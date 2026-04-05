@@ -36,6 +36,7 @@ defmodule RaxolAgent.MixProject do
   defp deps do
     [
       {:raxol, path: "../..", override: true},
+      {:raxol_mcp, path: "../raxol_mcp"},
       {:circular_buffer, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:req, "~> 0.5", optional: true},
