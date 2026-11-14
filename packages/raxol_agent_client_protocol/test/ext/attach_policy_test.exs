@@ -324,10 +324,10 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicyTest do
              authorize(LocalNode, ctx(%{actor: nil}), sup)
   end
 
-  test "LocalNode uses an asserted actor that carries a binary id", %{sup: sup} do
-    actor = %{"id" => "v@laptop", "kind" => "user"}
+  test "LocalNode ignores an asserted actor: it is unauthenticated", %{sup: sup} do
+    actor = %{"id" => "root-admin", "kind" => "user"}
 
-    assert {:ok, %Grant{actor: ^actor}} =
+    assert {:ok, %Grant{actor: %{"id" => "local", "kind" => "local_node"}}} =
              authorize(LocalNode, ctx(%{actor: actor}), sup)
   end
 

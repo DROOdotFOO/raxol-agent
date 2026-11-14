@@ -20,6 +20,11 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.LocalNode do
   LocalNode never reads `ctx.capability` (a token sent here is ignored, not an
   error — stock-client compatibility).
 
+  Every LocalNode grant carries the same actor,
+  `%{"id" => "local", "kind" => "local_node"}`. A `ctx.actor` is not used:
+  under this policy nothing authenticates it, and a handler may have taken
+  it from the peer.
+
   **Why this is not a hole:** anyone who can present a co-resident transport can
   already read the journal files directly; the token would add zero security
   against that principal. LocalNode refuses a *network listener* transport,
@@ -29,6 +34,8 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.LocalNode do
   @behaviour Raxol.AgentClientProtocol.Ext.AttachPolicy
 
   alias Raxol.AgentClientProtocol.Ext.AttachPolicy.Grant
+
+  @local_actor %{"id" => "local", "kind" => "local_node"}
 
   @impl true
   @spec authorize_attach(map()) :: {:ok, Grant.t()} | {:error, :not_local}
@@ -43,22 +50,12 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.LocalNode do
   @spec grant(map()) :: Grant.t()
   defp grant(ctx) do
     %Grant{
-      actor: actor(ctx),
+      actor: @local_actor,
       scope: :attach,
       session_id: Map.get(ctx, :session_id),
       via: :local_node,
       expires_at: nil,
       lens: nil
     }
-  end
-
-  # The asserted actor when it carries a binary "id", else a concrete synthesized
-  # local identity — never nil, never id-less (Grant/Runner require a binary id).
-  @spec actor(map()) :: map()
-  defp actor(ctx) do
-    case Map.get(ctx, :actor) do
-      %{"id" => id} = a when is_binary(id) -> a
-      _ -> %{"id" => "local", "kind" => "local_node"}
-    end
   end
 end
