@@ -14,8 +14,11 @@ defmodule RaxolPayments.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       dialyzer: [
-        # :mix for the Mix.Task callbacks of the mix tasks.
-        plt_add_apps: [:mix],
+        # raxol_agent is runtime: false here (see deps/0), so it is not in the
+        # application tree dialyzer derives. Add it (with :mix, for the
+        # Mix.Task callbacks) to the PLT so the Action behaviour, CommandHook
+        # and Mix.Task callbacks resolve.
+        plt_add_apps: [:raxol_agent, :mix],
         ignore_warnings: ".dialyzer_ignore.exs"
       ],
       description: description(),
@@ -36,7 +39,13 @@ defmodule RaxolPayments.MixProject do
 
   defp deps do
     [
-      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", []),
+      # Payments calls raxol_agent code at run time (`Raxol.Agent.Action`,
+      # `Raxol.Agent.ContextStore`). `runtime: false` keeps :raxol_agent out of
+      # this application's start list for in-repo builds, so the raxol_earn
+      # release can ship the agent modules loaded without starting the agent
+      # tree. Hex requirements carry no `runtime:` flag: a Hex consumer gets
+      # raxol_agent as an ordinary, started dependency.
+      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", runtime: false),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
       # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
