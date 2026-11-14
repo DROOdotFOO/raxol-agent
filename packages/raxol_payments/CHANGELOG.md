@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Raxol.Payments.Protocols.Xochi.origin_pull_pin_env_config!/0`: reads the
   origin-pull solver pin from `XOCHI_SOLVER_ETH`, `_BASE`, `_ARBITRUM`,
-  `_OPTIMISM`, `_POLYGON` and `XOCHI_PULL_REQUIRE_SOLVER_PIN`, raises when the
+  `_OPTIMISM`, `_POLYGON`, `_ROBINHOOD` and `XOCHI_PULL_REQUIRE_SOLVER_PIN`
+  (unset: required in production), raises when the
   result is fail-open, and returns the keyword list for
   `config :raxol_payments` (the configured addresses plus
   `PullContracts.pull_recipients/0`). For the `config/runtime.exs` of a release
@@ -153,6 +154,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   require `:policy`, a `SpendingPolicy`, and raise `ArgumentError` without
   one. Without a policy AutoPay used to pay any 402 with no domain or amount
   gate. Pass `SpendingPolicy.dev()` for development.
+- **Breaking.** `config :raxol_payments, :pull_require_solver_pin` defaults to
+  `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
+  with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull
+  before signing. An explicit `true` or `false` still wins.
 - Cross-repository parity now uses the published `@xochi/spec@0.9.0`
   tarball, pinned by committed SHA-512 integrity and fetched through a cached,
   verified script. `XOCHI_SPEC_DIR` is the single package-root contract, and

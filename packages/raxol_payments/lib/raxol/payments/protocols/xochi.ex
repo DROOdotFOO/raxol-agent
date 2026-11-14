@@ -46,8 +46,11 @@ defmodule Raxol.Payments.Protocols.Xochi do
       config :raxol_payments, :pull_solver_allowlist, ["0xsolver...", "0xsolver2..."]
 
   When set, a pull whose `to` (ERC-3009) or `spender` (Permit2) is not in the list
-  is rejected before any signature. When unset (the default), the address is not
-  bound.
+  is rejected before any signature. When unset, a Permit2 pull is always
+  rejected, and an ERC-3009 pull is rejected when the pin is required:
+  `config :raxol_payments, :pull_require_solver_pin` defaults to
+  `Raxol.Payments.Deployment.production?/0`, so a deployed release requires it
+  and development and tests do not. An explicit `true` or `false` wins either way.
   """
 
   @behaviour Raxol.Payments.Protocol
@@ -659,7 +662,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
 
   @solver_env ~w(
     XOCHI_SOLVER_ETH XOCHI_SOLVER_BASE XOCHI_SOLVER_ARBITRUM
-    XOCHI_SOLVER_OPTIMISM XOCHI_SOLVER_POLYGON
+    XOCHI_SOLVER_OPTIMISM XOCHI_SOLVER_POLYGON XOCHI_SOLVER_ROBINHOOD
   )
 
   @doc """
@@ -670,10 +673,12 @@ defmodule Raxol.Payments.Protocols.Xochi do
              Raxol.Payments.Protocols.Xochi.origin_pull_pin_env_config!()
 
   `XOCHI_SOLVER_ETH`, `XOCHI_SOLVER_BASE`, `XOCHI_SOLVER_ARBITRUM`,
-  `XOCHI_SOLVER_OPTIMISM` and `XOCHI_SOLVER_POLYGON` name the solver collection
-  address the agent signs pulls to. The allowlist is flat, so one address that
-  serves every chain needs one variable. `XOCHI_PULL_REQUIRE_SOLVER_PIN=true`
-  pins ERC-3009 with no address set; Permit2 is fail-closed regardless.
+  `XOCHI_SOLVER_OPTIMISM`, `XOCHI_SOLVER_POLYGON` and `XOCHI_SOLVER_ROBINHOOD`
+  name the solver collection address the agent signs pulls to. The allowlist is
+  flat, so one address that serves every chain needs one variable.
+  `XOCHI_PULL_REQUIRE_SOLVER_PIN=true` pins ERC-3009 with no address set, and
+  `false` unpins it; unset, it follows `Raxol.Payments.Deployment.production?/0`.
+  Permit2 is fail-closed regardless.
 
   Raises as `assert_origin_pull_pinned!/2` does when no address is set and the
   pin is not required, so the release does not boot fail-open. The returned
@@ -691,7 +696,11 @@ defmodule Raxol.Payments.Protocols.Xochi do
       |> Enum.map(&System.get_env/1)
       |> Enum.reject(&(is_nil(&1) or &1 == ""))
 
-    require_pin? = System.get_env("XOCHI_PULL_REQUIRE_SOLVER_PIN", "false") == "true"
+    require_pin? =
+      case System.get_env("XOCHI_PULL_REQUIRE_SOLVER_PIN", "") do
+        "" -> Raxol.Payments.Deployment.production?()
+        value -> value == "true"
+      end
 
     assert_origin_pull_pinned!(solvers, require_pin?)
 
@@ -908,7 +917,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # `from` is the signer, `value` the pulled amount, `validBefore` the expiry.
   # The recipient (`to`) is the solver collection address; it is enforced against
   # the pinned allowlist when one is configured, and against a hard pin when
-  # `:pull_require_solver_pin` is set. With neither, an unpinned `to` is left
+  # the pin is required (by config, or by default in production). With neither, an unpinned `to` is left
   # bounded by ERC-3009's `msg.sender == to` plus the value cap.
   defp validate_erc3009_pull(pull, request, signer) do
     domain = pull["domain"] || %{}
@@ -1002,8 +1011,8 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # Defaults when no allowlist is configured differ by method, because their
   # on-chain guarantees differ: ERC-3009 binds `to` in the signed digest and the
   # token enforces `msg.sender == to`, so an unpinned `to` stays bounded (funds can
-  # only reach the signed address) -- accepted unless `:pull_require_solver_pin` is
-  # set. Permit2 has NO on-chain recipient guard (the spender picks the recipient
+  # only reach the signed address) -- accepted unless the pin is required
+  # (`require_solver_pin?/0`). Permit2 has NO on-chain recipient guard (the spender picks the recipient
   # at call time), so the pin is the only destination control and is always
   # required -- an unpinned permit2 pull is rejected (fail-closed).
   #
@@ -1020,8 +1029,14 @@ defmodule Raxol.Payments.Protocols.Xochi do
     end
   end
 
-  defp require_solver_pin?,
-    do: Application.get_env(:raxol_payments, :pull_require_solver_pin, false)
+  # Explicit config wins both ways; unset, a deployed release requires the pin.
+  defp require_solver_pin? do
+    Application.get_env(
+      :raxol_payments,
+      :pull_require_solver_pin,
+      Raxol.Payments.Deployment.production?()
+    )
+  end
 
   defp solver_allowlist do
     normalize_solver_list(Application.get_env(:raxol_payments, :pull_solver_allowlist, []))

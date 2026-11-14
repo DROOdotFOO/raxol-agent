@@ -7,7 +7,8 @@ defmodule Raxol.Payments.Protocols.XochiPullPinEnvTest do
 
   @env_vars ~w(
     XOCHI_SOLVER_ETH XOCHI_SOLVER_BASE XOCHI_SOLVER_ARBITRUM
-    XOCHI_SOLVER_OPTIMISM XOCHI_SOLVER_POLYGON XOCHI_PULL_REQUIRE_SOLVER_PIN
+    XOCHI_SOLVER_OPTIMISM XOCHI_SOLVER_POLYGON XOCHI_SOLVER_ROBINHOOD
+    XOCHI_PULL_REQUIRE_SOLVER_PIN
   )
 
   @solver "0x00000000000000000000000000000000000000a1"
@@ -47,6 +48,14 @@ defmodule Raxol.Payments.Protocols.XochiPullPinEnvTest do
 
       assert config[:pull_solver_allowlist] ==
                Enum.uniq([@solver, @other] ++ PullContracts.pull_recipients())
+    end
+
+    test "reads XOCHI_SOLVER_ROBINHOOD, which the boot error names" do
+      System.put_env("XOCHI_SOLVER_ROBINHOOD", @other)
+
+      config = Xochi.origin_pull_pin_env_config!()
+
+      assert @other in config[:pull_solver_allowlist]
     end
 
     test "a required pin boots with no solver address set" do
