@@ -40,11 +40,11 @@ defmodule RaxolPayments.MixProject do
   defp deps do
     [
       # Payments calls raxol_agent code at run time (`Raxol.Agent.Action`,
-      # `Raxol.Agent.ContextStore`). `runtime: false` keeps :raxol_agent out of
-      # this application's start list for in-repo builds, so the raxol_earn
-      # release can ship the agent modules loaded without starting the agent
-      # tree. Hex requirements carry no `runtime:` flag: a Hex consumer gets
-      # raxol_agent as an ordinary, started dependency.
+      # `Raxol.Agent.ContextStore`). In-repo, `runtime: false` keeps
+      # :raxol_agent out of this application's start list, so the raxol_earn
+      # release ships the agent modules loaded without starting the agent
+      # tree. `raxol_dep/4` drops it from the Hex form: a consumer compiles
+      # this mix.exs, and the flag would leave raxol_agent out of its release.
       raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", runtime: false),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
@@ -86,7 +86,7 @@ defmodule RaxolPayments.MixProject do
 
   defp raxol_dep(name, version, path, opts) do
     if hex_package?() do
-      {name, version, opts}
+      {name, version, Keyword.delete(opts, :runtime)}
     else
       {name, version, [path: path] ++ opts}
     end
