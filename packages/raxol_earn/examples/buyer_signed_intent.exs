@@ -133,7 +133,7 @@ case System.get_env("BUYER_PRIVATE_KEY") do
     request = build_request.(BuyerWallet.address())
 
     # Xochi config. Auth here is a Member token; also {:mandate, agent_wallet}
-    # or {:x402, wallet: BuyerWallet}. See Raxol.Payments.Xochi.Client.
+    # or {:x402, wallet: BuyerWallet, policy: policy}. See Raxol.Payments.Xochi.Client.
     config = %{
       base_url: System.get_env("XOCHI_URL", "https://api.xochi.fi"),
       auth_token: System.get_env("XOCHI_MEMBER_TOKEN", "")

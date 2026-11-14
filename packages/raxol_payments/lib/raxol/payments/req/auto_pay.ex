@@ -26,9 +26,10 @@ defmodule Raxol.Payments.Req.AutoPay do
   - `:wallet` (required) -- module implementing `Raxol.Payments.Wallet`
   - `:protocols` -- list of protocol atoms, default `[:x402, :mpp]`
   - `:ledger` -- Ledger server for budget tracking (optional)
-  - `:policy` -- `SpendingPolicy` struct; when set, `approved_domains` and
+  - `:policy` (required) -- `SpendingPolicy` struct; `approved_domains` and
     `require_confirmation_above` are enforced against the request URL host
-    before the wallet is asked to sign
+    before the wallet is asked to sign. `attach/2` raises `ArgumentError`
+    without one; for development pass `SpendingPolicy.dev()`
   - `:agent_id` -- identifier for ledger tracking (required if ledger given)
   - `:on_confirm` -- 2-arity function `(amount, domain) -> :approve | :deny`
     called when `policy.require_confirmation_above` is exceeded. Runs
@@ -42,11 +43,43 @@ defmodule Raxol.Payments.Req.AutoPay do
 
   @doc """
   Attach the auto-pay plugin to a Req request.
+
+  Raises `ArgumentError` when `opts` has no `:policy` `SpendingPolicy`.
   """
   @spec attach(Req.Request.t(), keyword()) :: Req.Request.t()
   def attach(%Req.Request{} = req, opts) do
+    validate_opts!(opts)
     Req.Request.append_response_steps(req, auto_pay: &handle_response(&1, opts))
   end
+
+  @doc false
+  # Shared with `Raxol.Payments.Req.AgentPlugin.auto_pay/1`, which checks at
+  # build time rather than when the plugin is first applied.
+  @spec validate_opts!(keyword()) :: :ok
+  def validate_opts!(opts) do
+    case Keyword.get(opts, :policy) do
+      %SpendingPolicy{} ->
+        :ok
+
+      nil ->
+        raise ArgumentError,
+              "Raxol.Payments.Req.AutoPay requires a :policy option (a " <>
+                "%Raxol.Payments.SpendingPolicy{}); none was given. Pass " <>
+                "policy: Raxol.Payments.SpendingPolicy.dev() for development"
+
+      other ->
+        raise ArgumentError,
+              "Raxol.Payments.Req.AutoPay :policy must be a " <>
+                "%Raxol.Payments.SpendingPolicy{}, got #{policy_shape(other)}. Pass " <>
+                "policy: Raxol.Payments.SpendingPolicy.dev() for development"
+    end
+  end
+
+  defp policy_shape(%module{}), do: "a #{inspect(module)} struct"
+  defp policy_shape(value) when is_map(value), do: "a map"
+  defp policy_shape(value) when is_list(value), do: "a list"
+  defp policy_shape(value) when is_atom(value), do: "the atom #{inspect(value)}"
+  defp policy_shape(_value), do: "another term"
 
   @spec handle_response({Req.Request.t(), Req.Response.t()}, keyword()) ::
           {Req.Request.t(), Req.Response.t()}
@@ -193,8 +226,6 @@ defmodule Raxol.Payments.Req.AutoPay do
     end
   end
 
-  defp enforce_policy_gate(nil, _amount, _host, _opts), do: :ok
-
   defp enforce_policy_gate(%SpendingPolicy{} = _policy, _amount, host, _opts)
        when host in [nil, ""],
        do: {:error, {:gate_denied, :missing_host}}
@@ -217,7 +248,6 @@ defmodule Raxol.Payments.Req.AutoPay do
     )
   end
 
-  defp do_enforce_budget(nil, _ledger, _proto, _amount, _host, _opts), do: :ok
   defp do_enforce_budget(_policy, nil, _proto, _amount, _host, _opts), do: :ok
 
   defp do_enforce_budget(

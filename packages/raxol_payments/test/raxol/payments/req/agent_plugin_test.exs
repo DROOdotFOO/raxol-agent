@@ -2,15 +2,28 @@ defmodule Raxol.Payments.Req.AgentPluginTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Payments.Req.AgentPlugin
+  alias Raxol.Payments.SpendingPolicy
 
   describe "auto_pay/1" do
+    test "raises without a :policy when the plugin is built" do
+      assert_raise ArgumentError, ~r/:policy/, fn ->
+        AgentPlugin.auto_pay(wallet: SomeWallet)
+      end
+    end
+
     test "returns a function" do
-      plugin = AgentPlugin.auto_pay(wallet: SomeWallet)
+      plugin = AgentPlugin.auto_pay(wallet: SomeWallet, policy: SpendingPolicy.dev())
       assert is_function(plugin, 1)
     end
 
     test "returned function attaches auto_pay step to Req request" do
-      plugin = AgentPlugin.auto_pay(wallet: SomeWallet, protocols: [:x402])
+      plugin =
+        AgentPlugin.auto_pay(
+          wallet: SomeWallet,
+          policy: SpendingPolicy.dev(),
+          protocols: [:x402]
+        )
+
       req = Req.new(url: "https://example.com")
 
       result = plugin.(req)
@@ -20,7 +33,7 @@ defmodule Raxol.Payments.Req.AgentPluginTest do
     end
 
     test "preserves existing request options" do
-      plugin = AgentPlugin.auto_pay(wallet: SomeWallet)
+      plugin = AgentPlugin.auto_pay(wallet: SomeWallet, policy: SpendingPolicy.dev())
 
       req =
         Req.new(url: "https://example.com")

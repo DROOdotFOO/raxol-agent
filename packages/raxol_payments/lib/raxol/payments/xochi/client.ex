@@ -31,9 +31,11 @@ defmodule Raxol.Payments.Xochi.Client do
     agent acting for a Member. Wires `Raxol.Payments.Req.Mandate`, which looks
     up the soonest-expiring active mandate for the wallet. Pass plugin overrides
     with `{:mandate, agent_wallet, opts}`.
-  - `{:x402, wallet: MyWallet}` -- Guest mode. The agent signs an EIP-3009 USDC
-    micropayment per call and sends `X-PAYMENT`. Wires `Raxol.Payments.Req.AutoPay`
-    (restricted to `:x402`), which regenerates the payment from each 402 challenge.
+  - `{:x402, wallet: MyWallet, policy: policy}` -- Guest mode. The agent signs an
+    EIP-3009 USDC micropayment per call and sends `X-PAYMENT`. Wires
+    `Raxol.Payments.Req.AutoPay` (restricted to `:x402`), which regenerates the
+    payment from each 402 challenge; like `AutoPay`, it requires a
+    `SpendingPolicy` as `:policy`.
   - `{:member, jwt}` -- only if a passkey-issued JWT is provisioned out of band.
 
   ## Read capability
@@ -64,7 +66,10 @@ defmodule Raxol.Payments.Xochi.Client do
       config = %{base_url: "https://api.xochi.fi", auth: {:mandate, "0xAgent..."}}
 
       # Guest / x402
-      config = %{base_url: "https://api.xochi.fi", auth: {:x402, wallet: MyWallet}}
+      config = %{
+        base_url: "https://api.xochi.fi",
+        auth: {:x402, wallet: MyWallet, policy: SpendingPolicy.dev()}
+      }
 
       # Member JWT (legacy `:auth_token` is equivalent to `{:member, token}`)
       config = %{base_url: "https://api.xochi.fi", auth_token: "bearer-token"}

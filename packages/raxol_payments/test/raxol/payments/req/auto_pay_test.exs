@@ -84,10 +84,33 @@ defmodule Raxol.Payments.Req.AutoPayTest do
   end
 
   describe "attach/2" do
+    test "raises without a :policy, naming the option and the development policy" do
+      error =
+        assert_raise ArgumentError, fn ->
+          AutoPay.attach(Req.new(url: "https://example.com"), wallet: SomeWallet)
+        end
+
+      assert error.message =~ ":policy"
+      assert error.message =~ "SpendingPolicy.dev()"
+    end
+
+    test "raises when :policy is not a SpendingPolicy, without echoing its value" do
+      error =
+        assert_raise ArgumentError, fn ->
+          AutoPay.attach(Req.new(url: "https://example.com"),
+            wallet: SomeWallet,
+            policy: %{session_max: "secret-ish"}
+          )
+        end
+
+      assert error.message =~ "got a map"
+      refute error.message =~ "secret-ish"
+    end
+
     test "adds auto_pay response step to the request" do
       req =
         Req.new(url: "https://example.com")
-        |> AutoPay.attach(wallet: SomeWallet)
+        |> AutoPay.attach(wallet: SomeWallet, policy: SpendingPolicy.dev())
 
       step_names = Enum.map(req.response_steps, fn {name, _fun} -> name end)
       assert :auto_pay in step_names
@@ -99,7 +122,7 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       req =
         Req.new(url: "https://example.com")
         |> Req.Request.append_response_steps(custom: noop)
-        |> AutoPay.attach(wallet: SomeWallet)
+        |> AutoPay.attach(wallet: SomeWallet, policy: SpendingPolicy.dev())
 
       step_names = Enum.map(req.response_steps, fn {name, _fun} -> name end)
       assert :custom in step_names
@@ -111,7 +134,7 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     test "200 response passes through unchanged" do
       req =
         Req.new(url: "https://example.com", retry: false)
-        |> AutoPay.attach(wallet: SomeWallet)
+        |> AutoPay.attach(wallet: SomeWallet, policy: SpendingPolicy.dev())
         |> Req.Request.prepend_request_steps(
           stub: fn req ->
             {req, Req.Response.new(status: 200, body: "ok")}
@@ -126,7 +149,7 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     test "500 response passes through unchanged" do
       req =
         Req.new(url: "https://example.com", retry: false)
-        |> AutoPay.attach(wallet: SomeWallet)
+        |> AutoPay.attach(wallet: SomeWallet, policy: SpendingPolicy.dev())
         |> Req.Request.prepend_request_steps(
           stub: fn req ->
             {req, Req.Response.new(status: 500, body: "error")}
@@ -143,7 +166,11 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     test "returns original 402 when no protocol headers match" do
       req =
         Req.new(url: "https://example.com", retry: false)
-        |> AutoPay.attach(wallet: SomeWallet, protocols: [:x402, :mpp])
+        |> AutoPay.attach(
+          wallet: SomeWallet,
+          policy: SpendingPolicy.dev(),
+          protocols: [:x402, :mpp]
+        )
         |> Req.Request.prepend_request_steps(
           stub: fn req ->
             resp = Req.Response.new(status: 402, body: "payment required")
@@ -161,7 +188,7 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     test "auto_pay step is not present after attach + strip cycle" do
       req =
         Req.new(url: "https://example.com")
-        |> AutoPay.attach(wallet: SomeWallet)
+        |> AutoPay.attach(wallet: SomeWallet, policy: SpendingPolicy.dev())
 
       # Simulate what remove_auto_pay_step does internally
       stripped = %{

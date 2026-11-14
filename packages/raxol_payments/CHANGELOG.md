@@ -148,6 +148,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Requires `raxol_agent ~> 3.0` (was `~> 2.7`) and `raxol_core ~> 2.8` (was
   `~> 2.7`).
+- **Breaking.** `Raxol.Payments.Req.AutoPay.attach/2`,
+  `Req.AgentPlugin.auto_pay/1` and the Xochi client's `{:x402, opts}` auth
+  require `:policy`, a `SpendingPolicy`, and raise `ArgumentError` without
+  one. Without a policy AutoPay used to pay any 402 with no domain or amount
+  gate. Pass `SpendingPolicy.dev()` for development.
 - Cross-repository parity now uses the published `@xochi/spec@0.9.0`
   tarball, pinned by committed SHA-512 integrity and fetched through a cached,
   verified script. `XOCHI_SPEC_DIR` is the single package-root contract, and

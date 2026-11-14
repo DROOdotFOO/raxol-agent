@@ -235,11 +235,11 @@ The two are independent: revoking one does not revoke the other. An agent that m
 
 ## AutoPay (Req plugin)
 
-`Raxol.Payments.Req.AutoPay` is a Req response step. Add it to any Req client and HTTP 402 responses get handled transparently:
+`Raxol.Payments.Req.AutoPay` is a Req response step. Add it to any Req client and HTTP 402 responses get handled transparently. A `SpendingPolicy` is required (`attach/2` raises without one):
 
 ```elixir
 client = Req.new(base_url: "https://api.example.com")
-  |> Raxol.Payments.Req.AutoPay.attach(wallet: my_wallet)
+  |> Raxol.Payments.Req.AutoPay.attach(wallet: my_wallet, policy: SpendingPolicy.dev())
 
 # If the server returns 402, AutoPay signs and retries automatically
 {:ok, response} = Req.get(client, url: "/expensive-endpoint")

@@ -25,10 +25,14 @@ defmodule Raxol.Payments do
       # Configure a wallet
       wallet = Raxol.Payments.Wallets.Env.new()
 
-      # Auto-pay (HTTP 402, same-chain)
+      # Auto-pay (HTTP 402, same-chain); a SpendingPolicy is required
       backend_opts = [
         req_plugins: [
-          {Raxol.Payments.Req.AutoPay, wallet: wallet, protocols: [:x402, :mpp]}
+          Raxol.Payments.Req.AgentPlugin.auto_pay(
+            wallet: wallet,
+            policy: Raxol.Payments.SpendingPolicy.dev(),
+            protocols: [:x402, :mpp]
+          )
         ]
       ]
 
