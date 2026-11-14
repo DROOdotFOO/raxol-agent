@@ -6,7 +6,7 @@ defmodule Raxol.CLI.Doctor do
   answerable from the release version alone: a months-old binary and one built
   minutes ago both call themselves `0.2.6`. So this prints build provenance,
   packaging, runtime, and whether the ACP surface is compiled into this build
-  (a Hex install of `raxol_agent` has none) and can start an agent on this
+  (`raxol_agent` 3.0.0 from Hex has none) and can start an agent on this
   platform.
 
   It then lists the providers an agent could reach from this environment, from
@@ -61,8 +61,8 @@ defmodule Raxol.CLI.Doctor do
   def acp_surface(os_type \\ :os.type()) do
     cond do
       not Serve.available?() ->
-        "NOT built in -- needs a source build of raxol_agent with " <>
-          ":raxol_agent_client_protocol"
+        "NOT built in -- raxol_agent was compiled without " <>
+          ":raxol_agent_client_protocol (3.1.0 and later require it)"
 
       refusal = platform_refusal(os_type) ->
         "NOT available -- #{refusal}"

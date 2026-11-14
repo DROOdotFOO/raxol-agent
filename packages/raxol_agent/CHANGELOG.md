@@ -5,6 +5,18 @@ All notable changes to `raxol_agent` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-11-14
+
+### Changed
+
+- **`raxol_agent` requires `raxol_agent_client_protocol ~> 0.1`, so the ACP
+  agent is compiled from Hex.** `Raxol.Agent.ClientProtocol.StdioAgent`,
+  `ClientProtocol.Turn` and `ClientProtocol.Permission` are now part of a Hex
+  install, and `ClientProtocol.Serve.run/1` serves an editor instead of
+  returning 1 with "this build has no ACP support". Nothing else changes; the
+  `web3` and `fx` tools are still compiled only where `raxol_web3` is present,
+  which a Hex install does not have.
+
 ## [3.0.0] - 2026-11-14
 
 **Breaking.** Requires `raxol`, `raxol_mcp` and `raxol_journal` 2.8 (`~> 2.8`).

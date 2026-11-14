@@ -223,9 +223,10 @@ message chunk; `session/cancel` sends the turn's `{:acp_cancel, ref}`.
 `Raxol.Agent.ClientProtocol.Permission.authorizer/2` is the turn's `approver`:
 it announces each tool call and asks `session/request_permission` for an action
 marked `sensitive`, so a client that refuses, times out, disconnects, or
-answers method-not-found denies it. `session/load` is not offered. The protocol
-package is a path dependency, so `StdioAgent` compiles only when raxol_agent is
-built from source with it present; a Hex install exits 1 with an explanation.
+answers method-not-found denies it. `session/load` is not offered.
+`StdioAgent` compiles only when the protocol package is present, which
+`raxol_agent` requires in every build since 3.1.0; a build without it exits 1
+with an explanation.
 
 Steer does not bridge. `Raxol.AgentClientProtocol.Session` refuses every steer
 with `{:error, :no_steer_channel}` unless a host injects a `SteerAdapter`, and

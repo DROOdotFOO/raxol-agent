@@ -1,7 +1,7 @@
 defmodule RaxolAgent.MixProject do
   use Mix.Project
 
-  @version "3.0.0"
+  @version "3.1.0"
   @source_url "https://github.com/DROOdotFOO/raxol-agent"
   @source_ref "raxol_agent-v#{@version}"
 
@@ -55,28 +55,26 @@ defmodule RaxolAgent.MixProject do
     ] ++ acp_dep() ++ web3_dep()
   end
 
-  # raxol_agent_client_protocol is NOT a published requirement -- it is
-  # unpublished, so naming it in the Hex package would make raxol_agent
-  # unpublishable. HEX_BUILD therefore drops it entirely, and a Hex install of
-  # raxol_agent has no ACP surface (`Raxol.Agent.ClientProtocol.StdioAgent` is
-  # compile-gated on the package's presence).
-  #
-  # A source build takes it in EVERY env, not just dev/test: the packaged
-  # `raxol acp` is a :prod build of this package, and a dep edge is what orders
-  # the ACP package's compilation ahead of the gate that tests for it.
+  # raxol_agent_client_protocol is a required dependency in every form:
+  # `Raxol.Agent.ClientProtocol.StdioAgent` and the rest of the ACP agent are
+  # compile-gated on the package's presence, and a dep edge is what orders the
+  # ACP package's compilation ahead of the gate that tests for it. The Hex form
+  # (HEX_BUILD, or inside a Hex install) requires the published package; a
+  # source build takes the sibling directory, in EVERY env, not just dev/test:
+  # the packaged `raxol acp` is a :prod build of this package.
   defp acp_dep do
     path = "../raxol_agent_client_protocol"
 
     if hex_package?() do
-      []
+      [{:raxol_agent_client_protocol, "~> 0.1"}]
     else
       [{:raxol_agent_client_protocol, path: path, override: true}]
     end
   end
 
-  # Same shape as `acp_dep/0`, same reason: `raxol_web3` is unpublished, so
-  # naming it in the Hex package would make raxol_agent unpublishable, and a
-  # Hex install therefore has no `web3` tool (`Raxol.Agent.Actions.Web3` is
+  # `raxol_web3` is unpublished, so naming it in the Hex package would make
+  # raxol_agent unpublishable. HEX_BUILD therefore drops it entirely, and a
+  # Hex install has no `web3` tool (`Raxol.Agent.Actions.Web3` is
   # compile-gated on the package's presence).
   #
   # The edge points this way, from consumer to provider, and that is the whole
