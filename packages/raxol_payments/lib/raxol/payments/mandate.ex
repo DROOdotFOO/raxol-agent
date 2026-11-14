@@ -4,8 +4,7 @@ defmodule Raxol.Payments.Mandate do
   Xochi Member to a specific agent wallet, scoped to particular
   endpoints with a budget.
 
-  Per the Xochi design (locked 2026-04-27 in
-  `xochi/docs/planning/agent-auth.md`), a Mandate is a **per-request
+  Per the Xochi design, a Mandate is a **per-request
   envelope** the agent presents on every protected Xochi call via
   `X-Xochi-Delegation`. Xochi's worker verifies the signature and
   decrements budget counters in KV keyed by `H(envelope)`. The agent
