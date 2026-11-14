@@ -4,6 +4,8 @@ defmodule Raxol.Payments.SpendingPolicy do
 
   Defines per-request, per-session (sliding window), and lifetime caps.
   Used by the `Ledger` to enforce budget constraints before signing payments.
+  AutoPay and `SpendGate` apply `per_request_max` with or without a ledger;
+  `session_max` and `lifetime_max` need the ledger's history.
 
   Caps are human amounts of `currency` (see `unit/1`): with the default
   `"USDC"`, `Decimal.new("1.00")` is one US dollar. AutoPay and `SpendGate`

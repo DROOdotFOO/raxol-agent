@@ -27,6 +27,9 @@ named in parentheses describes it and is marked **Breaking**.
 - Spending a token that is not a stablecoin needs a price source (`:price_fn`
   or `price_source:`), and `Prices.Static` and `Prices.CoinGecko` prices
   expire after 300 seconds (same entry).
+- `SpendGate` enforces `per_request_max` without a `:ledger`, and refuses an
+  unusable policy as `{:invalid_policy, field}` (Changed, "`SpendGate`
+  applies the policy's `per_request_max`").
 - EURC, EURe and ZCHF are spent only under a policy in their own currency
   (Added, "`ExecuteXochiIntent`, `ExecuteRelayTransfer`, `payment_transfer`
   and ACP buys").
@@ -287,6 +290,14 @@ named in parentheses describes it and is marked **Breaking**.
   policy's, and its metadata keeps `source_asset` and `source_amount`.
   `payment_transfer` returns `reserved`. An unregistered Relay source token,
   which was scaled at 6 decimals, is refused, with or without a policy.
+- **Breaking.** `SpendGate` applies the policy's `per_request_max` without a
+  `:ledger` too (`Ledger.check_request/2`, as AutoPay does). It used to skip
+  every cap when no ledger was in context, so a policy alone bounded only the
+  approved domains and the confirmation threshold. A policy whose
+  `per_request_max` (and, with a ledger, `session_max`, `session_window_ms`
+  or `lifetime_max`) is not usable, or that is not a `SpendingPolicy`, is
+  refused before pricing as `{:invalid_policy, field}`, a `:config_error`
+  failure; with a ledger it was reported as `{:over_budget, :invalid_policy}`.
 - **Breaking.** `config :raxol_payments, :pull_require_solver_pin` defaults to
   `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
   with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull

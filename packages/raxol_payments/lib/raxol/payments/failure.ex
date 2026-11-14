@@ -318,6 +318,18 @@ defmodule Raxol.Payments.Failure do
         {:missing_context, key}
       )
 
+  # The spending policy in context has a cap the gate cannot compare against
+  # (missing, non-finite, not a Decimal), or is not a `SpendingPolicy`. That is
+  # the operator's configuration, not a spend over a limit.
+  def from({:invalid_policy, field} = detail),
+    do:
+      build(
+        :config_error,
+        "The spending policy is not usable (#{field}); fix its configuration.",
+        false,
+        detail
+      )
+
   # A fund-moving deployment required a durable idempotency checkpoint but none
   # was configured. Fail closed before signing rather than risk a double-settle
   # on a crash-retry.

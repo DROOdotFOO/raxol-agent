@@ -213,6 +213,79 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
     end
   end
 
+  # The per-request cap needs no history, so it holds without a ledger, as it
+  # does in AutoPay. Only the cumulative caps need one.
+  describe "authorize/3 without a ledger" do
+    test "1000 USDC is refused against dev()'s per-request cap" do
+      ctx = context(%{policy: SpendingPolicy.dev(), require_policy: true})
+
+      assert {:error, {:over_budget, :per_request}} =
+               SpendGate.authorize(ctx, Decimal.new("1000"), asset: @usdc)
+    end
+
+    test "50 WETH at $3,000 is refused against dev()'s per-request cap" do
+      ctx =
+        context(%{
+          policy: SpendingPolicy.dev(),
+          price_fn: Static.price_fn(%{"WETH" => "3000"})
+        })
+
+      assert {:error, {:over_budget, :per_request}} =
+               SpendGate.authorize(ctx, Decimal.new("50"), asset: @weth)
+    end
+
+    test "a spend within the per-request cap is allowed and converted" do
+      ctx = context(%{policy: SpendingPolicy.dev()})
+
+      assert {:ok, amount} = SpendGate.authorize(ctx, Decimal.new("0.05"), asset: @usdc)
+      assert Decimal.equal?(amount, Decimal.new("0.05"))
+    end
+
+    test "an empty SpendingPolicy is refused as a configuration error, before pricing" do
+      ctx = context(%{policy: %SpendingPolicy{}, price_fn: fn _ -> raise "not called" end})
+
+      assert {:error, {:invalid_policy, :per_request_max} = reason} =
+               SpendGate.authorize(ctx, Decimal.new("1000000"), asset: @weth)
+
+      assert %Raxol.Payments.Failure{reason: :config_error, retryable?: false} =
+               Raxol.Payments.Failure.from(reason)
+    end
+
+    test "a policy that is not a SpendingPolicy is refused as a configuration error" do
+      ctx = context(%{policy: %{per_request_max: Decimal.new("1")}})
+
+      assert {:error, {:invalid_policy, :not_a_policy}} =
+               SpendGate.authorize(ctx, Decimal.new("0.5"), asset: @usdc)
+    end
+  end
+
+  describe "authorize/3 policy validation with a ledger" do
+    test "a cumulative cap the ledger needs is a configuration error, not over budget" do
+      ledger = start_ledger()
+      pol = %{policy() | session_max: nil}
+      ctx = context(%{policy: pol, ledger: ledger})
+
+      assert {:error, {:invalid_policy, :session_max}} = authorize(ctx, "0.50", @usdc)
+      assert Ledger.get_history(ledger, "agent_1") == []
+    end
+
+    test "a non-Decimal per-request cap is a configuration error" do
+      ledger = start_ledger()
+      ctx = context(%{policy: %{policy() | per_request_max: 10}, ledger: ledger})
+
+      assert {:error, {:invalid_policy, :per_request_max}} = authorize(ctx, "0.50", @usdc)
+    end
+
+    test "a valid policy with a ledger is unchanged" do
+      ledger = start_ledger()
+      ctx = context(%{policy: policy(), ledger: ledger})
+
+      assert {:ok, _} = authorize(ctx, "0.50", @usdc)
+      assert {:error, {:over_budget, :per_request}} = authorize(ctx, "2.00", @usdc)
+      assert Decimal.equal?(lifetime(ledger, policy()), Decimal.new("0.50"))
+    end
+  end
+
   describe "release/2" do
     test "release nets out a prior authorize on totals" do
       ledger = start_ledger()

@@ -29,12 +29,18 @@ defmodule Raxol.Payments.Actions.SpendGate do
 
   ## Context keys
 
-  * `:policy` -- a `SpendingPolicy`. With nil there are no caps and no
-    conversion, but `asset:` is still required and a stablecoin pegged to a
-    currency other than the dollar (EURC, EURe, ZCHF) is still refused. Where
-    a policy is required (`:require_policy`, the default in a deployed
-    release) nil is refused as `{:policy_required, :no_spending_policy}`.
-  * `:ledger` -- a `Ledger` server (nil disables budget reservation).
+  * `:policy` -- a `SpendingPolicy`. Its `per_request_max` (and, with a
+    `:ledger`, `session_max`, `session_window_ms` and `lifetime_max`) must be
+    usable (`SpendingPolicy.validate/2`), or the spend is refused as
+    `{:invalid_policy, field}` before anything is priced. With nil there are
+    no caps and no conversion, but `asset:` is still required and a
+    stablecoin pegged to a currency other than the dollar (EURC, EURe, ZCHF)
+    is still refused. Where a policy is required (`:require_policy`, the
+    default in a deployed release) nil is refused as
+    `{:policy_required, :no_spending_policy}`.
+  * `:ledger` -- a `Ledger` server. Without one the policy's `per_request_max`
+    still applies (`Ledger.check_request/2`); `session_max` and
+    `lifetime_max` need the ledger's history and are not enforced.
   * `:agent_id` -- ledger key (default `:unknown`).
   * `:on_confirm` -- `(Decimal.t(), String.t() -> :approve | :deny)` consulted
     when the converted amount exceeds `policy.require_confirmation_above`.
@@ -56,6 +62,7 @@ defmodule Raxol.Payments.Actions.SpendGate do
           {:over_budget, atom()}
           | {:requires_confirmation, Decimal.t()}
           | {:invalid_amount, Decimal.t()}
+          | {:invalid_policy, atom()}
           | {:policy_required, atom()}
           | {:unpriced_asset, map()}
           | {:deny, PolicyGate.deny_reason()}
@@ -81,6 +88,7 @@ defmodule Raxol.Payments.Actions.SpendGate do
 
     with :ok <- validate_amount(amount),
          :ok <- require_policy(context),
+         :ok <- validate_policy(policy, Map.get(context, :ledger)),
          {:ok, spend} <- SpendPricing.to_policy_unit(policy, amount, asset, context),
          :ok <- validate_amount(spend),
          :ok <- gate(policy, spend, target, context),
@@ -201,6 +209,21 @@ defmodule Raxol.Payments.Actions.SpendGate do
     end
   end
 
+  # The caps the spend is compared against must be usable before anything is
+  # priced: `per_request_max` always, the cumulative caps when a ledger
+  # enforces them (AutoPay parity). An unusable policy is a configuration
+  # error, not a spend over a limit.
+  defp validate_policy(nil, _ledger), do: :ok
+
+  defp validate_policy(policy, ledger) do
+    fields =
+      if ledger,
+        do: [:per_request_max, :session_max, :session_window_ms, :lifetime_max],
+        else: [:per_request_max]
+
+    SpendingPolicy.validate(policy, fields)
+  end
+
   # -- Non-budget gate --
 
   defp gate(nil, _amount, _target, _context), do: :ok
@@ -234,21 +257,25 @@ defmodule Raxol.Payments.Actions.SpendGate do
   defp confirm_address(_on_confirm, amount, _addr),
     do: {:error, {:requires_confirmation, amount}}
 
-  # -- Atomic budget reservation --
+  # -- Budget reservation --
 
+  # With a ledger the spend is checked against every cap and recorded
+  # atomically. Without one only `per_request_max` can be checked, and nothing
+  # is recorded.
   defp reserve(context, amount, metadata) do
-    with {:ledger, ledger} when not is_nil(ledger) <-
-           {:ledger, Map.get(context, :ledger)},
-         {:policy, %SpendingPolicy{} = policy} <-
-           {:policy, Map.get(context, :policy)} do
-      agent_id = Map.get(context, :agent_id, :unknown)
+    case {Map.get(context, :ledger), Map.get(context, :policy)} do
+      {_ledger, nil} ->
+        :ok
 
-      case Ledger.try_spend(ledger, agent_id, amount, policy, metadata) do
-        :ok -> :ok
-        {:over_limit, type} -> {:error, {:over_budget, type}}
-      end
-    else
-      _ -> :ok
+      {nil, %SpendingPolicy{} = policy} ->
+        over_budget(Ledger.check_request(amount, policy))
+
+      {ledger, %SpendingPolicy{} = policy} ->
+        agent_id = Map.get(context, :agent_id, :unknown)
+        over_budget(Ledger.try_spend(ledger, agent_id, amount, policy, metadata))
     end
   end
+
+  defp over_budget(:ok), do: :ok
+  defp over_budget({:over_limit, type}), do: {:error, {:over_budget, type}}
 end
