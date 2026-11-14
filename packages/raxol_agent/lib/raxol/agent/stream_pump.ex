@@ -52,9 +52,8 @@ defmodule Raxol.Agent.StreamPump do
   the done — producer and decider are one call, they cannot disagree at write
   time. This is pinned by `Raxol.Agent.StreamPumpTest` ("the done gate is
   consulted on the real done path", "a mutation's own result echo is
-  rejected", "a zero-tool turn closes ungated") and by
-  `Raxol.Agent.Red.U21RealProducerRegressionTest`, which gates journals
-  produced by the real `pump/3`, not synthetic ones.
+  rejected", "a zero-tool turn closes ungated") and by a regression test that
+  gates journals produced by the real `pump/3`, not synthetic ones.
 
   Both `[:raxol, :agent, :done_gate, :ungated_done]` and `[:raxol, :agent,
   :done_gate, :rejected_evidence]` telemetry are emitted on the same arms —

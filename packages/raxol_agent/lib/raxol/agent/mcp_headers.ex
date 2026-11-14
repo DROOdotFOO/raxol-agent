@@ -1,7 +1,7 @@
 defmodule Raxol.Agent.McpHeaders do
   @moduledoc """
   Resolve a remote MCP server's auth headers, gated on where the spec came
-  from (ADR-0037 decision 4).
+  from.
 
   A header value is either a literal or a reference:
 

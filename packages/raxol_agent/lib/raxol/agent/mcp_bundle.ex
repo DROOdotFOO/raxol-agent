@@ -24,7 +24,7 @@ defmodule Raxol.Agent.McpBundle do
   ## Two transports, one spec shape
 
   A spec carries `:command` (a local stdio subprocess) XOR `:url` (a remote
-  HTTP server, ADR-0037). Both keys, or neither, is
+  HTTP server). Both keys, or neither, is
   `{:error, {:invalid_spec, _}}` rather than a silent preference for one, and
   the refusal names the server and what was wrong with it -- never the spec
   itself, whose `:env` and `:headers` hold secrets.

@@ -26,9 +26,9 @@ defmodule Mix.Tasks.RaxolPayments.Anvil do
 
   ## Next steps after start
 
-  In another terminal:
+  In another terminal, from `packages/raxol_payments` of a raxol-agent
+  checkout (the example is not in the Hex package):
 
-      cd packages/raxol_payments
       export PREFLIGHT_TARGET_URL=http://localhost:4002/anything
       mix run examples/preflight.exs
 
@@ -200,8 +200,8 @@ defmodule Mix.Tasks.RaxolPayments.Anvil do
     block_time:  #{opts[:block_time]}s
     echo:        #{echo_label(opts)}
 
-    In another terminal, run the preflight:
-      cd packages/raxol_payments
+    In another terminal, from packages/raxol_payments of a raxol-agent
+    checkout (the example is not in the Hex package), run the preflight:
       mix run examples/preflight.exs
 
     Ctrl-C to stop.

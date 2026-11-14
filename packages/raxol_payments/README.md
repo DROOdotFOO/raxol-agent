@@ -29,14 +29,14 @@ Agent payment protocols for Elixir. Autonomous agents that can pay for things: x
 ## Quick start
 
 ```elixir
-alias Raxol.Payments.{Router, Req.AgentPlugin}
+alias Raxol.Payments.{Router, SpendingPolicy, Req.AgentPlugin}
 
 # Router auto-selects protocol
 Router.select(cross_chain: true)  # => :xochi
 Router.select(privacy: :stealth)  # => :xochi
 Router.select()                   # => :x402
 
-# Wire auto-pay into agent HTTP backend
+# Wire auto-pay into agent HTTP backend (a SpendingPolicy is required)
 plugin = AgentPlugin.auto_pay(
   wallet: Raxol.Payments.Wallets.Env,
   ledger: ledger_pid,

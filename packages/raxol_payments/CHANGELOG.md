@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-11-14
 
+**Breaking.** 0.3.0 breaks 0.2 (see Removed and Changed), and a `~> 0.2`
+requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
+
 ### Removed
 
 - **Breaking.** The Riddler Commerce API client is gone: Riddler removed
@@ -168,10 +171,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Raxol.Payments.PrivacyTier`: Sovereign's `data_retention` is `:wallet`, not
   `:nothing`; `:nothing` is removed from the `t()` typespec. No design promises
   zero retention and Sovereign is excluded. `examples/privacy_modes.exs` /
-  `examples/README.md` describe shielded as unavailable: testnet tracer A is
-  recipient-private with the amount public (recipient half not delivered),
-  production target B-panel (conditional) hides amount and recipient on Aztec
-  only, and the source deposit is always public. The `PrivacyTier` moduledoc
+  `examples/README.md` describe shielded as unavailable: on testnet the
+  recipient is private and the amount public (the recipient half is not
+  delivered), the production target (conditional) hides amount and recipient
+  on Aztec only, and the source deposit is always public. The `PrivacyTier` moduledoc
   marks Private and Sovereign shielded settlement unavailable.
 - **Breaking.** `Raxol.Payments.Pxe.Client` now follows the pxe-bridge
   contract. Previously it could not safely move money: there was no
@@ -362,8 +365,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A read token is never presented to, or deleted under, a different API origin,
   executing principal, or intent id than the execute that issued it.
 
-- Requires `decimal >= 3.1.2` (was `~> 3.0`) for CVE-2026-97853: below 3.1.2,
-  `Decimal.round/3` allocates in proportion to its `places` argument.
+- Requires `decimal ~> 3.1 and >= 3.1.2` (was `~> 3.0`) for CVE-2026-97853:
+  below 3.1.2, `Decimal.round/3` allocates in proportion to its `places`
+  argument.
 
 - x402 and MPP challenges whose atomic amount is wider than a uint256 (more
   than 78 digits, or above 2^256 - 1) are rejected at parse time as

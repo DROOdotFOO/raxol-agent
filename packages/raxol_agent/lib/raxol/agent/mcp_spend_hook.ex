@@ -1,7 +1,7 @@
 defmodule Raxol.Agent.McpSpendHook do
   @moduledoc """
   Reserve before a per-call-priced MCP tool runs, and deny an unpriced tool on
-  a metered origin (ADR-0037 decision 7).
+  a metered origin.
 
   Register it in the ordered `:tool_call_hooks` list of the agent context,
   last, so a capability veto from an earlier hook happens before any money is

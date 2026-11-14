@@ -10,8 +10,7 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
   `deposit_attestation_signer`. raxol pins that address and verifies the
   attestation recovers to it BEFORE any funds move, failing closed otherwise.
 
-  Byte-exact parity with the Riddler signer
-  (`Riddler.Integrations.Xochi.DepositAttestation`): the signed message is seven
+  Byte-exact parity with the solver's signer: the signed message is seven
   lines joined by a single `\\n` (no trailing newline), UTF-8:
 
       xochi-deposit-attestation:v1

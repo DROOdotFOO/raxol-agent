@@ -17,9 +17,8 @@ defmodule Raxol.Payments.Xochi.Client do
   - `get_history/2` -- GET /api/intent/history?wallet=
   - `claim/2` -- POST /api/stealth/claim
 
-  Pinned contract: `xochi/docs/contracts/xochi-intent-api.md`. It covers quote,
-  execute, and status; the history and stealth claim paths live in the worker's
-  OpenAPI spec.
+  Quote, execute and status follow the Xochi intent API contract; the history
+  and stealth claim paths follow the worker's OpenAPI spec.
 
   ## Authentication
 

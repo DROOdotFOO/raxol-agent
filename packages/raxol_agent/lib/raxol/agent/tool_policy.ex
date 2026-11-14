@@ -86,8 +86,9 @@ defmodule Raxol.Agent.ToolPolicy do
   Module Actions keep it in `__action_meta__/0`; runtime-discovered MCP tools
   are `%Raxol.Agent.Action.Dynamic{}` structs and carry it on the struct. Public
   because an authorizer that ASKS rather than denies needs the name for its
-  prompt, not just the flag -- see
-  `Raxol.Agent.ClientProtocol.Permission.authorizer/2`.
+  prompt, not just the flag, as the ACP permission authorizer does
+  (`Raxol.Agent.ClientProtocol.Permission`, compiled only when
+  `raxol_agent_client_protocol` is present).
   """
   @spec identity(module() | Raxol.Agent.Action.Dynamic.t()) ::
           {String.t() | atom(), boolean()}

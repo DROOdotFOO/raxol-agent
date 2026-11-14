@@ -16,8 +16,8 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   ## Wire tolerance
 
   - The current matrix emits chains as `chain_id` + `chain_name` only;
-    `vm_type` and `address_format` arrive with Riddler's WP-E. Absent
-    `vm_type` defaults to `:evm` (the pre-WP-E wire). A *present* but
+    `vm_type` and `address_format` arrive with a later solver release. Absent
+    `vm_type` defaults to `:evm` (the older wire). A *present* but
     unrecognised `vm_type` drops the chain: its address rules are unknown, so
     it is not treated as EVM.
   - Unknown keys are dropped; individually malformed chain/token entries are
@@ -347,7 +347,7 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   defp parse_chain(_), do: []
 
-  # Absent is the pre-WP-E wire, which only ever listed EVM chains. Matching is
+  # Absent is the older wire, which only ever listed EVM chains. Matching is
   # case/whitespace-insensitive so "EVM" does not silently drop a live chain; a
   # genuinely unknown family still drops it.
   defp parse_vm_type(nil), do: {:ok, :evm}

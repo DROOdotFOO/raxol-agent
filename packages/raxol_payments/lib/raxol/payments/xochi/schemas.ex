@@ -414,7 +414,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
     # The Xochi worker response is snake_case with `eip712`; older/sim responses
     # are camelCase with `eip712Data`. Accept both so the client does not break
-    # on the canonical (snake_case) shape. See xochi/docs/contracts/xochi-intent-api.md.
+    # on the canonical (snake_case) shape.
     @spec from_json(map()) :: t()
     def from_json(json) do
       %__MODULE__{

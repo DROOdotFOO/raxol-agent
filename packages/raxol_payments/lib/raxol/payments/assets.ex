@@ -241,7 +241,7 @@ defmodule Raxol.Payments.Assets do
                    )
 
   # Solver-fillable EVM tokens: symbol -> chain id -> lowercase address. Mirrors
-  # Riddler's config/token_registry.ex for the six supported EVM chains
+  # the solver's token registry for the six supported EVM chains
   # (Ethereum, Optimism, Polygon, Base, Arbitrum, Robinhood Chain). Decimals live
   # in `@addresses`. USDG is Robinhood Chain's native stablecoin (Permit2 pull,
   # no ERC-3009); WETH is also canonical there. RAXOL (Robinhood Chain) is
@@ -405,8 +405,8 @@ defmodule Raxol.Payments.Assets do
   @spec symbols() :: [String.t()]
   def symbols, do: Map.keys(@evm_tokens)
 
-  # Human-readable names for the supported EVM chains, matching Riddler's
-  # `config/chain_registry.ex` naming.
+  # Human-readable names for the supported EVM chains, matching the solver's
+  # chain naming.
   @chain_names %{
     1 => "Ethereum",
     10 => "Optimism",
