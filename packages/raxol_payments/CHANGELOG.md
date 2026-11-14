@@ -5,18 +5,77 @@ All notable changes to `raxol_payments` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-14
+
+### Upgrading from 0.2
+
+0.3.0 breaks 0.2, and a `~> 0.2` requirement resolves to it; pin `~> 0.2.1`
+to stay on 0.2. Each change below needs action from a 0.2.1 user; the entry
+named in parentheses describes it and is marked **Breaking**.
+
+- Pass a `SpendingPolicy` to `Req.AutoPay.attach/2`,
+  `Req.AgentPlugin.auto_pay/1` and the Xochi `{:x402, opts}` auth; a
+  non-finite cap is refused (Changed, "`AutoPay.attach/2` ... require
+  `:policy`").
+- Caps are human amounts of the policy's currency for every protocol, a
+  custom `Protocol` sets `:unit` in its parsed challenge, and
+  `Ledger.get_totals/3` takes only a `SpendingPolicy` (Changed, "Every
+  `SpendingPolicy` cap").
+- `SpendGate.authorize/3` requires `asset:` and returns `{:ok, amount}`; pass
+  that amount to `release/3` and `tag_reservation/3` (Changed, "`SpendGate`
+  converts every spend").
+- Spending a token that is not a stablecoin needs a price source (`:price_fn`
+  or `price_source:`), and `Prices.Static` and `Prices.CoinGecko` prices
+  expire after 300 seconds (same entry).
+- `SpendGate` enforces `per_request_max` without a `:ledger`, and refuses an
+  unusable policy as `{:invalid_policy, field}` (Changed, "`SpendGate`
+  applies the policy's `per_request_max`").
+- EURC, EURe and ZCHF are spent only under a policy in their own currency
+  (Added, "`ExecuteXochiIntent`, `ExecuteRelayTransfer`, `payment_transfer`
+  and ACP buys").
+- A deployed release requires a solver pin for ERC-3009 origin pulls
+  (Changed, "`:pull_require_solver_pin` defaults").
+- AutoPay keeps a signed spend recorded when the paid retry fails, and an
+  x402 `validBefore` is at most one hour out (Security, "`Req.AutoPay` keeps
+  the spend recorded").
+- A served EIP-712 payload must be the canonical typed data, and
+  `EIP712.hash/3` returns `{:error, :no_primary_type}` for a types map without
+  a single root (Security, "Every EIP-712 payload").
+- `Pxe.Client` follows the pxe-bridge contract: idempotency keys, new results
+  and errors (Changed, "`Raxol.Payments.Pxe.Client`").
+- The Riddler Commerce API client is removed (Removed, "The Riddler Commerce
+  API client").
+- `Protocols.Xochi.execute/3` and `sign_intent/2` are removed; use `execute/4`
+  and `sign_intent/3` (Removed).
+- In `{:delivery_below_floor, detail}`, `min_to_amount` is the quote's own
+  minimum and `:floor` the caller's (Changed, "`{:delivery_below_floor,
+  detail}`").
+- `PrivacyTier`'s `data_retention` no longer has `:nothing` (Changed,
+  "`Raxol.Payments.PrivacyTier`").
+- EURe leaves `Assets.symbols/0` and `evm_tokens/0` (Added,
+  "`Raxol.Payments.Assets` registers the non-USD stablecoins").
+- A custom `Relay.Broadcaster` returns `{:error, {:not_sent, reason}}` for a
+  failure before submission; any other error leaves the Relay spend reserved
+  as in doubt (Security, "`ExecuteRelayTransfer` keeps the spend").
+- Requires `decimal ~> 3.1`, whose default context differs from decimal 2's,
+  and `req ~> 0.6` (Security, "Requires `decimal`" and "Requires `req`").
+- Requires `raxol_agent ~> 3.0` and `raxol_core ~> 2.8` (Changed, "Requires
+  `raxol_agent`").
+- A release that depends on `raxol_payments` from Hex starts `raxol_agent`,
+  `raxol`, `raxol_mcp` and `raxol_journal` (Changed, "A release that depends
+  on `raxol_payments`").
 
 ### Added
 
 - `Raxol.Payments.Protocols.Xochi.origin_pull_pin_env_config!/0`: reads the
   origin-pull solver pin from `XOCHI_SOLVER_ETH`, `_BASE`, `_ARBITRUM`,
-  `_OPTIMISM`, `_POLYGON` and `XOCHI_PULL_REQUIRE_SOLVER_PIN`, raises when the
+  `_OPTIMISM`, `_POLYGON`, `_ROBINHOOD` and `XOCHI_PULL_REQUIRE_SOLVER_PIN`
+  (unset: required in production), raises when the
   result is fail-open, and returns the keyword list for
   `config :raxol_payments` (the configured addresses plus
   `PullContracts.pull_recipients/0`). For the `config/runtime.exs` of a release
   that signs origin pulls.
-- Xochi read capability (xochi#563). `ExecuteResponse.read_token` carries the
+- Xochi read capability. `ExecuteResponse.read_token` carries the
   one-time token `POST /api/intent/execute` returns (nil from an older worker;
   excluded from `inspect`). `Xochi.Client.get_status/3` and `get_intent/3` take
   `read_token:` and send it as the `X-Xochi-Read-Token` header, never in the
@@ -57,27 +116,209 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that intent. For a genuinely ambiguous dispatch, a 404 at or after the signed
   deadline proves it never landed and releases the reservation.
 
-### Security
+- Registered RAXOL on Robinhood Chain (`0xf447...53af`, 18 decimals) in
+  `Raxol.Payments.Assets`, so the Xochi client sizes, resolves and classifies
+  USDC/USDT/USDG->RAXOL legs.
+- `Raxol.Payments.Prices.CoinGecko` prices EURe (USD quote, not dollar par),
+  RAXOL and WETH. Neither EURe nor RAXOL is a settlement-ledger stablecoin, so
+  an unpriced leg reports `nil`, never $1. New `Raxol.Payments.Prices` reads
+  the configured `price_source:` and `fx:`, and new `Assets.peg/2` and
+  `Assets.symbol_peg/1` name a stablecoin's peg currency, the dollar included.
+- `Assets.parse_atomic/1` parses a positive atomic amount no wider than a
+  uint256, and `Assets.to_decimal/1` converts an amount to a `Decimal`, taking
+  an integer string of up to 78 digits through the integer (decimal 3's
+  string parse stops at 34 digits).
+- **Breaking.**
+  `Raxol.Payments.Assets` registers the non-USD stablecoins of ADR-0040:
+  EURC on 1 and 8453, EURe on 1, 100, 137, 8453 and 42161, and ZCHF on 1 plus
+  the CCIP-bridged contract on 10, 100, 137, 8453 and 42161, each at its
+  on-chain decimals. EURe was previously registered on 1 and 42161 only, so
+  elsewhere the lenient `decimals/2` scaled it at 6 instead of 18, off by
+  10^12. `address/2` matches the mixed-case wire symbol `"EURe"`
+  case-insensitively. EURe's legacy v1
+  contracts resolve to `"EURe"` through `symbol_for/2` and are never returned
+  by `address/2`, since they front the same balance as v2. Chain 100 (Gnosis)
+  gains a name and its xDAI gas token. New `Assets.fx_peg/2` names a token's
+  non-USD peg. None of these tokens is solver-fillable: EURe leaves
+  `symbols/0`, `evm_tokens/0` and the Xochi settlement grid, where it was
+  listed on Arbitrum. `Xochi.Capabilities.fallback/0` and the capacity
+  deriver read `evm_tokens/0`, so they drop EURe on 42161 too; only
+  `supported_chain_ids/0` and the stealth chain check are unchanged.
+- **Breaking.**
+  `ExecuteXochiIntent`, `ExecuteRelayTransfer`, `payment_transfer` and ACP
+  buys spend one only under a policy in its own currency (a EUR policy counts
+  EURe at par) and otherwise refuse it as
+  `{:unpriced_asset, %{reason: :fx_unsupported}}` (see Changed),
+  and Xochi and Relay refuse a non-USD destination without a positive
+  `min_to_amount`, as `{:unpriced_asset, detail}` (ADR-0040 decision 6),
+  until an FX rate gates the conversion (decision 7). A `min_to_amount` of `0`
+  bounds nothing: Relay and the deposit route read it as absent and Xochi
+  refuses it. x402 pays only in registered USDC (see Security), so it refuses
+  a non-USD stablecoin challenge at parse, as `{:unpriced_asset, detail}`.
+- `ExecuteRelayTransfer` accepts `min_to_amount` and refuses a quote delivering
+  less before the spend is authorized. It previously had no delivery floor, so
+  a quote could deliver any amount.
+- `ExecuteXochiIntent`'s delivery floor also judges the `toAmount` in the
+  EIP-712 message the wallet would sign, read only when the message's primary
+  type declares the field. A null or missing value counts as 0, which is what
+  `EIP712` signs, and a whitespace or sign variant fails closed at the floor or
+  the encoder, so a quote whose signed amount is 0 is refused.
+- `Raxol.Payments.TypedData` checks a served EIP-712 payload against the
+  canonical typed data for one message kind: `check_shape/2` (primary type,
+  types, `typeHash`, message fields) and `check_domain/2` (exactly the
+  expected domain fields and values).
+- `EIP712.type_hash/2` returns the `typeHash` of a struct type, and
+  `EIP712.hash/4` hashes the primary type the caller names.
 
-- Error bodies recursively redact both `read_token` and `readToken`; no error
-  tuple or replayable Action result carries the bearer secret.
-- A read token is never presented to, or deleted under, a different API origin,
-  executing principal, or intent id than the execute that issued it.
+- Euro and franc stablecoins can be priced in accounting (ADR-0040 decision 6).
+  `RAXOL_FX_ENABLED=true` with `RAXOL_SLEUTH_API_KEY` and `RPC_BASE` or `RPC_ETH`
+  puts `Raxol.Payments.Prices.FX` in front of `RAXOL_PRICE_SOURCE` in the
+  `RebalanceMonitor` sweep and `mix raxol_earn.rebalance`: EURC, EURe and ZCHF
+  are priced at the Chainlink rate for their peg when Sleuth's market price is
+  within 100 bps of it, and `nil` otherwise. Enabling it without the key, without
+  either RPC URL, or in a build without `raxol_web3` (an optional dependency,
+  dropped under `HEX_BUILD`) refuses and names what is missing. Pricing only: no
+  spend cap or delivery floor reads an FX rate. `Prices.FX` answers exactly
+  the symbols in `Assets.fx_pegs/0`, in any casing, at the Chainlink rate for
+  the peg registered there, and hands every other symbol to
+  `RAXOL_PRICE_SOURCE`. A listing whose peg disagrees with the registered one,
+  a symbol listed twice with any listing not `:ok`, a symbol missing from the
+  snapshot, and a failed snapshot leave the symbol `nil`, never the fallback.
+  A key `Raxol.Web3.FX.Sleuth.new/1` refuses (one with a CR, LF or space
+  inside it) is logged, naming the argument and never the key, and leaves
+  EURC, EURe and ZCHF unpriced for the sweep to count.
+- `SettlementLedger` aggregates carry `unpriced_count` and
+  `recording_gap_count`. A leg or a nonzero fee that neither `usdc_price` nor
+  `price_fn` could price (an EURe fee) used to drop out of `usd_revenue` or
+  `usd_fee` without a trace, so a report with EUR legs read as smaller rather
+  than as partial; such an entry now counts once in `unpriced_count`. An entry
+  missing a leg's amount or decimals is a recording problem, not a pricing
+  one: it counts in `recording_gap_count`, and in `unpriced_count` only when
+  its fee, its margin basis, is unpriced.
+- Each `RebalanceMonitor` sweep reports margin. It prices
+  `SettlementLedger.report/2` with the same `price_fn` that sizes refuels (FX
+  in front of `RAXOL_PRICE_SOURCE` when enabled), emits the totals as
+  `[:raxol, :payments, :margin]`, which the accounting sidecar logs as
+  `payments.margin`, and keeps the per-corridor report for
+  `RebalanceMonitor.margin_report/1`. Until now nothing in production read the
+  report, so FX pricing reached only the native gas symbols a refuel asks for.
+  The advice and the report fail independently, and an FX snapshot that raises
+  leaves EURC, EURe and ZCHF unpriced, and the rest to `RAXOL_PRICE_SOURCE`,
+  instead of aborting the sweep.
+  `SettlementLedger.report/2` reads the ledger once instead of four times.
+  `SettlementLedger` aggregates and the event carry `margin_count`, the number
+  of entries `usd_margin` covers, and `gas_unpriced_count`, the entries whose
+  gas amount is known but whose gas symbol no price answers (POL with a price
+  source that only knows ETH); `count - margin_count` is every entry left out
+  of `usd_margin`, for any reason. The event carries `unpriced_count` and
+  `recording_gap_count` too.
+- Xochi quotes can be exact-output. `QuoteRequest` gains `swap_kind`
+  (`"exact_input"` by default, or `"exact_output"`), `output_amount` and
+  `max_from_amount`; an exact-output request sends `output_amount` instead of
+  `from_amount` and never sends `max_from_amount`, which only caps what raxol
+  will sign. `ExecuteXochiIntent` takes `swap_kind` and `output_amount`; on
+  exact output `amount` is the maximum spend, reserved by the spend gate and
+  passed on as `max_from_amount`. Exact output has no automatic same-asset
+  floor; an explicit `min_to_amount` still applies.
 
 ### Changed
 
-- Cross-repository parity now uses the published `@xochi/spec@0.9.0`
+- **Breaking.** Requires `raxol_agent ~> 3.0` (was `~> 2.7`) and
+  `raxol_core ~> 2.8` (was `~> 2.7`).
+- **Breaking.** A release that depends on `raxol_payments` from Hex includes
+  and starts `raxol_agent` and the applications under it: `raxol`,
+  `raxol_mcp` and `raxol_journal`. 0.2.1 declared `raxol_agent`
+  `runtime: false`, which left it out of a consumer's release, so the payment
+  Actions raised at run time. `raxol` boots in `:full` mode unless
+  `RAXOL_MODE=minimal` (or `config :raxol, :startup_mode, :minimal`), which
+  starts only its error recovery, event manager and telemetry (when enabled).
+  `raxol_agent` starts `Raxol.Agent.Supervisor` (its MCP agent tools register
+  only on an `:mcp` node or with `config :raxol_agent, :mcp_tools, true`) and
+  refuses to boot on a malformed `config :raxol_agent, :web3`.
+- **Breaking.** `Raxol.Payments.Req.AutoPay.attach/2`,
+  `Req.AgentPlugin.auto_pay/1` and the Xochi client's `{:x402, opts}` auth
+  require `:policy`, a `SpendingPolicy`, and raise `ArgumentError` without
+  one. Without a policy AutoPay used to pay any 402 with no domain or amount
+  gate. Every payment is now held to the policy's `approved_domains`,
+  `require_confirmation_above` and `per_request_max`, with or without a
+  `:ledger`; its `session_max` and `lifetime_max` are enforced only with a
+  `:ledger`. An amount over `per_request_max` is refused before signing with
+  the same `%{error: :budget_exceeded, limit: :per_request}` body either way.
+  Pass `SpendingPolicy.dev()` for development. New
+  `Raxol.Payments.Ledger.check_request/2` is the per-request check without a
+  ledger. `attach/2` also raises when `per_request_max` (and, with a
+  `:ledger`, `session_max`, `session_window_ms` and `lifetime_max`) is not a
+  finite positive value.
+- **Breaking.** Every `SpendingPolicy` cap is a human amount of the policy's
+  `currency` (`SpendingPolicy.unit/1`, US dollars for the default `"USDC"`),
+  for every protocol. `MPP.amount/1` returned the challenge's atomic amount,
+  so an MPP charge of 5 USDC base units was gated as $5; it now scales by the
+  challenge currency (ISO 4217 minor units for USD, EUR and CHF, registered
+  decimals for a dollar or registered non-USD stablecoin), and a challenge in
+  any other currency is refused at parse (`{:unpriced_currency, currency}`);
+  AutoPay passes such a challenge through as the unpaid 402 and logs the
+  refusal. A parsed challenge carries its `:unit`; AutoPay refuses one whose
+  unit is not the policy's (`%{error: :currency_mismatch}`) before anything is
+  reserved, so MPP and x402 payments add up against the same caps. A
+  custom `Protocol` must set `:unit` in its parsed challenge. The Ledger
+  refuses a non-`SpendingPolicy` or a nil or non-finite cap as
+  `{:over_limit, :invalid_policy}` instead of crashing, and `get_totals/3`
+  takes only a `SpendingPolicy`. New `SpendingPolicy.validate/2`.
+- **Breaking.** `SpendGate` converts every spend into the policy's unit
+  before the policy gate, the ledger reservation and any signature
+  (`Raxol.Payments.SpendPricing`). It used to reserve the source token's own
+  amount, so a 5 WETH Xochi intent counted as 5 against a $10 cap. Now a
+  stablecoin pegged to the unit counts at par (USDC, USDT, USDG, DAI and Tron
+  USDT/USDC under a USD policy), and under a USD policy any other token
+  (WETH, RAXOL) counts at its USD price from the context's `:price_fn` or
+  `config :raxol_payments, :accounting, price_source:` (`RAXOL_PRICE_SOURCE`
+  when accounting is enabled). Non-pegged sources need a price source under
+  a policy: with none, with no fresh positive price, or with a source that
+  raises, the spend is refused as `{:unpriced_asset, %{reason: reason}}`
+  before anything is signed. `Prices.CoinGecko` asks for each price's
+  `last_updated_at` and answers `nil` for one older than `:max_age_s`
+  (default 300 seconds) or without one; `Prices.Static.price_fn/2` takes
+  `:as_of` (default when built) and `:max_age_s` (default 300) and answers
+  `nil` once its prices are older. For a spend the configured source is
+  fetched without retries and with 5-second connect and receive timeouts, and
+  a failed fetch refuses the spend as `:price_source_error`, which is
+  retryable (`Prices.source_fn/2` passes options to
+  `Prices.CoinGecko.price_fn/1`, which takes `:raise_on_fetch_error`); the
+  accounting sweep keeps the defaults. No spend cap reads an FX rate, so a
+  stablecoin pegged to another currency is refused (EURC, EURe and ZCHF
+  under a USD policy or with no policy; a dollar stablecoin under a EUR or
+  CHF policy), and under a non-USD policy every token not pegged to it is
+  refused. `SpendGate.authorize/3` requires `asset:` (`{:token, chain_id,
+  address}` or `{:symbol, ticker}`) and returns `{:ok, amount}`, the
+  converted amount the caps saw and the ledger holds; pass it to
+  `release/3` and `tag_reservation/3`. The ledger entry's `currency` is the
+  policy's, and its metadata keeps `source_asset` and `source_amount`.
+  `payment_transfer` returns `reserved`. An unregistered Relay source token,
+  which was scaled at 6 decimals, is refused, with or without a policy.
+- **Breaking.** `SpendGate` applies the policy's `per_request_max` without a
+  `:ledger` too (`Ledger.check_request/2`, as AutoPay does). It used to skip
+  every cap when no ledger was in context, so a policy alone bounded only the
+  approved domains and the confirmation threshold. A policy whose
+  `per_request_max` (and, with a ledger, `session_max`, `session_window_ms`
+  or `lifetime_max`) is not usable, or that is not a `SpendingPolicy`, is
+  refused before pricing as `{:invalid_policy, field}`, a `:config_error`
+  failure; with a ledger it was reported as `{:over_budget, :invalid_policy}`.
+- **Breaking.** `config :raxol_payments, :pull_require_solver_pin` defaults to
+  `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
+  with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull
+  before signing. An explicit `true` or `false` still wins.
+- Cross-repository parity now uses the published `@xochi/spec@0.14.0`
   tarball, pinned by committed SHA-512 integrity and fetched through a cached,
   verified script. `XOCHI_SPEC_DIR` is the single package-root contract, and
   `RIDDLER_CHECKOUT_DIR` explicitly names any built Riddler checkout.
-- `Raxol.Payments.PrivacyTier`: Sovereign's `data_retention` is `:wallet`, not
+- **Breaking.**
+  `Raxol.Payments.PrivacyTier`: Sovereign's `data_retention` is `:wallet`, not
   `:nothing`; `:nothing` is removed from the `t()` typespec. No design promises
-  zero retention and Sovereign is excluded (xochi
-  `docs/planning/shielded-execution.md` D1). `examples/privacy_modes.exs` /
-  `examples/README.md` describe shielded as unavailable: testnet tracer A is
-  recipient-private with the amount public (recipient half not delivered),
-  production target B-panel (conditional) hides amount and recipient on Aztec
-  only, and the source deposit is always public. The `PrivacyTier` moduledoc
+  zero retention and Sovereign is excluded. `examples/privacy_modes.exs` /
+  `examples/README.md` describe shielded as unavailable: on testnet the
+  recipient is private and the amount public (the recipient half is not
+  delivered), the production target (conditional) hides amount and recipient
+  on Aztec only, and the source deposit is always public. The `PrivacyTier` moduledoc
   marks Private and Sovereign shielded settlement unavailable.
 - **Breaking.** `Raxol.Payments.Pxe.Client` now follows the pxe-bridge
   contract. Previously it could not safely move money: there was no
@@ -102,10 +343,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The `:retry` config key is gone.
   - Modelled on `@xochi/client`'s transport, which uses separate timeouts for
     long writes and reads and retries only idempotent reads on 502/503/504.
-    xochi-sdk is deleting its own `PxeBridgeClient` (xochi-sdk#32) for these
-    same defects.
 
-## [0.3.0] - 2026-10-09
+- **Breaking.**
+  In `{:delivery_below_floor, detail}`, `min_to_amount` is the quote's own
+  stated minimum; the caller's floor is `:floor`, and `:lowest` is what was
+  compared. In v0.2.1 `min_to_amount` was the caller's floor. The refusal's
+  message no longer says "refusing to sign", which was wrong on the deposit
+  route.
 
 ### Removed
 
@@ -118,145 +362,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   delegated to) for cross-chain intents. `Raxol.Payments.Relay.Client` is
   unaffected.
 
-### Added
-
-- Registered RAXOL on Robinhood Chain (`0xf447...53af`, 18 decimals) in
-  `Raxol.Payments.Assets`, so the Xochi client sizes, resolves and classifies
-  USDC/USDT/USDG->RAXOL legs.
-- `Raxol.Payments.Prices.CoinGecko` prices EURe (USD quote, not dollar par)
-  and RAXOL. Neither is a settlement-ledger stablecoin, so an unpriced leg
-  reports `nil`, never $1.
-- `Assets.parse_atomic/1` parses a positive atomic amount no wider than a
-  uint256, and `Assets.to_decimal/1` converts an amount to a `Decimal`, taking
-  an integer string of up to 78 digits through the integer (decimal 3's
-  string parse stops at 34 digits).
-- `Raxol.Payments.Assets` registers the non-USD stablecoins of ADR-0040:
-  EURC on 1 and 8453, EURe on 1, 100, 137, 8453 and 42161, and ZCHF on 1 plus
-  the CCIP-bridged contract on 10, 100, 137, 8453 and 42161, each at its
-  on-chain decimals. EURe was previously registered on 1 and 42161 only, so
-  elsewhere the lenient `decimals/2` scaled it at 6 instead of 18, off by
-  10^12. `address/2` matches the mixed-case wire symbol `"EURe"`
-  case-insensitively. EURe's legacy v1
-  contracts resolve to `"EURe"` through `symbol_for/2` and are never returned
-  by `address/2`, since they front the same balance as v2. Chain 100 (Gnosis)
-  gains a name and its xDAI gas token. New `Assets.fx_peg/2` names a token's
-  non-USD peg. None of these tokens is solver-fillable: EURe leaves
-  `symbols/0`, `evm_tokens/0` and the Xochi settlement grid, where it was
-  listed on Arbitrum. `Xochi.Capabilities.fallback/0` and the capacity
-  deriver read `evm_tokens/0`, so they drop EURe on 42161 too; only
-  `supported_chain_ids/0` and the stealth chain check are unchanged.
-- Registering them opens no fund-moving path. `ExecuteXochiIntent` and
-  `ExecuteRelayTransfer` refuse a non-USD source, and both refuse a non-USD
-  destination without a positive `min_to_amount`, as `{:unpriced_asset, detail}`
-  (ADR-0040 decision 6), until an FX rate gates the conversion (decision 7).
-  Dollar spend caps would otherwise count them at par. A `min_to_amount` of `0`
-  bounds nothing: Relay and the deposit route read it as absent and Xochi
-  refuses it. x402 refuses a challenge whose asset is a non-USD stablecoin,
-  which the spend gate would otherwise reserve and charge at par. The refusals
-  cover the FX tokens only: WETH and RAXOL sources are still counted at par by
-  the spend cap, as before (ADR-0040 context item 3).
-- `ExecuteRelayTransfer` accepts `min_to_amount` and refuses a quote delivering
-  less before the spend is authorized. It previously had no delivery floor, so
-  a quote could deliver any amount.
-
-- Euro and franc stablecoins can be priced in accounting (ADR-0040 decision 6).
-  `RAXOL_FX_ENABLED=true` with `RAXOL_SLEUTH_API_KEY` and `RPC_BASE` or `RPC_ETH`
-  puts `Raxol.Payments.Prices.FX` in front of `RAXOL_PRICE_SOURCE` in the
-  `RebalanceMonitor` sweep and `mix raxol_earn.rebalance`: EURC, EURe and ZCHF
-  are priced at the Chainlink rate for their peg when Sleuth's market price is
-  within 100 bps of it, and `nil` otherwise. Enabling it without the key, without
-  either RPC URL, or in a build without `raxol_web3` (an optional dependency,
-  dropped under `HEX_BUILD`) refuses and names what is missing. Pricing only: no
-  spend cap or delivery floor reads an FX rate.
-- `SettlementLedger` aggregates carry `unpriced_count`: entries with a leg that
-  neither `usdc_price` nor `price_fn` could price. Such a revenue used to drop out
-  of `usd_revenue` without a trace, so a report with EUR legs read as smaller
-  rather than as partial.
-- Each `RebalanceMonitor` sweep reports margin. It prices
-  `SettlementLedger.report/2` with the same `price_fn` that sizes refuels (FX
-  in front of `RAXOL_PRICE_SOURCE` when enabled), emits the totals as
-  `[:raxol, :payments, :margin]`, which the accounting sidecar logs as
-  `payments.margin`, and keeps the per-corridor report for
-  `RebalanceMonitor.margin_report/1`. Until now nothing in production read the
-  report, so FX pricing reached only the native gas symbols a refuel asks for.
-  The advice and the report fail independently, and an FX snapshot that raises
-  leaves EURC, EURe and ZCHF unpriced, and the rest to `RAXOL_PRICE_SOURCE`,
-  instead of aborting the sweep.
-  `SettlementLedger.report/2` reads the ledger once instead of four times.
-- Xochi quotes can be exact-output. `QuoteRequest` gains `swap_kind`
-  (`"exact_input"` by default, or `"exact_output"`), `output_amount` and
-  `max_from_amount`; an exact-output request sends `output_amount` instead of
-  `from_amount` and never sends `max_from_amount`, which only caps what raxol
-  will sign. `ExecuteXochiIntent` takes `swap_kind` and `output_amount`; on
-  exact output `amount` is the maximum spend, reserved by the spend gate and
-  passed on as `max_from_amount`. Exact output has no automatic same-asset
-  floor; an explicit `min_to_amount` still applies.
-
-### Changed
-
-- `Protocols.Riddler.submit_order/4` takes the Xochi `QuoteRequest` as its
-  fourth argument, so the intent it signs is checked against the request.
-
-### Security
-
-- Requires `decimal >= 3.1.2` (was `~> 3.0`) for CVE-2026-97853: below 3.1.2,
-  `Decimal.round/3` allocates in proportion to its `places` argument.
-
-### Removed
-
-- `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
+- **Breaking.**
+  `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
   `execute/4` and `sign_intent/3`, which take the `QuoteRequest` the quote was
   fetched with.
 
-### Changed
-
-- In `{:delivery_below_floor, detail}`, `min_to_amount` is the quote's own
-  stated minimum; the caller's floor is `:floor`, and `:lowest` is what was
-  compared. In v0.2.1 `min_to_amount` was the caller's floor. The refusal's
-  message no longer says "refusing to sign", which was wrong on the deposit
-  route.
-
 ### Fixed
 
-- Under decimal 3, an x402 or MPP amount string of 35 to 78 digits no longer
-  raises `Decimal.Error` out of `Req.AutoPay`, and `SettlementLedger` no longer
-  crashes (losing its table) recording such an amount: x402 and the ledger
-  convert through `Assets.to_decimal/1`, MPP through the integer. The amount
-  then reaches the policy and budget gates, which refuse it when a
-  `SpendingPolicy` and ledger are configured.
-- `SettlementLedger` aggregates and the `[:raxol, :payments, :margin]` event
-  carry `gas_unpriced_count`: entries whose gas amount is known but whose gas
-  symbol no price answers. Such an entry left the margin without any count
-  saying why; every reason an entry is left out of `usd_margin` is now
-  countable.
 - A Permit2 intent's execute `nonce` (the worker's replay-dedup key) was
   derived by reading Permit2's decimal uint256 pull nonce as hex: an odd digit
   count sent 0 for every intent, which the worker rejects on the wallet's
   second non-terminal intent ("Nonce already used"). Decimal nonces now give
-  their low 48 bits, as 0x-hex ERC-3009 nonces already did (#772).
+  their low 48 bits, as 0x-hex ERC-3009 nonces already did.
 - raxol signed the Xochi EIP-712 intent without checking it against the
-  request (#1164). A quote could carry a signable intent for another wallet,
+  request. A quote could carry a signable intent for another wallet,
   recipient, chain, token, amount, settlement preference or a far-off
-  deadline, and raxol would sign it. `Xochi.validate_intent/2` now binds every
-  signed field to the request before any signature, both in `sign_intent/3`
-  and in `ExecuteXochiIntent` ahead of the spend gate, so a mismatch reserves
-  nothing. A refusal is `{:intent_mismatch, field}`, reported as `:rejected`.
-  The reported and telemetry `from_amount` is the signed `fromAmount`.
+  deadline, and raxol would sign it. `Xochi.validate_intent/2` now checks,
+  before any signature, that the served payload is exactly the v3 `XochiIntent`
+  (its types, field order and message fields) under the v3 Xochi domain on the
+  request's origin chain, and binds every route and amount field to the request, both in
+  `sign_intent/3` and in `ExecuteXochiIntent` ahead of the spend gate, so a
+  mismatch reserves nothing. A refusal is `{:intent_mismatch, field}`, reported
+  as `:rejected`. The reported and telemetry `from_amount` is the signed
+  `fromAmount`.
 - `ExecuteXochiIntent` signed a re-quote without checking it. When the first
   execute came back as an expired quote (a 409 the endpoint chooses), the
   retry fetched a new quote and signed it with neither the delivery floor nor
   the method check, so a re-quote delivering 1 was signed and executed. The
   re-quote is now held to both before anything is signed; a refusal releases
-  the reservation and reports the refusal itself.
-- The delivery floor reads the signed `toAmount` only when the message's
-  primary type declares the field, judges a null or missing value as 0, which
-  is what `EIP712` signs, and range-checks it; a whitespace or sign variant
-  fails closed at the floor or the encoder. It used to read only a
-  literal `"toAmount"` key and treat null or missing as absent, so a quote
-  whose signed amount was 0 passed. Every amount, the caller's floor
-  included, must be at most 2^256 - 1, and `EIP712` itself now refuses a
-  `uint256` outside 0..2^256 - 1 instead of signing its low 256 bits (2^256 + 1
-  signed as 1).
+  the reservation with `reason: :requote_refused` in the ledger entry's
+  metadata and reports the refusal itself.
+- `EIP712` signed a `uint256` outside 0..2^256 - 1 as its low 256 bits
+  (2^256 + 1 signed as 1). It now refuses one, and every amount the delivery
+  floor reads, the caller's floor included, must be at most 2^256 - 1.
 - `ExecuteDepositRoute` returns `to_amount` and `min_to_amount` as strings
   even when the quote served them as JSON numbers; a numeric `min_to_amount`
   passed the floor and then failed the tool's output schema, so the payer got
@@ -266,24 +404,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lets an honest quote's own minimum fall under it and is refused. That is the
   backstop working: a quote that may deliver under 80% of par is what it
   exists to stop.
-- `SettlementLedger` aggregates and `[:raxol, :payments, :margin]` carry
-  `margin_count`, the number of entries `usd_margin` covers. An entry whose gas
-  symbol no price answers (POL with a price source that only knows ETH) left
-  the margin silently, with no counter to say so; `count - margin_count` now
-  reports every entry left out, for any reason.
 - `SettlementLedger` values USDG at `usdc_price`, as it does the other dollar
   stablecoins. It was missing from the set, so every USDG leg or fee was
-  unpriced whatever the price source, and `unpriced_count` overstated the
-  FX gap.
-- `unpriced_count` no longer judges the recorded leg of a recording-gap entry,
-  whose revenue is unknowable anyway; only its fee, which is its margin basis.
-  An entry is now in both `unpriced_count` and `recording_gap_count` only when
-  its legs were not recorded and its fee is unpriced.
-- The FX `price_fn` answers EURC, EURe and ZCHF in any casing, as `Assets`
-  does: `"EURE"` or `"eurc"` used to reach the fallback, which could price a
-  euro at par, and a lowercase Sleuth listing could not veto. The degraded
-  `price_fn` `Prices.FX` returns when the snapshot raises or the key is refused
-  folds case the same way.
+  unpriced whatever the price source.
 - `SettlementLedger`'s `usd_margin` is the sum of per-entry margins: each
   entry's basis net of its own gas, over entries that have both. It was the
   total spread (else the total fee) minus the total gas, which mixed
@@ -301,11 +424,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   below a tenth of the source amount rescaled to the destination's decimals is
   refused as `{:implausible_min_to_amount, detail}`, which catches a floor
   written in the source's 6 decimals for 18-decimal EURe. A quote is judged on
-  the lowest amount it states: its `to_amount`, its own `min_to_amount` when it
-  gives one, and on `ExecuteXochiIntent` the `toAmount` of the EIP-712 message
-  the wallet signs, so neither a high stated minimum beside a 1-wei estimate
-  nor a signed amount below the advertised one passes. A floor of more than 78
-  digits is refused rather than parsed.
+  the lowest amount it states, its `to_amount` and its own `min_to_amount` when
+  it gives one, so a high stated minimum beside a 1-wei estimate does not
+  pass. A floor of more than 78 digits is refused rather than parsed.
 - `ExecuteDepositRoute` returned a verified Tron deposit address for an EURC,
   EURe or ZCHF destination with no delivery floor, so the payer could fund a
   quote stating any amount. It now takes `min_to_amount`, as
@@ -317,30 +438,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attestation does not cover the amount and the floor is not sent to Xochi.
   The deposit instructions from `Protocols.Xochi.deposit_route_quote/3` now
   carry the quote's `min_to_amount`.
-- `SettlementLedger`'s `unpriced_count` missed two kinds of entry that dropped
-  out of the totals. A nonzero fee no price answered (an EURe fee) left
-  `usd_fee` silently and now counts as unpriced; an entry still counts once.
-  An entry missing a leg's amount or decimals left `usd_revenue` silently and
-  is now counted in the new `recording_gap_count`, which is a recording
-  problem, not a pricing one. `[:raxol, :payments, :margin]` carries it.
-- `Prices.FX` no longer raises `MatchError` when `Raxol.Web3.FX.Sleuth.new/1`
-  refuses the configured key (one with a CR, LF or space inside it). It logs
-  the refusal, which names the argument and never the key, and leaves EURC,
-  EURe and ZCHF unpriced for the sweep to count.
-- The FX `price_fn` no longer lets Sleuth choose what it reprices. It answers
-  exactly the symbols in the new `Assets.fx_pegs/0`, at the Chainlink rate for
-  the peg registered there, and hands every other symbol to the fallback. A
-  snapshot listing `ETH` with `pegCurrency: "EUR"` used to price ETH at the EUR
-  rate (1.13 instead of 2500), and ZCHF relabelled `EUR` was priced at the EUR
-  rate. A listing whose peg disagrees with the registered one, a symbol listed
-  twice with any listing not `:ok`, a symbol missing from the snapshot, and a
-  failed snapshot all leave the symbol `nil`, never the fallback.
 
 - Unknown chains and tokens now fail closed on the Xochi path instead of
-  being treated as EVM or 6-decimal (#1149). `ExecuteXochiIntent` refuses,
+  being treated as EVM or 6-decimal. `ExecuteXochiIntent` refuses,
   before quoting, a source or destination token without registered decimals
   (`:route_unsupported`, `{:unknown_asset, _}`; `min_to_amount` does not waive
-  it) and a non-positive `min_to_amount`, and routes with chain ids so a Tron
+  it), and routes with chain ids so a Tron
   leg is sent to Relay. `Xochi.Schemas.QuoteRequest.validate/1` refuses stealth
   settlement to any chain outside `Assets.evm_chain_ids/0`, on every quote
   path. `Xochi.Capabilities.vm_type/2` returns `nil` for an unlisted chain, and
@@ -355,13 +458,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `EIP712.hash/3` refuses a `uint256` string longer than 78 bytes as
   `{:invalid_uint256, value}` before parsing it. A quote message with a
   5-million-digit amount raised `SystemLimitError` out of the wallet.
+- `EIP712` raised `FunctionClauseError` on a value of the wrong Elixir type (a
+  float or boolean `uint256`, an integer `bytes32`, a struct that is not a
+  map), and read a served `false` as an absent field (encoded as 0). Every
+  hash function now returns `{:error, {:invalid_value, type}}` instead. A
+  hostile Relay gasless block with such a value, or a wallet that raised,
+  exited or threw while signing it, left `ExecuteRelayTransfer`'s reservation
+  held; the action now refuses it and releases the reservation.
 - A raise inside `Xochi.execute` (on the first execute or the re-quote retry)
   left `ExecuteXochiIntent`'s spend reservation held and its checkpoint in
   place. It is now a definite failure: the reservation is released, the
   checkpoint deleted, and the action returns an error.
-- A re-quote `ExecuteXochiIntent` refuses after an expired execute releases
-  the reservation with `reason: :requote_refused` in the ledger entry's
-  metadata. It was recorded as `:execute_failed`, though nothing was executed.
+- `ExecuteXochiIntent` released its reservation twice when a concurrent run
+  of the same payment held the checkpoint key and that record was gone before
+  this run read it, handing back one spend's worth of budget. It now releases
+  once and returns `:checkpoint_race`, a non-retryable `:rejected` failure.
 - `ExecuteDepositRoute` also returns an integral JSON-float `to_amount` or
   `min_to_amount` (`960000.0`) as its integer string; it failed the output
   schema. A fractional float, or one above 2^53 that may not be the integer
@@ -370,6 +481,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Breaking.**
+  **Every EIP-712 payload a server serves is checked to be exactly the
+  canonical typed data before the wallet signs it, and is signed with the
+  canonical types, not the served map.** The checks looked at field names
+  only, while the encoder hashed whatever root the served `types` map implied,
+  so a hostile Xochi quote could add types that made a USDC `Permit` (unlimited
+  allowance to the attacker) the struct the wallet signed, or retype the
+  ERC-3009 pull's `nonce` to do the same and bypass the solver pin. Now:
+  - the Xochi intent must be the v3 `XochiIntent` (typehash checked) with a
+    message carrying exactly its fields, under domain name `Xochi`, a version
+    whose major is 3, `chainId` = the request's origin chain, `salt` =
+    keccak256(version) and no `verifyingContract`
+    (`{:intent_mismatch, :intent_type | :intent_fields | {:intent_domain,
+    field}}`);
+  - an ERC-3009 origin pull must be `ReceiveWithAuthorization` on the
+    request's USDC under that chain's USDC domain; a Permit2 pull must be
+    `PermitWitnessTransferFrom` + `OriginPullWitness` under name `Permit2`, the
+    origin chain and the canonical Permit2 (`{:authorization_mismatch,
+    :pull_type | :pull_fields | :pull_token | :pull_chain | :pull_verifier |
+    {:pull_domain, field}}`);
+  - the Relay gasless block, which was signed unchecked, must be that same
+    Permit2 pull for the request's token, chain and amount, with a pinned
+    spender (`{:authorization_mismatch, {:gasless, field}}`);
+  - x402 signs only for the registered USDC contract on a chain whose USDC
+    domain is known (`{:unsupported_asset, _}`), and `network` must be
+    `eip155:<chain id>` (`{:invalid_network, _}`);
+  - `EIP712.hash/3` refuses a types map with no single root
+    (`{:error, :no_primary_type}`) instead of guessing one, and the new
+    `EIP712.hash/4` hashes the primary type the caller names.
+- **Breaking.**
+  **`Req.AutoPay` keeps the spend recorded once a signed payment has left the
+  process.** A paid retry answered with a non-2xx status, or lost in
+  transport, used to release the reservation, although the server held a
+  signed authorization it could still settle; a server answering every paid
+  retry with 500 could collect signatures past `session_max` and
+  `lifetime_max`. The reservation is now released only when nothing was
+  signed: `build_payment/2` returned an error, or a raise, exit or throw
+  before signing (a wallet process that crashed or timed out) no longer
+  leaks the reservation. An x402 challenge's `validBefore` must be a whole
+  second in the future and at most one hour out, the validity AutoPay signs
+  when the challenge names none (`{:invalid_valid_before, value}`), so a
+  withheld authorization expires within the hour. Its `validAfter` must be a
+  non-negative whole second no later than that `validBefore`
+  (`{:invalid_valid_after, value}`) and its `nonce` 32 bytes of `0x`-hex
+  (`{:invalid_nonce, value}`), so a malformed value is refused before
+  anything is reserved or signed. An MPP `methods` field that
+  is not a list is refused at parse (`{:invalid_methods, value}`). AutoPay
+  passes a challenge refused at parse through as the unpaid 402 and logs the
+  refusal's tag; the caller does not see these reasons.
+- **Breaking.**
+  **`ExecuteRelayTransfer` keeps the spend once a signed gasless pull or a
+  deposit broadcast may have left.** A transport error, timeout or 5xx from
+  execute after the Permit2 signature was sent released the reservation,
+  deleted the checkpoint and reported a retryable network failure, so a retry
+  signed a second pull the solver could settle beside the first. Now a
+  transport error, timeout, 5xx or raise from execute after a signature, and
+  any broadcaster error, raise, exit or throw other than `{:error,
+  {:not_sent, reason}}`, keep the reservation (tagged with the `transfer_id`,
+  so a refund seen by `PollRelayStatus` releases it) and the checkpoint, and
+  return `{:in_doubt, transfer_id}` as a non-retryable `:stranded` failure:
+  poll the transfer. A 4xx from execute, or a connection that never opened,
+  still releases.
+- Error bodies recursively redact both `read_token` and `readToken`; no error
+  tuple or replayable Action result carries the bearer secret.
+- A read token is never presented to, or deleted under, a different API origin,
+  executing principal, or intent id than the execute that issued it.
+
 - x402 and MPP challenges whose atomic amount is wider than a uint256 (more
   than 78 digits, or above 2^256 - 1) are rejected at parse time as
   `{:invalid_amount, _}`. No such amount can be signed. The bound is checked
@@ -377,10 +555,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client parse a header-sized number, run a quadratic `Decimal.div` on it, or
   hand `on_confirm` and the telemetry logger a `Decimal` too wide for decimal
   3's 6_178-digit `to_string` limit (which raised, or detached the logger).
-- Requires `decimal ~> 3.0` (was `~> 2.0`) for EEF-CVE-2026-32686 (unbounded
-  exponent DoS). Decimal 3 defaults to the decimal128 context: precision 34
-  (was 28), `emax: 6_144` / `emin: -6_143` with over/underflow signalled, and
-  string parses reject more than 34 digits or an exponent past 6_144.
+- **Breaking.**
+  Requires `decimal ~> 3.1 and >= 3.1.2` (was `~> 2.0`) for
+  EEF-CVE-2026-32686 (unbounded exponent DoS) and CVE-2026-97853 (below
+  3.1.2, `Decimal.round/3` allocates in proportion to its `places`
+  argument). Decimal 3 defaults to the decimal128 context: precision 34 (was
+  28), `emax: 6_144` / `emin: -6_143` with over/underflow signalled, and
+  string parses reject more than 34 digits or an exponent past 6_144. x402
+  and `SettlementLedger` convert an atomic amount of up to 78 digits through
+  `Assets.to_decimal/1`, and MPP through the integer, so such an amount still
+  reaches AutoPay's gates: the required `SpendingPolicy`'s `per_request_max`
+  with or without a `:ledger`, and its `session_max` and `lifetime_max` with
+  one, compared in the policy's unit.
+- **Breaking.**
+  Requires `req ~> 0.6 and >= 0.6.1` (was `~> 0.5`) for CVE-2026-49755 and
+  CVE-2026-49756, and, when present, `plug ~> 1.19 and >= 1.19.3` (was
+  `~> 1.16`) for CVE-2026-54892 and CVE-2026-8468, and `plug_cowboy ~> 2.8 and
+  >= 2.8.1` (was `~> 2.7`) for CVE-2026-32688.
 
 ## [0.2.1] - 2026-09-09
 
@@ -411,7 +602,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Raxol.Payments.Mandate`: Xochi delegation envelope. EIP-712-signed
   per-request authorization from a Member to a specific agent wallet.
-  Schema mirrors `xochi/packages/shared/src/eip712.ts` (snake_case
+  Schema mirrors the Mandate typed data the Xochi worker verifies (snake_case
   fields, `string[]` scopes, chainId pinned to 1). Digest verified
   byte-for-byte against viem's `hashTypedData`. Functions:
   `build/1`, `typed_data/1`, `digest/1`, `sign/2`, `verify/1`,

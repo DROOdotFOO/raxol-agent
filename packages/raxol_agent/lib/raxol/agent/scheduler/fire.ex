@@ -79,7 +79,7 @@ defmodule Raxol.Agent.Scheduler.Fire do
   # rather than expose unpoliced schedule-more-work capability to a fresh fire.
   # The framework path enforces the guard in-process and keeps the action, which
   # is why this only strips when the resolved backend is native. This guards ONE
-  # action by name; a second context-guarded action (e.g. #726's authorizer /
+  # action by name; a second context-guarded action (e.g. an authorizer /
   # hooks / owner enforcement over the native MCP path) needs its own clause here,
   # it is not covered by adding this action to some list. `native_tool_loop?/1`
   # re-resolves the backend (a second resolve if the turn also auto-provisions),

@@ -38,6 +38,30 @@ defmodule Raxol.Payments.Prices.StaticTest do
     end
   end
 
+  describe "price_fn/2 age" do
+    test "prices are answered while at most :max_age_s old, and nil after" do
+      now = System.system_time(:second)
+
+      assert Decimal.equal?(
+               Static.price_fn(%{"ETH" => "1700"}, as_of: now - 299).("ETH"),
+               Decimal.new("1700")
+             )
+
+      assert Static.price_fn(%{"ETH" => "1700"}, as_of: now - 301).("ETH") == nil
+      assert Static.price_fn(%{"ETH" => "1700"}, as_of: now - 3600, max_age_s: 7200).("ETH")
+    end
+
+    test "an :as_of in the future prices nothing" do
+      future = System.system_time(:second) + 60
+      assert Static.price_fn(%{"ETH" => "1700"}, as_of: future).("ETH") == nil
+    end
+
+    test "a malformed :as_of or :max_age_s raises" do
+      assert_raise ArgumentError, fn -> Static.price_fn(%{}, as_of: "now") end
+      assert_raise ArgumentError, fn -> Static.price_fn(%{}, max_age_s: 0) end
+    end
+  end
+
   describe "properties" do
     property "resolves every seeded symbol to its price and unseeded symbols to nil" do
       check all(

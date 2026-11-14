@@ -8,6 +8,8 @@ Agent payment protocols for Elixir. Autonomous agents that can pay for things: x
 {:raxol_payments, "~> 0.3"}
 ```
 
+0.3 requires `raxol_agent` 3.0 and `raxol_core` 2.8.
+
 ## Features
 
 - **Protocol behaviour**: four pluggable payment protocols (x402, MPP, Xochi, Permit2).
@@ -27,14 +29,14 @@ Agent payment protocols for Elixir. Autonomous agents that can pay for things: x
 ## Quick start
 
 ```elixir
-alias Raxol.Payments.{Router, Req.AgentPlugin}
+alias Raxol.Payments.{Router, SpendingPolicy, Req.AgentPlugin}
 
 # Router auto-selects protocol
 Router.select(cross_chain: true)  # => :xochi
 Router.select(privacy: :stealth)  # => :xochi
 Router.select()                   # => :x402
 
-# Wire auto-pay into agent HTTP backend
+# Wire auto-pay into agent HTTP backend (a SpendingPolicy is required)
 plugin = AgentPlugin.auto_pay(
   wallet: Raxol.Payments.Wallets.Env,
   ledger: ledger_pid,
@@ -46,27 +48,21 @@ plugin = AgentPlugin.auto_pay(
 ## Examples
 
 A guided path from an offline rehearsal to a real on-chain settlement lives in
-[`examples/`](examples/README.md): `preflight.exs` (local echo server, no funds)
--> `crosschain_stealth_payment.exs` (in-process Xochi sim, no funds) ->
-`scripts/run_live_gates.sh` at the repo root (live cross-chain settlement across
-all assets and routes, real funds). Start with the README there.
+[`examples/`](https://github.com/DROOdotFOO/raxol-agent/blob/main/packages/raxol_payments/examples/README.md):
+`preflight.exs` (local echo server, no funds) -> `crosschain_stealth_payment.exs`
+(in-process Xochi sim, no funds) -> `scripts/run_live_gates.sh` at the repository
+root (live cross-chain settlement across all assets and routes, real funds).
+Start with the README there.
 
-## Relay (Tron) gasless pull
+## Relay (Tron) funding
 
-The Relay rail (`Raxol.Payments.Relay`, `actions/payments/execute_relay_transfer`)
-has two EVM->Tron funding paths: **gasless (A)**, signing the quote's `gasless`
-typed-data block so the signature rides on `/relay/execute` with no broadcast; and
-**broadcast (B)**, an on-chain transfer to the `deposit_address`.
-
-Path A is delivered on the Riddler side (axol-io/Riddler#120, PR #160):
-`POST /relay/quote` returns a Permit2 `gasless` block for EVM->Tron when the solver
-runs with `RELAY_GASLESS_PULL_ENABLED=true`. The client already signs it and plumbs
-the signature, so no raxol change is needed: the `execute_relay_transfer`
-moduledoc "Pending Riddler support ... #120" note can be cleared. Caveats:
-
-- Permit2 only (USDC + other ERC-20s); ERC-3009 is deferred (axol-io/Riddler#159).
-- Riddler's `/relay/*` surface is still production-gated, so the flag stays off
-  until that unblocks; path B (broadcast) remains the working route meanwhile.
+`Raxol.Payments.Actions.Payments.ExecuteRelayTransfer` funds an EVM->Tron
+transfer in one of three ways: **gasless (A)**, signing the quote's Permit2
+`gasless` typed-data block so the signature rides on execute and the solver
+pulls, with no broadcast (the solver serves the block only with
+`RELAY_GASLESS_PULL_ENABLED=true`; ERC-3009 is not supported); **broadcast (B)**,
+an on-chain transfer to the `deposit_address` by the `:broadcaster` in context;
+or **external (C)**, returning the deposit address for an outside wallet to fund.
 
 ## Architecture
 
@@ -80,4 +76,4 @@ moduledoc "Pending Riddler support ... #120" note can be cleared. Caveats:
 - `Raxol.Payments.Mandate.Store`: singleton ETS + optional DETS holder for envelopes
 - `Raxol.Payments.Req.Mandate`: Req plugin attaching `X-Xochi-Delegation` on outbound Xochi calls
 
-See [Agentic Commerce docs](../../docs/features/AGENTIC_COMMERCE.md) for the full design.
+See the [Agentic Commerce docs](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/AGENTIC_COMMERCE.md) for the full design.

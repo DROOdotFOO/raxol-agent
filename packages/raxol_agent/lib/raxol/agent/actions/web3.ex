@@ -16,12 +16,9 @@ if Code.ensure_loaded?(Raxol.Web3.Router) do
     The MCP surface (`Raxol.Web3.MCP.Tools`) serves thirteen typed tools; this
     serves one with an `operation` enum, and the asymmetry is deliberate. An
     MCP server is something an operator connects on purpose, and its tool list
-    is scoped to that connection. An agent Action sits in an agent's
-    toolset for the whole session, where the survey's finding binds: 268
-    pass-through tools consumed a large share of a context window, and Helius
-    reached ten router tools for all of Solana instead. Thirteen more tool
-    definitions in every prompt is a real cost paid by every turn, including
-    the turns that never touch a chain.
+    is scoped to that connection. An agent Action sits in an agent's toolset
+    for the whole session, so thirteen more tool definitions would be a cost
+    paid in every prompt, including the turns that never touch a chain.
 
     The operation is validated against a compile-time list, so this is a router
     tool and not a passthrough: `raw_request` is not in it, and no operation

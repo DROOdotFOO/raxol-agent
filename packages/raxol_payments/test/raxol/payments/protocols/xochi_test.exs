@@ -1,5 +1,6 @@
 defmodule Raxol.Payments.Protocols.XochiTest do
-  use ExUnit.Case, async: true
+  # Writes the global solver-pin settings, which other modules read.
+  use ExUnit.Case, async: false
   use ExUnitProperties
 
   alias Raxol.Payments.Protocols.Xochi
@@ -105,8 +106,10 @@ defmodule Raxol.Payments.Protocols.XochiTest do
   end
 
   describe "execute/4 nonce" do
-    test "sends the nonce embedded in the signed eip712 message" do
-      quote_resp = quote_with_nonce(42)
+    test "refuses an intent message carrying a field the v3 struct does not sign" do
+      # SPEC §2.1: XochiIntent v3 has no `nonce`; an extra message key is a field
+      # the signature would not cover, so the payload is refused before signing.
+      quote_resp = intent_quote(request(@signer_addr), message: %{"nonce" => 42})
 
       config = %{
         base_url: "https://api.xochi.fi",
@@ -114,9 +117,11 @@ defmodule Raxol.Payments.Protocols.XochiTest do
         req_options: [plug: echo_plug(self())]
       }
 
-      assert {:ok, _} = Xochi.execute(config, quote_resp, SignerWallet, request(@signer_addr))
-      assert_receive {:req, "POST", "/api/intent/execute", _headers, raw_body}
-      assert Jason.decode!(raw_body)["nonce"] == 42
+      assert {:error, {:intent_mismatch, :intent_fields}} =
+               Xochi.execute(config, quote_resp, NotifyingWallet, request(@signer_addr))
+
+      refute_received :signed
+      refute_received {:req, "POST", "/api/intent/execute", _h, _b}
     end
 
     test "defaults to 0 when the signed message carries no nonce" do
@@ -358,13 +363,13 @@ defmodule Raxol.Payments.Protocols.XochiTest do
 
   describe "sign_intent/3 (buyer-side: quote -> sign -> bundle, no execute)" do
     test "returns a relayable bundle and does not POST execute" do
-      quote_resp = quote_with_nonce(42)
+      quote_resp = intent_quote(request(@signer_addr))
 
       # No config, no network -- sign_intent never talks to the worker.
       assert {:ok, bundle} = Xochi.sign_intent(quote_resp, SignerWallet, request(@signer_addr))
       assert bundle.intent_id == quote_resp.intent_id
       assert bundle.quote_id == quote_resp.quote_id
-      assert bundle.nonce == 42
+      assert bundle.nonce == 0
       assert is_binary(bundle.signature)
       assert String.starts_with?(bundle.signature, "0x")
       # No pull authorization in this quote -> no pull_signature key.
@@ -372,7 +377,7 @@ defmodule Raxol.Payments.Protocols.XochiTest do
     end
 
     test "the signed bundle relays verbatim through execute_signed" do
-      quote_resp = quote_with_nonce(42)
+      quote_resp = intent_quote(request(@signer_addr))
       {:ok, bundle} = Xochi.sign_intent(quote_resp, SignerWallet, request(@signer_addr))
 
       config = %{
@@ -385,7 +390,7 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       assert_receive {:req, "POST", "/api/intent/execute", _h, raw}
       body = Jason.decode!(raw)
       assert body["signature"] == bundle.signature
-      assert body["nonce"] == 42
+      assert body["nonce"] == 0
       assert body["intent_id"] == quote_resp.intent_id
       assert body["quote_id"] == quote_resp.quote_id
     end
@@ -393,7 +398,7 @@ defmodule Raxol.Payments.Protocols.XochiTest do
     test "sign_intent + execute_signed produces the same POST as execute" do
       # The extracted sign half composes back into the full execute: relaying the
       # signed bundle yields byte-for-byte the request execute/4 would send.
-      quote_resp = quote_with_nonce(42)
+      quote_resp = intent_quote(request(@signer_addr))
 
       config = %{
         base_url: "https://api.xochi.fi",
@@ -458,7 +463,7 @@ defmodule Raxol.Payments.Protocols.XochiTest do
               "quoteId" => "xq_qs",
               "canSolve" => true,
               "toAmount" => "990000",
-              "eip712Data" => XochiIntentFixture.eip712(body, "990000", message: %{"nonce" => 5})
+              "eip712Data" => XochiIntentFixture.eip712(body, "990000")
             }).(conn)
           end
         ]
@@ -469,7 +474,7 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       assert {:ok, bundle} = Xochi.quote_and_sign(config, request, SignerWallet)
       assert bundle.intent_id == "xi_qs"
       assert bundle.quote_id == "xq_qs"
-      assert bundle.nonce == 5
+      assert bundle.nonce == 0
       assert is_binary(bundle.signature)
     end
 
@@ -597,12 +602,17 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       end
     end
 
-    test "signs the served domain verbatim when it omits verifyingContract" do
-      # Canonical XochiIntent domain has no verifyingContract.
-      quote_resp =
-        intent_quote(request(@anvil_addr),
-          domain: %{"name" => "Xochi", "version" => "1", "chainId" => 8453}
-        )
+    test "signs the served v3 domain verbatim: name, version, chainId, salt" do
+      # Canonical XochiIntent domain (SPEC §2.2) has no verifyingContract and a
+      # salt of keccak256(version); a deployment-scoped version keeps the v3 major.
+      domain = %{
+        "name" => "Xochi",
+        "version" => "3-prod",
+        "chainId" => 8453,
+        "salt" => "0x9367b434237c76dd65474f6b3400f245656f312be16268d772cec464857dc759"
+      }
+
+      quote_resp = intent_quote(request(@anvil_addr), domain: domain)
 
       config = %{
         base_url: "https://api.xochi.fi",
@@ -614,52 +624,42 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       assert_receive {:req, "POST", "/api/intent/execute", _headers, raw_body}
       sent_sig = Jason.decode!(raw_body)["signature"]
 
-      # The signature must be over a 3-field EIP712Domain (no verifyingContract),
-      # matching what the worker and solver hash.
-      domain = %{name: "Xochi", version: "1", chainId: 8453}
-
       {:ok, raw} =
-        RealWallet.sign_typed_data(domain, intent_types(quote_resp), intent_message(quote_resp))
-
-      expected_sig = "0x" <> Base.encode16(raw, case: :lower)
-
-      assert sent_sig == expected_sig
-    end
-
-    test "includes verifyingContract in the domain when the server provides it" do
-      # A served verifyingContract must be signed into a 4-field EIP712Domain,
-      # not dropped.
-      vc = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
-
-      quote_resp =
-        intent_quote(request(@anvil_addr),
-          domain: %{
-            "name" => "Xochi",
-            "version" => "1",
-            "chainId" => 8453,
-            "verifyingContract" => vc
-          }
+        RealWallet.sign_typed_data(
+          build_domain(domain),
+          intent_types(quote_resp),
+          intent_message(quote_resp)
         )
-
-      config = %{
-        base_url: "https://api.xochi.fi",
-        auth: :none,
-        req_options: [plug: echo_plug(self())]
-      }
-
-      assert {:ok, _} = Xochi.execute(config, quote_resp, RealWallet, request(@anvil_addr))
-      assert_receive {:req, "POST", "/api/intent/execute", _headers, raw_body}
-      sent_sig = Jason.decode!(raw_body)["signature"]
-
-      domain = %{name: "Xochi", version: "1", chainId: 8453, verifyingContract: vc}
-
-      {:ok, raw} =
-        RealWallet.sign_typed_data(domain, intent_types(quote_resp), intent_message(quote_resp))
 
       assert sent_sig == "0x" <> Base.encode16(raw, case: :lower)
     end
 
-    property "signs the served typed data and echoes its nonce, for any served eip712" do
+    test "refuses a domain that is not the v3 XochiIntent domain" do
+      salt3 = "0x2a80e1ef1d7842f27f2e6be0972bb708b9a135c38860dbe73c27c3486c34f4de"
+      base = %{"name" => "Xochi", "version" => "3", "chainId" => 8453, "salt" => salt3}
+      vc = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+
+      for {domain, field} <- [
+            {Map.put(base, "verifyingContract", vc), :fields},
+            {Map.delete(base, "salt"), :fields},
+            {%{base | "name" => "USD Coin"}, :name},
+            {%{base | "version" => "2"}, :version},
+            {%{base | "chainId" => 1}, :chain_id},
+            {%{base | "salt" => "0x" <> String.duplicate("00", 32)}, :salt}
+          ] do
+        quote_resp = intent_quote(request(@anvil_addr), domain: domain)
+
+        assert {:error, {:intent_mismatch, {:intent_domain, got}}} =
+                 Xochi.sign_intent(quote_resp, NotifyingWallet, request(@anvil_addr))
+
+        assert got == field or (field == :version and got == :salt),
+               "domain #{inspect(domain)}: expected #{field}, got #{got}"
+
+        refute_received :signed
+      end
+    end
+
+    property "signs the canonical typed data for any served v3 domain" do
       config = %{
         base_url: "https://api.xochi.fi",
         auth: :none,
@@ -669,22 +669,18 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       check all(
               domain <- domain_gen(),
               intent_id <- StreamData.map(hex_gen(32), &("xi_" <> &1)),
-              wallet <- address_gen(),
-              nonce <- StreamData.integer(0..1_000_000)
+              wallet <- address_gen()
             ) do
         request = request(wallet)
 
-        quote_resp =
-          request
-          |> intent_quote(domain: domain, intent_id: intent_id, message: %{"nonce" => nonce})
-          |> declare_intent_field("nonce", "uint256")
+        quote_resp = intent_quote(request, domain: domain, intent_id: intent_id)
 
         assert {:ok, _} = Xochi.execute(config, quote_resp, RealWallet, request)
         assert_receive {:req, "POST", "/api/intent/execute", _h, body}
         decoded = Jason.decode!(body)
 
-        # 1. the execute nonce echoes the signed message nonce
-        assert decoded["nonce"] == nonce
+        # 1. the execute nonce is 0: v3 signs none and the quote has no pull
+        assert decoded["nonce"] == 0
 
         # 2. the signature is over the canonically-rebuilt typed data (the exact
         #    domain/types/message the worker and solver hash). Built independently
@@ -1063,11 +1059,12 @@ defmodule Raxol.Payments.Protocols.XochiTest do
                  request
                )
 
-      # So does omitting it, which is how a 2-field domain used to slip through.
+      # So does omitting it, which is how a 2-field domain used to slip through:
+      # the domain must carry exactly name, chainId and verifyingContract.
       no_verifier =
         update_in(canonical_permit2_pull(), ["domain"], &Map.delete(&1, "verifyingContract"))
 
-      assert {:error, {:authorization_mismatch, :pull_verifier}} =
+      assert {:error, {:authorization_mismatch, {:pull_domain, :fields}}} =
                Xochi.execute(config, quote_for.(no_verifier), RealWallet, request)
     end
 
@@ -1212,30 +1209,31 @@ defmodule Raxol.Payments.Protocols.XochiTest do
 
   defp address_gen, do: StreamData.map(hex_gen(40), &("0x" <> &1))
 
+  # SPEC §2.2 v3 domains: a v3 version, bare or deployment-scoped, its salt
+  # keccak256(version), on the request's origin chain (8453 in `request/1`).
   defp domain_gen do
-    base =
-      StreamData.fixed_map(%{
-        "name" => StreamData.constant("Xochi"),
-        "version" => StreamData.member_of(["1", "1-prod", "1-staging"]),
-        "chainId" => StreamData.member_of([1, 8453, 42_161, 10, 137])
-      })
-
-    StreamData.one_of([
-      base,
-      StreamData.bind(base, fn d ->
-        StreamData.map(address_gen(), &Map.put(d, "verifyingContract", &1))
-      end)
-    ])
+    StreamData.map(StreamData.member_of(["3", "3-prod", "3-staging", "3-axol-prod"]), fn v ->
+      %{
+        "name" => "Xochi",
+        "version" => v,
+        "chainId" => 8453,
+        "salt" => "0x" <> Base.encode16(ExKeccak.hash_256(v), case: :lower)
+      }
+    end)
   end
 
   # Canonical EIP-712 domain: only the keys the server actually served, atom-keyed.
   defp build_domain(d) do
     base = %{name: d["name"], version: d["version"], chainId: d["chainId"]}
 
-    case d["verifyingContract"] do
-      nil -> base
-      vc -> Map.put(base, :verifyingContract, vc)
-    end
+    base
+    |> then(
+      &if(d["verifyingContract"],
+        do: Map.put(&1, :verifyingContract, d["verifyingContract"]),
+        else: &1
+      )
+    )
+    |> then(&if(d["salt"], do: Map.put(&1, :salt, d["salt"]), else: &1))
   end
 
   # validate_intent/2 and sign_intent/3 both refuse with `field`; nothing signed.
@@ -1247,9 +1245,6 @@ defmodule Raxol.Payments.Protocols.XochiTest do
 
     refute_received :signed
   end
-
-  defp quote_with_nonce(nonce),
-    do: intent_quote(request(@signer_addr), message: %{"nonce" => nonce})
 
   # The exact_input request every stubbed quote below answers.
   defp request(wallet, overrides \\ []) do
@@ -1282,13 +1277,6 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       to_amount: to_amount,
       eip712_data: XochiIntentFixture.eip712(request, to_amount, Keyword.delete(opts, :to_amount))
     }
-  end
-
-  defp declare_intent_field(%QuoteResponse{} = quote_resp, name, type) do
-    update_in(
-      quote_resp.eip712_data["types"]["XochiIntent"],
-      &Enum.concat(&1, [%{"name" => name, "type" => type}])
-    )
   end
 
   defp intent_types(%QuoteResponse{eip712_data: eip712}) do
@@ -1404,6 +1392,7 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       "domain" =>
         Map.merge(
           %{
+            "name" => "Permit2",
             "chainId" => 8453,
             "verifyingContract" => Raxol.Payments.Protocols.Permit2.verifying_contract()
           },

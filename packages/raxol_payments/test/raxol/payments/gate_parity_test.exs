@@ -204,7 +204,7 @@ defmodule Raxol.Payments.GateParityTest do
       "network" => "eip155:8453",
       "nonce" => "0x" <> String.duplicate("12", 32),
       "validAfter" => 0,
-      "validBefore" => 9_999_999_999
+      "validBefore" => System.system_time(:second) + 300
     }
     |> Jason.encode!()
     |> Base.encode64()

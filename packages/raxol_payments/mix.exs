@@ -2,7 +2,8 @@ defmodule RaxolPayments.MixProject do
   use Mix.Project
 
   @version "0.3.0"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "raxol_payments-v#{@version}"
 
   def project do
     [
@@ -13,10 +14,10 @@ defmodule RaxolPayments.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       dialyzer: [
-        # raxol_agent is a compile-time-only dep (runtime: false), so it is not in
-        # the application tree dialyzer derives. Add it (with :mix, for the Mix.Task
-        # tasks) to the PLT so the Action behaviour, CommandHook, and Mix.Task
-        # callbacks resolve -- this replaces per-file suppressions.
+        # In this repository raxol_agent is runtime: false (see deps/0), so it
+        # is not in the application tree dialyzer derives (the Hex form drops
+        # the flag). Add it (with :mix, for the Mix.Task callbacks) to the PLT
+        # so the Action behaviour, CommandHook and Mix.Task callbacks resolve.
         plt_add_apps: [:raxol_agent, :mix],
         ignore_warnings: ".dialyzer_ignore.exs"
       ],
@@ -38,11 +39,17 @@ defmodule RaxolPayments.MixProject do
 
   defp deps do
     [
-      # Compile-time only: Action macro, CommandHook behaviour, Command struct
-      raxol_dep(:raxol_agent, "~> 2.7", "../raxol_agent", runtime: false),
+      # Payments calls raxol_agent code at run time (`Raxol.Agent.Action`,
+      # `Raxol.Agent.ContextStore`). In-repo, `runtime: false` keeps
+      # :raxol_agent out of this application's start list, so the raxol_earn
+      # release ships the agent modules loaded without starting the agent
+      # tree. `raxol_dep/4` drops it from the Hex form: a consumer compiles
+      # this mix.exs, and the flag would leave raxol_agent out of its release.
+      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", runtime: false),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
-      {:req, "~> 0.5"},
+      # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
+      {:req, "~> 0.6 and >= 0.6.1"},
       {:ex_secp256k1, "~> 0.8"},
       {:ex_keccak, "~> 0.7"},
       {:jason, "~> 1.4"},
@@ -55,8 +62,11 @@ defmodule RaxolPayments.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       # Optional: only needed when running EchoServer (`mix raxol_payments.echo`).
-      {:plug, "~> 1.16", optional: true},
-      {:plug_cowboy, "~> 2.7", optional: true}
+      # Floors: plug CVE-2026-54892 (quadratic parameter decoding), fixed in
+      # 1.19.3 on the 1.19 line; plug_cowboy CVE-2026-32688 (HTTP/2 atom
+      # exhaustion), fixed in 2.8.1.
+      {:plug, "~> 1.19 and >= 1.19.3", optional: true},
+      {:plug_cowboy, "~> 2.8 and >= 2.8.1", optional: true}
     ] ++ web3_dep()
   end
 
@@ -76,7 +86,7 @@ defmodule RaxolPayments.MixProject do
 
   defp raxol_dep(name, version, path, opts) do
     if hex_package?() do
-      {name, version, opts}
+      {name, version, Keyword.delete(opts, :runtime)}
     else
       {name, version, [path: path] ++ opts}
     end
@@ -98,10 +108,9 @@ defmodule RaxolPayments.MixProject do
 
   # Hex form for a publish (HEX_BUILD=1) and inside a Hex install, which Hex
   # marks by unpacking hex_metadata.config beside mix.exs; a path dep anywhere
-  # else, whether or not the directory exists. Dependabot resolves a bump in a
-  # sandbox holding only mix.exs and mix.lock, and reading that absence as a
-  # Hex install locked the siblings as Hex packages, which
-  # scripts/check_lock_path_shadows.exs rejects.
+  # else, whether or not the directory exists. A dependency updater resolves in
+  # a sandbox holding only mix.exs and mix.lock, and reading that absence as a
+  # Hex install would lock the siblings as Hex packages.
   defp hex_package? do
     System.get_env("HEX_BUILD") != nil or File.exists?("hex_metadata.config")
   end
@@ -121,8 +130,7 @@ defmodule RaxolPayments.MixProject do
       links: %{
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/raxol_payments",
-        "Changelog" =>
-          "https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_payments/CHANGELOG.md",
+        "Changelog" => "#{@source_url}/blob/main/packages/raxol_payments/CHANGELOG.md",
         "Website" => "https://raxol.io"
       },
       maintainers: ["Raxol Team"]
@@ -133,12 +141,11 @@ defmodule RaxolPayments.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      # `raxol_payments-v0.2.0`, not `v0.2.0`: the bare form is a root `raxol`
-      # tag, and `v0.2.0` there points at raxol from 2025 -- so every source
-      # link in the published docs went to unrelated code. Matches
-      # raxol_earn and raxol_gateway.
-      source_ref: "raxol_payments-v#{@version}",
-      extras: ["README.md"]
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_payments in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_payments/%{path}#L%{line}",
+      extras: ["README.md", "CHANGELOG.md"]
     ]
   end
 end

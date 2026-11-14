@@ -3,7 +3,7 @@ defmodule Raxol.Agent.ThreadLog do
   Behaviour for `Raxol.Agent.ThreadEvent` persistence.
 
   Implementations decide the storage medium. Two adapters ship with
-  raxol_agent today:
+  raxol_agent:
 
     * `Raxol.Agent.ThreadLog.Ets` -- in-process, ordered_set on
       `{thread_id, sequence}`; ephemeral, fast, the default for
@@ -11,10 +11,6 @@ defmodule Raxol.Agent.ThreadLog do
     * `Raxol.Agent.ThreadLog.Postgrex` -- Postgres-backed via the
       optional `:postgrex` dep; for cross-process or multi-node
       durable thread logs.
-
-  A `Raxol.Agent.ThreadLog.Dets` adapter for single-node durable
-  logs is a deliberate follow-up; the Ets ↔ Postgrex pair covers the
-  two most common shapes (single-node ephemeral, multi-node durable).
 
   ## Sequence assignment
 

@@ -29,7 +29,7 @@ defmodule Raxol.Payments.SecurityTest do
         # 1_500_000 = 1.50 USDC at 6 decimals -- not a human-decimal "1.50".
         "maxAmountRequired" => "1500000",
         "payTo" => @valid_address,
-        "asset" => "0x" <> String.duplicate("cd", 20),
+        "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
         "network" => "eip155:8453"
       },
       overrides

@@ -70,7 +70,6 @@ defmodule Raxol.Agent.Session.Supervisor do
   physical journal *directory*, not by session) — that registration enforces
   the single-writer-per-dir invariant across sessions, base dirs and (on
   shared storage) nodes, which a per-session Registry key cannot express.
-  See `Raxol.Agent.Journal.FileStore.Writer.global_name/1`.
   """
 
   use Supervisor
@@ -334,7 +333,7 @@ defmodule Raxol.Agent.Session.Supervisor do
   @doc false
   # Start the per-session sink, waiting for a dead predecessor's
   # `{:emit_bridge, session_id}` via-name to clear first so a `:rest_for_one`
-  # restart is deterministic (YELLOW 3) rather than depending on winning the
+  # restart is deterministic rather than depending on winning the
   # race against Registry's async cleanup.
   @spec start_bridge(term(), keyword()) :: GenServer.on_start()
   def start_bridge(session_id, bridge_opts) do

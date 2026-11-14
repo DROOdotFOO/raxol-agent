@@ -1,8 +1,9 @@
 defmodule RaxolAgent.MixProject do
   use Mix.Project
 
-  @version "2.7.0"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @version "3.0.0"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "raxol_agent-v#{@version}"
 
   def project do
     [
@@ -42,7 +43,8 @@ defmodule RaxolAgent.MixProject do
       {:circular_buffer, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},
-      {:req, "~> 0.5", optional: true},
+      # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
+      {:req, "~> 0.6 and >= 0.6.1", optional: true},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -110,11 +112,11 @@ defmodule RaxolAgent.MixProject do
 
   # Hex form for a publish (HEX_BUILD=1) and inside a Hex install, which Hex
   # marks by unpacking hex_metadata.config beside mix.exs; a path dep anywhere
-  # else, whether or not the directory exists. Dependabot resolves a bump in a
-  # sandbox holding only mix.exs and mix.lock, and reading that absence as a
-  # Hex install locked the siblings as Hex packages (#1252), which
-  # scripts/check_lock_path_shadows.exs rejects. The directory check also made
-  # `../..` a path dep inside a consumer's deps/: a parent always exists.
+  # else, whether or not the directory exists. A dependency updater resolves in
+  # a sandbox holding only mix.exs and mix.lock, and reading that absence as a
+  # Hex install would lock the siblings as Hex packages. A directory check
+  # would also make `../..` a path dep inside a consumer's deps/: a parent
+  # always exists.
   defp hex_package? do
     System.get_env("HEX_BUILD") != nil or File.exists?("hex_metadata.config")
   end
@@ -130,12 +132,12 @@ defmodule RaxolAgent.MixProject do
   defp package do
     [
       name: "raxol_agent",
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE.md),
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE.md CHANGELOG.md),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/raxol_agent",
-        "Changelog" => "https://github.com/DROOdotFOO/raxol/blob/master/CHANGELOG.md",
+        "Changelog" => "#{@source_url}/blob/main/packages/raxol_agent/CHANGELOG.md",
         "Website" => "https://raxol.io"
       },
       maintainers: ["Raxol Team"]
@@ -146,10 +148,13 @@ defmodule RaxolAgent.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      source_ref: "v#{@version}",
-      extras: [
-        "README.md"
-      ]
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_agent in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_agent/%{path}#L%{line}",
+      extras: ["README.md", "CHANGELOG.md"],
+      # The changelog names functions this release removes.
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"]
     ]
   end
 end

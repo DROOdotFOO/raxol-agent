@@ -2,7 +2,7 @@ defmodule Raxol.Payments.Relay.Broadcaster do
   @moduledoc """
   Behaviour for funding a Relay deposit by broadcasting an on-chain token
   transfer to the Riddler-managed deposit address (the "B" backstop, used when
-  the gasless pull is unavailable; see axol-io/Riddler#120).
+  the gasless pull is unavailable).
 
   raxol's `Wallet` signs but does not broadcast, and the proven EVM transaction
   stack (EIP-1559 signing, RLP, nonce, JSON-RPC submit) lives in `raxol_earn`,
@@ -13,6 +13,12 @@ defmodule Raxol.Payments.Relay.Broadcaster do
 
   Implementations must be **idempotent on `transfer_id`**: a retried call for the
   same logical transfer must not double-send.
+
+  Return `{:error, {:not_sent, reason}}` only for a failure proven to happen
+  before the transaction was submitted; `ExecuteRelayTransfer` then releases
+  the spend reservation. Any other error, and a raise, exit or throw, leaves
+  the deposit in doubt: the reservation and checkpoint are kept and the
+  transfer is returned to poll.
   """
 
   @type params :: %{
@@ -27,7 +33,8 @@ defmodule Raxol.Payments.Relay.Broadcaster do
 
   @doc """
   Broadcast a token transfer of `amount_atomic` of `token` to the deposit address
-  `to` on `chain_id`. Returns the source-chain transaction hash.
+  `to` on `chain_id`. Returns the source-chain transaction hash, or
+  `{:error, {:not_sent, reason}}` when nothing was submitted.
   """
   @callback send_deposit(params()) :: {:ok, String.t()} | {:error, term()}
 end

@@ -15,7 +15,8 @@ defmodule Mix.Tasks.RaxolPayments.Bench do
   the serialization ceiling for spend decisions.
 
   The signing bench sets a throwaway key in `RAXOL_WALLET_KEY` for the run and
-  clears it after; it is for local measurement only.
+  restores the variable's previous value after (or unsets it if it was unset);
+  it is for local measurement only.
   """
 
   use Mix.Task
@@ -50,7 +51,20 @@ defmodule Mix.Tasks.RaxolPayments.Bench do
   end
 
   defp bench_signing(n) do
-    System.put_env("RAXOL_WALLET_KEY", @privkey)
+    previous_key = System.get_env("RAXOL_WALLET_KEY")
+
+    try do
+      System.put_env("RAXOL_WALLET_KEY", @privkey)
+      run_signing(n)
+    after
+      restore_env("RAXOL_WALLET_KEY", previous_key)
+    end
+  end
+
+  defp restore_env(var, nil), do: System.delete_env(var)
+  defp restore_env(var, value), do: System.put_env(var, value)
+
+  defp run_signing(n) do
     digest = :crypto.strong_rand_bytes(32)
 
     domain = %{
@@ -78,8 +92,6 @@ defmodule Mix.Tasks.RaxolPayments.Bench do
       end)
 
     report("wallet sign_typed_data (EIP-712 + secp256k1)", n, us_typed)
-  after
-    System.delete_env("RAXOL_WALLET_KEY")
   end
 
   defp bench_ledger(n, concurrency) do

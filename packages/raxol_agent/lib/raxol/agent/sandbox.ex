@@ -7,7 +7,7 @@ defprotocol Raxol.Agent.Sandbox do
   Implementations return `:ok` to allow, `{:deny, reason}` to block,
   or `:ok` as an *abstention* when the action is outside the
   sandbox's dimension. Walking a list of sandboxes (via
-  `Raxol.Agent.Sandbox.authorize_chain/4`) and short-circuiting on
+  `Raxol.Agent.Sandbox.authorize/4`, given a list) and short-circuiting on
   the first `:deny` is the canonical composition.
 
   ## Built-in dimensions
@@ -19,10 +19,8 @@ defprotocol Raxol.Agent.Sandbox do
   - `Raxol.Agent.Sandbox.Async` -- gates
     `Raxol.Agent.Directive.Async` (wholesale allow / deny).
 
-  Filesystem, Network, and Resource dimensions are planned
-  but deferred to a follow-up because their enforcement layer
-  is different (Action integration for filesystem / network;
-  OS-level quotas for Resource).
+  These are the only dimensions that ship. There is no Filesystem, Network
+  or Resource sandbox.
 
   ## Action atoms
 

@@ -145,7 +145,7 @@ defmodule Raxol.Agent.Action.ToolConverter do
   #      byte-identical to what was already authorized pre-hook. This closes
   #      the param-escalation gap: a hook that keeps the same action but
   #      rewrites e.g. a transfer amount is re-authorized against the new
-  #      amount, not cheap-skipped on action identity alone (U8 fund-movement
+  #      amount, not cheap-skipped on action identity alone (fund-movement
   #      approval builds on this).
   defp run_authorized_call(
          orig_tool,

@@ -1,8 +1,7 @@
 defmodule Raxol.Agent.McpHosts do
   @moduledoc """
   The operator's allowlist of what a WORKSPACE-declared MCP server may reach:
-  a remote host, or a local command (ADR-0037 decision 4, the transport half
-  of it).
+  a remote host, or a local command.
 
   `<dir>/.mcp.json` is repository content: a file a clone can carry. A remote
   entry in it names a host, and connecting to that host is not a neutral act.

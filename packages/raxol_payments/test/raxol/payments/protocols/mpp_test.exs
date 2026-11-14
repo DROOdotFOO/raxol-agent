@@ -57,6 +57,13 @@ defmodule Raxol.Payments.Protocols.MPPTest do
       assert {:error, {:missing_header, "www-authenticate"}} = MPP.parse_challenge([])
     end
 
+    test "refuses a methods field that is not a list" do
+      for methods <- ["tempo", %{"type" => "tempo"}, 1] do
+        assert {:error, {:invalid_methods, ^methods}} =
+                 MPP.parse_challenge(challenge_headers(%{"methods" => methods}))
+      end
+    end
+
     test "accepts an integer atomic amount" do
       assert {:ok, %{amount: 100}} = MPP.parse_challenge(challenge_headers(%{"amount" => 100}))
     end
@@ -101,52 +108,77 @@ defmodule Raxol.Payments.Protocols.MPPTest do
     end
   end
 
-  describe "amount/1" do
-    test "returns a Decimal for an all-digit atomic amount" do
-      assert Decimal.equal?(MPP.amount(%{amount: "100"}), Decimal.new("100"))
+  describe "amount/1 is in human units of the challenge's currency" do
+    test "a dollar stablecoin by its decimals, as USD" do
+      {:ok, challenge} = MPP.parse_challenge(challenge_headers(%{"amount" => "5"}))
+      assert challenge.unit == "USD"
+      assert Decimal.equal?(MPP.amount(challenge), Decimal.new("0.000005"))
+
+      {:ok, challenge} = MPP.parse_challenge(challenge_headers(%{"amount" => 1_500_000}))
+      assert Decimal.equal?(MPP.amount(challenge), Decimal.new("1.5"))
     end
 
-    test "returns a Decimal for an integer atomic amount" do
-      assert Decimal.equal?(MPP.amount(%{amount: 100}), Decimal.new(100))
+    test "fiat by its ISO 4217 minor units" do
+      for {currency, amount, unit, human} <- [
+            {"usd", "150", "USD", "1.50"},
+            {"USD", 5, "USD", "0.05"},
+            {"eur", "250", "EUR", "2.50"},
+            {"CHF", "1", "CHF", "0.01"}
+          ] do
+        {:ok, challenge} =
+          MPP.parse_challenge(challenge_headers(%{"currency" => currency, "amount" => amount}))
+
+        assert challenge.unit == unit
+        assert Decimal.equal?(MPP.amount(challenge), Decimal.new(human))
+      end
+    end
+
+    test "a non-USD stablecoin as its peg currency" do
+      {:ok, challenge} =
+        MPP.parse_challenge(challenge_headers(%{"currency" => "EURC", "amount" => "2000000"}))
+
+      assert challenge.unit == "EUR"
+      assert Decimal.equal?(MPP.amount(challenge), Decimal.new("2"))
+    end
+
+    test "a currency with no unit a cap can be written in is refused" do
+      for currency <- ["WETH", "ETH", "JPY", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", 840] do
+        assert {:error, {:unpriced_currency, ^currency}} =
+                 MPP.parse_challenge(challenge_headers(%{"currency" => currency}))
+      end
     end
 
     test "an all-digit amount past 34 digits equals its integer form" do
       atomic = Integer.pow(10, 40)
 
       assert Decimal.equal?(
-               MPP.amount(%{amount: Integer.to_string(atomic)}),
-               MPP.amount(%{amount: atomic})
+               MPP.amount(%{amount: Integer.to_string(atomic), decimals: 6}),
+               MPP.amount(%{amount: atomic, decimals: 6})
              )
     end
   end
 
-  describe "gate cap and signed amount stay the same unit" do
+  describe "gate amount and signed amount are the same quantity" do
     defmodule StubWallet do
       def address, do: "0x1111111111111111111111111111111111111111"
       def sign_message(_message), do: {:ok, <<0::256>>}
     end
 
-    test "amount/1 and the signed credential both carry the challenge's atomic amount" do
-      # The SpendingPolicy cap reads amount/1; the on-the-wire credential carries
-      # build_payment's amount. Both derive from challenge.amount verbatim, so
-      # they can never diverge into different units.
-      challenge = %{
-        amount: 100,
-        currency: "USDC",
-        recipient: "0xabcdef1234567890abcdef1234567890abcdef12",
-        methods: ["tempo"],
-        network: "tempo:mainnet",
-        nonce: "abc123"
-      }
+    test "the credential carries the atomic amount amount/1 scales" do
+      {:ok, challenge} =
+        MPP.parse_challenge(
+          challenge_headers(%{"amount" => 150, "currency" => "usd", "methods" => ["tempo"]})
+        )
 
-      assert Decimal.equal?(MPP.amount(challenge), Decimal.new(100))
+      assert Decimal.equal?(MPP.amount(challenge), Decimal.new("1.50"))
 
       assert {:ok, [{"authorization", "Payment " <> encoded}]} =
                MPP.build_payment(challenge, StubWallet)
 
       {:ok, json} = Base.decode64(encoded)
       {:ok, credential} = Jason.decode(json)
-      assert credential["amount"] == 100
+      assert credential["amount"] == 150
+      assert credential["currency"] == "usd"
     end
   end
 

@@ -22,7 +22,7 @@ defmodule MyAgent do
 end
 
 {:ok, _} = Raxol.Agent.Session.start_link(app_module: MyAgent, id: :my_agent)
-Raxol.Agent.Session.send_message(:my_agent, {:analyze, "lib/raxol.ex"})
+Raxol.Agent.Session.send_message(:my_agent, {:analyze, "mix.exs"})
 ```
 
 ## How it works
@@ -313,8 +313,10 @@ delivered reply.
 ## Examples
 
 ```bash
-FREE_AI=true mix run examples/agents/zero_system.exs  # ZERO System cockpit w/ live LLM reasoning
-# framework primitives run from the package (they need Raxol.Agent):
 cd packages/raxol_agent && mix run examples/agents/react_agent.exs  # Actions + ReAct + tools + shell
 cd packages/raxol_agent && mix run examples/agents/agent_team.exs   # coordinator + workers
 ```
+
+The ZERO System cockpit with live LLM reasoning is
+[`examples/agents/zero_system.exs`](https://github.com/DROOdotFOO/raxol/blob/master/examples/agents/zero_system.exs)
+in the runtime repository (`FREE_AI=true mix run examples/agents/zero_system.exs` there).

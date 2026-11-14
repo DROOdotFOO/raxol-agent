@@ -20,7 +20,7 @@ defmodule Raxol.Payments.Zksar do
   >
   > `attestation_digest/1` defines the bytes the oracle is assumed to sign
   > (an EIP-191 `personal_sign` over the canonical attestation fields). This
-  > encoding has NOT yet been confirmed byte-for-byte against the live Xochi
+  > encoding has NOT been confirmed byte-for-byte against the live Xochi
   > oracle signer. Verification fails closed on any mismatch, so a wrong
   > scheme rejects real attestations (safe) rather than accepting forged ones.
   > The scheme must still be reconciled with Xochi, and a real on-chain

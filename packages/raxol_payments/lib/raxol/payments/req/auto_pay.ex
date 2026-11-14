@@ -25,10 +25,30 @@ defmodule Raxol.Payments.Req.AutoPay do
 
   - `:wallet` (required) -- module implementing `Raxol.Payments.Wallet`
   - `:protocols` -- list of protocol atoms, default `[:x402, :mpp]`
-  - `:ledger` -- Ledger server for budget tracking (optional)
-  - `:policy` -- `SpendingPolicy` struct; when set, `approved_domains` and
-    `require_confirmation_above` are enforced against the request URL host
-    before the wallet is asked to sign
+  - `:policy` (required) -- `SpendingPolicy` struct. On every payment the
+    request URL host must be in `approved_domains` (`nil` allows any), an amount above
+    `require_confirmation_above` needs `:on_confirm` to approve, and the
+    challenge amount must be at most `per_request_max`. The cumulative caps,
+    `session_max` and `lifetime_max`, are enforced only with a `:ledger`.
+    Every amount is compared in one unit, human amounts of the policy's
+    `currency` (`SpendingPolicy.unit/1`; US dollars by default): an x402
+    challenge is priced only for USDC, an MPP challenge from its currency
+    (ISO 4217 minor units for USD, EUR and CHF; registered decimals for a
+    stablecoin). A parsed challenge in a unit other than the policy's is
+    refused with `%{error: :currency_mismatch}` before anything is reserved.
+    A challenge AutoPay cannot parse or price (an MPP currency it cannot
+    scale, an x402 asset other than registered USDC, a malformed or
+    over-long `validBefore`, `validAfter` or `nonce`, an amount wider than a
+    uint256) is passed through as the unpaid 402, and the refusal reason is
+    logged as a warning. `attach/2` raises `ArgumentError` without a policy,
+    or when `per_request_max` (and, with a `:ledger`, `session_max`,
+    `session_window_ms` and `lifetime_max`) is not a finite positive value;
+    for development pass `SpendingPolicy.dev()`
+  - `:ledger` -- Ledger server; with it, every payment is also reserved
+    against the policy's session and lifetime caps, atomically, before
+    signing (optional). The reservation is given back only if nothing was
+    signed; once the signed payment is sent it stays spent, whatever the
+    paid retry returns, because the server can still settle it
   - `:agent_id` -- identifier for ledger tracking (required if ledger given)
   - `:on_confirm` -- 2-arity function `(amount, domain) -> :approve | :deny`
     called when `policy.require_confirmation_above` is exceeded. Runs
@@ -36,17 +56,83 @@ defmodule Raxol.Payments.Req.AutoPay do
     return denies the payment.
   """
 
+  require Logger
+
   alias Raxol.Payments.{Ledger, PolicyGate, Protocol, SpendingPolicy}
 
   @default_protocols [:x402, :mpp]
 
   @doc """
   Attach the auto-pay plugin to a Req request.
+
+  Raises `ArgumentError` when `opts` has no `:policy` `SpendingPolicy`.
   """
   @spec attach(Req.Request.t(), keyword()) :: Req.Request.t()
   def attach(%Req.Request{} = req, opts) do
+    validate_opts!(opts)
     Req.Request.append_response_steps(req, auto_pay: &handle_response(&1, opts))
   end
+
+  @doc false
+  # Shared with `Raxol.Payments.Req.AgentPlugin.auto_pay/1`, which checks at
+  # build time rather than when the plugin is first applied.
+  @spec validate_opts!(keyword()) :: :ok
+  def validate_opts!(opts) do
+    case Keyword.get(opts, :policy) do
+      %SpendingPolicy{} = policy ->
+        validate_policy!(policy, Keyword.get(opts, :ledger) != nil)
+
+      nil ->
+        raise ArgumentError,
+              "Raxol.Payments.Req.AutoPay requires a :policy option (a " <>
+                "%Raxol.Payments.SpendingPolicy{}); none was given. The policy's " <>
+                "per_request_max, approved_domains and require_confirmation_above " <>
+                "apply to every payment; its session_max and lifetime_max need a " <>
+                ":ledger as well. Pass policy: Raxol.Payments.SpendingPolicy.dev() " <>
+                "for development"
+
+      other ->
+        raise ArgumentError,
+              "Raxol.Payments.Req.AutoPay :policy must be a " <>
+                "%Raxol.Payments.SpendingPolicy{}, got #{policy_shape(other)}. Pass " <>
+                "policy: Raxol.Payments.SpendingPolicy.dev() for development"
+    end
+  end
+
+  # The caps the payment path compares against must be usable before the first
+  # 402, not discovered per request: `per_request_max` always, the cumulative
+  # caps when a ledger enforces them, and a currency to price challenges in.
+  defp validate_policy!(policy, ledger?) do
+    fields =
+      if ledger?,
+        do: [:per_request_max, :session_max, :session_window_ms, :lifetime_max],
+        else: [:per_request_max]
+
+    case SpendingPolicy.validate(policy, fields) do
+      :ok ->
+        :ok
+
+      {:error, {:invalid_policy, field}} ->
+        raise ArgumentError,
+              "Raxol.Payments.Req.AutoPay :policy #{field} must be a finite positive " <>
+                "Decimal (session_window_ms a positive integer), got " <>
+                inspect(Map.fetch!(policy, field))
+    end
+
+    if SpendingPolicy.unit(policy) == nil do
+      raise ArgumentError,
+            "Raxol.Payments.Req.AutoPay :policy currency must be a currency code " <>
+              "string, got #{inspect(policy.currency)}"
+    end
+
+    :ok
+  end
+
+  defp policy_shape(%module{}), do: "a #{inspect(module)} struct"
+  defp policy_shape(value) when is_map(value), do: "a map"
+  defp policy_shape(value) when is_list(value), do: "a list"
+  defp policy_shape(value) when is_atom(value), do: "the atom #{inspect(value)}"
+  defp policy_shape(_value), do: "another term"
 
   @spec handle_response({Req.Request.t(), Req.Response.t()}, keyword()) ::
           {Req.Request.t(), Req.Response.t()}
@@ -55,15 +141,16 @@ defmodule Raxol.Payments.Req.AutoPay do
     protocols = Keyword.get(opts, :protocols, @default_protocols)
     headers = Raxol.Payments.Headers.flatten(response.headers)
 
-    with {:ok, protocol_mod, challenge} <- detect_and_parse(protocols, headers) do
+    with {:ok, protocol_mod, challenge} <- detect_and_parse(protocols, headers),
+         :ok <- require_policy_unit(challenge, Keyword.fetch!(opts, :policy)) do
       amount = protocol_mod.amount(challenge)
       host = request_host(request)
 
       case reserve_budget(protocol_mod, amount, host, opts) do
         :ok ->
-          # Budget is now reserved. Any failure past this point -- a signing
-          # failure, or a failed/errored paid retry -- must release it, or a
-          # payment that never completed would permanently consume budget.
+          # Budget is now reserved. It is given back only if nothing was
+          # signed; once a signed payment has left the process, the server can
+          # settle it whatever it answers, so the reservation stays spent.
           settle(request, response, protocol_mod, challenge, wallet, amount, host, opts)
 
         {:error, _} = denied ->
@@ -76,11 +163,17 @@ defmodule Raxol.Payments.Req.AutoPay do
 
   defp handle_response(req_response, _opts), do: req_response
 
-  # Sign and retry under a reservation already made by `reserve_budget/4`. Every
-  # non-success exit releases the reservation first, so only a 2xx paid retry
-  # (the payment landed) keeps the budget consumed.
+  # Sign and retry under a reservation already made by `reserve_budget/4`.
+  #
+  # The reservation is released only when signing failed (an error, a raise, an
+  # exit or a throw out of `build_payment/2`), because then no payment left this process. Once
+  # the signed payment is sent, the server holds an authorization it can settle
+  # on-chain until it expires, whatever status it answers with or whether the
+  # connection survives: a 500 or a dropped retry keeps the spend recorded, so a
+  # server that answers every paid retry with an error cannot sign its way past
+  # `session_max` and `lifetime_max`.
   defp settle(request, response, protocol_mod, challenge, wallet, amount, host, opts) do
-    case protocol_mod.build_payment(challenge, wallet) do
+    case build_payment_safely(protocol_mod, challenge, wallet) do
       {:ok, payment_headers} ->
         # Build retry request: add payment headers and strip the auto_pay step
         # to prevent infinite loops if the server returns 402 again.
@@ -90,16 +183,10 @@ defmodule Raxol.Payments.Req.AutoPay do
           |> remove_auto_pay_step()
 
         case Req.Request.run(retry_request) do
-          {_req, %Req.Response{status: status} = paid_response}
-          when status in 200..299 ->
-            {request, paid_response}
-
-          {_req, %Req.Response{} = failed_response} ->
-            release_budget(protocol_mod, amount, host, opts)
-            {request, failed_response}
+          {_req, %Req.Response{} = paid_or_failed} ->
+            {request, paid_or_failed}
 
           {:error, reason} ->
-            release_budget(protocol_mod, amount, host, opts)
             {request, payment_retry_error(response, reason)}
         end
 
@@ -108,6 +195,20 @@ defmodule Raxol.Payments.Req.AutoPay do
         release_budget(protocol_mod, amount, host, opts)
         handle_failure(error, request, response)
     end
+  end
+
+  # A raise, exit or throw while building the payment (a malformed challenge
+  # field the parser let through, or a wallet process that crashed or timed
+  # out) happens before any header is sent: no signed payment left this
+  # process, so refund the reservation rather than leak it. The exception
+  # module or the exit/throw kind is kept; the message or reason (which may
+  # carry challenge data) is not.
+  defp build_payment_safely(protocol_mod, challenge, wallet) do
+    protocol_mod.build_payment(challenge, wallet)
+  rescue
+    error -> {:error, {:build_payment_raised, error.__struct__}}
+  catch
+    kind, _reason when kind in [:exit, :throw] -> {:error, {:build_payment_failed, kind}}
   end
 
   defp payment_retry_error(response, reason) do
@@ -140,6 +241,11 @@ defmodule Raxol.Payments.Req.AutoPay do
     {request, %{response | body: body}}
   end
 
+  defp handle_failure({:error, {:currency_mismatch, unit, policy_unit}}, request, response) do
+    body = %{error: :currency_mismatch, currency: unit, policy_currency: policy_unit}
+    {request, %{response | body: body}}
+  end
+
   defp handle_failure(
          {:error, {:gate_denied, :missing_host}},
          request,
@@ -160,16 +266,41 @@ defmodule Raxol.Payments.Req.AutoPay do
 
       if mod.detect?(402, headers) do
         case mod.parse_challenge(headers) do
-          {:ok, challenge} -> {:ok, mod, challenge}
-          {:error, _} -> nil
+          {:ok, challenge} ->
+            {:ok, mod, challenge}
+
+          {:error, reason} ->
+            log_unparsed_challenge(proto_atom, reason)
+            nil
         end
       end
     end)
   end
 
+  # The challenge is server data, so only the reason's tag is logged.
+  defp log_unparsed_challenge(protocol, reason) do
+    Logger.warning(
+      "AutoPay passed a #{protocol} 402 through unpaid: #{inspect(reason_tag(reason))}"
+    )
+  end
+
+  defp reason_tag(reason) when is_atom(reason), do: reason
+  defp reason_tag(reason) when is_tuple(reason) and is_atom(elem(reason, 0)), do: elem(reason, 0)
+  defp reason_tag(_reason), do: :invalid_challenge
+
+  # `amount/1` is in human units of the challenge's `:unit`; the caps are in
+  # the policy's. A challenge priced in another unit (or in none) is refused
+  # before the gate, never compared across units.
+  defp require_policy_unit(challenge, policy) do
+    case {Map.get(challenge, :unit), SpendingPolicy.unit(policy)} do
+      {unit, unit} when is_binary(unit) -> :ok
+      {unit, policy_unit} -> {:error, {:currency_mismatch, unit, policy_unit}}
+    end
+  end
+
   # Run the policy gate then atomically reserve the budget. `:ok` means the spend
-  # is authorized and recorded; release it with `release_budget/4` if the payment
-  # then fails to complete.
+  # is authorized and recorded; `settle/8` releases it with `release_budget/4`
+  # only if nothing was signed.
   @spec reserve_budget(module(), Decimal.t(), String.t() | nil, keyword()) ::
           :ok | {:error, term()}
   defp reserve_budget(protocol_mod, amount, host, opts) do
@@ -193,8 +324,6 @@ defmodule Raxol.Payments.Req.AutoPay do
     end
   end
 
-  defp enforce_policy_gate(nil, _amount, _host, _opts), do: :ok
-
   defp enforce_policy_gate(%SpendingPolicy{} = _policy, _amount, host, _opts)
        when host in [nil, ""],
        do: {:error, {:gate_denied, :missing_host}}
@@ -217,8 +346,15 @@ defmodule Raxol.Payments.Req.AutoPay do
     )
   end
 
-  defp do_enforce_budget(nil, _ledger, _proto, _amount, _host, _opts), do: :ok
-  defp do_enforce_budget(_policy, nil, _proto, _amount, _host, _opts), do: :ok
+  # No ledger: no history to hold the cumulative caps against, but the
+  # per-request cap needs none, so it is enforced here with the same check and
+  # the same refusal as the ledger path.
+  defp do_enforce_budget(%SpendingPolicy{} = policy, nil, _proto, amount, _host, _opts) do
+    case Ledger.check_request(amount, policy) do
+      :ok -> :ok
+      {:over_limit, limit_type} -> {:error, {:over_budget, limit_type, amount}}
+    end
+  end
 
   defp do_enforce_budget(
          %SpendingPolicy{} = policy,

@@ -145,8 +145,8 @@ defmodule Raxol.Payments.Relay.Schemas do
             route: map() | nil,
             deposit_address: String.t() | nil,
             deposit_expires_at: integer() | nil,
-            # EIP-712 typed data for a gasless pull, present once Riddler returns
-            # it on the Tron route (axol-io/Riddler#120). nil = deposit-address.
+            # EIP-712 typed data for a gasless pull, present when the solver
+            # returns it on the Tron route. nil = deposit-address.
             gasless: map() | nil,
             instant_settlement: boolean(),
             metadata: map()
@@ -184,8 +184,8 @@ defmodule Raxol.Payments.Relay.Schemas do
             nonce: integer() | nil
           }
 
-    # Deposit-address transfers carry no signature. A gasless transfer (once
-    # Riddler consumes it on the Tron route, see axol-io/Riddler#120) carries a
+    # Deposit-address transfers carry no signature. A gasless transfer (when the
+    # solver consumes it on the Tron route) carries a
     # signed authorization so the solver can pull instead of waiting on a deposit.
     @spec to_json(t()) :: map()
     def to_json(%__MODULE__{} = req) do

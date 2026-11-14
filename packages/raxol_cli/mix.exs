@@ -159,7 +159,7 @@ defmodule RaxolCli.MixProject do
       # the `acp` and `mcp` agent surfaces. raxol_agent pulls main raxol transitively, but
       # the direct dep documents the CLI's reliance on Raxol.start_link/Playground.
       runtime_dep(:raxol, "~> 2.8", "."),
-      raxol_dep(:raxol_agent, "~> 2.7", "../raxol_agent"),
+      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent"),
 
       # Packaging + argv access. Runtime (not build-only) here: the CLI reads the
       # wrapped argv via `Burrito.Util.Args` at startup, so the module must ship

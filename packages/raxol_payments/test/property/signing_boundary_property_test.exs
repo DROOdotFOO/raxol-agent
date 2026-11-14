@@ -6,7 +6,7 @@ defmodule Raxol.Payments.SigningBoundaryPropertyTest do
       a spend-gate rejection implies zero wallet signatures.
 
   Put another way, no money-moving Action may reach `wallet.sign_*` unless
-  `SpendGate.authorize/3` returned `:ok` first. The per-Action tests each pin one
+  `SpendGate.authorize/3` returned `{:ok, _}` first. The per-Action tests each pin one
   rejection reason (over per-request); this file generalizes that to the whole
   rejection space and adds two structural guards so a future Action can't quietly
   open a path to the signer.

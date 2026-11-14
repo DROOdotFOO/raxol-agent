@@ -266,16 +266,26 @@ defmodule Raxol.Payments.Failure do
         detail
       )
 
-  # A registered stablecoin pegged to a currency other than the dollar. Its
-  # amount scales, but no FX rate converts it for a dollar spend cap or a
-  # delivery floor yet, so it moves no funds (ADR-0040 decision 6; decision 7
-  # lifts the refusal).
+  # A registered stablecoin pegged to a currency other than the dollar as a
+  # destination: no FX rate converts it for a delivery floor, so it needs an
+  # explicit one (ADR-0040 decision 6).
   def from({:unpriced_asset, %{side: :destination}} = detail),
     do:
       build(
         :invalid_request,
         "The destination token is pegged to a non-USD currency; pass min_to_amount to bound delivery.",
         false,
+        detail
+      )
+
+  # A spend `SpendPricing` could not convert into the policy's unit. A price
+  # source that failed may answer on a retry; every other reason will not.
+  def from({:unpriced_asset, %{reason: reason}} = detail),
+    do:
+      build(
+        :invalid_request,
+        "The source token cannot be priced in the spending policy's currency (#{reason}).",
+        reason == :price_source_error,
         detail
       )
 
@@ -306,6 +316,30 @@ defmodule Raxol.Payments.Failure do
         "Payment is not configured: missing #{key}.",
         false,
         {:missing_context, key}
+      )
+
+  # The spending policy in context has a cap the gate cannot compare against
+  # (missing, non-finite, not a Decimal), or is not a `SpendingPolicy`. That is
+  # the operator's configuration, not a spend over a limit.
+  def from({:invalid_policy, field} = detail),
+    do:
+      build(
+        :config_error,
+        "The spending policy is not usable (#{field}); fix its configuration.",
+        false,
+        detail
+      )
+
+  # A concurrent run of the same payment claimed its checkpoint, and its record
+  # was gone before this run could resume it. This run sent nothing and
+  # released its reservation; the other run's outcome decides the payment.
+  def from(:checkpoint_race),
+    do:
+      build(
+        :rejected,
+        "Another run of this payment claimed it; this run sent nothing. Check the payment's status before retrying.",
+        false,
+        :checkpoint_race
       )
 
   # A fund-moving deployment required a durable idempotency checkpoint but none
@@ -358,6 +392,18 @@ defmodule Raxol.Payments.Failure do
         :stranded,
         "Intent #{intent_id} did not settle in the poll window and may be stranded; reconcile it before retrying.",
         true,
+        detail
+      )
+
+  # A Relay transfer whose signed pull or deposit broadcast was sent but whose
+  # outcome is unknown. The funds may move, so retrying the payment could pay
+  # twice: the reservation is kept and the transfer id rides the error to poll.
+  def from({:in_doubt, transfer_id} = detail),
+    do:
+      build(
+        :stranded,
+        "Transfer #{transfer_id} was sent but its outcome is unknown; poll it with payment_poll_relay_status and do not retry the payment.",
+        false,
         detail
       )
 

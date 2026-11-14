@@ -124,8 +124,9 @@ defmodule Raxol.Payments.Assets do
   # Registered for scaling and recognition only. Riddler may fill EURe, but
   # raxol never lists an FX token as fillable (that is `@evm_tokens`). Xochi,
   # Relay and the deposit route deliver one only when the caller's
-  # `min_to_amount` bounds it, and a non-USD source is refused: a dollar spend
-  # cap would otherwise count 1 EURe as $1. `fx_peg/2` is how those paths tell.
+  # `min_to_amount` bounds it, and a source is refused unless the spending
+  # policy's currency is its peg: a dollar cap would otherwise count 1 EURe as
+  # $1. `fx_peg/2` is how those paths tell.
   #
   # EURe's v1 contracts front the same balance as v2 (equal `totalSupply()` on
   # each chain), so they resolve back to "EURe" but `address/2` never returns
@@ -241,7 +242,7 @@ defmodule Raxol.Payments.Assets do
                    )
 
   # Solver-fillable EVM tokens: symbol -> chain id -> lowercase address. Mirrors
-  # Riddler's config/token_registry.ex for the six supported EVM chains
+  # the solver's token registry for the six supported EVM chains
   # (Ethereum, Optimism, Polygon, Base, Arbitrum, Robinhood Chain). Decimals live
   # in `@addresses`. USDG is Robinhood Chain's native stablecoin (Permit2 pull,
   # no ERC-3009); WETH is also canonical there. RAXOL (Robinhood Chain) is
@@ -297,6 +298,38 @@ defmodule Raxol.Payments.Assets do
                      |> Map.merge(
                        Map.new(@testnet_usdc, fn {chain, addr} -> {chain, %{addr => "USDC"}} end)
                      )
+
+  # Dollar stablecoins, which a spend cap in US dollars counts at par: by ticker
+  # for callers that carry only a symbol (MPP, `payment_transfer`), and by
+  # contract for callers that carry an address. The contracts are the
+  # USDC, USDT and USDG of `@evm_tokens`, USDbC (`@usdc`), the testnet USDC,
+  # and the registered contracts listed nowhere else: DAI on Ethereum, bridged
+  # USDC.e on Polygon, and USDT and USDC on Tron.
+  @dollar_stable_symbols ["USDC", "USDT", "USDBC", "USDG", "PYUSD", "DAI"]
+
+  @other_dollar_stables %{
+    1 => ["0x6b175474e89094c44da98b954eedeac495271d0f"],
+    137 => ["0x2791bca1f2de4661ed88a30c99a7a9449aa84174"],
+    728_126_428 => ["tr7nhqjekqxgtci8q8zy4pl8otszgjlj6t", "tekxitehnzsmse2xqrbj4w32run966rdz8"]
+  }
+
+  @dollar_stables [
+                    for(
+                      symbol <- ["USDC", "USDT", "USDG"],
+                      {chain, address} <- Map.fetch!(@evm_tokens, symbol),
+                      do: {chain, address}
+                    ),
+                    for({chain, addresses} <- @usdc, address <- addresses, do: {chain, address}),
+                    Map.to_list(@testnet_usdc),
+                    for(
+                      {chain, addresses} <- @other_dollar_stables,
+                      address <- addresses,
+                      do: {chain, address}
+                    )
+                  ]
+                  |> Enum.concat()
+                  |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+                  |> Map.new(fn {chain, addresses} -> {chain, Enum.uniq(addresses)} end)
 
   @doc """
   Look up decimals by chain id and ERC-20 contract address.
@@ -405,8 +438,8 @@ defmodule Raxol.Payments.Assets do
   @spec symbols() :: [String.t()]
   def symbols, do: Map.keys(@evm_tokens)
 
-  # Human-readable names for the supported EVM chains, matching Riddler's
-  # `config/chain_registry.ex` naming.
+  # Human-readable names for the supported EVM chains, matching the solver's
+  # chain naming.
   @chain_names %{
     1 => "Ethereum",
     10 => "Optimism",
@@ -481,9 +514,10 @@ defmodule Raxol.Payments.Assets do
   anything else, dollar stablecoins, WETH and unregistered tokens included.
   Case-insensitive; accepts an integer chain id or a CAIP-2 string.
 
-  Fund-moving paths refuse a token with a peg (ADR-0040 decision 6) until an
-  FX rate gates the conversion (decision 7). Its decimals are known, so its amount
-  scales correctly, but a dollar-denominated spend cap would count it at par.
+  Fund-moving paths refuse a token with a peg (ADR-0040 decision 6) unless the
+  spending policy's currency is that peg, where it counts at par; no FX rate
+  converts it (decision 7). Its decimals are known, so its amount scales
+  correctly.
   """
   @spec fx_peg(integer() | String.t() | nil, String.t() | nil) :: String.t() | nil
   def fx_peg(chain_id, address) when is_binary(address) and address != "" do
@@ -505,6 +539,45 @@ defmodule Raxol.Payments.Assets do
   """
   @spec fx_pegs() :: %{String.t() => String.t()}
   def fx_pegs, do: @fx_pegs
+
+  @fx_pegs_by_ticker Map.new(@fx_pegs, fn {symbol, peg} ->
+                       {String.upcase(symbol, :ascii), peg}
+                     end)
+
+  @doc """
+  The currency a registered stablecoin at `(chain_id, address)` is pegged to:
+  `"USD"` for a dollar stablecoin (USDC, USDbC, USDC.e, USDT, USDG, DAI, and
+  USDT and USDC on Tron), else `fx_peg/2`. `nil` for anything else, WETH,
+  RAXOL and unregistered tokens included. Case-insensitive; accepts an integer
+  chain id or a CAIP-2 string.
+  """
+  @spec peg(integer() | String.t() | nil, String.t() | nil) :: String.t() | nil
+  def peg(chain_id, address) when is_binary(address) and address != "" do
+    chain = normalize_chain_id(chain_id)
+    address = String.downcase(address)
+
+    if address in Map.get(@dollar_stables, chain, []),
+      do: "USD",
+      else: fx_peg(chain, address)
+  end
+
+  def peg(_chain, _address), do: nil
+
+  @doc """
+  The currency a stablecoin ticker is pegged to: `"USD"` for USDC, USDT,
+  USDbC, USDG, PYUSD and DAI, the `fx_pegs/0` peg for EURC, EURe and ZCHF,
+  `nil` for anything else. Compared in `fold_symbol/1` form.
+  """
+  @spec symbol_peg(String.t() | nil) :: String.t() | nil
+  def symbol_peg(symbol) when is_binary(symbol) do
+    code = fold_symbol(symbol)
+
+    if code in @dollar_stable_symbols,
+      do: "USD",
+      else: Map.get(@fx_pegs_by_ticker, code)
+  end
+
+  def symbol_peg(_symbol), do: nil
 
   @doc """
   The case-insensitive form of a token symbol: upper-cased in ASCII only, so a
@@ -576,7 +649,7 @@ defmodule Raxol.Payments.Assets do
   def decimals(_), do: @default_decimals
 
   @doc """
-  Convert an atomic-unit amount to a human-decimal `Decimal.t/0`.
+  Convert an atomic-unit amount to a human-decimal `t:Decimal.t/0`.
 
   E.g. `to_human(10_000, 6)` -> `Decimal.new("0.01")`.
   """
@@ -633,7 +706,7 @@ defmodule Raxol.Payments.Assets do
   def parse_atomic(_amount), do: :error
 
   @doc """
-  Convert an amount to a `Decimal.t/0`. A `Decimal` passes through, an integer
+  Convert an amount to a `t:Decimal.t/0`. A `Decimal` passes through, an integer
   converts exactly, and a string goes through `Decimal.new/1`, except a string
   of at most 78 bytes that parses fully as an integer, which converts through
   that integer.

@@ -17,7 +17,7 @@ defmodule Raxol.Payments.Accounting do
   | `RPC_ETH` .. `RPC_ROBINHOOD`| Per-chain public RPC URL (read-only)      | (unset)     |
   | `XOCHI_SOLVER_ADDRESS`      | Solver wallet to read balances for        | (unset)     |
   | `RAXOL_REBALANCE_INTERVAL_MS`| RebalanceMonitor sweep interval          | `300000`    |
-  | `RAXOL_PRICE_SOURCE`        | USD price source for margin              | `coingecko` |
+  | `RAXOL_PRICE_SOURCE`        | USD price source for margin and spend     | `coingecko` |
   | `RAXOL_REBALANCE_DEMAND_MULTIPLIER` | Demand-aware floors: `peak * this` | (unset/off) |
   | `RAXOL_REBALANCE_DEMAND_FLOOR_CAP`  | Ceiling on a demand-widened floor  | (unset)     |
   | `RAXOL_REBALANCE_DEMAND_WINDOW_MS`  | How far back demand is read        | `86400000`  |
@@ -31,6 +31,8 @@ defmodule Raxol.Payments.Accounting do
   parsed vars. Enabling it in a build without `raxol_web3`, without the key,
   or without either RPC URL refuses too, naming what is missing. Pricing
   only: no spend cap or delivery floor reads an FX rate (ADR-0040 decision 7).
+  `RAXOL_PRICE_SOURCE` also prices a WETH or RAXOL spend a `SpendingPolicy`
+  caps (`Raxol.Payments.SpendPricing`).
 
   Demand-aware inventory floors are off unless `RAXOL_REBALANCE_DEMAND_MULTIPLIER`
   is set: floors then track the largest recent fill per corridor rather than a
@@ -92,14 +94,14 @@ defmodule Raxol.Payments.Accounting do
   @default_price_source :coingecko
   @default_demand_window_ms 86_400_000
 
-  # The only sources `Raxol.Payments.RebalanceMonitor.build_price_fn/1` knows. Its
-  # catch-all clause returns a price fn yielding nil, so an unrecognized value
+  # The only sources `Raxol.Payments.Prices.source_fn/1` knows. It returns nil
+  # for anything else, so an unrecognized value
   # here would disable USD pricing rather than fail, which is why this is an
   # allowlist and not `String.to_atom/1` -- that would also mint an atom, which is
   # never collected, from an operator-controlled string.
   @price_sources %{"coingecko" => :coingecko, "none" => :none}
 
-  @typedoc "USD price source the `RebalanceMonitor` prices its margin column with."
+  @typedoc "USD price source for the `RebalanceMonitor` margin column and spend pricing."
   @type price_source :: :coingecko | :none
 
   @doc """

@@ -58,8 +58,10 @@ defmodule Raxol.Payments.Ledger do
   Check if a payment amount fits within the spending policy.
 
   Returns `:ok` or `{:over_limit, limit_type}` where limit_type is
-  `:per_request`, `:session`, `:lifetime`, or `:invalid_amount` (a zero,
-  negative, or non-finite amount).
+  `:per_request`, `:session`, `:lifetime`, `:invalid_amount` (a zero,
+  negative, or non-finite amount), `:frozen`, or `:invalid_policy` (not a
+  `SpendingPolicy`, or a cap that is not a finite positive `Decimal`; see
+  `SpendingPolicy.validate/2`).
 
   Note: For concurrent use, prefer `try_spend/5` which atomically checks
   and records to prevent TOCTOU races.
@@ -93,6 +95,24 @@ defmodule Raxol.Payments.Ledger do
           :ok | {:over_limit, atom()}
   def try_spend(server, agent_id, amount, policy, metadata \\ %{}) do
     GenServer.call(server, {:try_spend, agent_id, amount, policy, metadata})
+  end
+
+  @doc """
+  The per-request checks of `check_budget/4`, without a ledger: the amount
+  must be positive and finite and at most `policy.per_request_max`.
+
+  Returns `:ok` or `{:over_limit, :per_request | :invalid_amount |
+  :invalid_policy}`; `:invalid_policy` when `policy` is not a
+  `SpendingPolicy` or its `per_request_max` is not a finite positive
+  `Decimal`. The cumulative caps (`session_max`, `lifetime_max`) need the
+  ledger's history; this does not check them.
+  """
+  @spec check_request(Decimal.t(), SpendingPolicy.t()) :: :ok | {:over_limit, atom()}
+  def check_request(amount, policy) do
+    with :ok <- check_policy(policy, [:per_request_max]),
+         :ok <- check_amount_positive(amount) do
+      check_per_request(amount, policy)
+    end
   end
 
   @doc """
@@ -183,7 +203,8 @@ defmodule Raxol.Payments.Ledger do
           session: Decimal.t(),
           lifetime: Decimal.t()
         }
-  def get_totals(server, agent_id, policy) do
+  def get_totals(server, agent_id, %SpendingPolicy{session_window_ms: window} = policy)
+      when is_integer(window) and window > 0 do
     GenServer.call(server, {:totals, agent_id, policy})
   end
 
@@ -523,13 +544,23 @@ defmodule Raxol.Payments.Ledger do
     end)
   end
 
+  # Every cap is validated before any comparison: a non-struct policy or a nil
+  # or non-finite cap is refused as `:invalid_policy` here, inside the server
+  # that owns the table, instead of raising and taking the ledger down.
   defp do_check_budget(table, agent_id, amount, policy) do
-    with :ok <- check_amount_positive(amount),
-         :ok <- check_per_request(amount, policy),
+    with :ok <- check_policy(policy, [:session_max, :session_window_ms, :lifetime_max]),
+         :ok <- check_request(amount, policy),
          entries = get_entries(table, agent_id),
          :ok <- check_session(entries, amount, policy),
          :ok <- check_lifetime(entries, amount, policy) do
       :ok
+    end
+  end
+
+  defp check_policy(policy, fields) do
+    case SpendingPolicy.validate(policy, fields) do
+      :ok -> :ok
+      {:error, {:invalid_policy, _field}} -> {:over_limit, :invalid_policy}
     end
   end
 

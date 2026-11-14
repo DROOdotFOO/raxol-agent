@@ -140,7 +140,7 @@ defmodule Raxol.Agent.Session do
     # Deterministic (re)start: a `:rest_for_one` restart can race Registry's
     # async cleanup of the dead predecessor's `{:via, ...}` name. Wait for the
     # stale key to clear before we register, so the start can't lose the race
-    # and fail with `{:already_started, dead_pid}` (YELLOW 3). Only the
+    # and fail with `{:already_started, dead_pid}`. Only the
     # single restarter competes for this unique key, and cleanup only REMOVES
     # it, so once it reads empty our registration cannot collide.
     await_free(id)
@@ -960,7 +960,7 @@ defmodule Raxol.Agent.Session do
   @doc false
   # Start the lifecycle as a linked, supervised child (NOT unlinked — the tree
   # supervises it). Waits for the dead predecessor's via-name to clear first so
-  # a `:rest_for_one` restart is deterministic (YELLOW 3).
+  # a `:rest_for_one` restart is deterministic.
   @spec start_supervised_lifecycle(keyword()) :: GenServer.on_start()
   def start_supervised_lifecycle(opts) do
     app_module = Keyword.fetch!(opts, :app_module)
@@ -1057,7 +1057,7 @@ defmodule Raxol.Agent.Session do
   # can briefly outlive its dead owner (Registry cleanup lag on a fast
   # `:rest_for_one` restart); skipping then would leave a LIVE session
   # unregistered once the stale key is swept — `whereis/1`, `list_sessions/0`
-  # and standalone `stop_session/1` would all lose it (YELLOW 2). Instead retry
+  # and standalone `stop_session/1` would all lose it. Instead retry
   # (bounded) until the stale predecessor's key clears and ours lands. A key
   # already held by self() is fine. A genuinely-live foreign holder
   # (pathological duplicate session_id) exhausts the budget and is skipped — the

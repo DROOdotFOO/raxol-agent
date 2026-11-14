@@ -9,6 +9,15 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   `deposit_address`; poll the result with
   `Raxol.Payments.Actions.Payments.PollRelayStatus`.
 
+  `amount` is a human amount of `from_token`. `SpendGate` converts it into the
+  spending policy's unit (`Raxol.Payments.SpendPricing`: a stablecoin pegged
+  to it at par, a token that is not a stablecoin at its USD price from the
+  configured source under a USD policy) and gates and reserves that, or
+  refuses the transfer as `{:unpriced_asset, detail}` before anything is
+  signed or broadcast. A stablecoin pegged to another currency (EURC, EURe,
+  ZCHF under a USD policy) and an unregistered or unpriced source token are
+  refused.
+
   Tron has no stealth settlement. A stealth or shielded request to a Tron
   destination fails closed with `{:error, :stealth_unsupported_on_chain}` and
   must be re-requested with public settlement, rather than silently downgrading
@@ -20,11 +29,11 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
 
   * **Gasless (A)** -- when the quote returns a `gasless` typed-data block, the
     wallet signs it and the signature rides on execute so the solver pulls. No
-    broadcast. Delivered Riddler-side (axol-io/Riddler#120, PR #160) behind
-    `RELAY_GASLESS_PULL_ENABLED`; Permit2 only (ERC-3009 deferred, Riddler#159).
+    broadcast. The solver supports the gasless pull on the Tron route behind
+    `RELAY_GASLESS_PULL_ENABLED`; Permit2 only (no ERC-3009).
   * **Broadcast (B)** -- when a `:broadcaster` is in context, it sends the
     on-chain token transfer to the deposit address. The default route while
-    Riddler's `/relay/*` surface stays production-gated.
+    the solver's `/relay/*` surface stays production-gated.
   * **External (C)** -- otherwise the deposit address is returned for an outside
     wallet to fund.
 
@@ -48,6 +57,20 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   it to poll) instead of starting a new one. The reused `transfer_id` also lets
   an idempotent broadcaster dedupe a retried deposit. Without a store the path is
   unchanged.
+
+  ## Funding in doubt
+
+  Once the signed gasless pull has been sent to execute, or the broadcaster was
+  asked to send the deposit, the solver may already hold the funds. A
+  transport error, timeout, 5xx or raise from execute after a signature, and a
+  broadcaster error, raise, exit or throw (other than `{:error, {:not_sent,
+  reason}}`), leave the outcome unknown: the reservation stays, tagged with
+  the `transfer_id` so a refund seen by `PollRelayStatus` releases it, the
+  checkpoint stays so a re-run resumes the transfer, and the Action returns
+  `{:error, {:in_doubt, transfer_id}}` (a non-retryable `Failure`): poll the
+  transfer, do not retry the payment. A 4xx from execute, or a connection
+  that never opened, is a clean rejection: the reservation is released and
+  the checkpoint deleted, as for any failure before a signature or broadcast.
   """
 
   @compile {:no_warn_undefined, Raxol.Agent.Action}
@@ -102,7 +125,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
 
   alias Raxol.Payments.Actions.SpendGate
   alias Raxol.Payments.{Assets, Checkpoint, DeliveryFloor, Failure, Relay, Router}
+  alias Raxol.Payments.Protocols.Xochi
   alias Raxol.Payments.Relay.Schemas.{QuoteRequest, QuoteResponse}
+  alias Raxol.Payments.Xochi.Client, as: XochiClient
 
   @spec run(map(), map()) :: {:ok, map()} | {:error, Failure.t()}
   @impl true
@@ -137,16 +162,16 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     with :ok <- assert_relay_route(request),
          {:ok, quote} <- fillable_quote(config, request),
          :ok <- assert_delivery_floor(quote, floor),
-         :ok <- authorize(context, config, amount) do
+         {:ok, reserved} <- authorize(context, config, request, amount) do
       # Checkpoint the dispatched transfer before any funds move so a crash in the
       # funding step leaves a record a resume can poll instead of re-funding.
       Checkpoint.put(store, key, dispatched_record(quote))
-      fund(config, request, amount, warnings, context, store, key, quote)
+      fund(config, request, reserved, warnings, context, store, key, quote)
     end
   end
 
   defp fund(config, request, amount, warnings, context, store, key, quote) do
-    with {:ok, signature} <- maybe_sign_gasless(quote, context, amount),
+    with {:ok, signature} <- maybe_sign_gasless(quote, request, context, amount),
          {:ok, status} <- execute(config, quote, signature, context, amount),
          {:ok, deposit_tx} <- maybe_broadcast(quote, request, signature, context, amount) do
       summary = summary(quote, status, warnings, signature, deposit_tx)
@@ -156,6 +181,13 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       Checkpoint.put(store, key, settled_record(summary))
       {:ok, summary}
     else
+      # Sent but unconfirmed: keep the reservation, tagged so a refund observed
+      # by PollRelayStatus releases it, and keep the checkpoint so a re-run
+      # resumes this transfer instead of signing or sending again.
+      {:error, {:in_doubt, transfer_id}} = error ->
+        SpendGate.tag_reservation(context, transfer_id, amount)
+        error
+
       # The funding helpers already released the spend reservation; drop the
       # checkpoint too so a retry of the same payment starts clean.
       {:error, _reason} = error ->
@@ -232,13 +264,12 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
 
   defp build_request(params, from_address) do
     to_chain = Map.fetch!(params, :to_chain_id)
+    from_chain = Map.fetch!(params, :from_chain_id)
+    from_token = Map.fetch!(params, :from_token)
 
     with :ok <- reject_stealth_on_tron(Map.get(params, :settlement, "public"), to_chain),
-         from_chain = Map.fetch!(params, :from_chain_id),
-         from_token = Map.fetch!(params, :from_token),
-         :ok <- reject_fx_source(from_chain, from_token) do
+         {:ok, decimals} <- registered_decimals(from_chain, from_token) do
       amount = Decimal.new(Map.fetch!(params, :amount))
-      decimals = Assets.decimals(from_chain, from_token)
       from_amount = Integer.to_string(Assets.to_atomic(amount, decimals))
 
       request = %QuoteRequest{
@@ -257,6 +288,15 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     end
   end
 
+  # A source token is scaled only by its registered decimals: the 6-decimal
+  # fallback of `Assets.decimals/2` would mis-scale an unregistered token.
+  defp registered_decimals(chain, token) do
+    case Assets.fetch_decimals(chain, token) do
+      {:ok, decimals} -> {:ok, decimals}
+      :error -> {:error, {:unknown_asset, %{chain_id: chain, token: token, side: :source}}}
+    end
+  end
+
   # Tron has no stealth settlement. Fail closed on a stealth/shielded request to
   # a Tron destination and require an explicit public re-request, rather than
   # silently downgrading a privacy preference to public (same guardrail class as
@@ -266,19 +306,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       {:error, :stealth_unsupported_on_chain}
     else
       :ok
-    end
-  end
-
-  # A non-USD stablecoin scales correctly but the spend gate caps in dollars and
-  # would count it at par, so it moves no funds (ADR-0040 decision 6) until an
-  # FX rate gates the conversion (decision 7).
-  defp reject_fx_source(chain, token) do
-    case Assets.fx_peg(chain, token) do
-      nil ->
-        :ok
-
-      peg ->
-        {:error, {:unpriced_asset, %{chain_id: chain, token: token, side: :source, peg: peg}}}
     end
   end
 
@@ -316,58 +343,95 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     end
   end
 
-  defp authorize(context, config, amount) do
+  # The gate reserves `amount` (human units of the source token) in the policy's
+  # unit; the release and tag calls that follow take the reserved amount.
+  defp authorize(context, config, request, amount) do
     host = config |> Map.fetch!(:base_url) |> URI.parse() |> Map.get(:host)
-    SpendGate.authorize(context, amount, target: {:domain, host}, metadata: %{protocol: :relay})
+
+    SpendGate.authorize(context, amount,
+      asset: {:token, request.from_chain_id, request.from_token},
+      target: {:domain, host},
+      metadata: %{protocol: :relay}
+    )
   end
 
   # A (gasless): sign the quote's typed data before execute so the solver pulls.
-  defp maybe_sign_gasless(%QuoteResponse{gasless: gasless}, context, amount)
+  # The block is the same Permit2 `PermitWitnessTransferFrom` + `OriginPullWitness`
+  # pull the Xochi origin pull uses, and it is checked the same way before the
+  # wallet sees it (`Xochi.validate_permit2_authorization/4`): exactly the
+  # canonical types, fields and Permit2 domain on the origin chain, the request's
+  # token, an amount at most the request's, a pinned spender, a bounded deadline.
+  # Anything else is refused, the reservation released, and nothing signed. So
+  # is a signing error, raise, exit or throw: no signature has left the process.
+  defp maybe_sign_gasless(%QuoteResponse{gasless: gasless}, request, context, amount)
        when is_map(gasless) do
     case Map.get(context, :wallet) do
       nil -> release_and_error(context, amount, {:missing_context, :wallet})
-      wallet -> sign_gasless(gasless, wallet, context, amount)
+      wallet -> sign_gasless(gasless, request, wallet, context, amount)
     end
   end
 
-  defp maybe_sign_gasless(_quote, _context, _amount), do: {:ok, nil}
+  defp maybe_sign_gasless(_quote, _request, _context, _amount), do: {:ok, nil}
 
-  defp sign_gasless(gasless, wallet, context, amount) do
-    domain = eip712_domain(gasless["domain"] || %{})
-    types = eip712_types(gasless["types"] || %{})
-    message = gasless["message"] || %{}
+  defp sign_gasless(gasless, request, wallet, context, amount) do
+    case Xochi.validate_permit2_authorization(
+           gasless,
+           request.from_token,
+           request.from_chain_id,
+           request.from_amount
+         ) do
+      :ok ->
+        %{types: types} = Xochi.permit2_kind()
+        domain = Xochi.eip712_domain(gasless)
 
-    case wallet.sign_typed_data(domain, types, message) do
-      {:ok, sig} -> {:ok, "0x" <> Base.encode16(sig, case: :lower)}
-      {:error, reason} -> release_and_error(context, amount, {:sign_failed, reason})
+        case safe_sign(wallet, domain, types, gasless["message"]) do
+          {:ok, sig} -> {:ok, "0x" <> Base.encode16(sig, case: :lower)}
+          {:error, reason} -> release_and_error(context, amount, {:sign_failed, reason})
+        end
+
+      {:error, {:authorization_mismatch, field}} ->
+        release_and_error(context, amount, {:authorization_mismatch, {:gasless, field}})
     end
   end
 
-  defp eip712_domain(d) do
-    %{
-      name: d["name"],
-      version: d["version"],
-      chainId: d["chainId"],
-      verifyingContract: d["verifyingContract"]
-    }
+  # A third-party wallet may raise (or exit, or throw) on served values its
+  # encoder rejects; the reservation is released either way.
+  defp safe_sign(wallet, domain, types, message) do
+    wallet.sign_typed_data(domain, types, message)
+  rescue
+    exception -> {:error, {:exception, exception.__struct__}}
+  catch
+    kind, _reason -> {:error, {kind, :signer}}
   end
 
-  defp eip712_types(types) do
-    types
-    |> Map.drop(["EIP712Domain"])
-    |> Map.new(fn {name, fields} -> {name, Enum.map(fields, &{&1["name"], &1["type"]})} end)
-  end
-
+  # Without a signature nothing has left this process that a solver could pull
+  # with, so any execute failure releases. With one, only a clean rejection does.
   defp execute(config, quote, signature, context, amount) do
-    case Relay.execute(config, quote.transfer_id, quote.quote_id, signature: signature) do
+    case safe_execute(config, quote, signature) do
       {:ok, status} ->
         {:ok, status}
 
       {:error, reason} ->
-        SpendGate.release(context, amount, %{protocol: :relay, reason: :execute_failed})
-        {:error, {:execute_failed, reason}}
+        if is_binary(signature) and not clean_rejection?(reason) do
+          {:error, {:in_doubt, quote.transfer_id}}
+        else
+          SpendGate.release(context, amount, %{protocol: :relay, reason: :execute_failed})
+          {:error, {:execute_failed, reason}}
+        end
     end
   end
+
+  defp safe_execute(config, quote, signature) do
+    Relay.execute(config, quote.transfer_id, quote.quote_id, signature: signature)
+  rescue
+    exception -> {:error, {:exception, exception.__struct__}}
+  catch
+    kind, _reason -> {:error, {kind, :execute}}
+  end
+
+  # The endpoint refused the request (4xx), or the connection never opened.
+  defp clean_rejection?({:http, status, _body}) when status in 400..499, do: true
+  defp clean_rejection?(reason), do: XochiClient.definite_connect_failure?(reason)
 
   # B (broadcast): if not gasless, an injected broadcaster sends the deposit on an
   # EVM source. Runs after execute so a failure before funds move releases the
@@ -402,14 +466,27 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       wallet: Map.get(context, :wallet)
     }
 
-    case broadcaster.send_deposit(params) do
+    case safe_broadcast(broadcaster, params) do
       {:ok, tx_hash} ->
         {:ok, tx_hash}
 
-      {:error, reason} ->
+      {:error, {:not_sent, reason}} ->
         SpendGate.release(context, amount, %{protocol: :relay, reason: :deposit_broadcast_failed})
         {:error, {:deposit_broadcast_failed, reason}}
+
+      {:error, _reason} ->
+        {:error, {:in_doubt, quote.transfer_id}}
     end
+  end
+
+  # A broadcaster may raise after it submitted the transaction (while awaiting
+  # its receipt, say), so a raise, exit or throw is in doubt like an error.
+  defp safe_broadcast(broadcaster, params) do
+    broadcaster.send_deposit(params)
+  rescue
+    exception -> {:error, {:exception, exception.__struct__}}
+  catch
+    kind, _reason -> {:error, {kind, :broadcast}}
   end
 
   defp release_and_error(context, amount, reason) do

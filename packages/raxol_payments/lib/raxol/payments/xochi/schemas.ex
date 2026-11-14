@@ -414,7 +414,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
     # The Xochi worker response is snake_case with `eip712`; older/sim responses
     # are camelCase with `eip712Data`. Accept both so the client does not break
-    # on the canonical (snake_case) shape. See xochi/docs/contracts/xochi-intent-api.md.
+    # on the canonical (snake_case) shape.
     @spec from_json(map()) :: t()
     def from_json(json) do
       %__MODULE__{
@@ -484,7 +484,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
   defmodule ExecuteResponse do
     @moduledoc false
-    # `read_token` is a bearer secret (xochi#563): it reveals a non-public
+    # `read_token` is a bearer secret: it reveals a non-public
     # intent's settlement tx hashes to whoever presents it. Keep it out of
     # inspect output so a logged or crash-dumped response never carries it.
     @derive {Inspect, except: [:read_token]}
@@ -521,7 +521,6 @@ defmodule Raxol.Payments.Xochi.Schemas do
     # `stealth_address`, ...); older/sim responses are camelCase. Accept both, as
     # QuoteResponse does, so the client reads the canonical worker shape -- reading
     # only camelCase left `intent_id` nil and tripped the Action output contract.
-    # See xochi/packages/worker-lib/src/handlers/intents.ts (handleExecuteIntent).
     @spec from_json(map()) :: t()
     def from_json(json) do
       %__MODULE__{
@@ -538,7 +537,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
         # 5xx/timeout wrapped as a 200) and kept the intent non-terminal. Funds
         # may be in flight; the caller must poll to resolve, never re-execute.
         reconciling: pick(json, ["reconciling"]) || false,
-        # Read capability (xochi#563), returned once by execute. The client
+        # Read capability, returned once by execute. The client
         # rejects a present malformed value with context; this parser accepts
         # both worker naming conventions and never coerces it.
         read_token: read_token(json)
@@ -597,7 +596,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
       # The destination fill receipt and its chain (owner view only).
       :settlement_tx_hash,
       :settlement_chain_id,
-      # Anonymous view of a private settlement (xochi#563): the legs are
+      # Anonymous view of a private settlement: the legs are
       # withheld, and `settlement_confirmed` says whether the fill receipt
       # exists. Reporting markers only; never a reason to release or re-execute.
       settlement_confirmed: false,
@@ -649,8 +648,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
     # The Xochi worker's status response is snake_case (`intent_id`, `tx_hash`,
     # `terminal`, ...); older/sim responses are camelCase. Accept both so the poll
     # reads the canonical worker shape -- reading only camelCase dropped
-    # `intent_id`/`tx_hash` (status/terminal happened to match either way). See
-    # xochi/packages/worker-lib/src/handlers/intents.ts (handlePollIntentStatus).
+    # `intent_id`/`tx_hash` (status/terminal happened to match either way).
     @spec from_json(map()) :: t()
     def from_json(json) do
       status = parse_status(json["status"])
@@ -738,10 +736,8 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
     Unlike `IntentStatus` (settlement/tx state only), this carries the
     authoritative corridor and amounts written at quote time (`status: :quoted`),
-    so a relayer can read what the buyer signed before settlement -- see the
-    worker's `handleGetIntent`
-    (`xochi/packages/worker-lib/src/handlers/intents/read.ts`). Amounts are token
-    base-unit strings; `fee_rate` is the tier fraction (e.g. `0.003`).
+    so a relayer can read what the buyer signed before settlement. Amounts are
+    token base-unit strings; `fee_rate` is the tier fraction (e.g. `0.003`).
     """
 
     @enforce_keys [:intent_id, :status]

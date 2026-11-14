@@ -8,9 +8,16 @@ defmodule Raxol.Payments.Actions.Payments.Transfer do
   itself broadcast a transaction: this package has no same-chain EOA send rail.
   Cross-chain and stealth transfers execute through
   `Raxol.Payments.Actions.Payments.ExecuteXochiIntent`; a same-chain send is
-  performed by the caller's own rail after this authorization. If an authorized
-  transfer is abandoned, release the reservation with `SpendGate.release/3` so
-  the budget is not permanently consumed.
+  performed by the caller's own rail after this authorization.
+
+  `amount` is a human amount of `currency` (a ticker, default `"USDC"`).
+  `SpendGate` converts it into the spending policy's unit
+  (`Raxol.Payments.SpendPricing`: a stablecoin pegged to it at par, a token
+  that is not a stablecoin at its USD price from the configured source under
+  a USD policy, a stablecoin pegged to another currency refused) or refuses it as
+  `{:unpriced_asset, detail}`; `reserved` is the converted amount the ledger
+  holds. If an authorized transfer is abandoned, release `reserved` with
+  `SpendGate.release/3` so the budget is not permanently consumed.
   """
 
   @compile {:no_warn_undefined, Raxol.Agent.Action}
@@ -34,7 +41,8 @@ defmodule Raxol.Payments.Actions.Payments.Transfer do
         status: [type: :string],
         from: [type: :string],
         to: [type: :string],
-        amount: [type: :string]
+        amount: [type: :string],
+        reserved: [type: :string]
       ]
     ]
 
@@ -56,12 +64,11 @@ defmodule Raxol.Payments.Actions.Payments.Transfer do
     currency = Map.get(params, :currency, "USDC")
     amount = Decimal.new(amount_str)
 
-    metadata = %{to: to, currency: currency, type: :explicit_transfer}
-
-    with :ok <-
+    with {:ok, reserved} <-
            SpendGate.authorize(context, amount,
+             asset: {:symbol, currency},
              target: {:address, to},
-             metadata: metadata
+             metadata: %{to: to, type: :explicit_transfer}
            ) do
       # "authorized", not "pending": the spend gate passed and budget is
       # reserved, but this action does not broadcast, so nothing is in flight.
@@ -70,7 +77,8 @@ defmodule Raxol.Payments.Actions.Payments.Transfer do
          status: "authorized",
          from: wallet.address(),
          to: to,
-         amount: amount_str
+         amount: amount_str,
+         reserved: Decimal.to_string(reserved)
        }}
     end
   end

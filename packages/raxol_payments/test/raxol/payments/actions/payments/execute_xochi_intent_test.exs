@@ -3,8 +3,32 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
 
   alias Raxol.Payments.Actions.Payments.{ExecuteXochiIntent, PollXochiStatus}
   alias Raxol.Payments.{Checkpoint, Failure, Ledger, SpendingPolicy}
+  alias Raxol.Payments.Prices.Static
+  alias Raxol.Payments.Req.AutoPay
   alias Raxol.Payments.Test.XochiIntentFixture
   alias Raxol.Payments.Xochi.{ReadTokenStore, SettlementState, Stealth}
+
+  # Two runs of the same payment share its key: this run's `put_new` loses
+  # (`:exists`), and the winner's checkpoint is gone before this run reads it.
+  defmodule LostRaceStore do
+    @moduledoc false
+    @behaviour Checkpoint
+
+    @impl true
+    def fetch(_handle, _key), do: :error
+
+    @impl true
+    def put(_handle, _key, _record), do: :ok
+
+    @impl true
+    def put_new(_handle, _key, _record), do: {:error, :exists}
+
+    @impl true
+    def delete(_handle, _key), do: :ok
+
+    @impl true
+    def sweep_expired(_handle, _now), do: :ok
+  end
 
   # Wallet that signals when it signs, so tests can assert the gate runs first.
   defmodule SpyWallet do
@@ -539,7 +563,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
         policy: policy(),
         agent_id: "a1",
         checkpoint: store,
-        idempotency_key: "pay-1"
+        idempotency_key: "pay-1",
+        # 0.50 WETH at $1.50 is $0.75, inside the $1.00 per-request cap.
+        price_fn: Static.price_fn(%{"WETH" => "1.50"})
       }
 
       params = base_params(%{from_token: "0x4200000000000000000000000000000000000006"})
@@ -770,6 +796,187 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
     end
   end
 
+  # `amount` is a human amount of `from_token`; the gate converts it into the
+  # policy's unit (USD here) before it reserves anything or the wallet signs.
+  describe "ExecuteXochiIntent policy unit" do
+    @weth_base "0x4200000000000000000000000000000000000006"
+
+    defp usd_policy do
+      policy(%{
+        per_request_max: Decimal.new("10"),
+        session_max: Decimal.new("10"),
+        lifetime_max: Decimal.new("100"),
+        approved_domains: ["xochi.test", "api.example.com"]
+      })
+    end
+
+    defp weth_ctx(ledger, extra \\ %{}) do
+      Map.merge(
+        %{
+          wallet: SpyWallet,
+          xochi_config: config(),
+          ledger: ledger,
+          policy: usd_policy(),
+          agent_id: "a1",
+          price_fn: Static.price_fn(%{"WETH" => "3000"})
+        },
+        extra
+      )
+    end
+
+    defp weth_params(amount), do: base_params(%{amount: amount, from_token: @weth_base})
+
+    test "5 WETH at $3,000 is refused against a $10 per-request cap and nothing is signed" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+
+      assert {:error, %Failure{reason: :over_budget, detail: {:over_budget, :per_request}}} =
+               ExecuteXochiIntent.run(weth_params("5"), weth_ctx(ledger))
+
+      refute_received :wallet_signed
+      assert Ledger.get_history(ledger, "a1") == []
+    end
+
+    test "0.002 WETH at $3,000 is signed and recorded as 6 USD" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+
+      assert {:ok, result} = ExecuteXochiIntent.run(weth_params("0.002"), weth_ctx(ledger))
+      # 0.002 WETH at 18 decimals.
+      assert result.from_amount == "2000000000000000"
+      assert_received :wallet_signed
+
+      assert [%{amount: amount, metadata: metadata}] = Ledger.get_history(ledger, "a1")
+      assert Decimal.equal?(amount, Decimal.new("6"))
+      assert metadata.protocol == :xochi
+      assert metadata.source_asset == {:token, 8453, @weth_base}
+      assert Decimal.equal?(metadata.source_amount, Decimal.new("0.002"))
+    end
+
+    test "a WETH intent with no price source is refused before signing" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+      ctx = Map.delete(weth_ctx(ledger), :price_fn)
+
+      assert {:error,
+              %Failure{
+                reason: :invalid_request,
+                detail: {:unpriced_asset, %{reason: :no_price_source, unit: "USD"}}
+              }} = ExecuteXochiIntent.run(weth_params("0.002"), ctx)
+
+      refute_received :wallet_signed
+      assert Ledger.get_history(ledger, "a1") == []
+    end
+
+    test "a stale WETH price is refused before signing" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+      stale = Static.price_fn(%{"WETH" => "3000"}, as_of: System.system_time(:second) - 3600)
+
+      assert {:error, %Failure{detail: {:unpriced_asset, %{reason: :no_price}}}} =
+               ExecuteXochiIntent.run(weth_params("0.002"), weth_ctx(ledger, %{price_fn: stale}))
+
+      refute_received :wallet_signed
+    end
+
+    test "a price source error refuses the intent before signing" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+      failing = fn _symbol -> raise "price feed down" end
+
+      assert {:error,
+              %Failure{
+                retryable?: true,
+                detail: {:unpriced_asset, %{reason: :price_source_error}}
+              }} =
+               ExecuteXochiIntent.run(
+                 weth_params("0.002"),
+                 weth_ctx(ledger, %{price_fn: failing})
+               )
+
+      refute_received :wallet_signed
+    end
+
+    test "USDC counts at par with no price source" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+      ctx = Map.delete(weth_ctx(ledger), :price_fn)
+
+      assert {:ok, _} = ExecuteXochiIntent.run(base_params(%{}), ctx)
+      assert [%{amount: amount}] = Ledger.get_history(ledger, "a1")
+      assert Decimal.equal?(amount, Decimal.new("0.50"))
+    end
+
+    test "a EUR policy refuses a USDC intent before signing" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+      ctx = weth_ctx(ledger, %{policy: %{usd_policy() | currency: "EUR"}})
+
+      assert {:error,
+              %Failure{
+                detail: {:unpriced_asset, %{reason: :fx_unsupported, peg: "USD", unit: "EUR"}}
+              }} = ExecuteXochiIntent.run(base_params(%{}), ctx)
+
+      refute_received :wallet_signed
+    end
+
+    test "AutoPay x402 and Xochi spends add up against one session_max in USD" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
+      ctx = weth_ctx(ledger)
+
+      # $4 of USDC through x402, then $6 of WETH through Xochi: the $10 session
+      # is exactly spent.
+      assert %Req.Response{status: 200} = autopay_get(ledger, "4000000")
+      assert {:ok, _} = ExecuteXochiIntent.run(weth_params("0.002"), ctx)
+
+      totals = Ledger.get_totals(ledger, "a1", usd_policy())
+      assert Decimal.equal?(totals.session, Decimal.new("10"))
+
+      # Neither path can spend past it: $0.30 of WETH, then $0.01 of USDC.
+      assert {:error, %Failure{detail: {:over_budget, :session}}} =
+               ExecuteXochiIntent.run(weth_params("0.0001"), ctx)
+
+      assert %Req.Response{body: %{error: :budget_exceeded, limit: :session}} =
+               autopay_get(ledger, "10000")
+
+      totals = Ledger.get_totals(ledger, "a1", usd_policy())
+      assert Decimal.equal?(totals.session, Decimal.new("10"))
+    end
+
+    defp autopay_get(ledger, atomic_usdc) do
+      challenge =
+        %{
+          "maxAmountRequired" => atomic_usdc,
+          "payTo" => "0x" <> String.duplicate("cd", 20),
+          "asset" => @usdc_base,
+          "network" => "eip155:8453",
+          "nonce" => "0x" <> String.duplicate("12", 32),
+          "validAfter" => 0,
+          "validBefore" => System.system_time(:second) + 300
+        }
+        |> Jason.encode!()
+        |> Base.encode64()
+
+      stub = fn req ->
+        resp =
+          if Req.Request.get_header(req, "x-payment") == [] do
+            Req.Response.new(status: 402, body: "")
+            |> Req.Response.put_header("payment-required", challenge)
+          else
+            Req.Response.new(status: 200, body: "ok")
+          end
+
+        {req, resp}
+      end
+
+      Req.new(url: "https://api.example.com/data", retry: false)
+      |> AutoPay.attach(wallet: SpyWallet, ledger: ledger, policy: usd_policy(), agent_id: "a1")
+      |> Req.Request.prepend_request_steps(stub: stub)
+      |> Req.request!()
+    end
+  end
+
   describe "ExecuteXochiIntent routing" do
     test "rejects a same-chain public transfer that does not route to Xochi" do
       ctx = %{wallet: SpyWallet, xochi_config: config()}
@@ -822,19 +1029,34 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
       refute_received :wallet_signed
     end
 
-    # ADR-0040 decision 6: a registered non-USD stablecoin scales correctly but
-    # has no FX rate for the dollar spend cap, so it is refused as a source.
-    test "a non-USD stablecoin source is refused before quoting or signing" do
+    # A registered non-USD stablecoin scales correctly, but no spend cap reads
+    # an FX rate (ADR-0040 decision 7 is not built), so it is refused as a
+    # source under a dollar policy, even when a price for it is at hand.
+    test "a non-USD stablecoin source is refused before signing" do
+      stub_quote_and_execute()
+      ledger = start_supervised!({Ledger, [name: nil]})
       eurc_base = "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"
       params = base_params(%{from_token: eurc_base, settlement: "public"})
+
+      ctx = %{
+        wallet: SpyWallet,
+        xochi_config: config(),
+        ledger: ledger,
+        policy: policy(),
+        agent_id: "a1",
+        price_fn: Static.price_fn(%{"EURC" => "1.08"})
+      }
 
       assert {:error,
               %Failure{
                 reason: :invalid_request,
-                detail: {:unpriced_asset, %{side: :source, chain_id: 8453, peg: "EUR"}}
-              }} = ExecuteXochiIntent.run(params, %{wallet: SpyWallet, xochi_config: config()})
+                detail:
+                  {:unpriced_asset,
+                   %{side: :source, chain_id: 8453, peg: "EUR", reason: :fx_unsupported}}
+              }} = ExecuteXochiIntent.run(params, ctx)
 
       refute_received :wallet_signed
+      assert Ledger.get_history(ledger, "a1") == []
     end
 
     # No quote stub: the refusal must land before any network call.
@@ -1208,6 +1430,47 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
 
       totals = Ledger.get_totals(ledger, "a1", policy())
       assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+    end
+
+    test "a lost checkpoint race releases the reservation once and sends nothing" do
+      parent = self()
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        case conn.request_path do
+          "/api/intent/quote" ->
+            serve_quote(conn)
+
+          "/api/intent/execute" ->
+            send(parent, :executed)
+            Req.Test.json(conn, %{"success" => true, "intentId" => "int_1"})
+        end
+      end)
+
+      ledger = start_supervised!({Ledger, [name: nil]})
+
+      ctx = %{
+        wallet: SpyWallet,
+        xochi_config: config(),
+        ledger: ledger,
+        policy: policy(),
+        agent_id: "a1",
+        checkpoint: {LostRaceStore, nil},
+        idempotency_key: "pay-1"
+      }
+
+      assert {:error, %Failure{reason: :rejected, detail: :checkpoint_race, retryable?: false}} =
+               ExecuteXochiIntent.run(base_params(%{}), ctx)
+
+      refute_received :executed
+
+      amounts = ledger |> Ledger.get_history("a1") |> Enum.map(& &1.amount)
+      assert [released, reserved] = Enum.sort_by(amounts, &Decimal.to_float/1)
+      assert Decimal.equal?(reserved, Decimal.new("0.50"))
+      assert Decimal.equal?(released, Decimal.new("-0.50"))
+
+      totals = Ledger.get_totals(ledger, "a1", policy())
+      assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+      assert Decimal.equal?(totals.session, Decimal.new("0"))
     end
   end
 

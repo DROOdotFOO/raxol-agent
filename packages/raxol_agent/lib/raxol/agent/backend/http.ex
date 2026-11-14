@@ -22,7 +22,12 @@ defmodule Raxol.Agent.Backend.HTTP do
       opts = [
         api_key: "sk-...",
         req_plugins: [
-          fn req -> Raxol.Payments.Req.AutoPay.attach(req, wallet: MyWallet) end
+          fn req ->
+            Raxol.Payments.Req.AutoPay.attach(req,
+              wallet: MyWallet,
+              policy: Raxol.Payments.SpendingPolicy.dev()
+            )
+          end
         ]
       ]
 

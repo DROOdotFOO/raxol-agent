@@ -4,7 +4,8 @@ defmodule Raxol.Payments.Relay.Broadcaster.InMemory do
 
   Records each broadcast in the process dictionary (keyed by `transfer_id`, so a
   retry returns the same hash) and returns a synthetic tx hash. Set
-  `:relay_broadcaster_fail` in the process dictionary to make it return an error.
+  `:relay_broadcaster_fail` in the process dictionary to a reason to make it
+  return `{:error, reason}` (`{:not_sent, _}` for a failure before submission).
   """
 
   @behaviour Raxol.Payments.Relay.Broadcaster

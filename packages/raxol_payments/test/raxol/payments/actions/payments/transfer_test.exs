@@ -59,4 +59,41 @@ defmodule Raxol.Payments.Actions.Payments.TransferTest do
     assert {:error, {:requires_confirmation, _}} =
              Transfer.run(%{to: "0xabc", amount: "0.50"}, ctx)
   end
+
+  # `amount` is a human amount of the `currency` ticker; the gate converts it
+  # into the policy's unit and `reserved` reports what the ledger holds.
+  test "a WETH amount is reserved at its USD price" do
+    ledger = start_ledger()
+
+    ctx = %{
+      wallet: StubWallet,
+      ledger: ledger,
+      policy: policy(),
+      agent_id: "a1",
+      price_fn: Raxol.Payments.Prices.Static.price_fn(%{"WETH" => "3000"})
+    }
+
+    assert {:ok, %{amount: "0.0002", reserved: reserved}} =
+             Transfer.run(%{to: "0xabc", amount: "0.0002", currency: "weth"}, ctx)
+
+    assert Decimal.equal?(Decimal.new(reserved), Decimal.new("0.6"))
+    totals = Ledger.get_totals(ledger, "a1", policy())
+    assert Decimal.equal?(totals.lifetime, Decimal.new("0.6"))
+
+    assert {:error, {:over_budget, :per_request}} =
+             Transfer.run(%{to: "0xabc", amount: "0.001", currency: "WETH"}, ctx)
+  end
+
+  test "an unpriced or non-USD-pegged currency is refused and nothing is recorded" do
+    ledger = start_ledger()
+    ctx = %{wallet: StubWallet, ledger: ledger, policy: policy(), agent_id: "a1"}
+
+    assert {:error, {:unpriced_asset, %{reason: :no_price_source, symbol: "ETH"}}} =
+             Transfer.run(%{to: "0xabc", amount: "0.0001", currency: "ETH"}, ctx)
+
+    assert {:error, {:unpriced_asset, %{reason: :fx_unsupported, peg: "EUR"}}} =
+             Transfer.run(%{to: "0xabc", amount: "0.50", currency: "EURC"}, ctx)
+
+    assert Ledger.get_history(ledger, "a1") == []
+  end
 end

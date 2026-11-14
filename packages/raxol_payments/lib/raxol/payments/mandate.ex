@@ -4,8 +4,7 @@ defmodule Raxol.Payments.Mandate do
   Xochi Member to a specific agent wallet, scoped to particular
   endpoints with a budget.
 
-  Per the Xochi design (locked 2026-04-27 in
-  `xochi/docs/planning/agent-auth.md`), a Mandate is a **per-request
+  Per the Xochi design, a Mandate is a **per-request
   envelope** the agent presents on every protected Xochi call via
   `X-Xochi-Delegation`. Xochi's worker verifies the signature and
   decrements budget counters in KV keyed by `H(envelope)`. The agent
@@ -24,9 +23,9 @@ defmodule Raxol.Payments.Mandate do
 
   ## Schema
 
-  Matches `xochi/packages/shared/src/eip712.ts:182-263` exactly --
-  the type hash and field ordering must agree, or signatures won't
-  verify on the Xochi side.
+  Matches the Mandate typed data the Xochi worker verifies exactly -- the
+  type hash and field ordering must agree, or signatures won't verify on the
+  Xochi side.
 
       Mandate(
         address human_wallet,
@@ -86,8 +85,8 @@ defmodule Raxol.Payments.Mandate do
   @zero_address "0x0000000000000000000000000000000000000000"
 
   @doc """
-  Build an unsigned Mandate, validating fields against the Xochi Zod
-  constraints in `xochi/packages/shared/src/schemas.ts:197-211`.
+  Build an unsigned Mandate, validating fields against the constraints the
+  Xochi worker enforces on a Mandate.
 
   Generates a random 32-byte nonce when omitted.
   """

@@ -53,21 +53,53 @@ defmodule Raxol.Payments.EIP712 do
     `:version`, `:chainId` (or `:chain_id`), `:verifyingContract` (or
     `:verifying_contract`), and `:salt` (bytes32). Only the keys present in
     the map are included in the domain type, matching reference implementations.
-  - `types` — map of struct type names to field definitions. The first
-    key in the map is treated as the primary type.
+  - `types` — map of struct type names to field definitions. The primary type
+    is the one type no other type references; a map with no such type (a
+    cycle) or with several is refused rather than guessed.
   - `message` — map of field values for the primary type.
 
   Returns `{:ok, digest}` on success or `{:error, reason}` if a value
   cannot be encoded under its declared type.
+
+  A caller signing typed data it did not build should use `hash/4` with the
+  primary type it expects, so the struct that gets hashed is not chosen by the
+  served `types` map.
   """
   @spec hash(map(), map(), map()) :: {:ok, binary()} | {:error, term()}
   def hash(domain, types, message) do
-    with {:ok, domain_separator} <-
-           hash_struct("EIP712Domain", domain, eip712_domain_types(domain)),
-         {:ok, message_hash} <- hash_struct(primary_type(types), message, types) do
-      {:ok, ExKeccak.hash_256(<<0x19, 0x01, domain_separator::binary, message_hash::binary>>)}
+    case primary_type(types) do
+      nil -> {:error, :no_primary_type}
+      primary -> hash(domain, primary, types, message)
     end
   end
+
+  @doc """
+  Hash `message` as the struct `primary_type` of `types`, under `domain`.
+
+  The root is the caller's, not the map's: `{:error, {:unknown_primary_type,
+  name}}` when `types` does not define it.
+  """
+  @spec hash(map(), String.t(), map(), map()) :: {:ok, binary()} | {:error, term()}
+  def hash(domain, primary_type, types, message)
+      when is_binary(primary_type) and is_map(types) do
+    if Map.has_key?(types, primary_type) do
+      with {:ok, domain_separator} <-
+             hash_struct("EIP712Domain", domain, eip712_domain_types(domain)),
+           {:ok, message_hash} <- hash_struct(primary_type, message, types) do
+        {:ok, ExKeccak.hash_256(<<0x19, 0x01, domain_separator::binary, message_hash::binary>>)}
+      end
+    else
+      {:error, {:unknown_primary_type, primary_type}}
+    end
+  end
+
+  @doc """
+  The EIP-712 `typeHash` of `type_name` in `types`: `keccak256(encodeType)`,
+  with the referenced struct types appended in name order.
+  """
+  @spec type_hash(String.t(), map()) :: binary()
+  def type_hash(type_name, types) when is_binary(type_name) and is_map(types),
+    do: encode_type(type_name, types)
 
   @doc """
   Hash a typed message against a domain separator obtained from somewhere other
@@ -79,17 +111,21 @@ defmodule Raxol.Payments.EIP712 do
   computed, and any disagreement over which fields the domain has cancels out on
   both sides. Supplying the counterparty's separator removes that: the domain
   half of the digest comes from the contract that will verify it, so a projection
-  that drops or invents a field is visible rather than self-consistent. See
-  GitHub #772, where a `version` we added and Permit2 never declared reverted the
-  origin pull.
+  that drops or invents a field is visible rather than self-consistent: a
+  `version` field we added to a Permit2 domain, which Permit2 never declares,
+  reverted the origin pull.
 
   The struct half is still encoded here, and is covered against ethers-generated
   vectors by the Permit2 and ERC-3009 conformance suites.
   """
   @spec hash_with_separator(term(), map(), map()) :: {:ok, binary()} | {:error, term()}
   def hash_with_separator(<<domain_separator::binary-size(32)>>, types, message) do
-    with {:ok, message_hash} <- hash_struct(primary_type(types), message, types) do
+    with primary when is_binary(primary) <- primary_type(types),
+         {:ok, message_hash} <- hash_struct(primary, message, types) do
       {:ok, ExKeccak.hash_256(<<0x19, 0x01, domain_separator::binary, message_hash::binary>>)}
+    else
+      nil -> {:error, :no_primary_type}
+      {:error, _} = err -> err
     end
   end
 
@@ -210,15 +246,10 @@ defmodule Raxol.Payments.EIP712 do
       [primary] ->
         primary
 
-      [] ->
-        # Cycles or zero candidates: fall back to insertion-ish order so
-        # single-type maps keep working.
-        types |> Map.keys() |> List.first()
-
-      multiple ->
-        raise ArgumentError,
-              "EIP-712 types map is ambiguous: multiple root types #{inspect(multiple)}. " <>
-                "Every type should be referenced by exactly one other, except the primary."
+      # No root (a cycle) or several roots: there is no primary type to hash,
+      # and guessing one lets the map choose the struct that gets signed.
+      _none_or_several ->
+        nil
     end
   end
 
@@ -289,18 +320,30 @@ defmodule Raxol.Payments.EIP712 do
     end
   end
 
+  # A struct value that is not a map (a served nested struct or array element
+  # of the wrong shape) is refused like any other value of the wrong type.
+  defp encode_data(type_name, data, _types) when not is_map(data),
+    do: {:error, {:invalid_value, type_name}}
+
   defp encode_data(type_name, data, types) do
     fields = Map.get(types, type_name, [])
 
     fields
     |> Enum.reduce_while(<<>>, fn {name, type}, acc ->
-      value = Map.get(data, name) || safe_atom_get(data, name)
-
-      case encode_value(type, value, types) do
+      case encode_value(type, field_value(data, name), types) do
         {:ok, encoded} -> {:cont, <<acc::binary, encoded::binary>>}
         {:error, _} = err -> {:halt, err}
       end
     end)
+  end
+
+  # `false` is a value, not a missing key: a served `false` for a uint256 is
+  # refused rather than read as absent and encoded as zero.
+  defp field_value(data, name) do
+    case Map.fetch(data, name) do
+      {:ok, value} -> value
+      :error -> safe_atom_get(data, name)
+    end
   end
 
   # Look up a string key as an existing atom. Returns nil if the atom
@@ -434,6 +477,11 @@ defmodule Raxol.Payments.EIP712 do
   defp encode_value(_type, value) when is_binary(value) do
     {:ok, pad_left(value, 32)}
   end
+
+  # Any other value (a float, a boolean for a non-bool type, an integer for a
+  # bytes32 or address, a map for a scalar) is refused. The value itself stays
+  # out of the error: it is served data.
+  defp encode_value(type, _value), do: {:error, {:invalid_value, type}}
 
   defp array_element_type(type) do
     case String.split(type, "[]", parts: 2) do

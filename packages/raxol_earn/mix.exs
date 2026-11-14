@@ -34,10 +34,15 @@ defmodule RaxolEarn.MixProject do
     end
   end
 
-  # Slim headless release for the read-only settlement-accounting sidecar. Includes
-  # :raxol_earn + its runtime deps (:raxol_payments, :raxol_core, req, cowboy, the
-  # crypto NIFs) but NOT :raxol_terminal -- :raxol_agent/:raxol_mcp are runtime:false,
-  # so the termbox NIF never enters the release. Build with
+  # Slim headless release for the settlement-accounting sidecar and solver.
+  # Starts :raxol_earn + its runtime deps (:raxol_payments, :raxol_core,
+  # :raxol_web3, :raxol_mcp, req, cowboy, the crypto NIFs). raxol_payments calls
+  # raxol_agent code at run time, so the agent side ships as well -- :raxol_agent
+  # and the runtime apps it requires, :raxol_terminal (with its termbox NIF)
+  # included -- but only LOADED: nothing here needs the agent supervisor, the
+  # raxol application or the terminal, so none of them starts. Mix allows :load
+  # only because no started application depends on them: raxol_payments takes
+  # raxol_agent with `runtime: false`. Build with
   # `MIX_ENV=prod mix release raxol_earn` from this package.
   defp releases do
     [
@@ -45,8 +50,14 @@ defmodule RaxolEarn.MixProject do
         include_executables_for: [:unix],
         steps: [:assemble],
         # runtime_tools makes :observer/:recon remote diagnostics available without
-        # starting anything at boot; everything else is pulled from the dep tree.
-        applications: [runtime_tools: :load]
+        # starting anything at boot; the agent side is loaded, not started (above).
+        applications: [
+          runtime_tools: :load,
+          raxol_agent: :load,
+          raxol: :load,
+          raxol_terminal: :load,
+          raxol_journal: :load
+        ]
       ]
     ]
   end

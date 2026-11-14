@@ -1,5 +1,6 @@
 defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
-  use ExUnit.Case, async: true
+  # Writes the global solver-pin settings, which other modules read.
+  use ExUnit.Case, async: false
 
   alias Raxol.Payments.Actions.Payments.{ExecuteRelayTransfer, PollRelayStatus}
   alias Raxol.Payments.Relay.Broadcaster
@@ -17,6 +18,42 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
     def sign_typed_data(_d, _t, _m), do: {:ok, <<7::size(520)>>}
     def sign_message(_), do: {:ok, <<7::size(520)>>}
     def sign_hash(_), do: {:ok, <<7::size(520)>>}
+  end
+
+  # Anvil/foundry default account #0 -- known private key for deterministic tests.
+  @env_wallet_var "RAXOL_RELAY_GASLESS_TEST_KEY"
+  @env_wallet_key "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+  defmodule EnvWallet do
+    @moduledoc false
+    use Raxol.Payments.Wallets.Env, env_var: "RAXOL_RELAY_GASLESS_TEST_KEY"
+  end
+
+  # A third-party wallet that does not rescue: it raises, exits or throws as
+  # `:wallet_failure` in the process dictionary says.
+  defmodule CrashingWallet do
+    @moduledoc false
+    def address, do: "0x1111111111111111111111111111111111111111"
+    def chain_id, do: 8453
+
+    def sign_typed_data(_d, _t, _m) do
+      case Process.get(:wallet_failure) do
+        :raise -> raise "signer crashed"
+        :exit -> exit(:signer_down)
+        :throw -> throw(:signer_threw)
+      end
+    end
+
+    def sign_message(_), do: {:error, :unsupported}
+    def sign_hash(_), do: {:error, :unsupported}
+  end
+
+  # A broadcaster that raises after it may have submitted the deposit.
+  defmodule RaisingBroadcaster do
+    @moduledoc false
+    @behaviour Raxol.Payments.Relay.Broadcaster
+    @impl true
+    def send_deposit(_params), do: raise("receipt poll crashed")
   end
 
   defp config do
@@ -86,6 +123,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
     )
   end
 
+  defp lifetime(context), do: Ledger.get_totals(context.ledger, "a1", policy()).lifetime
+
   describe "happy path" do
     test "quotes, gates, executes, returns the deposit address and status" do
       stub_quote_and_execute()
@@ -121,12 +160,65 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
       assert send.chain_id == 8453
     end
 
-    test "releases the reservation when the broadcast fails" do
+    test "releases the reservation when the broadcaster proves nothing was sent" do
       stub_quote_and_execute()
-      Process.put(:relay_broadcaster_fail, :rpc_down)
+      Process.put(:relay_broadcaster_fail, {:not_sent, :rpc_down})
       context = ctx(%{broadcaster: Broadcaster.InMemory})
 
       assert {:error, %Failure{}} = ExecuteRelayTransfer.run(base_params(%{}), context)
+
+      totals = Ledger.get_totals(context.ledger, "a1", policy())
+      assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+    end
+
+    test "keeps the reservation and checkpoint when the broadcast outcome is unknown" do
+      stub_quote_and_execute()
+      Process.put(:relay_broadcaster_fail, :receipt_timeout)
+      store = Checkpoint.ETS.new()
+
+      context =
+        ctx(%{broadcaster: Broadcaster.InMemory, checkpoint: store, idempotency_key: "pay-1"})
+
+      assert {:error, %Failure{retryable?: false, detail: {:in_doubt, "t_1"}}} =
+               ExecuteRelayTransfer.run(base_params(%{}), context)
+
+      totals = Ledger.get_totals(context.ledger, "a1", policy())
+      assert Decimal.equal?(totals.lifetime, Decimal.new("0.50"))
+      assert {:ok, %{transfer_id: "t_1"}} = Checkpoint.fetch(store, "pay-1")
+    end
+
+    test "a broadcaster that raises leaves the outcome in doubt" do
+      stub_quote_and_execute()
+      context = ctx(%{broadcaster: RaisingBroadcaster})
+
+      assert {:error, %Failure{retryable?: false, detail: {:in_doubt, "t_1"}}} =
+               ExecuteRelayTransfer.run(base_params(%{}), context)
+
+      totals = Ledger.get_totals(context.ledger, "a1", policy())
+      assert Decimal.equal?(totals.lifetime, Decimal.new("0.50"))
+    end
+
+    test "an execute that times out before any broadcast or signature releases" do
+      Req.Test.stub(__MODULE__, fn conn ->
+        case conn.request_path do
+          "/relay/quote" ->
+            Req.Test.json(conn, %{
+              "transfer_id" => "t_1",
+              "quote_id" => "q_1",
+              "can_fill" => true,
+              "to_amount" => "499000",
+              "deposit_address" => "0xdeposit"
+            })
+
+          "/relay/execute" ->
+            Req.Test.transport_error(conn, :timeout)
+        end
+      end)
+
+      context = ctx(%{broadcaster: Broadcaster.InMemory})
+
+      assert {:error, %Failure{}} = ExecuteRelayTransfer.run(base_params(%{}), context)
+      assert Broadcaster.InMemory.sent() == []
 
       totals = Ledger.get_totals(context.ledger, "a1", policy())
       assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
@@ -167,30 +259,86 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
     end
   end
 
-  describe "gasless funding (A)" do
-    test "signs the quote's typed data and sends the signature on execute" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        case conn.request_path do
-          "/relay/quote" ->
-            Req.Test.json(conn, %{
-              "transfer_id" => "t_1",
-              "quote_id" => "q_1",
-              "can_fill" => true,
-              "to_amount" => "499000",
-              "deposit_address" => "0xdeposit",
-              "gasless" => %{
-                "domain" => %{"name" => "Permit2", "chainId" => 8453},
-                "types" => %{"Permit" => [%{"name" => "amount", "type" => "uint256"}]},
-                "message" => %{"amount" => 500_000}
-              }
-            })
+  @solver "0x000000000000000000000000000000000000dEaD"
 
-          "/relay/execute" ->
-            {:ok, raw, conn} = Plug.Conn.read_body(conn)
-            send(self(), {:execute_body, Jason.decode!(raw)})
-            Req.Test.json(conn, %{"transfer_id" => "t_1", "status" => "pending"})
-        end
-      end)
+  # The Permit2 PermitWitnessTransferFrom + OriginPullWitness pull for
+  # base_params/1 (0.50 USDC on Base = 500000 atomic), spender pinned.
+  defp canonical_gasless(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "domain" => %{
+          "name" => "Permit2",
+          "chainId" => 8453,
+          "verifyingContract" => Raxol.Payments.Protocols.Permit2.verifying_contract()
+        },
+        "primaryType" => "PermitWitnessTransferFrom",
+        "types" => %{
+          "PermitWitnessTransferFrom" => [
+            %{"name" => "permitted", "type" => "TokenPermissions"},
+            %{"name" => "spender", "type" => "address"},
+            %{"name" => "nonce", "type" => "uint256"},
+            %{"name" => "deadline", "type" => "uint256"},
+            %{"name" => "witness", "type" => "OriginPullWitness"}
+          ],
+          "TokenPermissions" => [
+            %{"name" => "token", "type" => "address"},
+            %{"name" => "amount", "type" => "uint256"}
+          ],
+          "OriginPullWitness" => [%{"name" => "orderId", "type" => "bytes32"}]
+        },
+        "message" => %{
+          "permitted" => %{"token" => @usdc_base, "amount" => "500000"},
+          "spender" => @solver,
+          "nonce" => "1",
+          "deadline" => Integer.to_string(System.system_time(:second) + 600),
+          "witness" => %{"orderId" => "0x" <> String.duplicate("cd", 32)}
+        }
+      },
+      overrides
+    )
+  end
+
+  defp stub_gasless(gasless) do
+    stub_gasless(gasless, &Req.Test.json(&1, %{"transfer_id" => "t_1", "status" => "pending"}))
+  end
+
+  # The execute stub reads (and reports) the signed body before `respond`
+  # answers, so the signature has reached the endpoint whatever it returns.
+  defp stub_gasless(gasless, respond) do
+    parent = self()
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      case conn.request_path do
+        "/relay/quote" ->
+          Req.Test.json(conn, %{
+            "transfer_id" => "t_1",
+            "quote_id" => "q_1",
+            "can_fill" => true,
+            "to_amount" => "499000",
+            "deposit_address" => "0xdeposit",
+            "gasless" => gasless
+          })
+
+        "/relay/execute" ->
+          {:ok, raw, conn} = Plug.Conn.read_body(conn)
+          send(parent, {:execute_body, Jason.decode!(raw)})
+          respond.(conn)
+      end
+    end)
+  end
+
+  defp respond_status(status, body) do
+    fn conn -> conn |> Plug.Conn.put_status(status) |> Req.Test.json(body) end
+  end
+
+  describe "gasless funding (A)" do
+    setup do
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [@solver])
+      on_exit(fn -> Application.delete_env(:raxol_payments, :pull_solver_allowlist) end)
+    end
+
+    test "signs the canonical Permit2 pull and sends the signature on execute" do
+      stub_gasless(canonical_gasless())
 
       assert {:ok, result} =
                ExecuteRelayTransfer.run(
@@ -205,6 +353,150 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
 
       assert_received {:execute_body, body}
       assert String.starts_with?(body["signature"], "0x")
+    end
+
+    test "refuses a gasless block that is not the canonical Permit2 pull, before signing" do
+      hostile = [
+        # An arbitrary struct of the server's choosing.
+        %{
+          "domain" => %{"name" => "Permit2", "chainId" => 8453},
+          "types" => %{"Permit" => [%{"name" => "amount", "type" => "uint256"}]},
+          "message" => %{"amount" => 500_000}
+        },
+        # The canonical envelope with an extra signable field.
+        update_in(canonical_gasless(), ["message"], &Map.put(&1, "value", "1")),
+        # An unpinned spender.
+        put_in(canonical_gasless(), ["message", "spender"], "0x" <> String.duplicate("ab", 20)),
+        # More than the transfer.
+        put_in(canonical_gasless(), ["message", "permitted", "amount"], "500001")
+      ]
+
+      context = ctx(%{})
+
+      for gasless <- hostile do
+        stub_gasless(gasless)
+
+        assert {:error,
+                %Failure{reason: :rejected, detail: {:authorization_mismatch, {:gasless, _}}}} =
+                 ExecuteRelayTransfer.run(base_params(%{}), context)
+
+        refute_received {:execute_body, _}
+      end
+    end
+
+    test "a served Permit2 value the encoder cannot take is refused and released" do
+      System.put_env(@env_wallet_var, @env_wallet_key)
+      on_exit(fn -> System.delete_env(@env_wallet_var) end)
+      context = ctx(%{wallet: EnvWallet})
+
+      probes = [
+        put_in(canonical_gasless(), ["message", "nonce"], 1.5),
+        put_in(canonical_gasless(), ["message", "nonce"], true),
+        put_in(canonical_gasless(), ["message", "nonce"], %{"value" => "1"}),
+        put_in(canonical_gasless(), ["message", "witness", "orderId"], 5)
+      ]
+
+      for gasless <- probes do
+        stub_gasless(gasless)
+
+        assert {:error, %Failure{}} = ExecuteRelayTransfer.run(base_params(%{}), context)
+        refute_received {:execute_body, _}
+
+        totals = Ledger.get_totals(context.ledger, "a1", policy())
+        assert Decimal.equal?(totals.session, Decimal.new("0"))
+        assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+      end
+    end
+
+    test "a wallet that raises, exits or throws is refused and the reservation released" do
+      context = ctx(%{wallet: CrashingWallet})
+
+      for failure <- [:raise, :exit, :throw] do
+        Process.put(:wallet_failure, failure)
+        stub_gasless(canonical_gasless())
+
+        assert {:error, %Failure{reason: :sign_failed}} =
+                 ExecuteRelayTransfer.run(base_params(%{}), context)
+
+        refute_received {:execute_body, _}
+
+        totals = Ledger.get_totals(context.ledger, "a1", policy())
+        assert Decimal.equal?(totals.session, Decimal.new("0"))
+      end
+    end
+  end
+
+  # Once the signed Permit2 pull has reached the execute endpoint, the solver
+  # may pull with it whatever the response says.
+  describe "gasless execute in doubt" do
+    setup do
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [@solver])
+      on_exit(fn -> Application.delete_env(:raxol_payments, :pull_solver_allowlist) end)
+      store = Checkpoint.ETS.new()
+      %{context: ctx(%{checkpoint: store, idempotency_key: "pay-1"}), store: store}
+    end
+
+    test "a timeout after the signature was sent keeps the spend and checkpoint; poll, not retry",
+         %{context: context, store: store} do
+      stub_gasless(canonical_gasless(), &Req.Test.transport_error(&1, :timeout))
+
+      assert {:error, %Failure{retryable?: false, detail: {:in_doubt, "t_1"}} = failure} =
+               ExecuteRelayTransfer.run(base_params(%{}), context)
+
+      assert failure.message =~ "t_1"
+      assert failure.message =~ "poll"
+      assert_received {:execute_body, %{"signature" => "0x" <> _}}
+
+      assert Decimal.equal?(lifetime(context), Decimal.new("0.50"))
+      assert {:ok, %{transfer_id: "t_1"}} = Checkpoint.fetch(store, "pay-1")
+
+      # A re-run resumes the transfer to poll; nothing is signed or sent again.
+      assert {:ok, %{transfer_id: "t_1"}} = ExecuteRelayTransfer.run(base_params(%{}), context)
+      refute_received {:execute_body, _}
+      assert Decimal.equal?(lifetime(context), Decimal.new("0.50"))
+    end
+
+    test "the kept reservation is tagged, so a refund seen by polling releases it",
+         %{context: context} do
+      stub_gasless(canonical_gasless(), &Req.Test.transport_error(&1, :timeout))
+
+      assert {:error, %Failure{detail: {:in_doubt, "t_1"}}} =
+               ExecuteRelayTransfer.run(base_params(%{}), context)
+
+      assert :released = Raxol.Payments.Actions.SpendGate.release_by_intent(context, "t_1")
+      assert Decimal.equal?(lifetime(context), Decimal.new("0"))
+    end
+
+    test "a 5xx after the signature was sent keeps the spend", %{context: context, store: store} do
+      stub_gasless(canonical_gasless(), respond_status(502, %{"error" => "bad_gateway"}))
+
+      assert {:error, %Failure{retryable?: false, detail: {:in_doubt, "t_1"}}} =
+               ExecuteRelayTransfer.run(base_params(%{}), context)
+
+      assert Decimal.equal?(lifetime(context), Decimal.new("0.50"))
+      assert {:ok, _record} = Checkpoint.fetch(store, "pay-1")
+    end
+
+    test "a 4xx rejection releases the spend and drops the checkpoint",
+         %{context: context, store: store} do
+      stub_gasless(canonical_gasless(), respond_status(400, %{"error" => "validation_failed"}))
+
+      assert {:error, %Failure{} = failure} = ExecuteRelayTransfer.run(base_params(%{}), context)
+      refute match?({:in_doubt, _}, failure.detail)
+
+      assert Decimal.equal?(lifetime(context), Decimal.new("0"))
+      assert :error = Checkpoint.fetch(store, "pay-1")
+    end
+
+    test "a connection refused before anything was sent releases the spend",
+         %{context: context, store: store} do
+      stub_gasless(canonical_gasless(), &Req.Test.transport_error(&1, :econnrefused))
+
+      assert {:error, %Failure{} = failure} = ExecuteRelayTransfer.run(base_params(%{}), context)
+      refute match?({:in_doubt, _}, failure.detail)
+
+      assert Decimal.equal?(lifetime(context), Decimal.new("0"))
+      assert :error = Checkpoint.fetch(store, "pay-1")
     end
   end
 
@@ -246,12 +538,19 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
                ExecuteRelayTransfer.run(params, ctx())
     end
 
-    test "refuses a non-USD stablecoin source before any relay call (ADR-0040)" do
+    test "refuses a non-USD stablecoin source before execute (ADR-0040)" do
       parent = self()
 
       Req.Test.stub(__MODULE__, fn conn ->
         send(parent, {:relay_called, conn.request_path})
-        Req.Test.json(conn, %{})
+
+        Req.Test.json(conn, %{
+          "transfer_id" => "t_1",
+          "quote_id" => "q_1",
+          "can_fill" => true,
+          "to_amount" => "499000",
+          "deposit_address" => "0xdeposit"
+        })
       end)
 
       params = base_params(%{from_token: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"})
@@ -259,10 +558,93 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
       assert {:error,
               %Failure{
                 reason: :invalid_request,
-                detail: {:unpriced_asset, %{side: :source, chain_id: 8453, peg: "EUR"}}
+                detail:
+                  {:unpriced_asset,
+                   %{side: :source, chain_id: 8453, peg: "EUR", reason: :fx_unsupported}}
               }} = ExecuteRelayTransfer.run(params, ctx())
 
-      refute_received {:relay_called, _}
+      refute_received {:relay_called, "/relay/execute"}
+    end
+  end
+
+  # `amount` is a human amount of `from_token`; the gate converts it into the
+  # policy's unit before it reserves anything or the transfer is funded.
+  describe "policy unit" do
+    @weth_base "0x4200000000000000000000000000000000000006"
+
+    defp weth_ctx(overrides \\ %{}) do
+      ctx(
+        Map.merge(
+          %{
+            policy: policy(%{per_request_max: Decimal.new("10"), session_max: Decimal.new("50")}),
+            price_fn: Raxol.Payments.Prices.Static.price_fn(%{"WETH" => "3000"})
+          },
+          overrides
+        )
+      )
+    end
+
+    test "0.002 WETH at $3,000 is reserved as 6 USD and broadcast at 18 decimals" do
+      stub_quote_and_execute()
+      ctx = weth_ctx(%{broadcaster: Broadcaster.InMemory})
+
+      assert {:ok, %{funding: "broadcast"}} =
+               ExecuteRelayTransfer.run(
+                 base_params(%{amount: "0.002", from_token: @weth_base}),
+                 ctx
+               )
+
+      assert [%{amount: amount, metadata: %{protocol: :relay}}] =
+               Ledger.get_history(ctx.ledger, "a1")
+
+      assert Decimal.equal?(amount, Decimal.new("6"))
+      assert [%{amount_atomic: "2000000000000000"}] = Broadcaster.InMemory.sent()
+    end
+
+    test "5 WETH at $3,000 is refused against a $10 per-request cap and nothing is funded" do
+      stub_quote_and_execute()
+      ctx = weth_ctx(%{broadcaster: Broadcaster.InMemory})
+
+      assert {:error, %Failure{reason: :over_budget}} =
+               ExecuteRelayTransfer.run(base_params(%{amount: "5", from_token: @weth_base}), ctx)
+
+      assert Ledger.get_history(ctx.ledger, "a1") == []
+      assert Broadcaster.InMemory.sent() == []
+    end
+
+    test "an unregistered source token is refused before quoting under a policy" do
+      stub_quote_and_execute()
+      params = base_params(%{from_token: "0x" <> String.duplicate("ab", 20)})
+
+      assert {:error, %Failure{detail: {:unknown_asset, %{side: :source}}}} =
+               ExecuteRelayTransfer.run(params, weth_ctx())
+    end
+
+    test "an unregistered source token is refused with no policy too" do
+      stub_quote_and_execute()
+      params = base_params(%{from_token: "0x" <> String.duplicate("ab", 20)})
+
+      assert {:error, %Failure{detail: {:unknown_asset, %{side: :source}}}} =
+               ExecuteRelayTransfer.run(params, ctx(%{policy: nil}))
+    end
+
+    test "a dollar stablecoin on Tron counts at par" do
+      stub_quote_and_execute()
+      ctx = ctx()
+
+      params =
+        base_params(%{
+          from_chain_id: @tron,
+          from_token: @usdt_trc20,
+          to_chain_id: 8453,
+          to_token: @usdc_base,
+          to_address: "0x" <> String.duplicate("ab", 20),
+          from_address: @tron_addr
+        })
+
+      assert {:ok, _} = ExecuteRelayTransfer.run(params, ctx)
+      assert [%{amount: amount}] = Ledger.get_history(ctx.ledger, "a1")
+      assert Decimal.equal?(amount, Decimal.new("0.50"))
     end
   end
 
@@ -354,7 +736,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
 
     test "drops the checkpoint when funding fails so a retry starts clean" do
       stub_quote_and_execute()
-      Process.put(:relay_broadcaster_fail, :rpc_down)
+      Process.put(:relay_broadcaster_fail, {:not_sent, :rpc_down})
       store = Checkpoint.ETS.new()
 
       context =

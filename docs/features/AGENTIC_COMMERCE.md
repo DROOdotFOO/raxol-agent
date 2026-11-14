@@ -127,6 +127,8 @@ Three layers of limits in `SpendingPolicy`:
 - **Per-session**: rolling total within one agent session
 - **Lifetime**: hard cap across all sessions
 
+Every cap is a human amount of the policy's `currency` (`SpendingPolicy.unit/1`): with the default `"USDC"`, `Decimal.new("1.00")` is one US dollar. AutoPay and `SpendGate` convert every payment into that unit before it is checked, reserved or signed; `SpendingHook` does not convert, so a `Pay` directive's `amount` must already be in that unit. AutoPay prices an x402 challenge only for USDC, and an MPP challenge from its currency (ISO 4217 minor units for USD, EUR and CHF, registered decimals for a stablecoin); a challenge in any other unit is refused. `SpendGate` (Xochi intents, Relay transfers, `payment_transfer`, ACP buys) counts a stablecoin pegged to the unit at par and, under a USD policy, converts any other token (WETH, RAXOL) at its USD price from the context's `:price_fn` or the configured `price_source:` (`Raxol.Payments.Prices`; CoinGecko and static prices expire after 300 seconds by default). It refuses the spend as `{:unpriced_asset, detail}` before anything is signed when there is no price source, no fresh positive price, or the source fails. No spend cap reads an FX rate yet, so a stablecoin pegged to another currency is refused (EURC, EURe and ZCHF under a USD policy, USDC under a EUR policy), and under a non-USD policy every token not pegged to it is refused. So x402, MPP, Xochi and Relay payments add up against the same session and lifetime caps.
+
 The `Ledger` is an ETS-backed GenServer that tracks cumulative spend. `SpendingHook` implements the `CommandHook` behaviour from raxol_agent. It runs before every command and can deny execution if limits would be exceeded.
 
 Both spend paths reserve atomically before signing: the `SpendGate` choke point (payment Actions) and `SpendingHook` (Pay directives) call `Ledger.try_spend`, which checks the caps and records in one step, and refund via `Ledger.release` when execution then fails, so two commands cannot both pass a check before either records. A non-positive or non-finite amount is rejected up front (it can never lower the running total). A missing policy leaves the gate permissive in development, but a deployed release fails closed: `require_policy` defaults to true in production (a deployed OTP release, detected by `Raxol.Payments.Deployment` via `RELEASE_NAME`) and false in development and tests, so a production `SpendGate` with no `SpendingPolicy` rejects the spend rather than allowing unlimited spend. Set the context flag or `config :raxol_payments, :require_policy` to override.
@@ -151,11 +153,11 @@ The relay rail keys on the logical payment rather than its client-minted `transf
 
 A process that holds a signing key is the crown jewel, so the fund-moving defaults are paranoid in a deployed release and permissive in development and tests. `Raxol.Payments.Deployment.production?/0` decides which: it is true for a deployed OTP release (detected by the `RELEASE_NAME` the release boot script sets, which survives into the running node where `Mix.env/0` does not), and can be forced either way with `config :raxol_payments, :deployment` or `RAXOL_PAYMENTS_DEPLOYMENT`.
 
-- **Signing boundary.** Every fund-moving Action reaches `wallet.sign_*` only after `SpendGate.authorize/3` returns `:ok`. `sign_hash/1` (the opaque-digest signer) is reachable only through `Mandate.sign/2`, which builds the digest from a validated struct, never an arbitrary hash. A property test asserts a gate rejection yields zero signatures across the amount space, and a guard test keeps any new Action from reaching a signer without the gate.
-- **Fail-closed defaults.** In production, `require_policy` and `require_checkpoint` default to true (see Spending Controls and Crash Recovery), and `Wallets.Env` refuses to load (see Wallet Backends).
+- **Signing boundary.** Every fund-moving Action reaches `wallet.sign_*` only after `SpendGate.authorize/3` returns `{:ok, amount}`. `sign_hash/1` (the opaque-digest signer) is reachable only through `Mandate.sign/2`, which builds the digest from a validated struct, never an arbitrary hash. A property test asserts a gate rejection yields zero signatures across the amount space, and a guard test keeps any new Action from reaching a signer without the gate.
+- **Fail-closed defaults.** In production, `require_policy` and `require_checkpoint` default to true (see Spending Controls and Crash Recovery), so does `pull_require_solver_pin` (an ERC-3009 origin pull with no `:pull_solver_allowlist` is refused before signing; Permit2 pulls always need the allowlist), and `Wallets.Env` refuses to load (see Wallet Backends).
 - **EIP-712 golden vectors.** The digest for every signed struct (x402 ERC-3009, the Xochi intent, the Permit2 witness, the Mandate) is pinned to a committed value that default CI checks on every run, so a change to a type definition or the encoder turns CI red rather than silently signing against the wrong struct.
 
-Two boot gates fail closed for a fund-moving deployment; call them at startup, alongside `Protocols.Xochi.assert_origin_pull_pinned!/2`. A release that signs origin pulls reads the pin from the environment in its own `config/runtime.exs` with `config :raxol_payments, Raxol.Payments.Protocols.Xochi.origin_pull_pin_env_config!()`, which raises when no `XOCHI_SOLVER_*` address is set and `XOCHI_PULL_REQUIRE_SOLVER_PIN` is not `true`. None of the shipped release configs calls it.
+Two boot gates fail closed for a fund-moving deployment; call them at startup, alongside `Protocols.Xochi.assert_origin_pull_pinned!/2`. A release that signs origin pulls reads the pin from the environment in its own `config/runtime.exs` with `config :raxol_payments, Raxol.Payments.Protocols.Xochi.origin_pull_pin_env_config!()`. Its allowlist is the `XOCHI_SOLVER_*` addresses plus the verified pull contracts, so every pull it admits is pinned; it raises at boot when no `XOCHI_SOLVER_*` address is set and the pin is not required (`XOCHI_PULL_REQUIRE_SOLVER_PIN=false`, or unset outside production). None of the shipped release configs calls it.
 
 ```elixir
 # In your application start/2, before serving traffic:
@@ -222,7 +224,7 @@ Req.new(url: "https://api.xochi.fi/api/intent/quote")
 
 `Mandate.Store` is a singleton (named ETS tables); start exactly one per node. Optional DETS persistence via `:mandate_store_path` in `config :raxol_payments`. Mandate is **orthogonal** to `SpendingPolicy`/`Ledger`: those govern operator-set session budgets locally; Mandate is a credential carried to Xochi for tier inheritance.
 
-v1 follows the locked design at `xochi/docs/planning/agent-auth.md`. On the agent side, a `410 Gone` from Xochi (a revoked or exhausted envelope) prunes the local mandate through the outbound plugin and flags the response as terminal, so a server-side revocation converges locally without a manual `payment_revoke_mandate` call. The authenticated server-side revoke endpoint itself, along with the on-chain registry, Verified-Agent metadata, issuer browser UI, and auto-rotation on exhaustion, remain deferred.
+On the agent side, a `410 Gone` from Xochi (a revoked or exhausted envelope) prunes the local mandate through the outbound plugin and flags the response as terminal, so a server-side revocation converges locally without a manual `payment_revoke_mandate` call. The authenticated server-side revoke endpoint itself, along with the on-chain registry, Verified-Agent metadata, issuer browser UI, and auto-rotation on exhaustion, remain deferred.
 
 ### Two delegation models (Mandate vs SCA session key)
 
@@ -235,19 +237,19 @@ The two are independent: revoking one does not revoke the other. An agent that m
 
 ## AutoPay (Req plugin)
 
-`Raxol.Payments.Req.AutoPay` is a Req response step. Add it to any Req client and HTTP 402 responses get handled transparently:
+`Raxol.Payments.Req.AutoPay` is a Req response step. Add it to any Req client and HTTP 402 responses get handled transparently. A `SpendingPolicy` is required (`attach/2` raises without one, or when a cap it needs is not a finite positive `Decimal`): every payment is held to its `approved_domains`, `require_confirmation_above` and `per_request_max`; its `session_max` and `lifetime_max` need a `:ledger` as well. A payment is reserved before it is signed and stays spent once the signed payment is sent, whatever the paid retry returns; only a payment that was never signed is released. An x402 authorization is valid for at most one hour.
 
 ```elixir
 client = Req.new(base_url: "https://api.example.com")
-  |> Raxol.Payments.Req.AutoPay.attach(wallet: my_wallet)
+  |> Raxol.Payments.Req.AutoPay.attach(wallet: my_wallet, policy: SpendingPolicy.dev())
 
-# If the server returns 402, AutoPay signs and retries automatically
+# A 402 within the policy is signed and retried automatically
 {:ok, response} = Req.get(client, url: "/expensive-endpoint")
 ```
 
 ## Package details
 
-Standalone package at `packages/raxol_payments/`. Depends on `raxol_agent` at compile time only (`runtime: false`) for the Action macro and CommandHook behaviour. Runtime deps: `req`, `ex_secp256k1`, `ex_keccak`, `jason`, `decimal`.
+Standalone package at `packages/raxol_payments/`. Uses `raxol_agent` for the Action macro, the CommandHook behaviour and `Raxol.Agent.ContextStore`. As a Hex dependency `raxol_agent` is an ordinary dependency, so a release that depends on `raxol_payments` includes and starts `raxol_agent`, `raxol`, `raxol_mcp` and `raxol_journal`; set `RAXOL_MODE=minimal` (or `config :raxol, :startup_mode, :minimal`) to keep `raxol` to its error recovery, event manager and telemetry. In this repository the dependency is `runtime: false`, so the `raxol_earn` release loads the agent modules without starting the agent applications. Runtime deps: `raxol_agent`, `raxol_core`, `req`, `ex_secp256k1`, `ex_keccak`, `jason`, `decimal`.
 
 ## See also
 

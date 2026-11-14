@@ -17,8 +17,7 @@ defmodule Raxol.Agent.Conversation.Store.ETS do
 
   ## Lifetime
 
-  Tables live for the duration of the BEAM; not supervised, not persisted. A
-  durable adapter is a follow-up.
+  Tables live for the duration of the BEAM; not supervised, not persisted.
   """
 
   @behaviour Raxol.Agent.Conversation.Store

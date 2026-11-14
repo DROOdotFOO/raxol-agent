@@ -41,8 +41,7 @@ defmodule Raxol.Payments.PrivacyTier do
 
   Shielded settlement is off everywhere today. \*Sovereign is excluded from
   every design and promises no stronger retention than Private: it maps to the
-  same `:shielded` / `:wallet` target, and `:nothing` retention is not offered
-  (xochi `docs/planning/shielded-execution.md` D1).
+  same `:shielded` / `:wallet` target, and `:nothing` retention is not offered.
   """
 
   @type tier :: :open | :public | :standard | :stealth | :private | :sovereign
@@ -60,8 +59,7 @@ defmodule Raxol.Payments.PrivacyTier do
     standard: %{settlement: :public, data_retention: :amounts},
     stealth: %{settlement: :stealth, data_retention: :ranges},
     private: %{settlement: :shielded, data_retention: :wallet},
-    # Sovereign is unavailable; `:nothing` retention is not a promise of any design
-    # (xochi docs/planning/shielded-execution.md D1).
+    # Sovereign is unavailable; `:nothing` retention is not a promise of any design.
     sovereign: %{settlement: :shielded, data_retention: :wallet}
   }
 

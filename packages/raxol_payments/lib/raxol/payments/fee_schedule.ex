@@ -2,13 +2,11 @@ defmodule Raxol.Payments.FeeSchedule do
   @moduledoc """
   The canonical Xochi fee schedule, mirrored in Elixir.
 
-  Authoritative source is `Riddler.Integrations.Xochi.FeePolicy`. This module
-  is its in-code mirror on the raxol side, exactly as
-  `@xochi/client`'s `fee.ts` is on the TypeScript side, and it is pinned
-  against the same generated projection both of those are checked against
-  (`priv/fee-oracle/schedule.json`). `fee_schedule_test.exs` fails when the two
-  drift, so a fee rate cannot quietly go stale here while the solver charges
-  something else.
+  The solver's fee policy is the authority; this module mirrors it, as
+  `@xochi/client` does on the TypeScript side. A test in this
+  package's repository pins it against the same generated schedule both of
+  those are checked against, so a fee rate cannot quietly go stale here while
+  the solver charges something else.
 
   ## What a quote costs
 

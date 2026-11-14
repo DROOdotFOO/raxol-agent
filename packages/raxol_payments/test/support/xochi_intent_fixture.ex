@@ -132,7 +132,8 @@ defmodule Raxol.Payments.Test.XochiIntentFixture do
       "name" => "Xochi",
       "version" => "3",
       "chainId" => from_chain,
-      "salt" => "0x" <> String.duplicate("00", 31) <> "01"
+      # SPEC §2.2: salt = keccak256(utf8(version)).
+      "salt" => "0x2a80e1ef1d7842f27f2e6be0972bb708b9a135c38860dbe73c27c3486c34f4de"
     }
   end
 

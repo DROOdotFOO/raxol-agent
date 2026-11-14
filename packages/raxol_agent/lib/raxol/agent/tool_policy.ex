@@ -15,8 +15,9 @@ defmodule Raxol.Agent.ToolPolicy do
   Authorizers compose with `all/1` (deny if any denies).
 
   Richer phase-aware policy (ALLOW/ASK/DENY) lives in
-  `Raxol.Agent.Authorization.Engine` at the `:tool_call` phase; delegating to it
-  from here is a follow-up.
+  `Raxol.Agent.Authorization.Engine` at the `:tool_call` phase. These
+  authorizers do not consult it; an authorizer that should apply it calls
+  `Raxol.Agent.Authorization.Engine.evaluate/4` itself.
   """
 
   @type authorizer ::
@@ -86,8 +87,9 @@ defmodule Raxol.Agent.ToolPolicy do
   Module Actions keep it in `__action_meta__/0`; runtime-discovered MCP tools
   are `%Raxol.Agent.Action.Dynamic{}` structs and carry it on the struct. Public
   because an authorizer that ASKS rather than denies needs the name for its
-  prompt, not just the flag -- see
-  `Raxol.Agent.ClientProtocol.Permission.authorizer/2`.
+  prompt, not just the flag, as the ACP permission authorizer does
+  (`Raxol.Agent.ClientProtocol.Permission`, compiled only when
+  `raxol_agent_client_protocol` is present).
   """
   @spec identity(module() | Raxol.Agent.Action.Dynamic.t()) ::
           {String.t() | atom(), boolean()}

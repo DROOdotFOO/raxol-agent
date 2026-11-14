@@ -56,11 +56,13 @@ defmodule Raxol.Payments.Protocol do
   @doc """
   Extract the payment amount from a parsed challenge.
 
-  Returns the amount in **human-decimal units** (e.g. `1.00` means
-  $1.00 USDC, not `1_000_000` atomic units). Implementations are
-  expected to normalize via `Raxol.Payments.Assets.to_human/2` using
-  the challenge's asset metadata. The `SpendingPolicy` caps are
-  written in the same units.
+  Returns the amount in **human-decimal units** of the currency named by the
+  parsed challenge's `:unit` key (e.g. `1.00` with unit `"USD"` means one
+  dollar, not `1_000_000` USDC atomic units), normalized via
+  `Raxol.Payments.Assets.to_human/2` with the challenge's decimals. The
+  `SpendingPolicy` caps are written in the same units, and
+  `Raxol.Payments.Req.AutoPay` refuses a challenge whose `:unit` is missing or
+  differs from `SpendingPolicy.unit/1`, so `parse_challenge/1` must set it.
   """
   @callback amount(challenge :: challenge()) :: Decimal.t()
 

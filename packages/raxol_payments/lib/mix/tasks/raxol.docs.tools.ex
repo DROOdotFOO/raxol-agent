@@ -11,14 +11,14 @@ defmodule Mix.Tasks.Raxol.Docs.Tools do
       mix raxol.docs.tools --check   # fail if the committed file is stale
 
   This task lives in `raxol_payments` because that package depends on
-  `raxol_agent` at compile time, so both packages' action modules are on the
-  code path here. The catalog is derived from the live metadata (name,
-  description, input schema, sensitivity) and is deterministic: run it twice and
-  the output is byte-identical.
+  `raxol_agent`, so both packages' action modules are on the code path here.
+  The catalog is derived from the live metadata (name, description, input
+  schema, sensitivity) and is deterministic: run it twice and the output is
+  byte-identical.
 
-  `raxol_payments` is not in the per-PR CI matrix, so nothing regenerates this
-  automatically. `--check` is the gate: run it before publishing, or from
-  `mix raxol.check` in a full checkout.
+  It maintains a file of the `raxol-agent` repository and refuses to run
+  anywhere but `packages/raxol_payments` of a checkout of it. Nothing
+  regenerates the catalog automatically: run `--check` before publishing.
   """
 
   use Mix.Task
@@ -179,15 +179,29 @@ defmodule Mix.Tasks.Raxol.Docs.Tools do
 
   defp escape(text), do: String.replace(text, "|", "\\|")
 
+  # The repository root, only when the working directory is
+  # `packages/raxol_payments` of a raxol-agent checkout: this task writes
+  # `docs/reference/TOOL_CATALOG.md` there and must never write relative to an
+  # unrelated directory (a consumer project with this package as a dependency).
   defp repo_root do
-    candidate = Path.expand(Path.join([File.cwd!(), "..", ".."]))
+    cwd = File.cwd!()
+    candidate = Path.expand("../..", cwd)
 
-    if File.dir?(Path.join(candidate, "docs")) do
+    in_checkout? =
+      Path.basename(cwd) == "raxol_payments" and
+        Path.basename(Path.dirname(cwd)) == "packages" and
+        File.regular?(Path.join(cwd, "mix.exs")) and
+        File.dir?(Path.join(candidate, "docs/reference")) and
+        File.regular?(Path.join(candidate, "packages/raxol_agent/mix.exs"))
+
+    if in_checkout? do
       candidate
     else
       Mix.raise(
-        "docs/ not found above #{File.cwd!()}. Run this task from " <>
-          "packages/raxol_payments in a full raxol checkout (mix raxol.docs.tools)."
+        "mix raxol.docs.tools maintains docs/reference/TOOL_CATALOG.md of the " <>
+          "raxol-agent repository and runs only from its packages/raxol_payments " <>
+          "directory; #{cwd} is not one (no packages/raxol_agent and " <>
+          "docs/reference two levels up)."
       )
     end
   end

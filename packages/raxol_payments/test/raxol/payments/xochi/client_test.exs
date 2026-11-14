@@ -53,7 +53,8 @@ defmodule Raxol.Payments.Xochi.ClientTest do
     test "x402 mode wires AutoPay without forcing an Authorization header" do
       # On a 200 the AutoPay response step is a no-op; this asserts the wiring
       # does not break the happy path or inject a Bearer/delegation header.
-      assert {:ok, _} = Client.claim(config(auth: {:x402, wallet: NoWallet}), @claim_params)
+      auth = {:x402, wallet: NoWallet, policy: Raxol.Payments.SpendingPolicy.dev()}
+      assert {:ok, _} = Client.claim(config(auth: auth), @claim_params)
       assert_receive {:req, _method, _path, headers, _body}
       refute has_header?(headers, "authorization")
       refute has_header?(headers, "x-payment")

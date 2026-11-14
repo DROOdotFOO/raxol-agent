@@ -5,8 +5,11 @@ AI agent framework for Elixir built on OTP. TEA-based agents with crash isolatio
 ## Install
 
 ```elixir
-{:raxol_agent, "~> 2.7"}
+{:raxol_agent, "~> 3.0"}
 ```
+
+3.0 requires `raxol`, `raxol_mcp` and `raxol_journal` 2.8. The session journal
+(`Raxol.Agent.Journal`) ships in `raxol_journal`.
 
 ## Quick start
 
@@ -26,7 +29,7 @@ defmodule MyAgent do
 end
 
 {:ok, _} = Raxol.Agent.Session.start_link(app_module: MyAgent, id: :my_agent)
-Raxol.Agent.Session.send_message(:my_agent, {:analyze, "lib/raxol.ex"})
+Raxol.Agent.Session.send_message(:my_agent, {:analyze, "mix.exs"})
 ```
 
 ## Features
@@ -34,7 +37,7 @@ Raxol.Agent.Session.send_message(:my_agent, {:analyze, "lib/raxol.ex"})
 - **TEA-based agents**: `init/update/view` with OTP supervision
 - **Agent teams**: Supervisor-based coordinator/worker groups
 - **Inter-agent messaging**: Registry-routed messages via `Agent.Comm`
-- **Real SSE streaming**: Anthropic, OpenAI, Ollama, Groq, LLM7, OpenRouter, LongCat, Lumo
+- **Real SSE streaming**: Anthropic, OpenAI, Ollama, LM Studio, DeepSeek, Kimi, LLM7, OpenRouter, LongCat, Lumo
 - **Shell commands**: Port-based execution with result callbacks
 - **Headless mode**: `view/1` is optional; skip rendering entirely
 
@@ -42,11 +45,9 @@ Raxol.Agent.Session.send_message(:my_agent, {:analyze, "lib/raxol.ex"})
 
 ```elixir
 Raxol.Agent.Team.start_link(
-  name: :review_team,
-  agents: [
-    {CodeReviewAgent, id: :reviewer, role: :coordinator},
-    {TestRunnerAgent, id: :tester, role: :worker}
-  ]
+  team_id: :review_team,
+  coordinator: {CodeReviewAgent, id: :reviewer},
+  workers: [{TestRunnerAgent, id: :tester}]
 )
 ```
 
@@ -76,6 +77,6 @@ a stopped id is spawned again with the same app; its state starts from
 `init/1`.
 
 `mcp_spawnable_apps` is also the list `raxol acp --agent <app>` serves from
-(see [Editor ACP](../../docs/features/EDITOR_ACP.md#serving-your-own-agent)).
+(see [Editor ACP](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/EDITOR_ACP.md#serving-your-own-agent)).
 
-See [main docs](../../README.md) for full examples and the agent framework guide.
+See the [agent framework guide](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/AGENT_FRAMEWORK.md) for full examples.

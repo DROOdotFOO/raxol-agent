@@ -41,11 +41,13 @@ defmodule Raxol.Payments.Req.AgentPlugin do
   - `:wallet` (required) -- module implementing `Raxol.Payments.Wallet`
   - `:protocols` -- list of protocol atoms, default `[:x402, :mpp]`
   - `:ledger` -- Ledger server for budget tracking (optional)
-  - `:policy` -- `SpendingPolicy` struct (required if ledger given)
+  - `:policy` (required) -- `SpendingPolicy` struct; raises `ArgumentError`
+    here, not when the plugin is first applied, when it is missing
   - `:agent_id` -- identifier for ledger tracking (required if ledger given)
   """
   @spec auto_pay(keyword()) :: (Req.Request.t() -> Req.Request.t())
   def auto_pay(opts) do
+    AutoPay.validate_opts!(opts)
     fn req -> AutoPay.attach(req, opts) end
   end
 end

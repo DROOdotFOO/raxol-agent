@@ -299,7 +299,8 @@ defmodule CrosschainStealthPayment do
         "name" => "Xochi",
         "version" => "3",
         "chainId" => req["from_chain_id"],
-        "salt" => "0x" <> String.duplicate("00", 31) <> "01"
+        # SPEC §2.2: salt = keccak256(version).
+        "salt" => "0x" <> Base.encode16(ExKeccak.hash_256("3"), case: :lower)
       },
       "primaryType" => "XochiIntent",
       "types" => intent_types(),

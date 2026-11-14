@@ -27,14 +27,17 @@ defmodule Raxol.Payments.Protocols.X402Test do
 
   describe "parse_challenge/1" do
     test "decodes base64 JSON challenge" do
+      valid_before = System.system_time(:second) + 600
+
       payload =
         Jason.encode!(%{
           "maxAmountRequired" => "1000000",
-          "asset" => "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           "network" => "eip155:8453",
           "payTo" => "0x1234567890abcdef1234567890abcdef12345678",
-          "nonce" => "0xabc123",
-          "validBefore" => 1_700_000_000
+          "nonce" => "0x" <> String.duplicate("ab", 32),
+          "validAfter" => "5",
+          "validBefore" => valid_before
         })
 
       encoded = Base.encode64(payload)
@@ -42,11 +45,105 @@ defmodule Raxol.Payments.Protocols.X402Test do
 
       assert {:ok, challenge} = X402.parse_challenge(headers)
       assert challenge.price == "1000000"
-      assert challenge.currency == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+      assert challenge.currency == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
       assert challenge.network == "eip155:8453"
       assert challenge.pay_to == "0x1234567890abcdef1234567890abcdef12345678"
-      assert challenge.nonce == "0xabc123"
-      assert challenge.valid_before == 1_700_000_000
+      assert challenge.nonce == "0x" <> String.duplicate("ab", 32)
+      assert challenge.valid_after == 5
+      assert challenge.valid_before == valid_before
+    end
+
+    test "refuses a validBefore past, too far out, or not a whole second" do
+      now = System.system_time(:second)
+
+      for valid_before <- [now - 1, now + 3601, 9_999_999_999, "soon", 1.5] do
+        encoded =
+          Base.encode64(
+            Jason.encode!(%{
+              "maxAmountRequired" => "1000000",
+              "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              "network" => "eip155:8453",
+              "payTo" => "0x1234567890abcdef1234567890abcdef12345678",
+              "validBefore" => valid_before
+            })
+          )
+
+        assert {:error, {:invalid_valid_before, ^valid_before}} =
+                 X402.parse_challenge([{"payment-required", encoded}])
+      end
+    end
+
+    defp challenge_with(fields) do
+      encoded =
+        %{
+          "maxAmountRequired" => "1000000",
+          "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "network" => "eip155:8453",
+          "payTo" => "0x1234567890abcdef1234567890abcdef12345678"
+        }
+        |> Map.merge(fields)
+        |> Jason.encode!()
+        |> Base.encode64()
+
+      X402.parse_challenge([{"payment-required", encoded}])
+    end
+
+    test "reads an absent validAfter as 0" do
+      assert {:ok, %{valid_after: 0, nonce: nil}} = challenge_with(%{})
+    end
+
+    test "refuses a validAfter that is not a whole second, or is after validBefore" do
+      valid_before = System.system_time(:second) + 600
+
+      for valid_after <- [-1, 1.5, "1.5", "+5", "-1", "soon", %{}, valid_before + 1] do
+        assert {:error, {:invalid_valid_after, ^valid_after}} =
+                 challenge_with(%{"validAfter" => valid_after, "validBefore" => valid_before})
+      end
+
+      # With no validBefore the signed one is an hour out.
+      too_late = System.system_time(:second) + 7200
+
+      assert {:error, {:invalid_valid_after, ^too_late}} =
+               challenge_with(%{"validAfter" => too_late})
+
+      assert {:ok, %{valid_after: ^valid_before}} =
+               challenge_with(%{"validAfter" => valid_before, "validBefore" => valid_before})
+    end
+
+    test "refuses a nonce that is not 32 bytes of 0x-hex" do
+      for nonce <- [
+            "0xabc123",
+            "0x" <> String.duplicate("ab", 33),
+            String.duplicate("ab", 32),
+            "0x" <> String.duplicate("zz", 32),
+            12_345,
+            ["0x"]
+          ] do
+        assert {:error, {:invalid_nonce, ^nonce}} = challenge_with(%{"nonce" => nonce})
+      end
+    end
+
+    test "refuses a network that is not eip155:<chain id>, and an asset that is not USDC there" do
+      for {network, asset, reason} <- [
+            {"eip155:abc", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", :invalid_network},
+            {"base", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", :invalid_network},
+            # Ethereum USDC served as Base.
+            {"eip155:8453", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", :unsupported_asset},
+            # WETH on Base: no ERC-3009, and not a dollar.
+            {"eip155:8453", "0x4200000000000000000000000000000000000006", :unsupported_asset}
+          ] do
+        encoded =
+          Base.encode64(
+            Jason.encode!(%{
+              "maxAmountRequired" => "1000000000000000000",
+              "asset" => asset,
+              "network" => network,
+              "payTo" => "0x1234567890abcdef1234567890abcdef12345678"
+            })
+          )
+
+        assert {:error, {^reason, _}} = X402.parse_challenge([{"payment-required", encoded}])
+      end
     end
 
     test "returns error for missing header" do
@@ -313,7 +410,7 @@ defmodule Raxol.Payments.Protocols.X402Test do
         %{
           "maxAmountRequired" => price,
           "payTo" => "0x" <> String.duplicate("cd", 20),
-          "asset" => "0x" <> String.duplicate("ef", 20),
+          "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           "network" => "eip155:8453"
         }
         |> Jason.encode!()

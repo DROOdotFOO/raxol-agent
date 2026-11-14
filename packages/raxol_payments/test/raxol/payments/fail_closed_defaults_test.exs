@@ -14,6 +14,8 @@ defmodule Raxol.Payments.FailClosedDefaultsTest do
   alias Raxol.Payments.{Failure, Ledger, SpendingPolicy}
   alias Raxol.Payments.Xochi.Stealth
 
+  @usdc {:token, 8453, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"}
+
   @usdc_base "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   @usdc_arb "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
 
@@ -40,15 +42,21 @@ defmodule Raxol.Payments.FailClosedDefaultsTest do
       ctx = %{ledger: start_supervised!({Ledger, [name: nil]}), agent_id: "a1"}
 
       assert {:error, {:policy_required, :no_spending_policy}} =
-               SpendGate.authorize(ctx, Decimal.new("0.50"), target: {:domain, "x.test"})
+               SpendGate.authorize(ctx, Decimal.new("0.50"),
+                 asset: @usdc,
+                 target: {:domain, "x.test"}
+               )
     end
 
     test "development treats a missing policy as an unrestricted no-op" do
       development()
       ctx = %{ledger: start_supervised!({Ledger, [name: nil]}), agent_id: "a1"}
 
-      assert :ok =
-               SpendGate.authorize(ctx, Decimal.new("0.50"), target: {:domain, "x.test"})
+      assert {:ok, _} =
+               SpendGate.authorize(ctx, Decimal.new("0.50"),
+                 asset: @usdc,
+                 target: {:domain, "x.test"}
+               )
     end
   end
 

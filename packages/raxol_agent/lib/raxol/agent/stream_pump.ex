@@ -20,10 +20,9 @@ defmodule Raxol.Agent.StreamPump do
       nothing, so a tool-call round whose assistant "message" is
       empty/whitespace seals no empty ❮ block) and before every tool_use /
       tool_result completion, so the live producer speaks the same item
-      lifecycle the fixture corpus does — the projection's live tail
-      (`Raxol.Harness.Projection.BlockBuilder.build_tail/2`) only surfaces
-      deltas for an item with a started group, which is what makes mid-turn
-      streaming render at all.
+      lifecycle the fixture corpus does — a transcript projection's live tail
+      only surfaces deltas for an item with a started group, which is what
+      makes mid-turn streaming render at all.
     * A `:reasoning` item carries the model's chain-of-thought (`content`)
       and seals as a durable, foldable/peekable ∴ block — reasoning is a
       first-class transcript fact once sealed, never silently dropped.
@@ -53,9 +52,8 @@ defmodule Raxol.Agent.StreamPump do
   the done — producer and decider are one call, they cannot disagree at write
   time. This is pinned by `Raxol.Agent.StreamPumpTest` ("the done gate is
   consulted on the real done path", "a mutation's own result echo is
-  rejected", "a zero-tool turn closes ungated") and by
-  `Raxol.Agent.Red.U21RealProducerRegressionTest`, which gates journals
-  produced by the real `pump/3`, not synthetic ones.
+  rejected", "a zero-tool turn closes ungated") and by a regression test that
+  gates journals produced by the real `pump/3`, not synthetic ones.
 
   Both `[:raxol, :agent, :done_gate, :ungated_done]` and `[:raxol, :agent,
   :done_gate, :rejected_evidence]` telemetry are emitted on the same arms —

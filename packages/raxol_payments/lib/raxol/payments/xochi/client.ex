@@ -17,9 +17,8 @@ defmodule Raxol.Payments.Xochi.Client do
   - `get_history/2` -- GET /api/intent/history?wallet=
   - `claim/2` -- POST /api/stealth/claim
 
-  Pinned contract: `xochi/docs/contracts/xochi-intent-api.md`. It covers quote,
-  execute, and status; the history and stealth claim paths live in the worker's
-  OpenAPI spec.
+  Quote, execute and status follow the Xochi intent API contract; the history
+  and stealth claim paths follow the worker's OpenAPI spec.
 
   ## Authentication
 
@@ -31,16 +30,18 @@ defmodule Raxol.Payments.Xochi.Client do
     agent acting for a Member. Wires `Raxol.Payments.Req.Mandate`, which looks
     up the soonest-expiring active mandate for the wallet. Pass plugin overrides
     with `{:mandate, agent_wallet, opts}`.
-  - `{:x402, wallet: MyWallet}` -- Guest mode. The agent signs an EIP-3009 USDC
-    micropayment per call and sends `X-PAYMENT`. Wires `Raxol.Payments.Req.AutoPay`
-    (restricted to `:x402`), which regenerates the payment from each 402 challenge.
+  - `{:x402, wallet: MyWallet, policy: policy}` -- Guest mode. The agent signs an
+    EIP-3009 USDC micropayment per call and sends `X-PAYMENT`. Wires
+    `Raxol.Payments.Req.AutoPay` (restricted to `:x402`), which regenerates the
+    payment from each 402 challenge; like `AutoPay`, it requires a
+    `SpendingPolicy` as `:policy`.
   - `{:member, jwt}` -- only if a passkey-issued JWT is provisioned out of band.
 
   ## Read capability
 
   For a non-`public` (stealth/shielded) intent the worker withholds the
   on-chain legs (`tx_hash`, `receiving_tx_hash`, ...) on `get_status/3` and
-  `get_intent/3` unless the caller proves ownership (xochi#563). `execute/2`
+  `get_intent/3` unless the caller proves ownership. `execute/2`
   returns a one-time `read_token` (`ExecuteResponse.read_token`; nil from an
   older worker); pass it back as `read_token:` and it travels only in the
   `X-Xochi-Read-Token` request header, never in a URL. It is a bearer secret
@@ -64,7 +65,10 @@ defmodule Raxol.Payments.Xochi.Client do
       config = %{base_url: "https://api.xochi.fi", auth: {:mandate, "0xAgent..."}}
 
       # Guest / x402
-      config = %{base_url: "https://api.xochi.fi", auth: {:x402, wallet: MyWallet}}
+      config = %{
+        base_url: "https://api.xochi.fi",
+        auth: {:x402, wallet: MyWallet, policy: SpendingPolicy.dev()}
+      }
 
       # Member JWT (legacy `:auth_token` is equivalent to `{:member, token}`)
       config = %{base_url: "https://api.xochi.fi", auth_token: "bearer-token"}
@@ -557,14 +561,19 @@ defmodule Raxol.Payments.Xochi.Client do
       else: {:ok, in_doubt(intent_id, :response_exception)}
   end
 
-  defp definite_connect_failure?(reason) when reason in @definite_connect_reasons, do: true
-  defp definite_connect_failure?({:tls_alert, _detail}), do: true
+  # Public for `ExecuteRelayTransfer`, which classifies its own execute the
+  # same way: a failure proven to happen before a connection opened sent
+  # nothing.
+  @doc false
+  @spec definite_connect_failure?(term()) :: boolean()
+  def definite_connect_failure?(reason) when reason in @definite_connect_reasons, do: true
+  def definite_connect_failure?({:tls_alert, _detail}), do: true
 
-  defp definite_connect_failure?(reason) when is_tuple(reason),
+  def definite_connect_failure?(reason) when is_tuple(reason),
     do: reason |> Tuple.to_list() |> Enum.any?(&definite_connect_failure?/1)
 
-  defp definite_connect_failure?(reason) when is_map(reason),
+  def definite_connect_failure?(reason) when is_map(reason),
     do: reason |> Map.values() |> Enum.any?(&definite_connect_failure?/1)
 
-  defp definite_connect_failure?(_reason), do: false
+  def definite_connect_failure?(_reason), do: false
 end

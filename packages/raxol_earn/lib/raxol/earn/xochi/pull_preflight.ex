@@ -386,15 +386,12 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
   # in it beyond dropping EIP712Domain, which both sides must do identically or
   # neither is encoding EIP-712.
   #
-  # Wrapped because the encoder can RAISE on a served payload, not only return
-  # an error: `EIP712`'s primary-type detection raises `ArgumentError` when the
-  # types map has more than one unreferenced root, and `served` comes off the
-  # wire. In `mix raxol_earn.order` that is pre-empted -- signing runs the same
-  # encoder first and would have raised there -- but the live gate calls
-  # `verify/4` once per cell with no rescue, so one malformed payload took down
-  # a ninety-cell matrix instead of failing its own cell. A payload this module
-  # cannot encode is a rejection either way; the shape of the failure should not
-  # decide whether the other eighty-nine cells run.
+  # Wrapped because a served payload comes off the wire and the encoder can
+  # still RAISE on a shape it cannot encode. A types map with no single root
+  # (several unreferenced types, or a cycle) is returned as
+  # `{:error, :no_primary_type}`; anything that raises is caught here. The
+  # live gate calls `verify/4` once per cell with no rescue, so one malformed
+  # payload must fail its own cell, not the other eighty-nine.
   defp digest(separator, served) do
     case encode_digest(separator, served) do
       {:ok, digest} -> {:ok, digest}

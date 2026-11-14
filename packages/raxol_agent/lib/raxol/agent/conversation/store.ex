@@ -7,9 +7,8 @@ defmodule Raxol.Agent.Conversation.Store do
   `seq`/`id`; live fan-out and the snapshot/tail partition live in
   `Raxol.Agent.Conversation.Log`.
 
-  One adapter ships today: `Raxol.Agent.Conversation.Store.ETS` (in-process,
-  ordered_set on `{conversation_id, seq}`). A durable adapter (DETS/Postgrex) is a
-  deliberate follow-up, matching ThreadLog's `Ets`/`Postgrex` split.
+  Only an ETS adapter ships: `Raxol.Agent.Conversation.Store.ETS` (in-process,
+  ordered_set on `{conversation_id, seq}`). There is no durable adapter.
 
   ## Append is the only writer
 

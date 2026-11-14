@@ -37,7 +37,6 @@ defmodule Raxol.Agent.Web3 do
   application does not start), the first call resolves and caches it.
   """
 
-  @key_env "RAXOL_SLEUTH_API_KEY"
   @cache {__MODULE__, :resolved}
 
   @type resolved :: %{router: struct() | nil, fx: struct() | nil}
@@ -118,15 +117,17 @@ defmodule Raxol.Agent.Web3 do
     end
   end
 
-  defp resolve_router(nil), do: nil
-  defp resolve_router(router), do: router |> require_web3!() |> router!()
-
-  defp resolve_fx(nil), do: nil
-
-  defp resolve_fx(opts),
-    do: opts |> keyword!("config :raxol_agent, :web3, fx:") |> require_web3!() |> build_fx()
-
   if Code.ensure_loaded?(Raxol.Web3.FX) do
+    @key_env "RAXOL_SLEUTH_API_KEY"
+
+    defp resolve_router(nil), do: nil
+    defp resolve_router(router), do: router!(router)
+
+    defp resolve_fx(nil), do: nil
+
+    defp resolve_fx(opts),
+      do: opts |> keyword!("config :raxol_agent, :web3, fx:") |> build_fx()
+
     defp build_fx(opts) do
       {key, source} =
         case present(Keyword.get(opts, :sleuth_api_key)) do
@@ -161,8 +162,6 @@ defmodule Raxol.Agent.Web3 do
       Raxol.Web3.FX.new(sleuth, chainlink)
     end
 
-    defp require_web3!(value), do: value
-
     # A key pasted with its trailing newline would otherwise reach the header,
     # where Mint refuses it as a transport error that names nothing.
     defp present(value) when is_binary(value) do
@@ -189,11 +188,17 @@ defmodule Raxol.Agent.Web3 do
     defp router_shape(value) when is_list(value), do: "a list"
     defp router_shape(value), do: shape(value)
   else
-    defp build_fx(_opts), do: nil
-    # Never reached: `require_web3!/1` raises first in a build without raxol_web3.
-    defp router!(router), do: router
+    defp resolve_router(nil), do: nil
+    defp resolve_router(_router), do: missing_web3!()
 
-    defp require_web3!(_value) do
+    defp resolve_fx(nil), do: nil
+
+    defp resolve_fx(opts) do
+      keyword!(opts, "config :raxol_agent, :web3, fx:")
+      missing_web3!()
+    end
+
+    defp missing_web3! do
       raise ArgumentError,
             "config :raxol_agent, :web3 is set but raxol_web3 is not in this build"
     end

@@ -11,8 +11,7 @@ defmodule Raxol.Payments.Xochi.AgentStream do
   Mandate it holds.
 
   This module is the agent side of that contract. It byte-matches the Xochi wire
-  contract (`packages/shared/src/agentStream.ts` in `xochi-fi/xochi`) so client,
-  worker, and agent can never drift.
+  contract so client, worker, and agent can never drift.
 
   ## Capability model
 
@@ -149,8 +148,8 @@ defmodule Raxol.Payments.Xochi.AgentStream do
 
   @doc """
   Canonical event serialization: a fixed-order JSON array, no object keys, no
-  whitespace. Byte-matches `canonicalizeEvent` in `agentStream.ts`. Do not
-  reorder the fields.
+  whitespace, byte for byte the form the Xochi client verifies. Do not reorder
+  the fields.
   """
   @spec canonical_event(event()) :: String.t()
   def canonical_event(%{} = e) do

@@ -244,11 +244,13 @@ defmodule Raxol.Earn.TestSupport.FakeXochi do
   # toAmount equals the top-level `to_amount`.
   defp xochi_intent_eip712(intent_id, quote_id, request, %{amount: to_amount} = req) do
     %{
+      # SPEC §2.2: name "Xochi", a v3 version, chainId = origin, salt =
+      # keccak256(version), no verifyingContract.
       "domain" => %{
         "name" => "Xochi",
-        "version" => "1",
+        "version" => "3",
         "chainId" => request["from_chain_id"],
-        "salt" => "0x" <> Base.encode16(:crypto.hash(:sha256, "salt:" <> intent_id), case: :lower)
+        "salt" => "0x" <> Base.encode16(ExKeccak.hash_256("3"), case: :lower)
       },
       "primaryType" => "XochiIntent",
       "types" => %{

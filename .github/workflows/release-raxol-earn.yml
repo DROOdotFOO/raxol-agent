@@ -1,8 +1,7 @@
 name: Release raxol_earn sidecar image
 
 # Builds and publishes the read-only settlement-accounting sidecar image to GHCR.
-# Standalone by design: the root release.yml builds a (non-existent) root mix release
-# and must not gate this. A successful image build IS the compile gate here.
+# A successful image build IS the compile gate here.
 #
 # Publishes to ghcr.io/droodotfoo/raxol-earn. The repo lives under DROOdotFOO, so the
 # job's GITHUB_TOKEN can push natively -- no PAT needed. The ops side pulls by digest;
