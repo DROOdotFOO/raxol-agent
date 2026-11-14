@@ -271,9 +271,10 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Keyring do
     }
   ```
 
-  **Validates at load**: every value must normalize to exactly 32 bytes or the
-  keyring REFUSES to load (fail at boot, loudly — never a half-usable ring at
-  verify time).
+  **Validated on every load**: `load/0` runs on each attach that carries a
+  token, and every value must normalize to exactly 32 bytes or it raises.
+  Under `AttachPolicy.Runner` that raise denies the attach as
+  `{:denied, :policy_crash}` and logs the error; nothing is checked at boot.
 
   **HARD RULE:** the keyring comes from the VERIFIER's own
   configuration ONLY. It is NEVER read from inside an attached artifact — a
@@ -351,11 +352,12 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Issuer do
   and `Runner` have zero reference to this module or to any private-key source
   (grep/xref-verifiable). The private key never lives in the verifier.
 
-  Issuance defaults are ENFORCED, not merely recommended: an interactive
-  attach token is capped at TTL **1 hour**; a longer TTL (up to **30 days**)
-  requires an explicit `archival: true` opt-in. A 30-day token is a deliberate
-  operator choice (the expiry bounds an archive's protocol-readability window),
-  never an accidental default.
+  Issuance caps are enforced: an interactive attach token is capped at TTL
+  **1 hour**; a longer TTL (up to **30 days**) requires an explicit
+  `archival: true` opt-in. `:max_ttl` can only lower the applicable cap,
+  never raise it. A 30-day token is a deliberate operator choice (the expiry
+  bounds an archive's protocol-readability window), never an accidental
+  default.
   """
 
   @interactive_ttl_s 3_600
@@ -413,7 +415,11 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Issuer do
   @spec max_ttl(keyword()) :: pos_integer()
   defp max_ttl(opts) do
     base = if Keyword.get(opts, :archival, false), do: @archival_ttl_s, else: @interactive_ttl_s
-    Keyword.get(opts, :max_ttl, base)
+
+    case Keyword.get(opts, :max_ttl) do
+      ttl when is_integer(ttl) and ttl > 0 -> min(ttl, base)
+      _absent -> base
+    end
   end
 
   @spec encode(map(), binary()) :: {:ok, binary()} | {:error, atom()}
