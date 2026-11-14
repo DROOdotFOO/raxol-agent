@@ -13,8 +13,8 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Bridge do
       `_raxol/session.load` converge on `Ext.Reattach.attach/1`, which runs the
       Runner funnel before any read. This is the security boundary.
     * **BEAM-local attach (in-process) — OPTIONAL SEAM.** An in-process caller
-      can already `FileStore.Reader.scan` the session dir directly, so a gate
-      on an in-process attach function is bypassable — it is a SEAM for a host
+      can already read the session's journal store directly, so a gate on an
+      in-process attach function is bypassable — it is a SEAM for a host
       that fronts reattach with its own transport, not a boundary.
 
   This module is that seam's ready-made implementation. `authorizer/1` returns an
