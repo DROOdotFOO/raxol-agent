@@ -252,4 +252,4 @@ Standalone package at `packages/raxol_payments/`. Depends on `raxol_agent` at co
 ## See also
 
 - [Agent Framework](AGENT_FRAMEWORK.md): how agents work (TEA, sessions, teams, commands)
-- [Distributed Swarm](DISTRIBUTED_SWARM.md): multi-node agent coordination
+- [Distributed Swarm](https://github.com/DROOdotFOO/raxol/blob/master/docs/features/DISTRIBUTED_SWARM.md): multi-node agent coordination

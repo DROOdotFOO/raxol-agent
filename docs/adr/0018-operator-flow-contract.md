@@ -4,7 +4,7 @@
 
 Proposed, 2026-06-16. Direct follow-up to ADR-0017 (paused-run query and pause-checkpoint contract). Codifies the cross-layer pattern that emerged when ADR-0017's runtime primitive was surfaced through six channels (Terminal, LiveView, MCP, Telegram, Watch, Orchestrator subscribers).
 
-**Symphony frozen out, 2026-10-27** ([ADR-0043](0043-two-repositories-runtime-and-agent.md) Decision 6, #1320). The `Raxol.Symphony.*` rows, the channel table and the `packages/raxol_symphony/` paths describe the frozen repository, and the pause-reason table gains no row for an `omp` runner because that runner is dropped.
+**Symphony frozen out, 2026-10-27** ([ADR-0043](https://github.com/DROOdotFOO/raxol/blob/master/docs/adr/0043-two-repositories-runtime-and-agent.md) Decision 6, #1320). The `Raxol.Symphony.*` rows, the channel table and the `packages/raxol_symphony/` paths describe the frozen repository, and the pause-reason table gains no row for an `omp` runner because that runner is dropped.
 
 ## Context
 

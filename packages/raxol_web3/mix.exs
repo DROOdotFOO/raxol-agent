@@ -52,13 +52,13 @@ defmodule RaxolWeb3.MixProject do
   # trust store at all and fails on the first HTTPS connect.
   defp deps do
     [
-      raxol_dep(:raxol_core, "~> 2.8", "../raxol_core"),
+      runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
       # Required, not optional. ADR-0033 decision 2: `Raxol.MCP.CircuitBreaker`
       # is what the router's failover is built on, so making it conditional
       # ships a build whose dead backends are retried on every call. Its own
       # runtime dependencies are `raxol_core` and `jason`, so it costs one
       # package.
-      raxol_dep(:raxol_mcp, "~> 2.8", "../raxol_mcp"),
+      runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp"),
       {:mint, "~> 1.8"},
       {:castore, "~> 1.0"},
       # ADR-0040 decision 3: FX figures are parsed with `floats: :decimals`, so
@@ -74,11 +74,17 @@ defmodule RaxolWeb3.MixProject do
     ]
   end
 
-  defp raxol_dep(name, version, path) do
-    if hex_package?() do
-      {name, version}
+  # A runtime package: its Hex release, or a checkout of the runtime
+  # repository when RAXOL_PATH names one (absolute, or relative to this
+  # repository's root).
+  defp runtime_dep(name, version, subdir, opts \\ []) do
+    checkout = System.get_env("RAXOL_PATH", "")
+
+    if hex_package?() or checkout == "" do
+      {name, version, opts}
     else
-      {name, version, [path: path, override: true]}
+      root = Path.expand(checkout, Path.expand("../..", __DIR__))
+      {name, version, [path: Path.expand(subdir, root), override: true] ++ opts}
     end
   end
 

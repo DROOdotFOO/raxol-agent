@@ -41,7 +41,7 @@ defmodule RaxolPayments.MixProject do
       # Compile-time only: Action macro, CommandHook behaviour, Command struct
       raxol_dep(:raxol_agent, "~> 2.7", "../raxol_agent", runtime: false),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
-      raxol_dep(:raxol_core, "~> 2.8", "../raxol_core", []),
+      runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
       {:req, "~> 0.5"},
       {:ex_secp256k1, "~> 0.8"},
       {:ex_keccak, "~> 0.7"},
@@ -79,6 +79,20 @@ defmodule RaxolPayments.MixProject do
       {name, version, opts}
     else
       {name, version, [path: path] ++ opts}
+    end
+  end
+
+  # A runtime package: its Hex release, or a checkout of the runtime
+  # repository when RAXOL_PATH names one (absolute, or relative to this
+  # repository's root).
+  defp runtime_dep(name, version, subdir, opts \\ []) do
+    checkout = System.get_env("RAXOL_PATH", "")
+
+    if hex_package?() or checkout == "" do
+      {name, version, opts}
+    else
+      root = Path.expand(checkout, Path.expand("../..", __DIR__))
+      {name, version, [path: Path.expand(subdir, root), override: true] ++ opts}
     end
   end
 

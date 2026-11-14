@@ -1,0 +1,16 @@
+_build/
+deps/
+doc/
+cover/
+node_modules/
+burrito_out/
+erl_crash.dump
+*.ez
+*.beam
+.elixir_ls/
+.DS_Store
+.env
+.env.*
+!.env.example
+packages/raxol_earn/xochi-offering.json
+tmp/

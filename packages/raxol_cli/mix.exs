@@ -158,7 +158,7 @@ defmodule RaxolCli.MixProject do
       # Main raxol for the terminal runtime + the Playground app; raxol_agent for
       # the `acp` and `mcp` agent surfaces. raxol_agent pulls main raxol transitively, but
       # the direct dep documents the CLI's reliance on Raxol.start_link/Playground.
-      raxol_dep(:raxol, "~> 2.8", "../.."),
+      runtime_dep(:raxol, "~> 2.8", "."),
       raxol_dep(:raxol_agent, "~> 2.7", "../raxol_agent"),
 
       # Packaging + argv access. Runtime (not build-only) here: the CLI reads the
@@ -209,6 +209,20 @@ defmodule RaxolCli.MixProject do
       {name, version}
     else
       {name, version, [path: path, override: true]}
+    end
+  end
+
+  # A runtime package: its Hex release, or a checkout of the runtime
+  # repository when RAXOL_PATH names one (absolute, or relative to this
+  # repository's root).
+  defp runtime_dep(name, version, subdir, opts \\ []) do
+    checkout = System.get_env("RAXOL_PATH", "")
+
+    if hex_package?() or checkout == "" do
+      {name, version, opts}
+    else
+      root = Path.expand(checkout, Path.expand("../..", __DIR__))
+      {name, version, [path: Path.expand(subdir, root), override: true] ++ opts}
     end
   end
 

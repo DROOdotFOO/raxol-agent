@@ -22,7 +22,7 @@ Events flow core → surface. The contract defines no commands.
 
 The event envelope, its two families and two tiers, and the rule that the
 contract only grows are described in the
-[`raxol_journal` README](../../packages/raxol_journal/README.md#the-event-contract).
+[`raxol_journal` README](https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_journal/README.md#the-event-contract).
 `Raxol.Harness.Projection` and
 `Raxol.UI.Components.Harness.Block.from_events/3` consume that shape. Only
 `:loop` events become transcript blocks, and `item_delta`, the one ephemeral
@@ -43,7 +43,7 @@ surface must never need a lockstep update to keep painting.
 The durable journal is the source of truth. `Raxol.Agent.Journal` and its
 file-backed implementation `Raxol.Agent.Journal.FileStore` live in
 `raxol_journal`; its
-[README](../../packages/raxol_journal/README.md#the-journal) describes the
+[README](https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_journal/README.md#the-journal) describes the
 on-disk layout, the writer lock, damage handling and why reads never write. A
 session's journal is one directory under `~/.raxol/sessions/<id>/`; an agent
 started over MCP lives one level down, under
@@ -72,7 +72,7 @@ the events up to it; nothing in the tree does that.
 
 `raxol_journal` ships one frozen journal per `schema_version` under
 `packages/raxol_journal/priv/golden/v<version>/`; its
-[README](../../packages/raxol_journal/README.md#frozen-golden-corpora) says
+[README](https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_journal/README.md#frozen-golden-corpora) says
 why. Each version is frozen exactly once, while it is current. A corpus is
 produced by the real pipeline (`StreamPump.pump/3` generates the payloads,
 `EmitBus` -> `EmitBridge` -> `FileStore.Writer` writes the journal) with only

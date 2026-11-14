@@ -14,7 +14,7 @@ single-owner state, and surfaces need an authenticated user.
 Supersedes ADRs 0022, 0024, 0026, 0027, 0028 and 0035 and narrows 0021, 0032,
 [0034](0034-foreign-coding-agent-seams.md) (foreign coding-agent seams),
 0036 and 0037 (table under Consequences); each is marked in its own Status.
-Amends [ADR-0012](0012-mcp-as-rendering-target.md): derived tool names
+Amends [ADR-0012](https://github.com/DROOdotFOO/raxol/blob/master/docs/adr/0012-mcp-as-rendering-target.md): derived tool names
 become session-scoped and a session's tool set becomes sticky (Decision 2).
 
 2026-11-13: the harness is deleted.
@@ -157,7 +157,7 @@ The first build exposes each headless session's derived tools to OMP.
   agent and records completion, tool calls and tokens, including cache reads
   and writes.
 
-**Amended by [ADR-0043](0043-two-repositories-runtime-and-agent.md),
+**Amended by [ADR-0043](https://github.com/DROOdotFOO/raxol/blob/master/docs/adr/0043-two-repositories-runtime-and-agent.md),
 2026-10-26: plugin home.** The plugin and its marketplace catalog move with
 `raxol_cli` to the agent repository at the split; until then the plugin is
 built in this tree at `integrations/omp/raxol/`.
@@ -180,7 +180,7 @@ PRs go first:
 3. Rebuild `raxol acp` on Raxol agents (Decision 5).
 
 **Symphony frozen out, 2026-10-27**
-([ADR-0043](0043-two-repositories-runtime-and-agent.md) Decision 6, #1320).
+([ADR-0043](https://github.com/DROOdotFOO/raxol/blob/master/docs/adr/0043-two-repositories-runtime-and-agent.md) Decision 6, #1320).
 The second PR above is dropped, so two go first, and the Symphony `omp`
 runner named under Consequences is not built.
 
@@ -259,7 +259,7 @@ Anthropic and Ollama clauses stay, and an unknown provider becomes an error
 instead of falling through to OpenAI. Lumo, the OpenAI-compatible family and
 Kimi are deleted; the native CLI drivers go with the harness.
 
-**Amended by [ADR-0043](0043-two-repositories-runtime-and-agent.md),
+**Amended by [ADR-0043](https://github.com/DROOdotFOO/raxol/blob/master/docs/adr/0043-two-repositories-runtime-and-agent.md),
 2026-10-26: `zkapi`.** The catalog gains a fourth model kind, `zkapi`,
 through the Ollama codec this decision keeps; it lands in the agent
 repository after the split.
@@ -406,7 +406,7 @@ get a status note retiring their Hermes-parity framing.
   (plugin `mcp.json` rules), and the Agent Plugins 1.0.0 schemas
   (`https://agent-plugins.org/schemas/1.0.0/plugin.schema.json`,
   `.../mcp.schema.json`).
-- [ADR-0012](0012-mcp-as-rendering-target.md), MCP as a rendering target.
+- [ADR-0012](https://github.com/DROOdotFOO/raxol/blob/master/docs/adr/0012-mcp-as-rendering-target.md), MCP as a rendering target.
 - [ADR-0031](0031-console-runtime-integration.md), the Console runtime that
   keeps the scheduler and skills store.
 - [ADR-0041](0041-agent-client-protocol-package.md), the ACP package.

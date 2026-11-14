@@ -1,7 +1,10 @@
 defmodule Raxol.ReleaseManifestTest do
   use ExUnit.Case, async: true
 
-  @script Path.expand("../../scripts/build_cli_release_manifest.mjs", __DIR__)
+  @script Path.expand(
+            "../../../../scripts/build_cli_release_manifest.mjs",
+            __DIR__
+          )
   @assets [
     "raxol_cli_macos",
     "raxol_cli_linux",
@@ -54,9 +57,7 @@ defmodule Raxol.ReleaseManifestTest do
     File.write!(checksums, "#{String.duplicate("a", 64)}  raxol_cli_linux\n")
 
     {output, status} =
-      System.cmd("node", [@script, "0.3.0", checksums, manifest],
-        stderr_to_stdout: true
-      )
+      System.cmd("node", [@script, "0.3.0", checksums, manifest], stderr_to_stdout: true)
 
     assert status == 1
     assert output =~ "missing checksum for raxol_cli_macos"

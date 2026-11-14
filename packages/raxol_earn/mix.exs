@@ -57,8 +57,8 @@ defmodule RaxolEarn.MixProject do
   defp deps do
     [
       raxol_dep(:raxol_payments, "~> 0.3", "../raxol_payments", []),
-      raxol_dep(:raxol_core, "~> 2.8", "../raxol_core", []),
-      raxol_dep(:raxol_mcp, "~> 2.8", "../raxol_mcp", runtime: false),
+      runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
+      runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp", runtime: false),
       {:req, "~> 0.5"},
       {:ex_keccak, "~> 0.7"},
       {:jason, "~> 1.4"},
@@ -78,6 +78,20 @@ defmodule RaxolEarn.MixProject do
       {name, version, opts}
     else
       {name, version, [path: path] ++ opts}
+    end
+  end
+
+  # A runtime package: its Hex release, or a checkout of the runtime
+  # repository when RAXOL_PATH names one (absolute, or relative to this
+  # repository's root).
+  defp runtime_dep(name, version, subdir, opts \\ []) do
+    checkout = System.get_env("RAXOL_PATH", "")
+
+    if hex_package?() or checkout == "" do
+      {name, version, opts}
+    else
+      root = Path.expand(checkout, Path.expand("../..", __DIR__))
+      {name, version, [path: Path.expand(subdir, root), override: true] ++ opts}
     end
   end
 

@@ -5,7 +5,7 @@ defmodule Raxol.InstallScriptTest do
   # use the npm platform package and do not provide bash on every CI image.
   @moduletag :unix_only
 
-  @script Path.expand("../../scripts/install.sh", __DIR__)
+  @script Path.expand("../../../../scripts/install.sh", __DIR__)
 
   test "missing option values are usage errors" do
     for option <- ["--version", "--dir"] do

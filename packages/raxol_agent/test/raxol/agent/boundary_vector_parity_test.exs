@@ -1,4 +1,4 @@
-defmodule Raxol.BoundaryVectorParityTest do
+defmodule Raxol.Agent.BoundaryVectorParityTest do
   @moduledoc """
   The two copies of the shared path-confinement conformance corpus must be
   byte-identical.
@@ -8,13 +8,12 @@ defmodule Raxol.BoundaryVectorParityTest do
   zero-raxol-dep, so it cannot consume raxol_core. Three places in the tree say
   the duplication is safe BECAUSE both bind to one corpus:
 
-    * `packages/raxol_core/lib/raxol/core/boundary/path.ex` -- "both bind to the
-      same shared conformance vectors ... so drift is a red test, not a silent
-      fork"
+    * `Raxol.Core.Boundary.Path` -- "both bind to the same shared conformance
+      vectors ... so drift is a red test, not a silent fork"
     * `packages/raxol_agent_client_protocol/lib/raxol/agent_client_protocol/client.ex`
       -- "The two are bound to the SAME shared conformance vectors"
-    * `packages/raxol_core/test/support/boundary_vectors/README.md` -- "Change a
-      path vector and you must update both copies ... or neither"
+    * the corpus README in raxol_core -- "Change a path vector and you must
+      update both copies ... or neither"
 
   All three stated a rule that nothing ran. The corpora are two directories of
   JSON copied by hand, so adding a vector to one and forgetting the other turned
@@ -23,17 +22,22 @@ defmodule Raxol.BoundaryVectorParityTest do
   fine" and is the exact silent fork the duplication was allowed on condition of
   avoiding.
 
-  This lives in the ROOT suite because it is the only one that structurally owns
-  both packages: neither package can see the other's test tree from its own
-  `mix test`, and raxol_core must not grow a path dependency on the Agent Client
-  Protocol package just to check a file.
+  This lives in raxol_agent because it is the package that depends on both:
+  raxol_core's copy is read from the dependency, which ships it, and the
+  Agent Client Protocol package sits beside this one.
   """
 
   use ExUnit.Case, async: true
   @moduletag :capture_log
 
-  @core "packages/raxol_core/test/support/boundary_vectors"
-  @acp "packages/raxol_agent_client_protocol/test/support/boundary_vectors"
+  @core Path.join(
+          Mix.Project.deps_paths()[:raxol_core],
+          "test/support/boundary_vectors"
+        )
+  @acp Path.expand(
+         "../../../../raxol_agent_client_protocol/test/support/boundary_vectors",
+         __DIR__
+       )
 
   # Only the `path_*` files are shared. `term_text_vectors.json` drives
   # `Boundary.TermText`, a different boundary with no ACP counterpart, and

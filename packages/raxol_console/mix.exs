@@ -77,7 +77,7 @@ defmodule RaxolConsole.MixProject do
       # messaging gateway (channels + per-chat sessions) are the boot substrate;
       # raxol_earn is the ACP package format + seller/registration seam.
       raxol_dep(:raxol_agent, "~> 2.7", "../raxol_agent"),
-      raxol_dep(:raxol_gateway, "~> 0.2", "../raxol_gateway"),
+      runtime_dep(:raxol_gateway, "~> 0.2", "packages/raxol_gateway"),
       raxol_dep(:raxol_earn, "~> 0.2", "../raxol_earn"),
       {:jason, "~> 1.4"},
 
@@ -101,6 +101,20 @@ defmodule RaxolConsole.MixProject do
       end
 
     apply_opts(base, opts)
+  end
+
+  # A runtime package: its Hex release, or a checkout of the runtime
+  # repository when RAXOL_PATH names one (absolute, or relative to this
+  # repository's root).
+  defp runtime_dep(name, version, subdir, opts \\ []) do
+    checkout = System.get_env("RAXOL_PATH", "")
+
+    if hex_package?() or checkout == "" do
+      {name, version, opts}
+    else
+      root = Path.expand(checkout, Path.expand("../..", __DIR__))
+      {name, version, [path: Path.expand(subdir, root), override: true] ++ opts}
+    end
   end
 
   # Hex form for a publish (HEX_BUILD=1) and inside a Hex install, which Hex

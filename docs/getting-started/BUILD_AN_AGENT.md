@@ -1,6 +1,6 @@
 # Build Your First Agent
 
-The [Quickstart](QUICKSTART.md) builds a terminal app. This one builds an autonomous
+The [Quickstart](https://github.com/DROOdotFOO/raxol/blob/master/docs/getting-started/QUICKSTART.md) builds a terminal app. This one builds an autonomous
 agent: a program an LLM drives, with tools and skills. Same TEA model,
 same OTP supervision. The "user" is a model issuing tool calls instead of a keyboard.
 
@@ -159,4 +159,4 @@ ANTHROPIC_API_KEY=sk-ant-... mix run examples/agents/react_agent.exs   # real mo
 
 - [Agent Framework](../features/AGENT_FRAMEWORK.md): teams, backends, authorization, the item-log.
 - [Agentic Commerce](../features/AGENTIC_COMMERCE.md): give the agent a wallet and spending limits.
-- [Why Raxol](../WHY_RAXOL.md): why an OTP runtime is the right substrate for agents.
+- [Why Raxol](https://github.com/DROOdotFOO/raxol/blob/master/docs/WHY_RAXOL.md): why an OTP runtime is the right substrate for agents.

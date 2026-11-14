@@ -1,0 +1,73 @@
+# Gitleaks configuration.
+#
+# Historical test-vector findings are accepted by exact fingerprint in
+# `.gitleaksignore`. The allowlists below cover only published values.
+#
+# Every allowlist sets `targetRules`, and new ones must too: without it an
+# allowlist is global and switches off every inherited rule for what it
+# matches. Values are allowlisted by value, not by path, so any other
+# key-shaped string in the same file still fails.
+#
+# Re-verify after changing this file:
+#   gitleaks git --no-banner --redact
+# That must report no leaks.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+Public Base mainnet token contract addresses (USDC, USDT) in
+`scripts/run_live_gates.sh`. Contract addresses are published, not secret.
+"""
+targetRules = ["generic-api-key"]
+regexes = [
+  '''0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913''',
+  '''0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2''',
+]
+
+[[allowlists]]
+description = """
+Two public on-chain identifiers asserted by value in the web3 backend tests:
+an SPL mint pubkey and a TRC-20 contract address.
+"""
+targetRules = ["generic-api-key"]
+regexes = [
+  '''NkfbyG7feH9aJhdnSs4d7D7kWCEnxrmNUbM7dbpC6MM''',
+  '''TFczxzPhnThNSqr5by8tvxsdCFRRz6cPNq''',
+]
+
+[[allowlists]]
+description = """
+The EURC token contract on Base, registered in `Raxol.Payments.Assets` and
+used as a non-USD source in the payments tests. Case-insensitive: the tests
+write the checksummed form, `Assets` the lowercase one.
+"""
+targetRules = ["generic-api-key"]
+regexes = [
+  '''(?i)0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42''',
+]
+
+[[allowlists]]
+description = """
+Public stablecoin contracts used as swap and transfer test tokens in the
+payments tests: USDC on Base and on Arbitrum One, and USDT on Tron.
+"""
+targetRules = ["generic-api-key"]
+regexes = [
+  '''(?i)0x833589fcd6edb6e08f4c7c32d4f71b54bda02913''',
+  '''(?i)0xaf88d065e77c8cc2239327c5edb3a432268e5831''',
+  '''TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t''',
+]
+
+[[allowlists]]
+description = """
+Unsigned fake JWTs in the raxol_broker auth fixtures. The header is exactly
+`{"alg":"none","typ":"JWT"}`, the payload starts `{"fake":true`, and the
+signature segment is a literal `FAKE-...` marker. The pattern requires all
+three parts, so a signed token in the same fixture still fails `jwt`.
+"""
+targetRules = ["jwt"]
+regexes = [
+  '''eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0\.eyJmYWtlIjp0cnVl[A-Za-z0-9_-]*\.FAKE-[A-Z0-9-]+''',
+]

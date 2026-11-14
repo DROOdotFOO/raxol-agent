@@ -1,0 +1,7 @@
+# The reference toolchain. mise reads this file, and CI reads it as
+# `version-file` with `version-type: strict`. Change the pin here only.
+
+[tools]
+erlang = "29.0.3"
+elixir = "1.20.2-otp-29"
+node = "latest"

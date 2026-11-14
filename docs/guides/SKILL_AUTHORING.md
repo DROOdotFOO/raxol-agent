@@ -100,7 +100,7 @@ age skills; nothing in Raxol ages them on its own.
 A tool call made while following a skill is a tool call like any other. An action marked
 `sensitive` is denied unless the context of the call carries a `:tool_authorizer` that
 allows it (see the [Tool Catalog](../reference/TOOL_CATALOG.md#authorization)), on whichever
-[surface](SURFACES.md) the agent is running, so a skill cannot smuggle in a privileged
+[surface](https://github.com/DROOdotFOO/raxol/blob/master/docs/guides/SURFACES.md) the agent is running, so a skill cannot smuggle in a privileged
 action.
 
 ## See also

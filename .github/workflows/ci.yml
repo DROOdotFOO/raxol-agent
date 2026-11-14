@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  MIX_ENV: test
+  TMPDIR: /tmp
+
+jobs:
+  package-tests:
+    name: Package Tests (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [raxol_agent, raxol_payments, raxol_broker, raxol_earn, raxol_web3, raxol_console, raxol_cli, raxol_agent_client_protocol]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: mise.toml
+          version-type: strict
+
+      # `_build` holds the compiled sibling packages, which no lockfile names,
+      # so the key covers every mix.exs.
+      - name: Cache package dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            packages/${{ matrix.package }}/deps
+            packages/${{ matrix.package }}/_build
+          key: pkg-${{ matrix.package }}-${{ runner.os }}-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles(format('packages/{0}/mix.lock', matrix.package)) }}-${{ hashFiles('packages/*/mix.exs') }}
+
+      - name: Install hex and rebar
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+
+      - name: Set up Node
+        if: matrix.package == 'raxol_payments' || matrix.package == 'raxol_cli'
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Cache pinned @xochi/spec
+        if: matrix.package == 'raxol_payments'
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/xochi-spec-cache
+          key: xochi-spec-${{ runner.os }}-${{ hashFiles('packages/raxol_payments/test/fixtures/XOCHI_SPEC_VERSION', 'packages/raxol_payments/test/fixtures/XOCHI_SPEC_INTEGRITY') }}
+
+      - name: Fetch and verify pinned @xochi/spec
+        if: matrix.package == 'raxol_payments'
+        run: |
+          package_root="$(
+            scripts/fetch_xochi_spec.sh \
+              "$RUNNER_TEMP/xochi-spec-cache" \
+              "$RUNNER_TEMP/xochi-spec/package"
+          )"
+          echo "XOCHI_SPEC_DIR=$package_root" >> "$GITHUB_ENV"
+
+      # The shadow guard runs first: a Hex entry for a path sibling unpins that
+      # entry's whole subtree, and `mix deps.get` does not remove it.
+      - name: Compile package
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          mix run --no-start --no-compile --no-deps-check ../../scripts/check_lock_path_shadows.exs
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+
+      # Stated here, not left to each test_helper: raxol_payments computes its
+      # exclusions from which environment variables are present.
+      - name: Run package tests
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          mix test \
+            --exclude live_xochi \
+            --exclude live_xochi_matrix \
+            --exclude live_xochi_preflight \
+            --exclude live_xochi_order \
+            --exclude live_xochi_order_preflight \
+            --exclude live_xochi_order_settle \
+            --exclude live_relay \
+            --exclude live_property \
+            --exclude live_parity \
+            --exclude live_solver_fee \
+            --exclude live_chain \
+            --exclude live_bundler \
+            --exclude live_acp_dev \
+            --exclude cli_signer \
+            --exclude skip_on_ci
+
+      # `bin/raxol-acp --agent` as an OS process. Included by file: the other
+      # `:integration` suites in this package need a live Postgres.
+      - name: Run ACP stdio loopback
+        if: matrix.package == 'raxol_agent'
+        working-directory: packages/raxol_agent
+        run: mix test --include integration test/raxol/agent/acp_loopback_test.exs
+
+      # `raxol mcp` as an OS process.
+      - name: Run raxol mcp subprocess tests
+        if: matrix.package == 'raxol_cli'
+        working-directory: packages/raxol_cli
+        run: mix test --include integration test/raxol/cli/mcp_integration_test.exs
+
+      - name: Check formatting
+        working-directory: packages/${{ matrix.package }}
+        run: mix format --check-formatted

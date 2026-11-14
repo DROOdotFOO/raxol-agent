@@ -30,8 +30,8 @@ defmodule RaxolBroker.MixProject do
   defp deps do
     [
       raxol_dep(:raxol_agent, "~> 2.7", "../raxol_agent", []),
-      raxol_dep(:raxol_journal, "~> 2.8", "../raxol_journal", []),
-      raxol_dep(:raxol_mcp, "~> 2.8", "../raxol_mcp", []),
+      runtime_dep(:raxol_journal, "~> 2.8", "packages/raxol_journal"),
+      runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp"),
       # Floor: below 3.1.2, `Decimal.round/3` allocates in proportion to
       # `places` (CVE-2026-97853).
       {:decimal, "~> 3.1 and >= 3.1.2"},
@@ -57,6 +57,20 @@ defmodule RaxolBroker.MixProject do
       {name, version, opts}
     else
       {name, version, [path: path] ++ opts}
+    end
+  end
+
+  # A runtime package: its Hex release, or a checkout of the runtime
+  # repository when RAXOL_PATH names one (absolute, or relative to this
+  # repository's root).
+  defp runtime_dep(name, version, subdir, opts \\ []) do
+    checkout = System.get_env("RAXOL_PATH", "")
+
+    if hex_package?() or checkout == "" do
+      {name, version, opts}
+    else
+      root = Path.expand(checkout, Path.expand("../..", __DIR__))
+      {name, version, [path: Path.expand(subdir, root), override: true] ++ opts}
     end
   end
 
