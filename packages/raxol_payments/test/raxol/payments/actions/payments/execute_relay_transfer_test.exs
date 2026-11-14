@@ -395,12 +395,20 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
       assert Broadcaster.InMemory.sent() == []
     end
 
-    test "an unregistered source token is refused: it has no peg and no symbol to price" do
+    test "an unregistered source token is refused before quoting under a policy" do
       stub_quote_and_execute()
       params = base_params(%{from_token: "0x" <> String.duplicate("ab", 20)})
 
-      assert {:error, %Failure{detail: {:unpriced_asset, %{reason: :no_price}}}} =
+      assert {:error, %Failure{detail: {:unknown_asset, %{side: :source}}}} =
                ExecuteRelayTransfer.run(params, weth_ctx())
+    end
+
+    test "an unregistered source token is refused with no policy too" do
+      stub_quote_and_execute()
+      params = base_params(%{from_token: "0x" <> String.duplicate("ab", 20)})
+
+      assert {:error, %Failure{detail: {:unknown_asset, %{side: :source}}}} =
+               ExecuteRelayTransfer.run(params, ctx(%{policy: nil}))
     end
 
     test "a dollar stablecoin on Tron counts at par" do

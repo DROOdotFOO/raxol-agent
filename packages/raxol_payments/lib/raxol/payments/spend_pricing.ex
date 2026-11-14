@@ -170,8 +170,12 @@ defmodule Raxol.Payments.SpendPricing do
     {:error, :price_source_error}
   end
 
+  # Rounded up at a fixed precision, whatever Decimal context the caller set:
+  # a converted spend is never counted below its value.
+  @context %Decimal.Context{precision: 34, rounding: :ceiling}
+
   defp multiply(amount, price) do
-    case Decimal.mult(amount, price) do
+    case Decimal.Context.with(@context, fn -> Decimal.mult(amount, price) end) do
       %Decimal{coef: coef} = converted when is_integer(coef) -> {:ok, converted}
       _ -> {:error, :invalid_price}
     end

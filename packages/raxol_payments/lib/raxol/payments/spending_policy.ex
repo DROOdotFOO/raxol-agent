@@ -6,8 +6,10 @@ defmodule Raxol.Payments.SpendingPolicy do
   Used by the `Ledger` to enforce budget constraints before signing payments.
 
   Caps are human amounts of `currency` (see `unit/1`): with the default
-  `"USDC"`, `Decimal.new("1.00")` is one US dollar. A payment is converted
-  into that unit before it is checked, reserved or signed:
+  `"USDC"`, `Decimal.new("1.00")` is one US dollar. AutoPay and `SpendGate`
+  convert a payment into that unit before it is checked, reserved or signed
+  (`SpendingHook` does not: a `Pay` directive's `amount` is taken as already in
+  that unit):
 
     * `Raxol.Payments.Req.AutoPay` scales an x402 or MPP challenge by its
       currency's decimals and refuses one priced in another unit.

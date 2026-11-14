@@ -124,8 +124,9 @@ defmodule Raxol.Payments.Assets do
   # Registered for scaling and recognition only. Riddler may fill EURe, but
   # raxol never lists an FX token as fillable (that is `@evm_tokens`). Xochi,
   # Relay and the deposit route deliver one only when the caller's
-  # `min_to_amount` bounds it, and a non-USD source is refused: a dollar spend
-  # cap would otherwise count 1 EURe as $1. `fx_peg/2` is how those paths tell.
+  # `min_to_amount` bounds it, and a source is refused unless the spending
+  # policy's currency is its peg: a dollar cap would otherwise count 1 EURe as
+  # $1. `fx_peg/2` is how those paths tell.
   #
   # EURe's v1 contracts front the same balance as v2 (equal `totalSupply()` on
   # each chain), so they resolve back to "EURe" but `address/2` never returns
@@ -513,9 +514,10 @@ defmodule Raxol.Payments.Assets do
   anything else, dollar stablecoins, WETH and unregistered tokens included.
   Case-insensitive; accepts an integer chain id or a CAIP-2 string.
 
-  Fund-moving paths refuse a token with a peg (ADR-0040 decision 6) until an
-  FX rate gates the conversion (decision 7). Its decimals are known, so its amount
-  scales correctly, but a dollar-denominated spend cap would count it at par.
+  Fund-moving paths refuse a token with a peg (ADR-0040 decision 6) unless the
+  spending policy's currency is that peg, where it counts at par; no FX rate
+  converts it (decision 7). Its decimals are known, so its amount scales
+  correctly.
   """
   @spec fx_peg(integer() | String.t() | nil, String.t() | nil) :: String.t() | nil
   def fx_peg(chain_id, address) when is_binary(address) and address != "" do

@@ -88,9 +88,10 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   listed on Arbitrum. `Xochi.Capabilities.fallback/0` and the capacity
   deriver read `evm_tokens/0`, so they drop EURe on 42161 too; only
   `supported_chain_ids/0` and the stealth chain check are unchanged.
-- Registering them opens no fund-moving path. `ExecuteXochiIntent`,
-  `ExecuteRelayTransfer`, `payment_transfer` and ACP buys refuse a non-USD
-  source as `{:unpriced_asset, %{reason: :fx_unsupported}}` (see Changed),
+- `ExecuteXochiIntent`, `ExecuteRelayTransfer`, `payment_transfer` and ACP
+  buys spend one only under a policy in its own currency (a EUR policy counts
+  EURe at par) and otherwise refuse it as
+  `{:unpriced_asset, %{reason: :fx_unsupported}}` (see Changed),
   and Xochi and Relay refuse a non-USD destination without a positive
   `min_to_amount`, as `{:unpriced_asset, detail}` (ADR-0040 decision 6),
   until an FX rate gates the conversion (decision 7). A `min_to_amount` of `0`
@@ -214,7 +215,7 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   `release/3` and `tag_reservation/3`. The ledger entry's `currency` is the
   policy's, and its metadata keeps `source_asset` and `source_amount`.
   `payment_transfer` returns `reserved`. An unregistered Relay source token,
-  which was scaled at 6 decimals, is refused.
+  which was scaled at 6 decimals, is refused, with or without a policy.
 - **Breaking.** `config :raxol_payments, :pull_require_solver_pin` defaults to
   `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
   with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull

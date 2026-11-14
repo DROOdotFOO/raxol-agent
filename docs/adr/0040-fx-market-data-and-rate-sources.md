@@ -11,7 +11,7 @@ changed: the live corridor path and x402 refuse FX tokens, Relay and Xochi requi
 the identity check is lazy and caches only a match (decision 2), the Sleuth decoder is
 bounded, a 403 is a status (decision 3), the verdict compares the exact deviation (decision 4),
 and the price closure answers only the registered symbols at their registered peg (decision
-6). Decision 7 is not built: spend caps still refuse EURC, EURe and ZCHF sources, while WETH and
+6). Decision 7 is not built: spend caps refuse EURC, EURe and ZCHF sources unless the policy's currency is their peg (then at par), while WETH and
 RAXOL sources are now priced in USD by `Raxol.Payments.SpendPricing` instead of counted at par.
 
 Builds on [ADR-0033](0033-web3-data-surface.md) (the `raxol_web3` read layer and its

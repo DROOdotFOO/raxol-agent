@@ -242,12 +242,12 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
 
   defp build_request(params, from_address) do
     to_chain = Map.fetch!(params, :to_chain_id)
+    from_chain = Map.fetch!(params, :from_chain_id)
+    from_token = Map.fetch!(params, :from_token)
 
-    with :ok <- reject_stealth_on_tron(Map.get(params, :settlement, "public"), to_chain) do
-      from_chain = Map.fetch!(params, :from_chain_id)
-      from_token = Map.fetch!(params, :from_token)
+    with :ok <- reject_stealth_on_tron(Map.get(params, :settlement, "public"), to_chain),
+         {:ok, decimals} <- registered_decimals(from_chain, from_token) do
       amount = Decimal.new(Map.fetch!(params, :amount))
-      decimals = Assets.decimals(from_chain, from_token)
       from_amount = Integer.to_string(Assets.to_atomic(amount, decimals))
 
       request = %QuoteRequest{
@@ -263,6 +263,15 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       }
 
       {:ok, request, amount, []}
+    end
+  end
+
+  # A source token is scaled only by its registered decimals: the 6-decimal
+  # fallback of `Assets.decimals/2` would mis-scale an unregistered token.
+  defp registered_decimals(chain, token) do
+    case Assets.fetch_decimals(chain, token) do
+      {:ok, decimals} -> {:ok, decimals}
+      :error -> {:error, {:unknown_asset, %{chain_id: chain, token: token, side: :source}}}
     end
   end
 

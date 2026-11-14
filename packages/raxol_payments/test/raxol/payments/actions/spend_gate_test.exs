@@ -295,6 +295,27 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
       assert Decimal.equal?(metadata.source_amount, Decimal.new("0.002"))
     end
 
+    test "a caller's low-precision Decimal context cannot undercount a converted spend" do
+      ledger = start_ledger()
+
+      ctx =
+        context(%{
+          policy: usd_policy(),
+          ledger: ledger,
+          price_fn: Static.price_fn(%{"WETH" => "3"})
+        })
+
+      previous = Decimal.Context.get()
+      Decimal.Context.set(%Decimal.Context{precision: 2, rounding: :floor})
+
+      try do
+        assert {:ok, reserved} = authorize(ctx, "1.99", @weth)
+        assert Decimal.equal?(reserved, Decimal.new("5.97"))
+      after
+        Decimal.Context.set(previous)
+      end
+    end
+
     test "the confirmation threshold sees the converted amount" do
       pol = %{usd_policy() | require_confirmation_above: Decimal.new("5")}
       ctx = context(%{policy: pol, price_fn: Static.price_fn(%{"WETH" => "3000"})})
