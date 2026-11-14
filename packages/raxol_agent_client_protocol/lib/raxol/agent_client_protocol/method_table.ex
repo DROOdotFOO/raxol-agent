@@ -11,8 +11,8 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
   `session/delete`/`session/close`/`logout`/`$/cancel_request` (which the
   oracle has). The table is literal data in this module: the oracle copy at
   `priv/schema-oracle/v1/meta.json` is a dev/test file in the repository, not
-  shipped in the package and not read at compile time;
-  `test/method_table_test.exs` checks the table against it.
+  shipped in the package and not read at compile time; the package's test
+  suite checks the table against it.
 
   ## What lives here vs. what doesn't
 
@@ -38,7 +38,7 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
      `layer: :protocol` rows.
 
   A sixth check (every `params`/`result` module referenced must exist and
-  export `from_json/1`) runs in `test/method_table_test.exs` rather than at
+  export `from_json/1`) runs in the package's test suite rather than at
   compile time, to avoid compile-order knots between this module and the
   `Schema.*` modules it references.
   """

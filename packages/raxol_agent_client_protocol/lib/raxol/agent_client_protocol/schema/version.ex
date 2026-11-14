@@ -55,7 +55,7 @@ defmodule Raxol.AgentClientProtocol.Schema.Version do
 
   Non-negative integers pass through unchanged. Any string (including a
   legacy MCP-style date string such as `"2024-11-05"`) is coerced to
-  `latest/0` rather than rejected — a recon caveat: we don't attempt to
+  `latest/0` rather than rejected. This is deliberately lenient: we don't attempt to
   parse or validate the string's shape, we simply treat "sent a string at
   all" as "speaks a version we don't recognize, negotiate down to what we
   know". Anything else is rejected. Never raises.

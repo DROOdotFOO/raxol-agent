@@ -29,7 +29,7 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
 
   ## Adding an event
 
-  `test/telemetry_registry_test.exs` parses `lib/` for `[:raxol, ...]` event
+  The package's test suite parses `lib/` for `[:raxol, ...]` event
   literals and fails if any is missing from `events/0` (or if `events/0` claims
   an event no source file mentions). A new event therefore cannot land without
   someone classifying it here, and the one-line WHY comment on each row below is
