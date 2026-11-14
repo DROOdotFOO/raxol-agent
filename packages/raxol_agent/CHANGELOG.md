@@ -18,9 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [runtime changelog](https://github.com/DROOdotFOO/raxol/blob/master/CHANGELOG.md).
 - The coding harness, memory, self-improvement and the coding tools are
   removed, and so are the modules nothing called (see Removed).
-- From Hex, the ACP agent (`Raxol.Agent.ClientProtocol.StdioAgent`) and the
-  `web3` and `fx` tools are not compiled: they need
-  `raxol_agent_client_protocol` and `raxol_web3`, which are not on Hex.
+- From Hex, the ACP agent (`Raxol.Agent.ClientProtocol.StdioAgent`, with
+  `ClientProtocol.Turn` and `ClientProtocol.Permission`) and the `web3` and
+  `fx` tools are not compiled: they need `raxol_agent_client_protocol` and
+  `raxol_web3`, which are not on Hex.
 
 ### Added
 
