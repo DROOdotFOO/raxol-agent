@@ -100,6 +100,11 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 - `ExecuteRelayTransfer` accepts `min_to_amount` and refuses a quote delivering
   less before the spend is authorized. It previously had no delivery floor, so
   a quote could deliver any amount.
+- `ExecuteXochiIntent`'s delivery floor also judges the `toAmount` in the
+  EIP-712 message the wallet would sign, read only when the message's primary
+  type declares the field. A null or missing value counts as 0, which is what
+  `EIP712` signs, and a whitespace or sign variant fails closed at the floor or
+  the encoder, so a quote whose signed amount is 0 is refused.
 
 - Euro and franc stablecoins can be priced in accounting (ADR-0040 decision 6).
   `RAXOL_FX_ENABLED=true` with `RAXOL_SLEUTH_API_KEY` and `RPC_BASE` or `RPC_ETH`
@@ -284,7 +289,7 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   deadline, and raxol would sign it. `Xochi.validate_intent/2` now checks,
   before any signature, that the served payload is exactly the v3 `XochiIntent`
   (its types, field order and message fields) under the v3 Xochi domain on the
-  request's origin chain, and binds every signed field to the request, both in
+  request's origin chain, and binds every route and amount field to the request, both in
   `sign_intent/3` and in `ExecuteXochiIntent` ahead of the spend gate, so a
   mismatch reserves nothing. A refusal is `{:intent_mismatch, field}`, reported
   as `:rejected`. The reported and telemetry `from_amount` is the signed
@@ -296,15 +301,9 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   re-quote is now held to both before anything is signed; a refusal releases
   the reservation with `reason: :requote_refused` in the ledger entry's
   metadata and reports the refusal itself.
-- The delivery floor reads the signed `toAmount` only when the message's
-  primary type declares the field, judges a null or missing value as 0, which
-  is what `EIP712` signs, and range-checks it; a whitespace or sign variant
-  fails closed at the floor or the encoder. It used to read only a
-  literal `"toAmount"` key and treat null or missing as absent, so a quote
-  whose signed amount was 0 passed. Every amount, the caller's floor
-  included, must be at most 2^256 - 1, and `EIP712` itself now refuses a
-  `uint256` outside 0..2^256 - 1 instead of signing its low 256 bits (2^256 + 1
-  signed as 1).
+- `EIP712` signed a `uint256` outside 0..2^256 - 1 as its low 256 bits
+  (2^256 + 1 signed as 1). It now refuses one, and every amount the delivery
+  floor reads, the caller's floor included, must be at most 2^256 - 1.
 - `ExecuteDepositRoute` returns `to_amount` and `min_to_amount` as strings
   even when the quote served them as JSON numbers; a numeric `min_to_amount`
   passed the floor and then failed the tool's output schema, so the payer got
