@@ -61,10 +61,11 @@ defmodule Raxol.AgentClientProtocol.Client do
 
       defmodule MyClient do
         use Raxol.AgentClientProtocol.Client
-        alias Raxol.AgentClientProtocol.Schema.ClientTypes.ReadTextFileResponse
+        alias Raxol.AgentClientProtocol.Client.FsSandbox
 
+        # `handler_arg:` is the project root the agent may read under.
         @impl true
-        def init(_arg), do: {:ok, %{}}
+        def init(root), do: {:ok, %{root: root}}
 
         @impl true
         def session_update(notification, _ctx) do
@@ -72,14 +73,16 @@ defmodule Raxol.AgentClientProtocol.Client do
         end
 
         @impl true
-        def read_text_file(req, _ctx) do
-          {:ok, ReadTextFileResponse.new(File.read!(req.path))}
-        end
+        def read_text_file(req, ctx), do: FsSandbox.read(ctx.handler_state.root, req)
 
         # ... only what you support.
       end
 
-      {:ok, sup} = Raxol.AgentClientProtocol.Client.start_link(MyClient, transport: {mod, handle})
+      {:ok, sup} =
+        Raxol.AgentClientProtocol.Client.start_link(MyClient,
+          transport: {mod, handle},
+          handler_arg: "/path/to/project"
+        )
 
   ## Session-consumer ergonomics: subscribe / prompt / prompt_stream
 
@@ -128,8 +131,12 @@ defmodule Raxol.AgentClientProtocol.Client do
   joined under the root, `..`-normalized, and checked against the root
   using BOTH the lexical result and the fully symlink-resolved real path,
   so a `../` escape or a symlink planted inside the sandbox that points
-  outside it are both rejected with `-32602 invalid params` (never a
-  crash, never a silent escape). See `Raxol.AgentClientProtocol.Client.FsSandbox`.
+  outside it are both rejected with `-32602 invalid params`. The file is
+  then opened and the open handle checked to be the regular file that was
+  resolved, and a read is capped at 16 MiB (`fs_max_read_bytes:` sets
+  another cap). `Raxol.AgentClientProtocol.Client.FsSandbox` states what
+  this does and does not guarantee against a peer that changes the
+  sandbox tree while requests run.
   `terminal/*` handlers are deliberately NOT defaulted by any option here --
   they stay `method_not_found` unless you implement them yourself.
 
@@ -456,6 +463,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   defmacro __using__(opts) do
     fs_sandbox = Keyword.get(opts, :fs_sandbox)
+    fs_opts = Keyword.take(opts, [:fs_max_read_bytes])
 
     quote do
       @behaviour Raxol.AgentClientProtocol.Client
@@ -499,7 +507,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
       defoverridable session_update: 2
 
-      unquote(Raxol.AgentClientProtocol.Client.__fs_sandbox_block__(fs_sandbox))
+      unquote(Raxol.AgentClientProtocol.Client.__fs_sandbox_block__(fs_sandbox, fs_opts))
     end
   end
 
@@ -508,15 +516,31 @@ defmodule Raxol.AgentClientProtocol.Client do
   # quote -- kept as a plain function (not inlined in the macro body) so
   # the `nil` (no sandbox) case is a one-line no-op AST rather than a
   # branch duplicated inside the big quote block.
-  @spec __fs_sandbox_block__(String.t() | nil) :: Macro.t()
-  def __fs_sandbox_block__(nil), do: quote(do: :ok)
+  @spec __fs_sandbox_block__(String.t() | nil, keyword()) :: Macro.t()
+  def __fs_sandbox_block__(path, opts \\ [])
 
-  def __fs_sandbox_block__(path) when is_binary(path) do
+  def __fs_sandbox_block__(nil, _opts), do: quote(do: :ok)
+
+  def __fs_sandbox_block__(path, opts) when is_binary(path) do
+    read_opts =
+      case Keyword.fetch(opts, :fs_max_read_bytes) do
+        {:ok, max} when is_integer(max) and max > 0 ->
+          [max_read_bytes: max]
+
+        {:ok, other} ->
+          raise ArgumentError,
+                "fs_max_read_bytes must be a positive integer, got: #{inspect(other)}"
+
+        :error ->
+          []
+      end
+
     quote do
       alias Raxol.AgentClientProtocol.Client.FsSandbox
 
       @impl Raxol.AgentClientProtocol.Client
-      def read_text_file(req, _ctx), do: FsSandbox.read(unquote(path), req)
+      def read_text_file(req, _ctx),
+        do: FsSandbox.read(unquote(path), req, unquote(read_opts))
 
       @impl Raxol.AgentClientProtocol.Client
       def write_text_file(req, _ctx), do: FsSandbox.write(unquote(path), req)
@@ -676,27 +700,69 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   directory -- backs `use Raxol.AgentClientProtocol.Client, fs_sandbox:
   path` (see that module's moduledoc for the option). Not a general-purpose
   path library: it exists solely to give a minimal client a working
-  filesystem story out of the box, safely.
+  filesystem story out of the box.
+
+  ## Path checks
 
   Every request path is joined under the sandbox root and lexically
   normalized (`..` resolved via `Path.expand/1`), checked against the root,
-  THEN fully symlink-resolved (a hand-rolled `realpath`, `real_path/1`) and
+  THEN fully symlink-resolved (`resolve/2`, a hand-rolled `realpath`) and
   checked against the root a second time -- so a `../` escape and a
   symlink planted inside the sandbox that points outside it are both
-  caught, not just the lexical case. Both failure modes return the same
-  `-32602 invalid params` `Error.t()`, safe to send straight to the peer
-  (the resolved absolute path is only ever placed in `data`, for local
-  debugging, never in `message`).
+  caught, not just the lexical case. Every refusal is a `-32602 invalid
+  params` `Error.t()`, safe to send straight to the peer: `data` carries a
+  `"reason"` and the path the peer sent, never the resolved absolute path.
 
-  This is an INTENTIONAL DUPLICATE of `Raxol.Core.Boundary.Path.confine/3`
-  (raxol_core), not a wrapper -- this package cannot depend on raxol_core.
-  The two are bound to the SAME shared conformance vectors
-  (`test/support/boundary_vectors/path_{reject,accept}_vectors.json`,
-  copied verbatim from raxol_core; see `test/client/fs_sandbox_vectors_test.exs`)
-  so a divergence between the two independent confinement implementations
-  is a red test here, not a silent fork. `resolve/2` does not implement
-  `Path.confine/3`'s `ref_format` regex gate; vectors exercising it are skipped
-  by that test.
+  ## Opening the file
+
+  A path that is checked and then opened leaves a window in which a peer
+  that can change the tree inside the root swaps the file for a symlink. So
+  the file is opened first and the open handle verified afterwards: the
+  device and inode of the handle (`:file.read_file_info/1` on it) must equal
+  those of the path re-resolved with `resolve/2` and read with
+  `File.lstat/1`, which does not follow a symlink at the leaf, and both
+  must be a regular file. A mismatch is refused as `"path_changed"`; a leaf
+  that is not a regular file (a directory, FIFO, device, or a symlink
+  swapped in for one) as `"not_a_regular_file"`.
+
+    * `read/3` checks the leaf with `File.lstat/1`, opens it read-only,
+      verifies the handle, and reads at most `:max_read_bytes` (default
+      16 MiB); a larger file is refused as `"file_too_large"`. `line` and
+      `limit` slice what was read.
+    * `write/2` creates missing parent directories one at a time, each
+      checked to be a directory and not a symlink, and re-resolves the path
+      afterwards. A new file is created with `O_EXCL`, which never follows
+      a symlink at the leaf; an existing file is opened without truncating
+      it. The handle is verified before it is truncated and written.
+
+  ## What is and is not guaranteed
+
+  Erlang's file API has no `openat` or `O_NOFOLLOW`, so checking a path and
+  opening it are separate system calls. With the verification above:
+
+    * Swapping the requested file itself (for a symlink, a FIFO, a device or
+      another file) while a request runs cannot make the request read or
+      write a file outside the root.
+    * A peer that can also rename the DIRECTORIES a requested path goes
+      through, and wins two races within one request (at the open and at
+      the verifying `lstat`), can still redirect that request. A path whose
+      only directory is the root itself is not exposed to this.
+    * There is no open mode that writes an existing file without `O_CREAT`,
+      so a leaf swapped for a dangling symlink at that instant, or a parent
+      directory swapped as above, can create an EMPTY file or directory
+      outside the root. Nothing is written into it: the handle check
+      refuses first.
+    * A leaf swapped for a FIFO between the `lstat` and the read-only open
+      blocks that one request until the FIFO has a writer.
+    * A hard link inside the root to a file outside it is that file; hard
+      links are not detected.
+    * On non-Unix file systems the inode is reported as zero, so the handle
+      check compares only the device and the file type.
+
+  `fs_sandbox` confines the paths the peer names. It is not a boundary
+  against a peer that can also change the sandbox tree by other means
+  while requests run: the checks above narrow those races but do not close
+  them.
   """
 
   alias Raxol.AgentClientProtocol.Error
@@ -707,19 +773,25 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   }
 
   @max_symlink_depth 40
+  @default_max_read_bytes 16 * 1024 * 1024
+  @read_chunk_bytes 1024 * 1024
 
-  @doc "Handle `fs/read_text_file` (`req` is a `ClientTypes.ReadTextFileRequest.t()`) confined to `sandbox_root`."
-  @spec read(String.t(), struct()) ::
+  @doc """
+  Handle `fs/read_text_file` (`req` is a `ClientTypes.ReadTextFileRequest.t()`)
+  confined to `sandbox_root`.
+
+  Options: `:max_read_bytes` (default 16 MiB), the largest file read; a
+  larger one is refused as `"file_too_large"`.
+  """
+  @spec read(String.t(), struct(), keyword()) ::
           {:ok, ReadTextFileResponse.t()} | {:error, Error.t()}
-  def read(sandbox_root, req) do
-    with {:ok, real} <- resolve(sandbox_root, req.path) do
-      case File.read(real) do
-        {:ok, content} ->
-          {:ok, ReadTextFileResponse.new(slice(content, req.line, req.limit))}
+  def read(sandbox_root, req, opts \\ []) do
+    max = Keyword.get(opts, :max_read_bytes, @default_max_read_bytes)
 
-        {:error, reason} ->
-          {:error, Error.with_data(Error.resource_not_found(req.path), inspect(reason))}
-      end
+    with {:ok, real} <- resolve(sandbox_root, req.path),
+         :ok <- regular_leaf(real, req.path),
+         {:ok, content} <- read_verified(sandbox_root, req.path, real, max) do
+      {:ok, ReadTextFileResponse.new(slice(content, req.line, req.limit))}
     end
   end
 
@@ -727,23 +799,183 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   @spec write(String.t(), struct()) ::
           {:ok, WriteTextFileResponse.t()} | {:error, Error.t()}
   def write(sandbox_root, req) do
-    with {:ok, real} <- resolve(sandbox_root, req.path),
-         :ok <- File.mkdir_p(Path.dirname(real)) do
-      case File.write(real, req.content) do
-        :ok ->
-          {:ok, WriteTextFileResponse.new()}
-
-        {:error, reason} ->
-          {:error, Error.with_data(Error.internal_error(), inspect(reason))}
+    result =
+      with {:ok, real} <- resolve(sandbox_root, req.path),
+           :ok <- make_parents(sandbox_root, req.path, real),
+           {:ok, fd} <- open_for_write(real, req.path) do
+        try do
+          write_verified(fd, sandbox_root, req, real)
+        after
+          :file.close(fd)
+        end
       end
-    else
-      {:error, %Error{}} = err ->
-        err
 
-      {:error, reason} ->
-        {:error, Error.with_data(Error.internal_error(), inspect(reason))}
+    case result do
+      {:error, %Error{}} = error -> error
+      {:error, reason} -> {:error, Error.with_data(Error.internal_error(), inspect(reason))}
+      ok -> ok
     end
   end
+
+  defp write_verified(fd, root, req, real) do
+    with :ok <- verify_handle(fd, root, req.path, real),
+         {:ok, 0} <- :file.position(fd, :bof),
+         :ok <- :file.truncate(fd),
+         :ok <- :file.write(fd, req.content) do
+      {:ok, WriteTextFileResponse.new()}
+    end
+  end
+
+  defp regular_leaf(real, path) do
+    case File.lstat(real) do
+      {:ok, %File.Stat{type: :regular}} ->
+        :ok
+
+      {:ok, %File.Stat{}} ->
+        {:error, invalid_params(:not_a_regular_file, path)}
+
+      {:error, reason} ->
+        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
+    end
+  end
+
+  defp read_verified(root, path, real, max) do
+    case :file.open(real, [:read, :binary, :raw]) do
+      {:ok, fd} ->
+        try do
+          with :ok <- verify_handle(fd, root, path, real) do
+            read_capped(fd, path, max)
+          end
+        after
+          :file.close(fd)
+        end
+
+      {:error, reason} ->
+        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
+    end
+  end
+
+  defp read_capped(fd, path, max), do: read_chunks(fd, path, max, [], 0)
+
+  defp read_chunks(fd, path, max, acc, size) do
+    case :file.read(fd, @read_chunk_bytes) do
+      {:ok, data} when size + byte_size(data) > max ->
+        {:error, file_too_large(path, max)}
+
+      {:ok, data} ->
+        read_chunks(fd, path, max, [acc | data], size + byte_size(data))
+
+      :eof ->
+        {:ok, IO.iodata_to_binary(acc)}
+
+      {:error, reason} ->
+        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
+    end
+  end
+
+  defp file_too_large(path, max) do
+    Error.with_data(Error.invalid_params(), %{
+      "reason" => "file_too_large",
+      "path" => path,
+      "max_read_bytes" => max
+    })
+  end
+
+  # Creates each missing directory between the real root and the leaf's
+  # parent with `mkdir` (which never follows a symlink at the name it
+  # creates), checks that each one is a directory and not a symlink, and then
+  # requires the path to resolve exactly as it did before.
+  defp make_parents(root, path, real) do
+    {:ok, root_real} = real_path(Path.expand(root))
+    parent = Path.dirname(real)
+
+    with :ok <- create_dirs(root_real, parent, path) do
+      case resolve(root, path) do
+        {:ok, ^real} -> :ok
+        {:ok, _moved} -> {:error, invalid_params(:path_changed, path)}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  # Nothing to create when the parent is the root, or when the leaf IS the
+  # root (its parent lies above it; the open then refuses the directory).
+  defp create_dirs(root_real, parent, path) do
+    if within?(root_real, parent) and parent != root_real do
+      parent
+      |> Path.relative_to(root_real)
+      |> Path.split()
+      |> create_each(root_real, path)
+    else
+      :ok
+    end
+  end
+
+  defp create_each([], _dir, _path), do: :ok
+
+  defp create_each([comp | rest], dir, path) do
+    dir = Path.join(dir, comp)
+
+    with :ok <- make_dir(dir, path) do
+      create_each(rest, dir, path)
+    end
+  end
+
+  defp make_dir(dir, path) do
+    with result when result in [:ok, {:error, :eexist}] <- :file.make_dir(dir) do
+      case File.lstat(dir) do
+        {:ok, %File.Stat{type: :directory}} -> :ok
+        {:ok, %File.Stat{}} -> {:error, invalid_params(:path_changed, path)}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  # A missing leaf is created with O_EXCL, which fails on any existing name,
+  # a symlink included, so it never follows one. An existing leaf must be a
+  # regular file and is opened read-write, which does not truncate it.
+  defp open_for_write(real, path) do
+    case File.lstat(real) do
+      {:error, :enoent} ->
+        case :file.open(real, [:write, :exclusive, :binary, :raw]) do
+          {:error, :eexist} -> open_existing(real, path)
+          opened -> opened
+        end
+
+      {:ok, _stat} ->
+        open_existing(real, path)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp open_existing(real, path) do
+    case File.lstat(real) do
+      {:ok, %File.Stat{type: :regular}} -> :file.open(real, [:read, :write, :binary, :raw])
+      {:ok, %File.Stat{}} -> {:error, invalid_params(:not_a_regular_file, path)}
+      {:error, _} = error -> error
+    end
+  end
+
+  # The open handle must be a regular file and the same file (device and
+  # inode) as the path re-resolved now, with the leaf read by `lstat` so a
+  # symlink swapped in at the leaf is seen as a symlink.
+  defp verify_handle(fd, root, path, real) do
+    with {:ok, record} <- :file.read_file_info(fd),
+         %File.Stat{type: :regular} = opened <- File.Stat.from_record(record),
+         {:ok, ^real} <- resolve(root, path),
+         {:ok, %File.Stat{type: :regular} = named} <- File.lstat(real),
+         true <- same_file?(opened, named) do
+      :ok
+    else
+      %File.Stat{} -> {:error, invalid_params(:not_a_regular_file, path)}
+      {:error, %Error{}} = error -> error
+      _changed -> {:error, invalid_params(:path_changed, path)}
+    end
+  end
+
+  defp same_file?(a, b), do: a.major_device == b.major_device and a.inode == b.inode
 
   @doc """
   Resolve `requested_path` against `sandbox_root`, rejecting any result
@@ -789,8 +1021,7 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   # `base` directly; a component that is not a symlink -- or does not exist (the
   # write-leaf case) -- is accepted literally, so the deepest existing ancestor
   # still resolves. Only symlink hops count toward the depth cap, so deep
-  # symlink-free nesting is never mistaken for a cycle. Kept byte-identical to
-  # `Raxol.Core.Boundary.Path`'s `walk_real` (the shared confinement rules).
+  # symlink-free nesting is never mistaken for a cycle.
   defp real_path(path) do
     [root | rest] = Path.split(Path.expand(path))
     walk_real(root, rest, 0)
