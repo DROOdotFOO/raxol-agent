@@ -7,7 +7,7 @@ defprotocol Raxol.Agent.Sandbox do
   Implementations return `:ok` to allow, `{:deny, reason}` to block,
   or `:ok` as an *abstention* when the action is outside the
   sandbox's dimension. Walking a list of sandboxes (via
-  `Raxol.Agent.Sandbox.authorize_chain/4`) and short-circuiting on
+  `Raxol.Agent.Sandbox.authorize/4`, given a list) and short-circuiting on
   the first `:deny` is the canonical composition.
 
   ## Built-in dimensions

@@ -20,10 +20,9 @@ defmodule Raxol.Agent.StreamPump do
       nothing, so a tool-call round whose assistant "message" is
       empty/whitespace seals no empty ❮ block) and before every tool_use /
       tool_result completion, so the live producer speaks the same item
-      lifecycle the fixture corpus does — the projection's live tail
-      (`Raxol.Harness.Projection.BlockBuilder.build_tail/2`) only surfaces
-      deltas for an item with a started group, which is what makes mid-turn
-      streaming render at all.
+      lifecycle the fixture corpus does — a transcript projection's live tail
+      only surfaces deltas for an item with a started group, which is what
+      makes mid-turn streaming render at all.
     * A `:reasoning` item carries the model's chain-of-thought (`content`)
       and seals as a durable, foldable/peekable ∴ block — reasoning is a
       first-class transcript fact once sealed, never silently dropped.

@@ -49,7 +49,7 @@ defmodule Raxol.Payments.Wallets.Op do
   end
 
   @doc """
-  Sign a precomputed 32-byte digest. Mirrors `Raxol.Payments.Wallet.sign_hash/1`
+  Sign a precomputed 32-byte digest. Mirrors `c:Raxol.Payments.Wallet.sign_hash/1`
   with a server argument; used by EIP-1559 transaction signing.
   """
   @spec sign_hash(GenServer.server(), <<_::256>>) ::

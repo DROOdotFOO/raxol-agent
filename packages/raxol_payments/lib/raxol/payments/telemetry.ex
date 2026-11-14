@@ -38,7 +38,7 @@ defmodule Raxol.Payments.Telemetry do
 
   | Measurement | Type          | Notes                                 |
   | ----------- | ------------- | ------------------------------------- |
-  | `:amount`   | `Decimal.t/0` | Human-decimal units (e.g. `0.01`)     |
+  | `:amount`   | `t:Decimal.t/0` | Human-decimal units (e.g. `0.01`)     |
 
   | Metadata    | Type          | Notes                                 |
   | ----------- | ------------- | ------------------------------------- |
@@ -53,7 +53,7 @@ defmodule Raxol.Payments.Telemetry do
 
   | Measurement | Type          |
   | ----------- | ------------- |
-  | `:amount`   | `Decimal.t/0` |
+  | `:amount`   | `t:Decimal.t/0` |
 
   | Metadata      | Type    | Values                                                   |
   | ------------- | ------- | -------------------------------------------------------- |
@@ -90,8 +90,8 @@ defmodule Raxol.Payments.Telemetry do
 
   | Measurement   | Type                 | Notes                                 |
   | ------------- | -------------------- | ------------------------------------- |
-  | `:fee_atomic` | `Decimal.t/0`        | Fee collected, atomic units           |
-  | `:gas_wei`    | `Decimal.t/0` \\| nil | Native gas burned; nil when unknown   |
+  | `:fee_atomic` | `t:Decimal.t/0`        | Fee collected, atomic units           |
+  | `:gas_wei`    | `t:Decimal.t/0` \\| nil | Native gas burned; nil when unknown   |
 
   Metadata: `:intent_id`, `:from_chain_id`, `:to_chain_id`, `:token_symbol`,
   `:gas_chain_id`, `:gas_symbol`, `:gas_status`, `:settlement_type`.
@@ -110,10 +110,10 @@ defmodule Raxol.Payments.Telemetry do
   | `:recording_gap_count` | `integer()`          | entries missing a leg's amount or decimals; not in `:usd_revenue`. Overlaps `:unpriced_count` only where such an entry's fee is unpriced |
   | `:gas_unknown_count`   | `integer()`          | entries with no gas figure yet           |
   | `:gas_unpriced_count`  | `integer()`          | entries whose gas amount is known but whose gas symbol no price answered |
-  | `:usd_revenue`         | `Decimal.t/0` \\| nil | spread of entries with both legs recorded and priced |
-  | `:usd_fee`             | `Decimal.t/0` \\| nil | venue fee of entries whose fee is priced |
-  | `:usd_gas`             | `Decimal.t/0` \\| nil | gas of entries whose gas is known and priced |
-  | `:usd_margin`          | `Decimal.t/0` \\| nil | sum of per-entry basis (spread, else fee if legs unrecorded) net of that entry's gas, over entries with both; negative is subsidy |
+  | `:usd_revenue`         | `t:Decimal.t/0` \\| nil | spread of entries with both legs recorded and priced |
+  | `:usd_fee`             | `t:Decimal.t/0` \\| nil | venue fee of entries whose fee is priced |
+  | `:usd_gas`             | `t:Decimal.t/0` \\| nil | gas of entries whose gas is known and priced |
+  | `:usd_margin`          | `t:Decimal.t/0` \\| nil | sum of per-entry basis (spread, else fee if legs unrecorded) net of that entry's gas, over entries with both; negative is subsidy |
   | `:margin_count`        | `integer()`          | entries `:usd_margin` covers; `:count` minus this were left out, each reason countable: no basis (`:unpriced_count`, `:recording_gap_count`), unknown gas (`:gas_unknown_count`), unpriced gas (`:gas_unpriced_count`). An entry with an unpriced fee but a priced spread is in both this and `:unpriced_count` |
 
   Each `usd_*` total is over its own population, so `usd_revenue - usd_gas` is
@@ -127,7 +127,7 @@ defmodule Raxol.Payments.Telemetry do
 
   | Measurement | Type                 | Notes                            |
   | ----------- | -------------------- | -------------------------------- |
-  | `:amount`   | `Decimal.t/0` \\| nil | USDC to convert / move, or deficit |
+  | `:amount`   | `t:Decimal.t/0` \\| nil | USDC to convert / move, or deficit |
 
   Metadata: `:type` (`:refuel_gas` \\| `:rebalance_usdc` \\| `:alert`) plus
   type-specific keys (`:chain_id`, `:from_chain`, `:to_chain`, `:funding`, `:note`).

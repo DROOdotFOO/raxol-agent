@@ -576,7 +576,7 @@ defmodule Raxol.Payments.Assets do
   def decimals(_), do: @default_decimals
 
   @doc """
-  Convert an atomic-unit amount to a human-decimal `Decimal.t/0`.
+  Convert an atomic-unit amount to a human-decimal `t:Decimal.t/0`.
 
   E.g. `to_human(10_000, 6)` -> `Decimal.new("0.01")`.
   """
@@ -633,7 +633,7 @@ defmodule Raxol.Payments.Assets do
   def parse_atomic(_amount), do: :error
 
   @doc """
-  Convert an amount to a `Decimal.t/0`. A `Decimal` passes through, an integer
+  Convert an amount to a `t:Decimal.t/0`. A `Decimal` passes through, an integer
   converts exactly, and a string goes through `Decimal.new/1`, except a string
   of at most 78 bytes that parses fully as an integer, which converts through
   that integer.

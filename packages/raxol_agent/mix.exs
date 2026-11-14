@@ -151,7 +151,9 @@ defmodule RaxolAgent.MixProject do
       # The package lives under packages/raxol_agent in its repository.
       source_url_pattern:
         "#{@source_url}/blob/#{@source_ref}/packages/raxol_agent/%{path}#L%{line}",
-      extras: ["README.md", "CHANGELOG.md"]
+      extras: ["README.md", "CHANGELOG.md"],
+      # The changelog names functions this release removes.
+      skip_undefined_reference_warnings_on: ["CHANGELOG.md"]
     ]
   end
 end

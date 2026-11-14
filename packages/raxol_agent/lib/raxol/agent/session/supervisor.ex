@@ -70,7 +70,6 @@ defmodule Raxol.Agent.Session.Supervisor do
   physical journal *directory*, not by session) — that registration enforces
   the single-writer-per-dir invariant across sessions, base dirs and (on
   shared storage) nodes, which a per-session Registry key cannot express.
-  See `Raxol.Agent.Journal.FileStore.Writer.global_name/1`.
   """
 
   use Supervisor
