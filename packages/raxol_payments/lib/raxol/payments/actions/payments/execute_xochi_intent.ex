@@ -614,6 +614,10 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
       {:ok, _exec, _quote} = dispatched ->
         dispatched
 
+      # Already released and nothing dispatched; the checkpoint is not ours.
+      {:refused, reason} ->
+        {:error, reason}
+
       {:error, reason} ->
         if quote_expired?(reason),
           do: retry_execute(config, request, floor, wallet, context, amount, store, key),
@@ -674,6 +678,10 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
         bind_dispatch_owner(dispatch)
         dispatch_owned(dispatch)
 
+      # Another run of this payment holds the key, so this run's reservation is
+      # released here, once. When that run's record is already gone there is
+      # nothing to resume: this run stops without sending, as a refusal the
+      # caller does not release again.
       {:error, :exists} ->
         SpendGate.release(dispatch.context, dispatch.amount, %{
           protocol: :xochi,
@@ -682,7 +690,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
 
         case Checkpoint.fetch(dispatch.store, dispatch.key) do
           {:ok, existing} -> {:ok, resumed_execute(existing), dispatch.quote}
-          :error -> {:error, :checkpoint_race}
+          :error -> {:refused, :checkpoint_race}
         end
     end
   end

@@ -464,6 +464,10 @@ named in parentheses describes it and is marked **Breaking**.
   left `ExecuteXochiIntent`'s spend reservation held and its checkpoint in
   place. It is now a definite failure: the reservation is released, the
   checkpoint deleted, and the action returns an error.
+- `ExecuteXochiIntent` released its reservation twice when a concurrent run
+  of the same payment held the checkpoint key and that record was gone before
+  this run read it, handing back one spend's worth of budget. It now releases
+  once and returns `:checkpoint_race`, a non-retryable `:rejected` failure.
 - `ExecuteDepositRoute` also returns an integral JSON-float `to_amount` or
   `min_to_amount` (`960000.0`) as its integer string; it failed the output
   schema. A fractional float, or one above 2^53 that may not be the integer

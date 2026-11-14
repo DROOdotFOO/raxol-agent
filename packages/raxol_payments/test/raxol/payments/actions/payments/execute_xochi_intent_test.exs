@@ -8,6 +8,28 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
   alias Raxol.Payments.Test.XochiIntentFixture
   alias Raxol.Payments.Xochi.{ReadTokenStore, SettlementState, Stealth}
 
+  # Two runs of the same payment share its key: this run's `put_new` loses
+  # (`:exists`), and the winner's checkpoint is gone before this run reads it.
+  defmodule LostRaceStore do
+    @moduledoc false
+    @behaviour Checkpoint
+
+    @impl true
+    def fetch(_handle, _key), do: :error
+
+    @impl true
+    def put(_handle, _key, _record), do: :ok
+
+    @impl true
+    def put_new(_handle, _key, _record), do: {:error, :exists}
+
+    @impl true
+    def delete(_handle, _key), do: :ok
+
+    @impl true
+    def sweep_expired(_handle, _now), do: :ok
+  end
+
   # Wallet that signals when it signs, so tests can assert the gate runs first.
   defmodule SpyWallet do
     @moduledoc false
@@ -1408,6 +1430,47 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
 
       totals = Ledger.get_totals(ledger, "a1", policy())
       assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+    end
+
+    test "a lost checkpoint race releases the reservation once and sends nothing" do
+      parent = self()
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        case conn.request_path do
+          "/api/intent/quote" ->
+            serve_quote(conn)
+
+          "/api/intent/execute" ->
+            send(parent, :executed)
+            Req.Test.json(conn, %{"success" => true, "intentId" => "int_1"})
+        end
+      end)
+
+      ledger = start_supervised!({Ledger, [name: nil]})
+
+      ctx = %{
+        wallet: SpyWallet,
+        xochi_config: config(),
+        ledger: ledger,
+        policy: policy(),
+        agent_id: "a1",
+        checkpoint: {LostRaceStore, nil},
+        idempotency_key: "pay-1"
+      }
+
+      assert {:error, %Failure{reason: :rejected, detail: :checkpoint_race, retryable?: false}} =
+               ExecuteXochiIntent.run(base_params(%{}), ctx)
+
+      refute_received :executed
+
+      amounts = ledger |> Ledger.get_history("a1") |> Enum.map(& &1.amount)
+      assert [released, reserved] = Enum.sort_by(amounts, &Decimal.to_float/1)
+      assert Decimal.equal?(reserved, Decimal.new("0.50"))
+      assert Decimal.equal?(released, Decimal.new("-0.50"))
+
+      totals = Ledger.get_totals(ledger, "a1", policy())
+      assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+      assert Decimal.equal?(totals.session, Decimal.new("0"))
     end
   end
 

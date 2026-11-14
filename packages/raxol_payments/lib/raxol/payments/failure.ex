@@ -330,6 +330,18 @@ defmodule Raxol.Payments.Failure do
         detail
       )
 
+  # A concurrent run of the same payment claimed its checkpoint, and its record
+  # was gone before this run could resume it. This run sent nothing and
+  # released its reservation; the other run's outcome decides the payment.
+  def from(:checkpoint_race),
+    do:
+      build(
+        :rejected,
+        "Another run of this payment claimed it; this run sent nothing. Check the payment's status before retrying.",
+        false,
+        :checkpoint_race
+      )
+
   # A fund-moving deployment required a durable idempotency checkpoint but none
   # was configured. Fail closed before signing rather than risk a double-settle
   # on a crash-retry.
