@@ -321,7 +321,7 @@ defmodule Raxol.AgentClientProtocol.Session do
     * `{:error, :no_steer_channel}` — no steer adapter is wired (the default).
 
   `request` is a map `%{text: _, expected_turn_id: _, client_msg_id: _}` (see
-  `Raxol.AgentClientProtocol.Session.SteerAdapter.request/0`).
+  `t:Raxol.AgentClientProtocol.Session.SteerAdapter.request/0`).
   """
   @spec steer(GenServer.server(), SteerAdapter.request()) :: SteerAdapter.result()
   def steer(session, request) when is_map(request) do
