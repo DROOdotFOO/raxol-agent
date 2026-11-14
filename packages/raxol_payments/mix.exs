@@ -14,11 +14,8 @@ defmodule RaxolPayments.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       dialyzer: [
-        # raxol_agent is a compile-time-only dep (runtime: false), so it is not in
-        # the application tree dialyzer derives. Add it (with :mix, for the Mix.Task
-        # tasks) to the PLT so the Action behaviour, CommandHook, and Mix.Task
-        # callbacks resolve -- this replaces per-file suppressions.
-        plt_add_apps: [:raxol_agent, :mix],
+        # :mix for the Mix.Task callbacks of the mix tasks.
+        plt_add_apps: [:mix],
         ignore_warnings: ".dialyzer_ignore.exs"
       ],
       description: description(),
@@ -39,8 +36,7 @@ defmodule RaxolPayments.MixProject do
 
   defp deps do
     [
-      # Compile-time only: Action macro, CommandHook behaviour, Command struct
-      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", runtime: false),
+      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", []),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
       {:req, "~> 0.5"},

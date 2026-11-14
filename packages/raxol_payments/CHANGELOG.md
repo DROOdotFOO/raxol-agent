@@ -149,6 +149,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Requires `raxol_agent ~> 3.0` (was `~> 2.7`) and `raxol_core ~> 2.8` (was
   `~> 2.7`).
+- `raxol_agent` is a runtime dependency, no longer `runtime: false`:
+  `raxol_payments` calls `Raxol.Agent.Action` and `Raxol.Agent.ContextStore`
+  at run time, so the `:raxol_agent` application starts with it.
 - **Breaking.** `Raxol.Payments.Req.AutoPay.attach/2`,
   `Req.AgentPlugin.auto_pay/1` and the Xochi client's `{:x402, opts}` auth
   require `:policy`, a `SpendingPolicy`, and raise `ArgumentError` without
