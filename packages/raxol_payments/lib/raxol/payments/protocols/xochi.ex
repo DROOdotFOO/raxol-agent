@@ -651,8 +651,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
               "would sign ERC-3009 origin-pull authorizations to an unverified recipient. " <>
               "Set XOCHI_SOLVER_BASE / XOCHI_SOLVER_ARBITRUM / XOCHI_SOLVER_OPTIMISM / " <>
               "XOCHI_SOLVER_ETH / XOCHI_SOLVER_POLYGON / XOCHI_SOLVER_ROBINHOOD to the " <>
-              "canonical solver address(es), or set XOCHI_PULL_REQUIRE_SOLVER_PIN=true. " <>
-              "See GitHub #333."
+              "canonical solver address(es), or set XOCHI_PULL_REQUIRE_SOLVER_PIN=true."
     end
 
     :ok
