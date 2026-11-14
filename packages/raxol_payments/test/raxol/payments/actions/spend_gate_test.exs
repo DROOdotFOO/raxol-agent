@@ -420,6 +420,53 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
                authorize(ctx, "1", @eurc)
     end
 
+    # The configured CoinGecko source is reached through the Req.Test plug,
+    # set as a Req default for the test because the spend path builds the
+    # source itself. This module is not async, so nothing else runs meanwhile.
+    defp route_requests_to_stub do
+      saved = Req.default_options()
+      Req.default_options(plug: {Req.Test, __MODULE__})
+      on_exit(fn -> Application.put_env(:req, :default_options, saved) end)
+      Application.put_env(:raxol_payments, :accounting, price_source: :coingecko, fx: nil)
+    end
+
+    test "a rate-limited CoinGecko fetch refuses the spend once, retryably" do
+      route_requests_to_stub()
+      parent = self()
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        send(parent, :coingecko_called)
+
+        conn
+        |> Plug.Conn.put_resp_header("retry-after", "2")
+        |> Plug.Conn.send_resp(429, "slow down")
+      end)
+
+      ctx = context(%{policy: usd_policy()})
+
+      assert {:error, {:unpriced_asset, %{reason: :price_source_error}} = reason} =
+               authorize(ctx, "0.002", @weth)
+
+      # One request: no retry, no `retry-after` wait.
+      assert_received :coingecko_called
+      refute_received :coingecko_called
+      assert %Raxol.Payments.Failure{retryable?: true} = Raxol.Payments.Failure.from(reason)
+    end
+
+    test "a configured CoinGecko source prices the spend" do
+      route_requests_to_stub()
+      now = System.system_time(:second)
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        Req.Test.json(conn, %{"weth" => %{"usd" => 3000, "last_updated_at" => now}})
+      end)
+
+      ctx = context(%{policy: usd_policy()})
+
+      assert {:ok, reserved} = authorize(ctx, "0.002", @weth)
+      assert Decimal.equal?(reserved, Decimal.new("6"))
+    end
+
     test "an unpriced token is refused: no symbol, or no price for it" do
       ctx =
         context(%{

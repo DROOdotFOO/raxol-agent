@@ -27,9 +27,10 @@ defmodule Raxol.Payments.SpendPricing do
   The price source is the context's `:price_fn` (`(symbol -> Decimal.t() |
   nil)`, as `Raxol.Payments.RebalanceMonitor` takes) when it is set, and
   otherwise `price_source:` of `Raxol.Payments.Prices.configured/0`, built
-  for the spend. Each source answers `nil` for a price older than it accepts:
-  `Prices.CoinGecko` and `Prices.Static` past their `:max_age_s` (default 300
-  seconds).
+  for the spend without retries and with 5-second connect and receive
+  timeouts, so a slow or rate-limited source refuses the spend quickly. Each
+  source answers `nil` for a price older than it accepts: `Prices.CoinGecko`
+  and `Prices.Static` past their `:max_age_s` (default 300 seconds).
 
   A spend that cannot be converted is refused as `{:unpriced_asset, detail}`,
   `detail` carrying `side: :source`, the asset, its `peg`, the policy `unit`
@@ -45,7 +46,7 @@ defmodule Raxol.Payments.SpendPricing do
     * `:invalid_price` -- the price is not a positive finite `Decimal`, or the
       product is not representable;
     * `:price_source_error` -- building or calling the source raised, exited
-      or threw;
+      or threw, or the configured source's fetch failed (retryable);
     * `:invalid_asset` -- the asset is not one of the shapes above.
   """
 
@@ -135,13 +136,27 @@ defmodule Raxol.Payments.SpendPricing do
   defp lookup(nil, _context), do: {:error, :no_price}
   defp lookup(symbol, context), do: price(source(context), symbol)
 
+  # A spend waits on the configured source's fetch, so it is built to fail
+  # fast: no retry (Req would otherwise retry a 429 or 5xx three times and
+  # honour `retry-after`), 5 seconds to connect and 5 seconds for the answer.
+  # A failed fetch raises, which refuses the spend as `:price_source_error`
+  # (retryable) rather than `:no_price`. The accounting sweep builds the same
+  # source with its defaults.
+  @spend_source_opts [
+    req_options: [retry: false, receive_timeout: 5_000, connect_options: [timeout: 5_000]],
+    raise_on_fetch_error: true
+  ]
+
   # The context's `:price_fn` wins; otherwise the configured source, built when
-  # the price is read. `Prices.source_fn/1` is nil for `:none` and anything it
+  # the price is read. `Prices.source_fn/2` is nil for `:none` and anything it
   # does not know.
   defp source(context) do
     case Map.get(context, :price_fn) do
-      price_fn when is_function(price_fn, 1) -> fn -> price_fn end
-      _ -> fn -> Prices.source_fn(Prices.configured().price_source) end
+      price_fn when is_function(price_fn, 1) ->
+        fn -> price_fn end
+
+      _ ->
+        fn -> Prices.source_fn(Prices.configured().price_source, @spend_source_opts) end
     end
   end
 

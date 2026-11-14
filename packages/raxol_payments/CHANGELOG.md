@@ -279,7 +279,12 @@ named in parentheses describes it and is marked **Breaking**.
   `last_updated_at` and answers `nil` for one older than `:max_age_s`
   (default 300 seconds) or without one; `Prices.Static.price_fn/2` takes
   `:as_of` (default when built) and `:max_age_s` (default 300) and answers
-  `nil` once its prices are older. No spend cap reads an FX rate, so a
+  `nil` once its prices are older. For a spend the configured source is
+  fetched without retries and with 5-second connect and receive timeouts, and
+  a failed fetch refuses the spend as `:price_source_error`, which is
+  retryable (`Prices.source_fn/2` passes options to
+  `Prices.CoinGecko.price_fn/1`, which takes `:raise_on_fetch_error`); the
+  accounting sweep keeps the defaults. No spend cap reads an FX rate, so a
   stablecoin pegged to another currency is refused (EURC, EURe and ZCHF
   under a USD policy or with no policy; a dollar stablecoin under a EUR or
   CHF policy), and under a non-USD policy every token not pegged to it is

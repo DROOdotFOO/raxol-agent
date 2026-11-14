@@ -35,9 +35,11 @@ defmodule Raxol.Payments.Prices do
 
   @doc """
   A `price_fn` for `source`, built now (`:coingecko` fetches once). `nil` for
-  `:none` and for anything unrecognized, which prices nothing.
+  `:none` and for anything unrecognized, which prices nothing. `opts` go to
+  the source's builder (`Prices.CoinGecko.price_fn/1`).
   """
-  @spec source_fn(term()) :: price_fn() | nil
-  def source_fn(:coingecko), do: CoinGecko.price_fn()
-  def source_fn(_source), do: nil
+  @spec source_fn(term(), keyword()) :: price_fn() | nil
+  def source_fn(source, opts \\ [])
+  def source_fn(:coingecko, opts), do: CoinGecko.price_fn(opts)
+  def source_fn(_source, _opts), do: nil
 end

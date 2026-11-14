@@ -39,7 +39,10 @@ defmodule Raxol.Payments.Prices.CoinGecko do
 
   Options: `:url` (override endpoint), `:req_options` (extra `Req` options, e.g.
   `plug:` for `Req.Test`), `:max_age_s` (a positive integer, default
-  #{@default_max_age_s}).
+  #{@default_max_age_s}), `:raise_on_fetch_error` (default `false`: a failed
+  fetch, a non-200 status or a body that is not a map, prices every symbol
+  `nil`; `true` raises instead, so a caller can tell a failed fetch from a
+  missing price).
   """
   @spec price_fn(keyword()) :: (String.t() -> Decimal.t() | nil)
   def price_fn(opts \\ []) do
@@ -49,7 +52,7 @@ defmodule Raxol.Payments.Prices.CoinGecko do
       raise ArgumentError, ":max_age_s must be a positive integer, got #{inspect(max_age_s)}"
     end
 
-    prices = fetch(opts)
+    prices = fetch(opts, Keyword.get(opts, :raise_on_fetch_error, false))
 
     fn symbol ->
       case Map.get(prices, symbol) do
@@ -64,7 +67,7 @@ defmodule Raxol.Payments.Prices.CoinGecko do
     age >= 0 and age <= max_age_s
   end
 
-  defp fetch(opts) do
+  defp fetch(opts, raise?) do
     url = Keyword.get(opts, :url, @default_url)
     req_options = Keyword.get(opts, :req_options, [])
     ids = @ids |> Map.values() |> Enum.join(",")
@@ -79,9 +82,17 @@ defmodule Raxol.Payments.Prices.CoinGecko do
 
     case Req.get(req) do
       {:ok, %Req.Response{status: 200, body: body}} when is_map(body) -> parse(body)
-      _ -> %{}
+      result -> fetch_failed(result, raise?)
     end
   end
+
+  defp fetch_failed(_result, false), do: %{}
+
+  defp fetch_failed({:ok, %Req.Response{status: status}}, true),
+    do: raise("CoinGecko price fetch failed: HTTP #{status}")
+
+  defp fetch_failed({:error, exception}, true),
+    do: raise("CoinGecko price fetch failed: #{inspect(exception.__struct__)}")
 
   defp parse(body) do
     @ids

@@ -106,4 +106,16 @@ defmodule Raxol.Payments.Prices.CoinGeckoTest do
     stub_json(%{"ethereum" => coin("not-a-number")})
     assert price_fn().("ETH") == nil
   end
+
+  test "with :raise_on_fetch_error a failed fetch raises instead of pricing nil" do
+    Req.Test.stub(__MODULE__, fn conn -> Plug.Conn.send_resp(conn, 429, "slow down") end)
+
+    assert_raise RuntimeError, ~r/HTTP 429/, fn -> price_fn(raise_on_fetch_error: true) end
+
+    Req.Test.stub(__MODULE__, &Req.Test.transport_error(&1, :timeout))
+
+    assert_raise RuntimeError, ~r/TransportError/, fn ->
+      price_fn(raise_on_fetch_error: true)
+    end
+  end
 end
