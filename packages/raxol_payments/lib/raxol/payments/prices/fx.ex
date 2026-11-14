@@ -19,8 +19,6 @@ defmodule Raxol.Payments.Prices.FX do
   floor reads; that is ADR-0040 decision 7, and it is not built.
   """
 
-  alias Raxol.Payments.{Assets, Secret}
-
   @type price_fn :: (String.t() -> Decimal.t() | nil)
 
   @doc "`fallback` when `opts` is `nil`, else the FX `price_fn` in front of it."
@@ -36,6 +34,8 @@ defmodule Raxol.Payments.Prices.FX do
 
   if Code.ensure_loaded?(Raxol.Web3.FX) do
     require Logger
+
+    alias Raxol.Payments.{Assets, Secret}
 
     defp build(opts, fallback) do
       key = opts |> Keyword.fetch!(:sleuth_api_key) |> Secret.new() |> Secret.reveal()
