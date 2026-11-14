@@ -149,6 +149,41 @@ defmodule Raxol.Payments.EIP712Test do
       assert byte_size(h1) == 32
       assert h1 != h2
     end
+
+    # The values come off the wire (a served Permit2 nonce or orderId), so a
+    # value of the wrong Elixir type is an error result, never a raise or a
+    # digest over a coerced value.
+    test "a value that does not fit its declared type is refused, not raised" do
+      for {type, value} <- [
+            {"uint256", 1.5},
+            {"uint256", true},
+            {"uint256", false},
+            {"bytes32", 5},
+            {"address", 7},
+            {"string", 1.0},
+            {"bool", 1}
+          ] do
+        types = %{"Box" => [{"v", type}]}
+
+        assert {:error, {:invalid_value, ^type}} =
+                 EIP712.hash(%{name: "Test"}, types, %{"v" => value})
+      end
+    end
+
+    test "a struct value that is not a map is refused, not raised" do
+      types = %{"Outer" => [{"inner", "Inner"}], "Inner" => [{"x", "uint256"}]}
+
+      assert {:error, {:invalid_value, "Inner"}} =
+               EIP712.hash(%{name: "Test"}, types, %{"inner" => 5})
+
+      array_types = %{"Outer" => [{"items", "Inner[]"}], "Inner" => [{"x", "uint256"}]}
+
+      assert {:error, {:invalid_value, "Inner"}} =
+               EIP712.hash(%{name: "Test"}, array_types, %{"items" => [1]})
+
+      assert {:error, {:invalid_value, "Inner"}} =
+               EIP712.hash(%{name: "Test"}, "Inner", types, "not a map")
+    end
   end
 
   describe "dynamic array types (T[])" do

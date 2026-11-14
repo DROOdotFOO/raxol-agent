@@ -20,6 +20,34 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
     def sign_hash(_), do: {:ok, <<7::size(520)>>}
   end
 
+  # Anvil/foundry default account #0 -- known private key for deterministic tests.
+  @env_wallet_var "RAXOL_RELAY_GASLESS_TEST_KEY"
+  @env_wallet_key "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+
+  defmodule EnvWallet do
+    @moduledoc false
+    use Raxol.Payments.Wallets.Env, env_var: "RAXOL_RELAY_GASLESS_TEST_KEY"
+  end
+
+  # A third-party wallet that does not rescue: it raises, exits or throws as
+  # `:wallet_failure` in the process dictionary says.
+  defmodule CrashingWallet do
+    @moduledoc false
+    def address, do: "0x1111111111111111111111111111111111111111"
+    def chain_id, do: 8453
+
+    def sign_typed_data(_d, _t, _m) do
+      case Process.get(:wallet_failure) do
+        :raise -> raise "signer crashed"
+        :exit -> exit(:signer_down)
+        :throw -> throw(:signer_threw)
+      end
+    end
+
+    def sign_message(_), do: {:error, :unsupported}
+    def sign_hash(_), do: {:error, :unsupported}
+  end
+
   defp config do
     %{
       base_url: "https://relay.test",
@@ -280,6 +308,47 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
                  ExecuteRelayTransfer.run(base_params(%{}), context)
 
         refute_received {:execute_body, _}
+      end
+    end
+
+    test "a served Permit2 value the encoder cannot take is refused and released" do
+      System.put_env(@env_wallet_var, @env_wallet_key)
+      on_exit(fn -> System.delete_env(@env_wallet_var) end)
+      context = ctx(%{wallet: EnvWallet})
+
+      probes = [
+        put_in(canonical_gasless(), ["message", "nonce"], 1.5),
+        put_in(canonical_gasless(), ["message", "nonce"], true),
+        put_in(canonical_gasless(), ["message", "nonce"], %{"value" => "1"}),
+        put_in(canonical_gasless(), ["message", "witness", "orderId"], 5)
+      ]
+
+      for gasless <- probes do
+        stub_gasless(gasless)
+
+        assert {:error, %Failure{}} = ExecuteRelayTransfer.run(base_params(%{}), context)
+        refute_received {:execute_body, _}
+
+        totals = Ledger.get_totals(context.ledger, "a1", policy())
+        assert Decimal.equal?(totals.session, Decimal.new("0"))
+        assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+      end
+    end
+
+    test "a wallet that raises, exits or throws is refused and the reservation released" do
+      context = ctx(%{wallet: CrashingWallet})
+
+      for failure <- [:raise, :exit, :throw] do
+        Process.put(:wallet_failure, failure)
+        stub_gasless(canonical_gasless())
+
+        assert {:error, %Failure{reason: :sign_failed}} =
+                 ExecuteRelayTransfer.run(base_params(%{}), context)
+
+        refute_received {:execute_body, _}
+
+        totals = Ledger.get_totals(context.ledger, "a1", policy())
+        assert Decimal.equal?(totals.session, Decimal.new("0"))
       end
     end
   end

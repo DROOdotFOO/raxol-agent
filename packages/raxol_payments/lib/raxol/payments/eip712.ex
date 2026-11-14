@@ -320,18 +320,30 @@ defmodule Raxol.Payments.EIP712 do
     end
   end
 
+  # A struct value that is not a map (a served nested struct or array element
+  # of the wrong shape) is refused like any other value of the wrong type.
+  defp encode_data(type_name, data, _types) when not is_map(data),
+    do: {:error, {:invalid_value, type_name}}
+
   defp encode_data(type_name, data, types) do
     fields = Map.get(types, type_name, [])
 
     fields
     |> Enum.reduce_while(<<>>, fn {name, type}, acc ->
-      value = Map.get(data, name) || safe_atom_get(data, name)
-
-      case encode_value(type, value, types) do
+      case encode_value(type, field_value(data, name), types) do
         {:ok, encoded} -> {:cont, <<acc::binary, encoded::binary>>}
         {:error, _} = err -> {:halt, err}
       end
     end)
+  end
+
+  # `false` is a value, not a missing key: a served `false` for a uint256 is
+  # refused rather than read as absent and encoded as zero.
+  defp field_value(data, name) do
+    case Map.fetch(data, name) do
+      {:ok, value} -> value
+      :error -> safe_atom_get(data, name)
+    end
   end
 
   # Look up a string key as an existing atom. Returns nil if the atom
@@ -465,6 +477,11 @@ defmodule Raxol.Payments.EIP712 do
   defp encode_value(_type, value) when is_binary(value) do
     {:ok, pad_left(value, 32)}
   end
+
+  # Any other value (a float, a boolean for a non-bool type, an integer for a
+  # bytes32 or address, a map for a scalar) is refused. The value itself stays
+  # out of the error: it is served data.
+  defp encode_value(type, _value), do: {:error, {:invalid_value, type}}
 
   defp array_element_type(type) do
     case String.split(type, "[]", parts: 2) do

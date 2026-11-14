@@ -370,6 +370,13 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 - `EIP712.hash/3` refuses a `uint256` string longer than 78 bytes as
   `{:invalid_uint256, value}` before parsing it. A quote message with a
   5-million-digit amount raised `SystemLimitError` out of the wallet.
+- `EIP712` raised `FunctionClauseError` on a value of the wrong Elixir type (a
+  float or boolean `uint256`, an integer `bytes32`, a struct that is not a
+  map), and read a served `false` as an absent field (encoded as 0). Every
+  hash function now returns `{:error, {:invalid_value, type}}` instead. A
+  hostile Relay gasless block with such a value, or a wallet that raised,
+  exited or threw while signing it, left `ExecuteRelayTransfer`'s reservation
+  held; the action now refuses it and releases the reservation.
 - A raise inside `Xochi.execute` (on the first execute or the re-quote retry)
   left `ExecuteXochiIntent`'s spend reservation held and its checkpoint in
   place. It is now a definite failure: the reservation is released, the

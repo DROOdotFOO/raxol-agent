@@ -339,7 +339,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   # wallet sees it (`Xochi.validate_permit2_authorization/4`): exactly the
   # canonical types, fields and Permit2 domain on the origin chain, the request's
   # token, an amount at most the request's, a pinned spender, a bounded deadline.
-  # Anything else is refused, the reservation released, and nothing signed.
+  # Anything else is refused, the reservation released, and nothing signed. So
+  # is a signing error, raise, exit or throw: no signature has left the process.
   defp maybe_sign_gasless(%QuoteResponse{gasless: gasless}, request, context, amount)
        when is_map(gasless) do
     case Map.get(context, :wallet) do
@@ -361,7 +362,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
         %{types: types} = Xochi.permit2_kind()
         domain = Xochi.eip712_domain(gasless)
 
-        case wallet.sign_typed_data(domain, types, gasless["message"]) do
+        case safe_sign(wallet, domain, types, gasless["message"]) do
           {:ok, sig} -> {:ok, "0x" <> Base.encode16(sig, case: :lower)}
           {:error, reason} -> release_and_error(context, amount, {:sign_failed, reason})
         end
@@ -369,6 +370,16 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       {:error, {:authorization_mismatch, field}} ->
         release_and_error(context, amount, {:authorization_mismatch, {:gasless, field}})
     end
+  end
+
+  # A third-party wallet may raise (or exit, or throw) on served values its
+  # encoder rejects; the reservation is released either way.
+  defp safe_sign(wallet, domain, types, message) do
+    wallet.sign_typed_data(domain, types, message)
+  rescue
+    exception -> {:error, {:exception, exception.__struct__}}
+  catch
+    kind, _reason -> {:error, {kind, :signer}}
   end
 
   defp execute(config, quote, signature, context, amount) do
