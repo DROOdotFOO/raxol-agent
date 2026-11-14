@@ -5,7 +5,22 @@ All notable changes to `raxol_payments` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-14
+
+### Removed
+
+- **Breaking.** The Riddler Commerce API client is gone: Riddler removed
+  `/commerce/*` server-side. Deleted `Raxol.Payments.Riddler.Client`,
+  `Raxol.Payments.Riddler.Schemas` (and its `QuoteRequest`/`QuoteResponse`/
+  `OrderRequest`/`OrderStatus`/... structs), `Raxol.Payments.Protocols.Riddler`,
+  and the `:riddler` atom in `Raxol.Payments.Protocol.resolve/1`. Use
+  `Raxol.Payments.Protocols.Xochi` (which `Protocols.Riddler` already
+  delegated to) for cross-chain intents. `Raxol.Payments.Relay.Client` is
+  unaffected.
+
+- `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
+  `execute/4` and `sign_intent/3`, which take the `QuoteRequest` the quote was
+  fetched with.
 
 ### Added
 
@@ -16,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config :raxol_payments` (the configured addresses plus
   `PullContracts.pull_recipients/0`). For the `config/runtime.exs` of a release
   that signs origin pulls.
-- Xochi read capability (xochi#563). `ExecuteResponse.read_token` carries the
+- Xochi read capability. `ExecuteResponse.read_token` carries the
   one-time token `POST /api/intent/execute` returns (nil from an older worker;
   excluded from `inspect`). `Xochi.Client.get_status/3` and `get_intent/3` take
   `read_token:` and send it as the `X-Xochi-Read-Token` header, never in the
@@ -56,69 +71,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rejection for this writer and is never converted into a deliverable by polling
   that intent. For a genuinely ambiguous dispatch, a 404 at or after the signed
   deadline proves it never landed and releases the reservation.
-
-### Security
-
-- Error bodies recursively redact both `read_token` and `readToken`; no error
-  tuple or replayable Action result carries the bearer secret.
-- A read token is never presented to, or deleted under, a different API origin,
-  executing principal, or intent id than the execute that issued it.
-
-### Changed
-
-- Cross-repository parity now uses the published `@xochi/spec@0.9.0`
-  tarball, pinned by committed SHA-512 integrity and fetched through a cached,
-  verified script. `XOCHI_SPEC_DIR` is the single package-root contract, and
-  `RIDDLER_CHECKOUT_DIR` explicitly names any built Riddler checkout.
-- `Raxol.Payments.PrivacyTier`: Sovereign's `data_retention` is `:wallet`, not
-  `:nothing`; `:nothing` is removed from the `t()` typespec. No design promises
-  zero retention and Sovereign is excluded (xochi
-  `docs/planning/shielded-execution.md` D1). `examples/privacy_modes.exs` /
-  `examples/README.md` describe shielded as unavailable: testnet tracer A is
-  recipient-private with the amount public (recipient half not delivered),
-  production target B-panel (conditional) hides amount and recipient on Aztec
-  only, and the source deposit is always public. The `PrivacyTier` moduledoc
-  marks Private and Sovereign shielded settlement unavailable.
-- **Breaking.** `Raxol.Payments.Pxe.Client` now follows the pxe-bridge
-  contract. Previously it could not safely move money: there was no
-  `Idempotency-Key`, it timed out at 15s while the bridge proves for up to
-  120s, and `-32001`/`-32002` arrived as a generic RPC error.
-  - `create_note/3` takes an idempotency key (1-128 printable ASCII; one key
-    per transfer) and sends it as `Idempotency-Key`.
-  - `create_note/3` waits 180s (`:create_note_timeout_ms`) and retries only a
-    refused or closed connection, once, never after a timeout. Reads use
-    `:request_timeout_ms` (10s).
-  - `-32001` is `{:error, :request_in_flight}`. `-32002` is
-    `{:error, {:submitted_unknown, tx_hash | nil}}`, carrying `data.txHash`.
-    The moduledoc says which failures are safe to resend with the same key.
-  - `CreateNoteResult` holds `note_hashes`, `nullifiers` and `l2_tx_hash`.
-    `note_commitment` / `nullifier_hash` are removed: the bridge deprecated
-    them. `from_json/1` returns `{:ok, t} | {:error, {:unexpected_result, _}}`.
-  - `CreateNoteParams` rejects a zero amount and the zero recipient address,
-    as the bridge does, and accepts the optional XIP-1 trade context
-    (`trade_id`, `sub_trade_index`, `total_sub_trades`; all or none).
-  - `health/1` returns a 503 `starting` body as
-    `{:ok, %HealthStatus{status: :starting}}`.
-  - The `:retry` config key is gone.
-  - Modelled on `@xochi/client`'s transport, which uses separate timeouts for
-    long writes and reads and retries only idempotent reads on 502/503/504.
-    xochi-sdk is deleting its own `PxeBridgeClient` (xochi-sdk#32) for these
-    same defects.
-
-## [0.3.0] - 2026-10-09
-
-### Removed
-
-- **Breaking.** The Riddler Commerce API client is gone: Riddler removed
-  `/commerce/*` server-side. Deleted `Raxol.Payments.Riddler.Client`,
-  `Raxol.Payments.Riddler.Schemas` (and its `QuoteRequest`/`QuoteResponse`/
-  `OrderRequest`/`OrderStatus`/... structs), `Raxol.Payments.Protocols.Riddler`,
-  and the `:riddler` atom in `Raxol.Payments.Protocol.resolve/1`. Use
-  `Raxol.Payments.Protocols.Xochi` (which `Protocols.Riddler` already
-  delegated to) for cross-chain intents. `Raxol.Payments.Relay.Client` is
-  unaffected.
-
-### Added
 
 - Registered RAXOL on Robinhood Chain (`0xf447...53af`, 18 decimals) in
   `Raxol.Payments.Assets`, so the Xochi client sizes, resolves and classifies
@@ -194,21 +146,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `Protocols.Riddler.submit_order/4` takes the Xochi `QuoteRequest` as its
-  fourth argument, so the intent it signs is checked against the request.
-
-### Security
-
-- Requires `decimal >= 3.1.2` (was `~> 3.0`) for CVE-2026-97853: below 3.1.2,
-  `Decimal.round/3` allocates in proportion to its `places` argument.
-
-### Removed
-
-- `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
-  `execute/4` and `sign_intent/3`, which take the `QuoteRequest` the quote was
-  fetched with.
-
-### Changed
+- Requires `raxol_agent ~> 3.0` (was `~> 2.7`) and `raxol_core ~> 2.8` (was
+  `~> 2.7`).
+- Cross-repository parity now uses the published `@xochi/spec@0.9.0`
+  tarball, pinned by committed SHA-512 integrity and fetched through a cached,
+  verified script. `XOCHI_SPEC_DIR` is the single package-root contract, and
+  `RIDDLER_CHECKOUT_DIR` explicitly names any built Riddler checkout.
+- `Raxol.Payments.PrivacyTier`: Sovereign's `data_retention` is `:wallet`, not
+  `:nothing`; `:nothing` is removed from the `t()` typespec. No design promises
+  zero retention and Sovereign is excluded. `examples/privacy_modes.exs` /
+  `examples/README.md` describe shielded as unavailable: testnet tracer A is
+  recipient-private with the amount public (recipient half not delivered),
+  production target B-panel (conditional) hides amount and recipient on Aztec
+  only, and the source deposit is always public. The `PrivacyTier` moduledoc
+  marks Private and Sovereign shielded settlement unavailable.
+- **Breaking.** `Raxol.Payments.Pxe.Client` now follows the pxe-bridge
+  contract. Previously it could not safely move money: there was no
+  `Idempotency-Key`, it timed out at 15s while the bridge proves for up to
+  120s, and `-32001`/`-32002` arrived as a generic RPC error.
+  - `create_note/3` takes an idempotency key (1-128 printable ASCII; one key
+    per transfer) and sends it as `Idempotency-Key`.
+  - `create_note/3` waits 180s (`:create_note_timeout_ms`) and retries only a
+    refused or closed connection, once, never after a timeout. Reads use
+    `:request_timeout_ms` (10s).
+  - `-32001` is `{:error, :request_in_flight}`. `-32002` is
+    `{:error, {:submitted_unknown, tx_hash | nil}}`, carrying `data.txHash`.
+    The moduledoc says which failures are safe to resend with the same key.
+  - `CreateNoteResult` holds `note_hashes`, `nullifiers` and `l2_tx_hash`.
+    `note_commitment` / `nullifier_hash` are removed: the bridge deprecated
+    them. `from_json/1` returns `{:ok, t} | {:error, {:unexpected_result, _}}`.
+  - `CreateNoteParams` rejects a zero amount and the zero recipient address,
+    as the bridge does, and accepts the optional XIP-1 trade context
+    (`trade_id`, `sub_trade_index`, `total_sub_trades`; all or none).
+  - `health/1` returns a 503 `starting` body as
+    `{:ok, %HealthStatus{status: :starting}}`.
+  - The `:retry` config key is gone.
+  - Modelled on `@xochi/client`'s transport, which uses separate timeouts for
+    long writes and reads and retries only idempotent reads on 502/503/504.
 
 - In `{:delivery_below_floor, detail}`, `min_to_amount` is the quote's own
   stated minimum; the caller's floor is `:floor`, and `:lowest` is what was
@@ -233,9 +207,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   derived by reading Permit2's decimal uint256 pull nonce as hex: an odd digit
   count sent 0 for every intent, which the worker rejects on the wallet's
   second non-terminal intent ("Nonce already used"). Decimal nonces now give
-  their low 48 bits, as 0x-hex ERC-3009 nonces already did (#772).
+  their low 48 bits, as 0x-hex ERC-3009 nonces already did.
 - raxol signed the Xochi EIP-712 intent without checking it against the
-  request (#1164). A quote could carry a signable intent for another wallet,
+  request. A quote could carry a signable intent for another wallet,
   recipient, chain, token, amount, settlement preference or a far-off
   deadline, and raxol would sign it. `Xochi.validate_intent/2` now binds every
   signed field to the request before any signature, both in `sign_intent/3`
@@ -337,7 +311,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed snapshot all leave the symbol `nil`, never the fallback.
 
 - Unknown chains and tokens now fail closed on the Xochi path instead of
-  being treated as EVM or 6-decimal (#1149). `ExecuteXochiIntent` refuses,
+  being treated as EVM or 6-decimal. `ExecuteXochiIntent` refuses,
   before quoting, a source or destination token without registered decimals
   (`:route_unsupported`, `{:unknown_asset, _}`; `min_to_amount` does not waive
   it) and a non-positive `min_to_amount`, and routes with chain ids so a Tron
@@ -369,6 +343,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being reformatted.
 
 ### Security
+
+- Error bodies recursively redact both `read_token` and `readToken`; no error
+  tuple or replayable Action result carries the bearer secret.
+- A read token is never presented to, or deleted under, a different API origin,
+  executing principal, or intent id than the execute that issued it.
+
+- Requires `decimal >= 3.1.2` (was `~> 3.0`) for CVE-2026-97853: below 3.1.2,
+  `Decimal.round/3` allocates in proportion to its `places` argument.
 
 - x402 and MPP challenges whose atomic amount is wider than a uint256 (more
   than 78 digits, or above 2^256 - 1) are rejected at parse time as
