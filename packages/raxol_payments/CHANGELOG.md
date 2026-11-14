@@ -51,6 +51,9 @@ named in parentheses describes it and is marked **Breaking**.
   "`Raxol.Payments.PrivacyTier`").
 - EURe leaves `Assets.symbols/0` and `evm_tokens/0` (Added,
   "`Raxol.Payments.Assets` registers the non-USD stablecoins").
+- A custom `Relay.Broadcaster` returns `{:error, {:not_sent, reason}}` for a
+  failure before submission; any other error leaves the Relay spend reserved
+  as in doubt (Security, "`ExecuteRelayTransfer` keeps the spend").
 - Requires `decimal ~> 3.1`, whose default context differs from decimal 2's,
   and `req ~> 0.6` (Security, "Requires `decimal`" and "Requires `req`").
 - Requires `raxol_agent ~> 3.0` and `raxol_core ~> 2.8` (Changed, "Requires
@@ -507,6 +510,19 @@ named in parentheses describes it and is marked **Breaking**.
   is not a list is refused at parse (`{:invalid_methods, value}`). AutoPay
   passes a challenge refused at parse through as the unpaid 402 and logs the
   refusal's tag; the caller does not see these reasons.
+- **Breaking.**
+  **`ExecuteRelayTransfer` keeps the spend once a signed gasless pull or a
+  deposit broadcast may have left.** A transport error, timeout or 5xx from
+  execute after the Permit2 signature was sent released the reservation,
+  deleted the checkpoint and reported a retryable network failure, so a retry
+  signed a second pull the solver could settle beside the first. Now a
+  transport error, timeout, 5xx or raise from execute after a signature, and
+  any broadcaster error, raise, exit or throw other than `{:error,
+  {:not_sent, reason}}`, keep the reservation (tagged with the `transfer_id`,
+  so a refund seen by `PollRelayStatus` releases it) and the checkpoint, and
+  return `{:in_doubt, transfer_id}` as a non-retryable `:stranded` failure:
+  poll the transfer. A 4xx from execute, or a connection that never opened,
+  still releases.
 - Error bodies recursively redact both `read_token` and `readToken`; no error
   tuple or replayable Action result carries the bearer secret.
 - A read token is never presented to, or deleted under, a different API origin,

@@ -37,6 +37,12 @@ package formerly named `raxol_acp`; neither name has been on Hex before, so
   `Privy` (signer sidecar), or `Mock`. `Raxol.Earn.Onchain.{RPC, Transaction, RLP}`
   are the EIP-1559 wire layer; ABIs are vendored under `priv/abi/` and verified
   Base addresses live in `Raxol.Earn.Chain`.
+- **Relay deposit broadcaster**: `Raxol.Earn.Relay.OnchainBroadcaster`
+  implements `Raxol.Payments.Relay.Broadcaster` with an ERC-20 `transfer` to
+  the deposit address through a `ProviderAdapter`. A missing provider or a bad
+  amount is `{:error, {:not_sent, reason}}`, so `ExecuteRelayTransfer`
+  releases the spend; a provider error may follow submission and is returned
+  as is, which leaves the deposit in doubt.
 - **SCA wallet**: `Raxol.Earn.Wallet.SCA`, an ERC-4337 v0.7 / Alchemy Modular
   Account v2 stack (UserOp, bundler, paymaster, counterfactual CREATE2
   provisioning, session keys), self-deploying on the first transaction.

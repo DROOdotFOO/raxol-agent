@@ -371,6 +371,18 @@ defmodule Raxol.Payments.Failure do
         detail
       )
 
+  # A Relay transfer whose signed pull or deposit broadcast was sent but whose
+  # outcome is unknown. The funds may move, so retrying the payment could pay
+  # twice: the reservation is kept and the transfer id rides the error to poll.
+  def from({:in_doubt, transfer_id} = detail),
+    do:
+      build(
+        :stranded,
+        "Transfer #{transfer_id} was sent but its outcome is unknown; poll it with payment_poll_relay_status and do not retry the payment.",
+        false,
+        detail
+      )
+
   # Polling timed out.
   def from(:timeout),
     do:

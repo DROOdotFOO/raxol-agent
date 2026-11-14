@@ -69,10 +69,10 @@ defmodule Raxol.Earn.Relay.OnchainBroadcasterTest do
       assert [{8453, _calls}] = Mock.sent_calls(provider)
     end
 
-    test "errors when no provider is configured" do
+    test "reports a missing provider as not sent" do
       Application.delete_env(:raxol_earn, :relay_broadcaster_provider)
 
-      assert {:error, :no_broadcaster_provider} =
+      assert {:error, {:not_sent, :no_broadcaster_provider}} =
                OnchainBroadcaster.send_deposit(%{
                  transfer_id: "t_1",
                  chain_id: 8453,
@@ -82,15 +82,32 @@ defmodule Raxol.Earn.Relay.OnchainBroadcasterTest do
                })
     end
 
-    test "errors on a non-positive or malformed amount" do
+    test "reports a non-positive or malformed amount as not sent" do
       provider = Mock.new()
       base = %{transfer_id: "t", chain_id: 8453, token: @token, to: @to, provider: provider}
 
-      assert {:error, {:invalid_amount, "0"}} =
+      assert {:error, {:not_sent, {:invalid_amount, "0"}}} =
                OnchainBroadcaster.send_deposit(Map.put(base, :amount_atomic, "0"))
 
-      assert {:error, {:invalid_amount, "abc"}} =
+      assert {:error, {:not_sent, {:invalid_amount, "abc"}}} =
                OnchainBroadcaster.send_deposit(Map.put(base, :amount_atomic, "abc"))
+    end
+
+    # The provider may fail after it submitted (a receipt that did not arrive in
+    # time), so its error is not marked not-sent: the deposit stays in doubt.
+    test "returns a provider error unmarked" do
+      provider = Mock.new()
+      :ok = Mock.set_send_calls_error(provider, :timeout)
+
+      assert {:error, :timeout} =
+               OnchainBroadcaster.send_deposit(%{
+                 transfer_id: "t",
+                 chain_id: 8453,
+                 token: @token,
+                 to: @to,
+                 amount_atomic: "500000",
+                 provider: provider
+               })
     end
   end
 end

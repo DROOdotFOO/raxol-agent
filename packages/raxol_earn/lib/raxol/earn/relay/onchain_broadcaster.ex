@@ -42,15 +42,22 @@ defmodule Raxol.Earn.Relay.OnchainBroadcaster do
     Application.put_env(@app, @config_key, provider)
   end
 
+  # A missing provider or a bad amount fails before anything is submitted, so
+  # it is `{:not_sent, reason}` and the spend is released. A provider error may
+  # come after the transaction was sent (a lost submit response, a receipt
+  # that did not arrive in time), so it is returned as is and stays in doubt.
   @impl true
   def send_deposit(%{chain_id: chain_id, token: token, to: to, amount_atomic: amount} = params) do
-    with {:ok, provider} <- provider(params),
-         {:ok, amount_int} <- parse_amount(amount),
+    with {:ok, provider} <- not_sent(provider(params)),
+         {:ok, amount_int} <- not_sent(parse_amount(amount)),
          {:ok, hashes} <-
            ProviderAdapter.send_calls(provider, chain_id, [transfer_call(token, to, amount_int)]) do
       first_hash(hashes)
     end
   end
+
+  defp not_sent({:error, reason}), do: {:error, {:not_sent, reason}}
+  defp not_sent(ok), do: ok
 
   @doc """
   Build the ERC-20 `transfer(to, amount)` call (selector `0xa9059cbb` + args).

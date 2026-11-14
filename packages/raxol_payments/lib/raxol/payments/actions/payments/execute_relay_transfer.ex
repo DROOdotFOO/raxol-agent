@@ -57,6 +57,20 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   it to poll) instead of starting a new one. The reused `transfer_id` also lets
   an idempotent broadcaster dedupe a retried deposit. Without a store the path is
   unchanged.
+
+  ## Funding in doubt
+
+  Once the signed gasless pull has been sent to execute, or the broadcaster was
+  asked to send the deposit, the solver may already hold the funds. A
+  transport error, timeout, 5xx or raise from execute after a signature, and a
+  broadcaster error, raise, exit or throw (other than `{:error, {:not_sent,
+  reason}}`), leave the outcome unknown: the reservation stays, tagged with
+  the `transfer_id` so a refund seen by `PollRelayStatus` releases it, the
+  checkpoint stays so a re-run resumes the transfer, and the Action returns
+  `{:error, {:in_doubt, transfer_id}}` (a non-retryable `Failure`): poll the
+  transfer, do not retry the payment. A 4xx from execute, or a connection
+  that never opened, is a clean rejection: the reservation is released and
+  the checkpoint deleted, as for any failure before a signature or broadcast.
   """
 
   @compile {:no_warn_undefined, Raxol.Agent.Action}
@@ -113,6 +127,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   alias Raxol.Payments.{Assets, Checkpoint, DeliveryFloor, Failure, Relay, Router}
   alias Raxol.Payments.Protocols.Xochi
   alias Raxol.Payments.Relay.Schemas.{QuoteRequest, QuoteResponse}
+  alias Raxol.Payments.Xochi.Client, as: XochiClient
 
   @spec run(map(), map()) :: {:ok, map()} | {:error, Failure.t()}
   @impl true
@@ -166,6 +181,13 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       Checkpoint.put(store, key, settled_record(summary))
       {:ok, summary}
     else
+      # Sent but unconfirmed: keep the reservation, tagged so a refund observed
+      # by PollRelayStatus releases it, and keep the checkpoint so a re-run
+      # resumes this transfer instead of signing or sending again.
+      {:error, {:in_doubt, transfer_id}} = error ->
+        SpendGate.tag_reservation(context, transfer_id, amount)
+        error
+
       # The funding helpers already released the spend reservation; drop the
       # checkpoint too so a retry of the same payment starts clean.
       {:error, _reason} = error ->
@@ -382,16 +404,34 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     kind, _reason -> {:error, {kind, :signer}}
   end
 
+  # Without a signature nothing has left this process that a solver could pull
+  # with, so any execute failure releases. With one, only a clean rejection does.
   defp execute(config, quote, signature, context, amount) do
-    case Relay.execute(config, quote.transfer_id, quote.quote_id, signature: signature) do
+    case safe_execute(config, quote, signature) do
       {:ok, status} ->
         {:ok, status}
 
       {:error, reason} ->
-        SpendGate.release(context, amount, %{protocol: :relay, reason: :execute_failed})
-        {:error, {:execute_failed, reason}}
+        if is_binary(signature) and not clean_rejection?(reason) do
+          {:error, {:in_doubt, quote.transfer_id}}
+        else
+          SpendGate.release(context, amount, %{protocol: :relay, reason: :execute_failed})
+          {:error, {:execute_failed, reason}}
+        end
     end
   end
+
+  defp safe_execute(config, quote, signature) do
+    Relay.execute(config, quote.transfer_id, quote.quote_id, signature: signature)
+  rescue
+    exception -> {:error, {:exception, exception.__struct__}}
+  catch
+    kind, _reason -> {:error, {kind, :execute}}
+  end
+
+  # The endpoint refused the request (4xx), or the connection never opened.
+  defp clean_rejection?({:http, status, _body}) when status in 400..499, do: true
+  defp clean_rejection?(reason), do: XochiClient.definite_connect_failure?(reason)
 
   # B (broadcast): if not gasless, an injected broadcaster sends the deposit on an
   # EVM source. Runs after execute so a failure before funds move releases the
@@ -426,14 +466,27 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       wallet: Map.get(context, :wallet)
     }
 
-    case broadcaster.send_deposit(params) do
+    case safe_broadcast(broadcaster, params) do
       {:ok, tx_hash} ->
         {:ok, tx_hash}
 
-      {:error, reason} ->
+      {:error, {:not_sent, reason}} ->
         SpendGate.release(context, amount, %{protocol: :relay, reason: :deposit_broadcast_failed})
         {:error, {:deposit_broadcast_failed, reason}}
+
+      {:error, _reason} ->
+        {:error, {:in_doubt, quote.transfer_id}}
     end
+  end
+
+  # A broadcaster may raise after it submitted the transaction (while awaiting
+  # its receipt, say), so a raise, exit or throw is in doubt like an error.
+  defp safe_broadcast(broadcaster, params) do
+    broadcaster.send_deposit(params)
+  rescue
+    exception -> {:error, {:exception, exception.__struct__}}
+  catch
+    kind, _reason -> {:error, {kind, :broadcast}}
   end
 
   defp release_and_error(context, amount, reason) do

@@ -561,14 +561,19 @@ defmodule Raxol.Payments.Xochi.Client do
       else: {:ok, in_doubt(intent_id, :response_exception)}
   end
 
-  defp definite_connect_failure?(reason) when reason in @definite_connect_reasons, do: true
-  defp definite_connect_failure?({:tls_alert, _detail}), do: true
+  # Public for `ExecuteRelayTransfer`, which classifies its own execute the
+  # same way: a failure proven to happen before a connection opened sent
+  # nothing.
+  @doc false
+  @spec definite_connect_failure?(term()) :: boolean()
+  def definite_connect_failure?(reason) when reason in @definite_connect_reasons, do: true
+  def definite_connect_failure?({:tls_alert, _detail}), do: true
 
-  defp definite_connect_failure?(reason) when is_tuple(reason),
+  def definite_connect_failure?(reason) when is_tuple(reason),
     do: reason |> Tuple.to_list() |> Enum.any?(&definite_connect_failure?/1)
 
-  defp definite_connect_failure?(reason) when is_map(reason),
+  def definite_connect_failure?(reason) when is_map(reason),
     do: reason |> Map.values() |> Enum.any?(&definite_connect_failure?/1)
 
-  defp definite_connect_failure?(_reason), do: false
+  def definite_connect_failure?(_reason), do: false
 end
