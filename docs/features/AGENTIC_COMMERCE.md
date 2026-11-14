@@ -127,6 +127,8 @@ Three layers of limits in `SpendingPolicy`:
 - **Per-session**: rolling total within one agent session
 - **Lifetime**: hard cap across all sessions
 
+Every cap is a human amount of the policy's `currency` (`SpendingPolicy.unit/1`): with the default `"USDC"`, `Decimal.new("1.00")` is one US dollar, whichever protocol pays. AutoPay prices an x402 challenge only for USDC, and an MPP challenge from its currency (ISO 4217 minor units for USD, EUR and CHF, registered decimals for a stablecoin); a challenge in any other unit is refused, so MPP and x402 payments add up against the same session and lifetime caps.
+
 The `Ledger` is an ETS-backed GenServer that tracks cumulative spend. `SpendingHook` implements the `CommandHook` behaviour from raxol_agent. It runs before every command and can deny execution if limits would be exceeded.
 
 Both spend paths reserve atomically before signing: the `SpendGate` choke point (payment Actions) and `SpendingHook` (Pay directives) call `Ledger.try_spend`, which checks the caps and records in one step, and refund via `Ledger.release` when execution then fails, so two commands cannot both pass a check before either records. A non-positive or non-finite amount is rejected up front (it can never lower the running total). A missing policy leaves the gate permissive in development, but a deployed release fails closed: `require_policy` defaults to true in production (a deployed OTP release, detected by `Raxol.Payments.Deployment` via `RELEASE_NAME`) and false in development and tests, so a production `SpendGate` with no `SpendingPolicy` rejects the spend rather than allowing unlimited spend. Set the context flag or `config :raxol_payments, :require_policy` to override.
@@ -222,7 +224,7 @@ Req.new(url: "https://api.xochi.fi/api/intent/quote")
 
 `Mandate.Store` is a singleton (named ETS tables); start exactly one per node. Optional DETS persistence via `:mandate_store_path` in `config :raxol_payments`. Mandate is **orthogonal** to `SpendingPolicy`/`Ledger`: those govern operator-set session budgets locally; Mandate is a credential carried to Xochi for tier inheritance.
 
-v1 follows the locked design at `xochi/docs/planning/agent-auth.md`. On the agent side, a `410 Gone` from Xochi (a revoked or exhausted envelope) prunes the local mandate through the outbound plugin and flags the response as terminal, so a server-side revocation converges locally without a manual `payment_revoke_mandate` call. The authenticated server-side revoke endpoint itself, along with the on-chain registry, Verified-Agent metadata, issuer browser UI, and auto-rotation on exhaustion, remain deferred.
+On the agent side, a `410 Gone` from Xochi (a revoked or exhausted envelope) prunes the local mandate through the outbound plugin and flags the response as terminal, so a server-side revocation converges locally without a manual `payment_revoke_mandate` call. The authenticated server-side revoke endpoint itself, along with the on-chain registry, Verified-Agent metadata, issuer browser UI, and auto-rotation on exhaustion, remain deferred.
 
 ### Two delegation models (Mandate vs SCA session key)
 
@@ -235,7 +237,7 @@ The two are independent: revoking one does not revoke the other. An agent that m
 
 ## AutoPay (Req plugin)
 
-`Raxol.Payments.Req.AutoPay` is a Req response step. Add it to any Req client and HTTP 402 responses get handled transparently. A `SpendingPolicy` is required (`attach/2` raises without one): every payment is held to its `approved_domains`, `require_confirmation_above` and `per_request_max`; its `session_max` and `lifetime_max` need a `:ledger` as well.
+`Raxol.Payments.Req.AutoPay` is a Req response step. Add it to any Req client and HTTP 402 responses get handled transparently. A `SpendingPolicy` is required (`attach/2` raises without one, or when a cap it needs is not a finite positive `Decimal`): every payment is held to its `approved_domains`, `require_confirmation_above` and `per_request_max`; its `session_max` and `lifetime_max` need a `:ledger` as well. A payment is reserved before it is signed and stays spent once the signed payment is sent, whatever the paid retry returns; only a payment that was never signed is released. An x402 authorization is valid for at most one hour.
 
 ```elixir
 client = Req.new(base_url: "https://api.example.com")

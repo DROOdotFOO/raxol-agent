@@ -16,8 +16,9 @@ defmodule Raxol.Payments.Protocols.MPP do
   ## Payment Methods
 
   MPP supports multiple payment methods per challenge. This implementation
-  handles EVM-based methods (Tempo, ETH, ERC-20). Stripe (fiat) methods
-  are detected but not yet implemented.
+  handles EVM-based methods (Tempo, ETH, ERC-20) and prefers one when the
+  challenge offers it. Stripe (fiat) methods are not supported: the credential
+  is always signed by the wallet.
   """
 
   @behaviour Raxol.Payments.Protocol
@@ -47,13 +48,17 @@ defmodule Raxol.Payments.Protocols.MPP do
            extract_payment_challenge(auth_header),
          amount when not is_nil(amount) <- challenge_data["amount"],
          :ok <- validate_positive_amount(amount),
+         currency = challenge_data["currency"] || "USDC",
+         {:ok, unit, decimals} <- currency_unit(currency),
          recipient when not is_nil(recipient) <-
            challenge_data["recipient"] || challenge_data["pay_to"],
          {:ok, methods} <- parse_methods(challenge_data["methods"]) do
       {:ok,
        %{
          amount: amount,
-         currency: challenge_data["currency"] || "USDC",
+         currency: currency,
+         unit: unit,
+         decimals: decimals,
          recipient: recipient,
          methods: methods,
          network: challenge_data["network"],
@@ -125,21 +130,18 @@ defmodule Raxol.Payments.Protocols.MPP do
 
   @impl true
   @spec amount(map()) :: Decimal.t()
-  # MPP amounts are atomic units: `parse_challenge` accepts only a positive
-  # integer or an all-digit string no wider than a uint256 (see
-  # `validate_positive_amount`), so this is always a valid integer -- the same
-  # value the signed credential carries, so a `SpendingPolicy` cap must be
-  # written in the targeted server's atomic unit (Stripe cents, or EVM token
-  # base units). Mapping atomic units to a human amount per method (via
-  # `Assets.to_human`) needs that server's token/decimals and lands with the
-  # first concrete MPP integration. It goes through the integer because
-  # decimal's string parse rejects more than 34 digits, and a wider amount that
-  # parsed must reach the budget gate, not raise here.
-  def amount(challenge) do
-    challenge.amount
+  # The challenge amount is atomic units of its currency; this is that amount in
+  # human units of `challenge.unit` (`"USD"` for dollars and dollar
+  # stablecoins), the unit `SpendingPolicy` caps are written in, using the
+  # `decimals` `parse_challenge/1` resolved from the currency. The signed
+  # credential carries the atomic amount unchanged. It goes through the integer
+  # because decimal's string parse rejects more than 34 digits, and a wider
+  # amount that parsed must reach the budget gate, not raise here.
+  def amount(%{amount: amount, decimals: decimals}) do
+    amount
     |> to_string()
     |> String.to_integer()
-    |> Decimal.new()
+    |> Raxol.Payments.Assets.to_human(decimals)
   end
 
   # -- Private --
@@ -157,19 +159,56 @@ defmodule Raxol.Payments.Protocols.MPP do
     end
   end
 
-  # MPP amounts are atomic units: a positive integer, or an all-digit string
-  # (Stripe cents, or EVM token base units), no wider than a uint256
+  # MPP amounts are atomic units of the challenge's currency: a positive
+  # integer, or an all-digit string, no wider than a uint256
   # (`Assets.parse_atomic/1`), matching the x402 convention. A float or a
   # decimal string is malformed as atomic units, and a wider amount can never be
   # signed, so the challenge is rejected at parse time -- fail closed rather
-  # than guess the unit. Once a concrete MPP server pins the per-method
-  # token/decimals, `amount/1` routes through `Assets.to_human` and this
-  # validation matches that convention.
+  # than guess the unit.
   defp validate_positive_amount(amount) do
     case Raxol.Payments.Assets.parse_atomic(amount) do
       {:ok, _} -> :ok
       :error -> {:error, {:invalid_amount, amount}}
     end
+  end
+
+  # ISO 4217 minor units of the fiat currencies raxol prices: the dollar, and
+  # the euro and Swiss franc the registered non-USD stablecoins are pegged to.
+  @fiat_minor_units %{"USD" => 2, "EUR" => 2, "CHF" => 2}
+
+  # Dollar stablecoins, counted at par with USD.
+  @dollar_stablecoins ["USDC", "USDT", "USDBC", "PYUSD", "DAI", "USDG"]
+
+  # The unit an MPP amount is priced in and its decimals, from the challenge's
+  # `currency`: a fiat code by its ISO 4217 minor units (`"usd"` 150 is $1.50),
+  # a dollar stablecoin as USD by its registered decimals, a registered non-USD
+  # stablecoin (EURC, EURe, ZCHF) as its peg currency. Anything else -- a
+  # volatile token, a contract address, an unknown code -- has no unit a cap
+  # can be written in, so the challenge is refused.
+  defp currency_unit(currency) when is_binary(currency) do
+    code = Raxol.Payments.Assets.fold_symbol(currency)
+
+    cond do
+      Map.has_key?(@fiat_minor_units, code) ->
+        {:ok, code, Map.fetch!(@fiat_minor_units, code)}
+
+      code in @dollar_stablecoins ->
+        {:ok, "USD", Raxol.Payments.Assets.decimals(code)}
+
+      peg = fx_peg(code) ->
+        {:ok, peg, Raxol.Payments.Assets.decimals(code)}
+
+      true ->
+        {:error, {:unpriced_currency, currency}}
+    end
+  end
+
+  defp currency_unit(currency), do: {:error, {:unpriced_currency, currency}}
+
+  defp fx_peg(code) do
+    Enum.find_value(Raxol.Payments.Assets.fx_pegs(), fn {symbol, peg} ->
+      if Raxol.Payments.Assets.fold_symbol(symbol) == code, do: peg
+    end)
   end
 
   # `build_payment/2` walks `methods`, so a non-list is refused here, before

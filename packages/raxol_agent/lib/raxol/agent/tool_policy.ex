@@ -15,8 +15,9 @@ defmodule Raxol.Agent.ToolPolicy do
   Authorizers compose with `all/1` (deny if any denies).
 
   Richer phase-aware policy (ALLOW/ASK/DENY) lives in
-  `Raxol.Agent.Authorization.Engine` at the `:tool_call` phase; delegating to it
-  from here is a follow-up.
+  `Raxol.Agent.Authorization.Engine` at the `:tool_call` phase. These
+  authorizers do not consult it; an authorizer that should apply it calls
+  `Raxol.Agent.Authorization.Engine.evaluate/4` itself.
   """
 
   @type authorizer ::

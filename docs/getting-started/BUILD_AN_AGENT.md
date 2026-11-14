@@ -28,7 +28,7 @@ defmodule MyAgent do
 end
 
 {:ok, _} = Raxol.Agent.Session.start_link(app_module: MyAgent, id: :my_agent)
-Raxol.Agent.Session.send_message(:my_agent, {:analyze, "lib/raxol.ex"})
+Raxol.Agent.Session.send_message(:my_agent, {:analyze, "mix.exs"})
 ```
 
 This is a headless OTP process (`view/1` defaults to `nil`). See the

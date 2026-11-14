@@ -30,8 +30,15 @@ defmodule Raxol.Payments.Req.AutoPay do
     `require_confirmation_above` needs `:on_confirm` to approve, and the
     challenge amount must be at most `per_request_max`. The cumulative caps,
     `session_max` and `lifetime_max`, are enforced only with a `:ledger`.
-    `attach/2` raises `ArgumentError` without a policy; for development pass
-    `SpendingPolicy.dev()`
+    Every amount is compared in one unit, human amounts of the policy's
+    `currency` (`SpendingPolicy.unit/1`; US dollars by default): an x402
+    challenge is priced only for USDC, an MPP challenge from its currency
+    (ISO 4217 minor units for USD, EUR and CHF; registered decimals for a
+    stablecoin), and a challenge in any other unit is refused with
+    `%{error: :currency_mismatch}` before anything is reserved. `attach/2`
+    raises `ArgumentError` without a policy, or when `per_request_max` (and,
+    with a `:ledger`, `session_max`, `session_window_ms` and `lifetime_max`) is
+    not a finite positive value; for development pass `SpendingPolicy.dev()`
   - `:ledger` -- Ledger server; with it, every payment is also reserved
     against the policy's session and lifetime caps, atomically, before
     signing (optional). The reservation is given back only if nothing was
@@ -65,8 +72,8 @@ defmodule Raxol.Payments.Req.AutoPay do
   @spec validate_opts!(keyword()) :: :ok
   def validate_opts!(opts) do
     case Keyword.get(opts, :policy) do
-      %SpendingPolicy{} ->
-        :ok
+      %SpendingPolicy{} = policy ->
+        validate_policy!(policy, Keyword.get(opts, :ledger) != nil)
 
       nil ->
         raise ArgumentError,
@@ -85,6 +92,35 @@ defmodule Raxol.Payments.Req.AutoPay do
     end
   end
 
+  # The caps the payment path compares against must be usable before the first
+  # 402, not discovered per request: `per_request_max` always, the cumulative
+  # caps when a ledger enforces them, and a currency to price challenges in.
+  defp validate_policy!(policy, ledger?) do
+    fields =
+      if ledger?,
+        do: [:per_request_max, :session_max, :session_window_ms, :lifetime_max],
+        else: [:per_request_max]
+
+    case SpendingPolicy.validate(policy, fields) do
+      :ok ->
+        :ok
+
+      {:error, {:invalid_policy, field}} ->
+        raise ArgumentError,
+              "Raxol.Payments.Req.AutoPay :policy #{field} must be a finite positive " <>
+                "Decimal (session_window_ms a positive integer), got " <>
+                inspect(Map.fetch!(policy, field))
+    end
+
+    if SpendingPolicy.unit(policy) == nil do
+      raise ArgumentError,
+            "Raxol.Payments.Req.AutoPay :policy currency must be a currency code " <>
+              "string, got #{inspect(policy.currency)}"
+    end
+
+    :ok
+  end
+
   defp policy_shape(%module{}), do: "a #{inspect(module)} struct"
   defp policy_shape(value) when is_map(value), do: "a map"
   defp policy_shape(value) when is_list(value), do: "a list"
@@ -98,7 +134,8 @@ defmodule Raxol.Payments.Req.AutoPay do
     protocols = Keyword.get(opts, :protocols, @default_protocols)
     headers = Raxol.Payments.Headers.flatten(response.headers)
 
-    with {:ok, protocol_mod, challenge} <- detect_and_parse(protocols, headers) do
+    with {:ok, protocol_mod, challenge} <- detect_and_parse(protocols, headers),
+         :ok <- require_policy_unit(challenge, Keyword.fetch!(opts, :policy)) do
       amount = protocol_mod.amount(challenge)
       host = request_host(request)
 
@@ -193,6 +230,11 @@ defmodule Raxol.Payments.Req.AutoPay do
     {request, %{response | body: body}}
   end
 
+  defp handle_failure({:error, {:currency_mismatch, unit, policy_unit}}, request, response) do
+    body = %{error: :currency_mismatch, currency: unit, policy_currency: policy_unit}
+    {request, %{response | body: body}}
+  end
+
   defp handle_failure(
          {:error, {:gate_denied, :missing_host}},
          request,
@@ -218,6 +260,16 @@ defmodule Raxol.Payments.Req.AutoPay do
         end
       end
     end)
+  end
+
+  # `amount/1` is in human units of the challenge's `:unit`; the caps are in
+  # the policy's. A challenge priced in another unit (or in none) is refused
+  # before the gate, never compared across units.
+  defp require_policy_unit(challenge, policy) do
+    case {Map.get(challenge, :unit), SpendingPolicy.unit(policy)} do
+      {unit, unit} when is_binary(unit) -> :ok
+      {unit, policy_unit} -> {:error, {:currency_mismatch, unit, policy_unit}}
+    end
   end
 
   # Run the policy gate then atomically reserve the budget. `:ok` means the spend

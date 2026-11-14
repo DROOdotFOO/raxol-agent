@@ -52,6 +52,8 @@ defmodule Raxol.Payments.Protocols.X402 do
        %{
          price: price,
          currency: currency,
+         # `require_usdc/2` admits only USDC, counted at par.
+         unit: "USD",
          network: decoded["network"],
          chain_id: chain_id,
          pay_to: pay_to,
@@ -218,9 +220,14 @@ defmodule Raxol.Payments.Protocols.X402 do
 
   @impl true
   @spec amount(map()) :: Decimal.t()
+  # Human units of `challenge.unit` ("USD"): the atomic price scaled by the
+  # asset's registered decimals on the challenge's chain.
   def amount(challenge) do
     decimals =
-      Raxol.Payments.Assets.decimals(challenge.network, challenge.currency)
+      Raxol.Payments.Assets.decimals(
+        Map.get(challenge, :chain_id, challenge.network),
+        challenge.currency
+      )
 
     Raxol.Payments.Assets.to_human(challenge.price, decimals)
   end

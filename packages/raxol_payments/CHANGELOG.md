@@ -10,21 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Breaking.** 0.3.0 breaks 0.2 (see Removed and Changed), and a `~> 0.2`
 requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 
-### Removed
-
-- **Breaking.** The Riddler Commerce API client is gone: Riddler removed
-  `/commerce/*` server-side. Deleted `Raxol.Payments.Riddler.Client`,
-  `Raxol.Payments.Riddler.Schemas` (and its `QuoteRequest`/`QuoteResponse`/
-  `OrderRequest`/`OrderStatus`/... structs), `Raxol.Payments.Protocols.Riddler`,
-  and the `:riddler` atom in `Raxol.Payments.Protocol.resolve/1`. Use
-  `Raxol.Payments.Protocols.Xochi` (which `Protocols.Riddler` already
-  delegated to) for cross-chain intents. `Raxol.Payments.Relay.Client` is
-  unaffected.
-
-- `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
-  `execute/4` and `sign_intent/3`, which take the `QuoteRequest` the quote was
-  fetched with.
-
 ### Added
 
 - `Raxol.Payments.Protocols.Xochi.origin_pull_pin_env_config!/0`: reads the
@@ -123,11 +108,23 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   within 100 bps of it, and `nil` otherwise. Enabling it without the key, without
   either RPC URL, or in a build without `raxol_web3` (an optional dependency,
   dropped under `HEX_BUILD`) refuses and names what is missing. Pricing only: no
-  spend cap or delivery floor reads an FX rate.
-- `SettlementLedger` aggregates carry `unpriced_count`: entries with a leg that
-  neither `usdc_price` nor `price_fn` could price. Such a revenue used to drop out
-  of `usd_revenue` without a trace, so a report with EUR legs read as smaller
-  rather than as partial.
+  spend cap or delivery floor reads an FX rate. `Prices.FX` answers exactly
+  the symbols in `Assets.fx_pegs/0`, in any casing, at the Chainlink rate for
+  the peg registered there, and hands every other symbol to
+  `RAXOL_PRICE_SOURCE`. A listing whose peg disagrees with the registered one,
+  a symbol listed twice with any listing not `:ok`, a symbol missing from the
+  snapshot, and a failed snapshot leave the symbol `nil`, never the fallback.
+  A key `Raxol.Web3.FX.Sleuth.new/1` refuses (one with a CR, LF or space
+  inside it) is logged, naming the argument and never the key, and leaves
+  EURC, EURe and ZCHF unpriced for the sweep to count.
+- `SettlementLedger` aggregates carry `unpriced_count` and
+  `recording_gap_count`. A leg or a nonzero fee that neither `usdc_price` nor
+  `price_fn` could price (an EURe fee) used to drop out of `usd_revenue` or
+  `usd_fee` without a trace, so a report with EUR legs read as smaller rather
+  than as partial; such an entry now counts once in `unpriced_count`. An entry
+  missing a leg's amount or decimals is a recording problem, not a pricing
+  one: it counts in `recording_gap_count`, and in `unpriced_count` only when
+  its fee, its margin basis, is unpriced.
 - Each `RebalanceMonitor` sweep reports margin. It prices
   `SettlementLedger.report/2` with the same `price_fn` that sizes refuels (FX
   in front of `RAXOL_PRICE_SOURCE` when enabled), emits the totals as
@@ -139,6 +136,12 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   leaves EURC, EURe and ZCHF unpriced, and the rest to `RAXOL_PRICE_SOURCE`,
   instead of aborting the sweep.
   `SettlementLedger.report/2` reads the ledger once instead of four times.
+  `SettlementLedger` aggregates and the event carry `margin_count`, the number
+  of entries `usd_margin` covers, and `gas_unpriced_count`, the entries whose
+  gas amount is known but whose gas symbol no price answers (POL with a price
+  source that only knows ETH); `count - margin_count` is every entry left out
+  of `usd_margin`, for any reason. The event carries `unpriced_count` and
+  `recording_gap_count` too.
 - Xochi quotes can be exact-output. `QuoteRequest` gains `swap_kind`
   (`"exact_input"` by default, or `"exact_output"`), `output_amount` and
   `max_from_amount`; an exact-output request sends `output_amount` instead of
@@ -163,7 +166,23 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   the same `%{error: :budget_exceeded, limit: :per_request}` body either way.
   Pass `SpendingPolicy.dev()` for development. New
   `Raxol.Payments.Ledger.check_request/2` is the per-request check without a
-  ledger.
+  ledger. `attach/2` also raises when `per_request_max` (and, with a
+  `:ledger`, `session_max`, `session_window_ms` and `lifetime_max`) is not a
+  finite positive value.
+- **Breaking.** Every `SpendingPolicy` cap is a human amount of the policy's
+  `currency` (`SpendingPolicy.unit/1`, US dollars for the default `"USDC"`),
+  for every protocol. `MPP.amount/1` returned the challenge's atomic amount,
+  so an MPP charge of 5 USDC base units was gated as $5; it now scales by the
+  challenge currency (ISO 4217 minor units for USD, EUR and CHF, registered
+  decimals for a dollar or registered non-USD stablecoin), and a challenge in
+  any other currency is refused at parse (`{:unpriced_currency, currency}`).
+  A parsed challenge carries its `:unit`; AutoPay refuses one whose unit is
+  not the policy's (`%{error: :currency_mismatch}`) before anything is
+  reserved, so MPP and x402 payments add up against the same caps. A
+  custom `Protocol` must set `:unit` in its parsed challenge. The Ledger
+  refuses a non-`SpendingPolicy` or a nil or non-finite cap as
+  `{:over_limit, :invalid_policy}` instead of crashing, and `get_totals/3`
+  takes only a `SpendingPolicy`. New `SpendingPolicy.validate/2`.
 - **Breaking.** `config :raxol_payments, :pull_require_solver_pin` defaults to
   `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
   with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull
@@ -210,19 +229,23 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   message no longer says "refusing to sign", which was wrong on the deposit
   route.
 
+### Removed
+
+- **Breaking.** The Riddler Commerce API client is gone: Riddler removed
+  `/commerce/*` server-side. Deleted `Raxol.Payments.Riddler.Client`,
+  `Raxol.Payments.Riddler.Schemas` (and its `QuoteRequest`/`QuoteResponse`/
+  `OrderRequest`/`OrderStatus`/... structs), `Raxol.Payments.Protocols.Riddler`,
+  and the `:riddler` atom in `Raxol.Payments.Protocol.resolve/1`. Use
+  `Raxol.Payments.Protocols.Xochi` (which `Protocols.Riddler` already
+  delegated to) for cross-chain intents. `Raxol.Payments.Relay.Client` is
+  unaffected.
+
+- `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
+  `execute/4` and `sign_intent/3`, which take the `QuoteRequest` the quote was
+  fetched with.
+
 ### Fixed
 
-- Under decimal 3, an x402 or MPP amount string of 35 to 78 digits no longer
-  raises `Decimal.Error` out of `Req.AutoPay`, and `SettlementLedger` no longer
-  crashes (losing its table) recording such an amount: x402 and the ledger
-  convert through `Assets.to_decimal/1`, MPP through the integer. The amount
-  then reaches the policy and budget gates, which refuse it when a
-  `SpendingPolicy` and ledger are configured.
-- `SettlementLedger` aggregates and the `[:raxol, :payments, :margin]` event
-  carry `gas_unpriced_count`: entries whose gas amount is known but whose gas
-  symbol no price answers. Such an entry left the margin without any count
-  saying why; every reason an entry is left out of `usd_margin` is now
-  countable.
 - A Permit2 intent's execute `nonce` (the worker's replay-dedup key) was
   derived by reading Permit2's decimal uint256 pull nonce as hex: an odd digit
   count sent 0 for every intent, which the worker rejects on the wallet's
@@ -244,7 +267,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   retry fetched a new quote and signed it with neither the delivery floor nor
   the method check, so a re-quote delivering 1 was signed and executed. The
   re-quote is now held to both before anything is signed; a refusal releases
-  the reservation and reports the refusal itself.
+  the reservation with `reason: :requote_refused` in the ledger entry's
+  metadata and reports the refusal itself.
 - The delivery floor reads the signed `toAmount` only when the message's
   primary type declares the field, judges a null or missing value as 0, which
   is what `EIP712` signs, and range-checks it; a whitespace or sign variant
@@ -263,24 +287,9 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   lets an honest quote's own minimum fall under it and is refused. That is the
   backstop working: a quote that may deliver under 80% of par is what it
   exists to stop.
-- `SettlementLedger` aggregates and `[:raxol, :payments, :margin]` carry
-  `margin_count`, the number of entries `usd_margin` covers. An entry whose gas
-  symbol no price answers (POL with a price source that only knows ETH) left
-  the margin silently, with no counter to say so; `count - margin_count` now
-  reports every entry left out, for any reason.
 - `SettlementLedger` values USDG at `usdc_price`, as it does the other dollar
   stablecoins. It was missing from the set, so every USDG leg or fee was
-  unpriced whatever the price source, and `unpriced_count` overstated the
-  FX gap.
-- `unpriced_count` no longer judges the recorded leg of a recording-gap entry,
-  whose revenue is unknowable anyway; only its fee, which is its margin basis.
-  An entry is now in both `unpriced_count` and `recording_gap_count` only when
-  its legs were not recorded and its fee is unpriced.
-- The FX `price_fn` answers EURC, EURe and ZCHF in any casing, as `Assets`
-  does: `"EURE"` or `"eurc"` used to reach the fallback, which could price a
-  euro at par, and a lowercase Sleuth listing could not veto. The degraded
-  `price_fn` `Prices.FX` returns when the snapshot raises or the key is refused
-  folds case the same way.
+  unpriced whatever the price source.
 - `SettlementLedger`'s `usd_margin` is the sum of per-entry margins: each
   entry's basis net of its own gas, over entries that have both. It was the
   total spread (else the total fee) minus the total gas, which mixed
@@ -314,24 +323,6 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   attestation does not cover the amount and the floor is not sent to Xochi.
   The deposit instructions from `Protocols.Xochi.deposit_route_quote/3` now
   carry the quote's `min_to_amount`.
-- `SettlementLedger`'s `unpriced_count` missed two kinds of entry that dropped
-  out of the totals. A nonzero fee no price answered (an EURe fee) left
-  `usd_fee` silently and now counts as unpriced; an entry still counts once.
-  An entry missing a leg's amount or decimals left `usd_revenue` silently and
-  is now counted in the new `recording_gap_count`, which is a recording
-  problem, not a pricing one. `[:raxol, :payments, :margin]` carries it.
-- `Prices.FX` no longer raises `MatchError` when `Raxol.Web3.FX.Sleuth.new/1`
-  refuses the configured key (one with a CR, LF or space inside it). It logs
-  the refusal, which names the argument and never the key, and leaves EURC,
-  EURe and ZCHF unpriced for the sweep to count.
-- The FX `price_fn` no longer lets Sleuth choose what it reprices. It answers
-  exactly the symbols in the new `Assets.fx_pegs/0`, at the Chainlink rate for
-  the peg registered there, and hands every other symbol to the fallback. A
-  snapshot listing `ETH` with `pegCurrency: "EUR"` used to price ETH at the EUR
-  rate (1.13 instead of 2500), and ZCHF relabelled `EUR` was priced at the EUR
-  rate. A listing whose peg disagrees with the registered one, a symbol listed
-  twice with any listing not `:ok`, a symbol missing from the snapshot, and a
-  failed snapshot all leave the symbol `nil`, never the fallback.
 
 - Unknown chains and tokens now fail closed on the Xochi path instead of
   being treated as EVM or 6-decimal. `ExecuteXochiIntent` refuses,
@@ -356,9 +347,6 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   left `ExecuteXochiIntent`'s spend reservation held and its checkpoint in
   place. It is now a definite failure: the reservation is released, the
   checkpoint deleted, and the action returns an error.
-- A re-quote `ExecuteXochiIntent` refuses after an expired execute releases
-  the reservation with `reason: :requote_refused` in the ledger entry's
-  metadata. It was recorded as `:execute_failed`, though nothing was executed.
 - `ExecuteDepositRoute` also returns an integral JSON-float `to_amount` or
   `min_to_amount` (`960000.0`) as its integer string; it failed the output
   schema. A fractional float, or one above 2^53 that may not be the integer
@@ -412,10 +400,6 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 - A read token is never presented to, or deleted under, a different API origin,
   executing principal, or intent id than the execute that issued it.
 
-- Requires `decimal ~> 3.1 and >= 3.1.2` (was `~> 3.0`) for CVE-2026-97853:
-  below 3.1.2, `Decimal.round/3` allocates in proportion to its `places`
-  argument.
-
 - x402 and MPP challenges whose atomic amount is wider than a uint256 (more
   than 78 digits, or above 2^256 - 1) are rejected at parse time as
   `{:invalid_amount, _}`. No such amount can be signed. The bound is checked
@@ -423,10 +407,17 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   client parse a header-sized number, run a quadratic `Decimal.div` on it, or
   hand `on_confirm` and the telemetry logger a `Decimal` too wide for decimal
   3's 6_178-digit `to_string` limit (which raised, or detached the logger).
-- Requires `decimal ~> 3.0` (was `~> 2.0`) for EEF-CVE-2026-32686 (unbounded
-  exponent DoS). Decimal 3 defaults to the decimal128 context: precision 34
-  (was 28), `emax: 6_144` / `emin: -6_143` with over/underflow signalled, and
-  string parses reject more than 34 digits or an exponent past 6_144.
+- Requires `decimal ~> 3.1 and >= 3.1.2` (was `~> 2.0`) for
+  EEF-CVE-2026-32686 (unbounded exponent DoS) and CVE-2026-97853 (below
+  3.1.2, `Decimal.round/3` allocates in proportion to its `places`
+  argument). Decimal 3 defaults to the decimal128 context: precision 34 (was
+  28), `emax: 6_144` / `emin: -6_143` with over/underflow signalled, and
+  string parses reject more than 34 digits or an exponent past 6_144. x402
+  and `SettlementLedger` convert an atomic amount of up to 78 digits through
+  `Assets.to_decimal/1`, and MPP through the integer, so such an amount still
+  reaches AutoPay's gates: the required `SpendingPolicy`'s `per_request_max`
+  with or without a `:ledger`, and its `session_max` and `lifetime_max` with
+  one, compared in the policy's unit.
 - Requires `req ~> 0.6 and >= 0.6.1` (was `~> 0.5`) for CVE-2026-49755 and
   CVE-2026-49756, and, when present, `plug ~> 1.19 and >= 1.19.3` (was
   `~> 1.16`) for CVE-2026-54892 and CVE-2026-8468, and `plug_cowboy ~> 2.8 and

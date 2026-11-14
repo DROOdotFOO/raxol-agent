@@ -23,7 +23,7 @@ defmodule Raxol.Payments do
   ## Quick Start
 
       # Configure a wallet
-      wallet = Raxol.Payments.Wallets.Env.new()
+      wallet = Raxol.Payments.Wallets.Env
 
       # Auto-pay (HTTP 402, same-chain); a SpendingPolicy is required
       backend_opts = [

@@ -97,8 +97,8 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     end
   end
 
-  # 402 on the first request, then a non-2xx on the retry -- the server did not
-  # honor the payment, so it did not complete.
+  # 402 on the first request, then a non-2xx on the retry: the server holds the
+  # signed payment and answers with an error.
   defp stub_402_then_error(amount) do
     fn req ->
       resp =
@@ -112,6 +112,35 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       {req, resp}
     end
   end
+
+  # 402 with an MPP `www-authenticate: Payment` challenge, 200 on the paid retry.
+  defp stub_mpp_402_then_ok(fields) do
+    challenge =
+      %{"recipient" => "0x" <> String.duplicate("cd", 20), "network" => "tempo:mainnet"}
+      |> Map.merge(fields)
+      |> Jason.encode!()
+      |> Base.encode64()
+
+    fn req ->
+      resp =
+        if Req.Request.get_header(req, "authorization") == [] do
+          Req.Response.new(status: 402, body: "")
+          |> Req.Response.put_header("www-authenticate", "Payment " <> challenge)
+        else
+          Req.Response.new(status: 200, body: "ok")
+        end
+
+      {req, resp}
+    end
+  end
+
+  defp autopay_req(ledger, policy, stub, wallet \\ StubWallet) do
+    Req.new(url: "https://api.example.com/data", retry: false)
+    |> AutoPay.attach(wallet: wallet, ledger: ledger, policy: policy, agent_id: :test)
+    |> Req.Request.prepend_request_steps(stub: stub)
+  end
+
+  defp lifetime(ledger, policy), do: Ledger.get_totals(ledger, :test, policy).lifetime
 
   describe "attach/2" do
     test "raises without a :policy, naming the option and the development policy" do
@@ -478,14 +507,6 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       %{ledger: ledger, policy: policy}
     end
 
-    defp autopay_req(ledger, policy, stub, wallet \\ StubWallet) do
-      Req.new(url: "https://api.example.com/data", retry: false)
-      |> AutoPay.attach(wallet: wallet, ledger: ledger, policy: policy, agent_id: :test)
-      |> Req.Request.prepend_request_steps(stub: stub)
-    end
-
-    defp lifetime(ledger, policy), do: Ledger.get_totals(ledger, :test, policy).lifetime
-
     test "a paid retry answered 500 keeps the spend recorded", %{ledger: ledger, policy: policy} do
       # 1_000_000 atomic = 1 USDC. The signed authorization has left the process
       # and the server can settle it, so the spend stays.
@@ -594,6 +615,193 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       assert resp.status == 402
       assert %{error: :budget_exceeded} = resp.body
       refute_received :wallet_signed
+    end
+  end
+
+  describe "one unit across protocols" do
+    setup do
+      Process.put(:wallet_signal_target, self())
+
+      {:ok, ledger} =
+        Ledger.start_link(table_name: :"autopay_unit_#{:erlang.unique_integer()}")
+
+      %{ledger: ledger}
+    end
+
+    test "an MPP charge of 5 USDC atomic is $0.000005 under dev(), and paid", %{ledger: ledger} do
+      policy = SpendingPolicy.dev()
+
+      resp =
+        autopay_req(ledger, policy, stub_mpp_402_then_ok(%{"amount" => "5"}))
+        |> Req.Request.run!()
+
+      assert resp.status == 200
+      assert Decimal.equal?(lifetime(ledger, policy), "0.000005")
+    end
+
+    test "an MPP charge of 50 US cents is $0.50, over dev()'s $0.10 per request", %{
+      ledger: ledger
+    } do
+      policy = SpendingPolicy.dev()
+
+      resp =
+        autopay_req(
+          ledger,
+          policy,
+          stub_mpp_402_then_ok(%{"amount" => "50", "currency" => "usd"})
+        )
+        |> Req.Request.run!()
+
+      assert resp.status == 402
+      assert %{error: :budget_exceeded, limit: :per_request} = resp.body
+      assert Decimal.equal?(lifetime(ledger, policy), "0")
+    end
+
+    test "an x402 charge of 50 USDC passes a 50 per-request cap", %{ledger: ledger} do
+      cap = Decimal.new("50")
+
+      policy = %SpendingPolicy{
+        per_request_max: cap,
+        session_max: cap,
+        lifetime_max: cap,
+        approved_domains: ["api.example.com"]
+      }
+
+      resp = autopay_req(ledger, policy, stub_402_then_ok(50_000_000)) |> Req.Request.run!()
+
+      assert resp.status == 200
+      assert_received :wallet_signed
+      assert Decimal.equal?(lifetime(ledger, policy), "50")
+    end
+
+    test "x402 WETH is not priced at par: refused, nothing reserved or signed", %{
+      ledger: ledger
+    } do
+      policy = SpendingPolicy.unrestricted()
+
+      challenge =
+        %{
+          "maxAmountRequired" => "1000000000000000000",
+          "payTo" => "0x" <> String.duplicate("cd", 20),
+          "asset" => "0x4200000000000000000000000000000000000006",
+          "network" => "eip155:8453"
+        }
+        |> Jason.encode!()
+        |> Base.encode64()
+
+      stub = fn req ->
+        {req,
+         Req.Response.new(status: 402, body: "")
+         |> Req.Response.put_header("payment-required", challenge)}
+      end
+
+      resp = autopay_req(ledger, policy, stub) |> Req.Request.run!()
+
+      assert resp.status == 402
+      refute_received :wallet_signed
+      assert Decimal.equal?(lifetime(ledger, policy), "0")
+    end
+
+    test "MPP and x402 payments add up against one session cap", %{ledger: ledger} do
+      policy = %SpendingPolicy{
+        per_request_max: Decimal.new("1"),
+        session_max: Decimal.new("1"),
+        lifetime_max: Decimal.new("10")
+      }
+
+      # $0.60 by x402 USDC, then $0.30 by MPP in cents: $0.90 in session.
+      assert %{status: 200} =
+               autopay_req(ledger, policy, stub_402_then_ok(600_000)) |> Req.Request.run!()
+
+      assert %{status: 200} =
+               autopay_req(
+                 ledger,
+                 policy,
+                 stub_mpp_402_then_ok(%{"amount" => 30, "currency" => "USD"})
+               )
+               |> Req.Request.run!()
+
+      # A further $0.20 by MPP in USDC atomic units would make $1.10.
+      resp =
+        autopay_req(ledger, policy, stub_mpp_402_then_ok(%{"amount" => "200000"}))
+        |> Req.Request.run!()
+
+      assert resp.status == 402
+      assert %{error: :budget_exceeded, limit: :session} = resp.body
+      assert Decimal.equal?(lifetime(ledger, policy), "0.90")
+    end
+
+    test "a challenge in another currency than the policy's is refused", %{ledger: ledger} do
+      policy = SpendingPolicy.unrestricted()
+
+      resp =
+        autopay_req(
+          ledger,
+          policy,
+          stub_mpp_402_then_ok(%{"amount" => "100", "currency" => "EUR"})
+        )
+        |> Req.Request.run!()
+
+      assert resp.status == 402
+      assert %{error: :currency_mismatch, currency: "EUR", policy_currency: "USD"} = resp.body
+      assert Decimal.equal?(lifetime(ledger, policy), "0")
+    end
+
+    test "a EUR policy pays a EUR challenge and refuses a USDC one", %{ledger: ledger} do
+      policy = %{SpendingPolicy.unrestricted() | currency: "EUR"}
+
+      assert %{status: 200} =
+               autopay_req(
+                 ledger,
+                 policy,
+                 stub_mpp_402_then_ok(%{"amount" => "250", "currency" => "eur"})
+               )
+               |> Req.Request.run!()
+
+      resp = autopay_req(ledger, policy, stub_402_then_ok(1_000_000)) |> Req.Request.run!()
+      assert %{error: :currency_mismatch, currency: "USD", policy_currency: "EUR"} = resp.body
+      refute_received :wallet_signed
+      assert Decimal.equal?(lifetime(ledger, policy), "2.50")
+    end
+  end
+
+  describe "an unusable policy" do
+    test "attach/2 raises when per_request_max is not a finite positive Decimal" do
+      for cap <- [nil, Decimal.new(0), Decimal.new("-1"), Decimal.new("Infinity"), "1.00"] do
+        policy = %{SpendingPolicy.dev() | per_request_max: cap}
+
+        assert_raise ArgumentError, ~r/per_request_max must be a finite positive Decimal/, fn ->
+          AutoPay.attach(Req.new(), wallet: StubWallet, policy: policy)
+        end
+      end
+    end
+
+    test "attach/2 with a ledger raises when a cumulative cap is missing" do
+      policy = %{SpendingPolicy.dev() | session_max: nil}
+
+      assert_raise ArgumentError, ~r/session_max/, fn ->
+        AutoPay.attach(Req.new(), wallet: StubWallet, policy: policy, ledger: self())
+      end
+
+      assert %Req.Request{} = AutoPay.attach(Req.new(), wallet: StubWallet, policy: policy)
+    end
+
+    test "the ledger refuses a non-struct or nil-cap policy and keeps serving" do
+      {:ok, ledger} =
+        Ledger.start_link(table_name: :"autopay_badpolicy_#{:erlang.unique_integer()}")
+
+      amount = Decimal.new("1")
+
+      for policy <- [%{per_request_max: amount}, nil, %{SpendingPolicy.dev() | lifetime_max: nil}] do
+        assert {:over_limit, :invalid_policy} = Ledger.try_spend(ledger, :a, amount, policy)
+        assert {:over_limit, :invalid_policy} = Ledger.check_budget(ledger, :a, amount, policy)
+      end
+
+      assert {:over_limit, :invalid_policy} =
+               Ledger.check_request(amount, %{per_request_max: amount})
+
+      assert Process.alive?(ledger)
+      assert :ok = Ledger.try_spend(ledger, :a, Decimal.new("0.05"), SpendingPolicy.dev())
     end
   end
 end

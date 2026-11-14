@@ -19,10 +19,8 @@ defprotocol Raxol.Agent.Sandbox do
   - `Raxol.Agent.Sandbox.Async` -- gates
     `Raxol.Agent.Directive.Async` (wholesale allow / deny).
 
-  Filesystem, Network, and Resource dimensions are planned
-  but deferred to a follow-up because their enforcement layer
-  is different (Action integration for filesystem / network;
-  OS-level quotas for Resource).
+  These are the only dimensions that ship. There is no Filesystem, Network
+  or Resource sandbox.
 
   ## Action atoms
 

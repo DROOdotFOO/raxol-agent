@@ -10,9 +10,10 @@ because the truth was never in the surface.
 ## Where this sits
 
 The harness is the **engine**, not a product you run directly (there is no
-`mix raxol.harness`: the `raxol.harness.*.bless` tasks only regenerate this
-engine's golden/fixture test snapshots). Agent sessions run on it: `raxol acp
---agent` and the `agent_*` MCP tools each start one.
+`mix raxol.harness`: the runtime repository's `raxol.harness.*.bless` tasks, in
+[`lib/mix/tasks/`](https://github.com/DROOdotFOO/raxol/blob/master/lib/mix/tasks),
+only regenerate this engine's golden/fixture test snapshots). Agent sessions
+run on it: `raxol acp --agent` and the `agent_*` MCP tools each start one.
 "Harness" here is the session engine; it is unrelated to an LLM backend and to
 the RATE render-determinism suite.
 
@@ -71,7 +72,8 @@ the events up to it; nothing in the tree does that.
 ### Frozen golden corpora
 
 `raxol_journal` ships one frozen journal per `schema_version` under
-`packages/raxol_journal/priv/golden/v<version>/`; its
+[`packages/raxol_journal/priv/golden/v<version>/`](https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_journal/priv/golden)
+in the runtime repository; its
 [README](https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_journal/README.md#frozen-golden-corpora) says
 why. Each version is frozen exactly once, while it is current. A corpus is
 produced by the real pipeline (`StreamPump.pump/3` generates the payloads,
@@ -79,27 +81,31 @@ produced by the real pipeline (`StreamPump.pump/3` generates the payloads,
 `ts`, `turn_id`, and `meta.json`'s `created_at` normalized so the bytes are
 reproducible.
 
-| step | command |
-| --- | --- |
-| freeze the current version | `cd packages/raxol_agent && MIX_ENV=test mix run scripts/freeze_golden_journal.exs [DIR]` (`DIR` defaults to `priv/golden` of the `raxol_journal` path dependency) |
-| re-pin the manifest | `elixir scripts/check_journal_goldens.exs --bless` |
-| verify (CI, `format` job) | `elixir scripts/check_journal_goldens.exs` |
+Freezing runs here; the manifest and its check live in the runtime repository.
 
-`scripts/check_journal_goldens.exs` enforces three rules against
-`priv/golden/MANIFEST.json`: the current `@default_schema_version` has a
-frozen corpus (so a bump fails until one is frozen), every pinned corpus still
-exists with the exact same bytes (history is not editable or deletable), and
-nothing on disk is unpinned. `Raxol.Agent.Invariants.ContractInvariantsTest`
-replays the current corpus through the live reader and asserts the shapes its
-version added, for 1.1.0, that all three `evidence` states are present and
-decode.
+| step | where | command |
+| --- | --- | --- |
+| freeze the current version | here | `cd packages/raxol_agent && MIX_ENV=test mix run scripts/freeze_golden_journal.exs [DIR]` (`DIR` defaults to `priv/golden` of `raxol_journal` only when it is a path dependency, i.e. with `RAXOL_PATH` naming a runtime checkout) |
+| re-pin the manifest | runtime repository | `elixir scripts/check_journal_goldens.exs --bless` |
+| verify | runtime repository (CI, `format` job) | `elixir scripts/check_journal_goldens.exs` |
+
+[`scripts/check_journal_goldens.exs`](https://github.com/DROOdotFOO/raxol/blob/master/scripts/check_journal_goldens.exs)
+enforces three rules against
+[`packages/raxol_journal/priv/golden/MANIFEST.json`](https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_journal/priv/golden/MANIFEST.json):
+the current `@default_schema_version` has a frozen corpus (so a bump fails
+until one is frozen), every pinned corpus still exists with the exact same
+bytes (history is not editable or deletable), and nothing on disk is unpinned.
+`Raxol.Agent.Invariants.ContractInvariantsTest` (here) replays the current
+corpus through the live reader and asserts the shapes its version added, for
+1.1.0, that all three `evidence` states are present and decode.
 
 ### Multi-surface parity
 
-`Raxol.Harness.Surface.Parity` is the check behind "one TEA module renders to
-terminal, browser, SSH, and MCP". Every fixture is rendered ONCE and projected
-four ways, so a divergence is always the projection's fault and never the
-input's:
+This check lives in the runtime repository.
+[`Raxol.Harness.Surface.Parity`](https://github.com/DROOdotFOO/raxol/blob/master/lib/raxol/harness/surface/parity.ex)
+is the check behind "one TEA module renders to terminal, browser, SSH, and
+MCP". Every fixture is rendered ONCE and projected four ways, so a divergence
+is always the projection's fault and never the input's:
 
 ```
 session (.jsonl) -> Projection.project/2 -> [Block.t()] -> Block.render/2
@@ -117,12 +123,15 @@ session (.jsonl) -> Projection.project/2 -> [Block.t()] -> Block.render/2
 surface's actual input, and pinning it from the grid would test a pipeline
 nothing runs.
 
-Two independent properties, both in `test/harness/surface_parity_test.exs`:
+Two independent properties, both in
+[`test/harness/surface_parity_test.exs`](https://github.com/DROOdotFOO/raxol/blob/master/test/harness/surface_parity_test.exs):
 
 - **Drift**: each fixture x surface artifact
-  (`test/fixtures/harness/parity/`) still matches a fresh render, and
-  `priv/harness/parity.refs` still hashes the artifacts. Bless with
-  `mix raxol.harness.parity.bless` (`--check` for the CI half).
+  ([`test/fixtures/harness/parity/`](https://github.com/DROOdotFOO/raxol/blob/master/test/fixtures/harness/parity))
+  still matches a fresh render, and
+  [`priv/harness/parity.refs`](https://github.com/DROOdotFOO/raxol/blob/master/priv/harness/parity.refs)
+  still hashes the artifacts. Bless with `mix raxol.harness.parity.bless`
+  (`--check` for the CI half) in the runtime repository.
 - **Parity**: the surfaces agree. The three grid-derived surfaces must be
   character-for-character equal; `:structured_json`'s block headers must match
   the screen's, as a prefix (the viewport clips a long session). This is the
@@ -179,8 +188,9 @@ tested, and is not in the path of a session started by `raxol acp` or
 
 `Raxol.Harness.Surface` is the assembled harness surface: `Projection` folds
 blocks, and `Composer`, `Keymap`, `StatusStrip` and the overlay pickers sit
-around them. It replays a fixture session, and
-`examples/harness_fixture_demo.exs` is its process loop on a real terminal.
+around them. It replays a fixture session, and the runtime repository's
+[`examples/harness_fixture_demo.exs`](https://github.com/DROOdotFOO/raxol/blob/master/examples/harness_fixture_demo.exs)
+is its process loop on a real terminal.
 `append_events/2` and the `:command_sink` option are where a live session
 would feed events in and take `:interrupt` and `:steer` out; nothing in the
 tree drives them.

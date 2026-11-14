@@ -12,11 +12,11 @@ on:
   pull_request:
     paths:
       - 'packages/raxol_cli/**'
-      - 'packages/raxol_mcp/**'
-      # Root lib decides the :mcp children and the harness gate.
-      - 'lib/**'
+      # raxol_cli's path dependencies, built into the release from source.
+      - 'packages/raxol_agent/**'
+      - 'packages/raxol_agent_client_protocol/**'
+      - 'packages/raxol_web3/**'
       - 'docker/Dockerfile.raxol-cli'
-      - 'mix.lock'
       - '.github/workflows/mcp-smoke.yml'
   workflow_dispatch:
 

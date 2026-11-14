@@ -88,11 +88,10 @@ defmodule Raxol.Agent.SpendGate.Reservations do
   then bounded by scope lifetime, not by process uptime. Returns the number of
   claims reclaimed.
 
-  NOT YET WIRED IN PRODUCTION: nothing in `lib/` drives the gate yet, so no
-  run/session scope exists to end. Whatever drives it MUST call
-  `sweep_scope/1` from its scope-teardown path (e.g. the
-  budget owner's `terminate/2` or the run supervisor's shutdown); until then
-  the leak-and-reclaim behavior is pinned by the robustness suite, including
+  Nothing in `lib/` calls `sweep_scope/1`. Whatever drives the gate under a
+  run/session scope MUST call it from its scope-teardown path (e.g. the
+  budget owner's `terminate/2` or the run supervisor's shutdown). The
+  leak-and-reclaim behavior is pinned by the robustness suite, including
   the brutal-`:kill` contour (`Process.exit(_, :kill)` runs no `rescue`/
   `after`, so a killed reserver ALWAYS leaks its claim — sweep is the only
   reclaim path).
