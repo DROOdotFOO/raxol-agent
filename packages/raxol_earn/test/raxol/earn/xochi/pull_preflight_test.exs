@@ -777,7 +777,7 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
           Map.put(types, "Orphan", [%{"name" => "x", "type" => "uint256"}])
         end)
 
-      assert {:rejected, %{reason: {:digest_failed, {:unencodable_types, _}}}} =
+      assert {:rejected, %{reason: {:digest_failed, :no_primary_type}}} =
                verify(served, current_signature(served_pull()), @account, rpc: chain())
     end
 
@@ -969,7 +969,12 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
         payment_method: "permit2",
         to_amount: "2990000",
         eip712_data: %{
-          "domain" => %{"name" => "Xochi", "version" => "1", "chainId" => 8453},
+          "domain" => %{
+            "name" => "Xochi",
+            "version" => "3",
+            "chainId" => 8453,
+            "salt" => "0x" <> Base.encode16(ExKeccak.hash_256("3"), case: :lower)
+          },
           "primaryType" => "XochiIntent",
           "types" => %{
             "XochiIntent" => intent_fields()

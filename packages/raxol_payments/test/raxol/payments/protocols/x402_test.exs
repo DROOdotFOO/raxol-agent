@@ -30,7 +30,7 @@ defmodule Raxol.Payments.Protocols.X402Test do
       payload =
         Jason.encode!(%{
           "maxAmountRequired" => "1000000",
-          "asset" => "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+          "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           "network" => "eip155:8453",
           "payTo" => "0x1234567890abcdef1234567890abcdef12345678",
           "nonce" => "0xabc123",
@@ -42,7 +42,7 @@ defmodule Raxol.Payments.Protocols.X402Test do
 
       assert {:ok, challenge} = X402.parse_challenge(headers)
       assert challenge.price == "1000000"
-      assert challenge.currency == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+      assert challenge.currency == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
       assert challenge.network == "eip155:8453"
       assert challenge.pay_to == "0x1234567890abcdef1234567890abcdef12345678"
       assert challenge.nonce == "0xabc123"
@@ -313,7 +313,7 @@ defmodule Raxol.Payments.Protocols.X402Test do
         %{
           "maxAmountRequired" => price,
           "payTo" => "0x" <> String.duplicate("cd", 20),
-          "asset" => "0x" <> String.duplicate("ef", 20),
+          "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           "network" => "eip155:8453"
         }
         |> Jason.encode!()

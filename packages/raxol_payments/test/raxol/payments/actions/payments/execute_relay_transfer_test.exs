@@ -167,30 +167,76 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
     end
   end
 
-  describe "gasless funding (A)" do
-    test "signs the quote's typed data and sends the signature on execute" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        case conn.request_path do
-          "/relay/quote" ->
-            Req.Test.json(conn, %{
-              "transfer_id" => "t_1",
-              "quote_id" => "q_1",
-              "can_fill" => true,
-              "to_amount" => "499000",
-              "deposit_address" => "0xdeposit",
-              "gasless" => %{
-                "domain" => %{"name" => "Permit2", "chainId" => 8453},
-                "types" => %{"Permit" => [%{"name" => "amount", "type" => "uint256"}]},
-                "message" => %{"amount" => 500_000}
-              }
-            })
+  @solver "0x000000000000000000000000000000000000dEaD"
 
-          "/relay/execute" ->
-            {:ok, raw, conn} = Plug.Conn.read_body(conn)
-            send(self(), {:execute_body, Jason.decode!(raw)})
-            Req.Test.json(conn, %{"transfer_id" => "t_1", "status" => "pending"})
-        end
-      end)
+  # The Permit2 PermitWitnessTransferFrom + OriginPullWitness pull for
+  # base_params/1 (0.50 USDC on Base = 500000 atomic), spender pinned.
+  defp canonical_gasless(overrides \\ %{}) do
+    Map.merge(
+      %{
+        "domain" => %{
+          "name" => "Permit2",
+          "chainId" => 8453,
+          "verifyingContract" => Raxol.Payments.Protocols.Permit2.verifying_contract()
+        },
+        "primaryType" => "PermitWitnessTransferFrom",
+        "types" => %{
+          "PermitWitnessTransferFrom" => [
+            %{"name" => "permitted", "type" => "TokenPermissions"},
+            %{"name" => "spender", "type" => "address"},
+            %{"name" => "nonce", "type" => "uint256"},
+            %{"name" => "deadline", "type" => "uint256"},
+            %{"name" => "witness", "type" => "OriginPullWitness"}
+          ],
+          "TokenPermissions" => [
+            %{"name" => "token", "type" => "address"},
+            %{"name" => "amount", "type" => "uint256"}
+          ],
+          "OriginPullWitness" => [%{"name" => "orderId", "type" => "bytes32"}]
+        },
+        "message" => %{
+          "permitted" => %{"token" => @usdc_base, "amount" => "500000"},
+          "spender" => @solver,
+          "nonce" => "1",
+          "deadline" => Integer.to_string(System.system_time(:second) + 600),
+          "witness" => %{"orderId" => "0x" <> String.duplicate("cd", 32)}
+        }
+      },
+      overrides
+    )
+  end
+
+  defp stub_gasless(gasless) do
+    parent = self()
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      case conn.request_path do
+        "/relay/quote" ->
+          Req.Test.json(conn, %{
+            "transfer_id" => "t_1",
+            "quote_id" => "q_1",
+            "can_fill" => true,
+            "to_amount" => "499000",
+            "deposit_address" => "0xdeposit",
+            "gasless" => gasless
+          })
+
+        "/relay/execute" ->
+          {:ok, raw, conn} = Plug.Conn.read_body(conn)
+          send(parent, {:execute_body, Jason.decode!(raw)})
+          Req.Test.json(conn, %{"transfer_id" => "t_1", "status" => "pending"})
+      end
+    end)
+  end
+
+  describe "gasless funding (A)" do
+    setup do
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [@solver])
+      on_exit(fn -> Application.delete_env(:raxol_payments, :pull_solver_allowlist) end)
+    end
+
+    test "signs the canonical Permit2 pull and sends the signature on execute" do
+      stub_gasless(canonical_gasless())
 
       assert {:ok, result} =
                ExecuteRelayTransfer.run(
@@ -205,6 +251,35 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
 
       assert_received {:execute_body, body}
       assert String.starts_with?(body["signature"], "0x")
+    end
+
+    test "refuses a gasless block that is not the canonical Permit2 pull, before signing" do
+      hostile = [
+        # An arbitrary struct of the server's choosing.
+        %{
+          "domain" => %{"name" => "Permit2", "chainId" => 8453},
+          "types" => %{"Permit" => [%{"name" => "amount", "type" => "uint256"}]},
+          "message" => %{"amount" => 500_000}
+        },
+        # The canonical envelope with an extra signable field.
+        update_in(canonical_gasless(), ["message"], &Map.put(&1, "value", "1")),
+        # An unpinned spender.
+        put_in(canonical_gasless(), ["message", "spender"], "0x" <> String.duplicate("ab", 20)),
+        # More than the transfer.
+        put_in(canonical_gasless(), ["message", "permitted", "amount"], "500001")
+      ]
+
+      context = ctx(%{})
+
+      for gasless <- hostile do
+        stub_gasless(gasless)
+
+        assert {:error,
+                %Failure{reason: :rejected, detail: {:authorization_mismatch, {:gasless, _}}}} =
+                 ExecuteRelayTransfer.run(base_params(%{}), context)
+
+        refute_received {:execute_body, _}
+      end
     end
   end
 

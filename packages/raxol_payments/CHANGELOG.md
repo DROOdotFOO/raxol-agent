@@ -231,11 +231,14 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 - raxol signed the Xochi EIP-712 intent without checking it against the
   request. A quote could carry a signable intent for another wallet,
   recipient, chain, token, amount, settlement preference or a far-off
-  deadline, and raxol would sign it. `Xochi.validate_intent/2` now binds every
-  signed field to the request before any signature, both in `sign_intent/3`
-  and in `ExecuteXochiIntent` ahead of the spend gate, so a mismatch reserves
-  nothing. A refusal is `{:intent_mismatch, field}`, reported as `:rejected`.
-  The reported and telemetry `from_amount` is the signed `fromAmount`.
+  deadline, and raxol would sign it. `Xochi.validate_intent/2` now checks,
+  before any signature, that the served payload is exactly the v3 `XochiIntent`
+  (its types, field order and message fields) under the v3 Xochi domain on the
+  request's origin chain, and binds every signed field to the request, both in
+  `sign_intent/3` and in `ExecuteXochiIntent` ahead of the spend gate, so a
+  mismatch reserves nothing. A refusal is `{:intent_mismatch, field}`, reported
+  as `:rejected`. The reported and telemetry `from_amount` is the signed
+  `fromAmount`.
 - `ExecuteXochiIntent` signed a re-quote without checking it. When the first
   execute came back as an expired quote (a 409 the endpoint chooses), the
   retry fetched a new quote and signed it with neither the delivery floor nor
@@ -364,6 +367,34 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 
 ### Security
 
+- **Every EIP-712 payload a server serves is checked to be exactly the
+  canonical typed data before the wallet signs it, and is signed with the
+  canonical types, not the served map.** The checks looked at field names
+  only, while the encoder hashed whatever root the served `types` map implied,
+  so a hostile Xochi quote could add types that made a USDC `Permit` (unlimited
+  allowance to the attacker) the struct the wallet signed, or retype the
+  ERC-3009 pull's `nonce` to do the same and bypass the solver pin. Now:
+  - the Xochi intent must be the v3 `XochiIntent` (typehash checked) with a
+    message carrying exactly its fields, under domain name `Xochi`, a version
+    whose major is 3, `chainId` = the request's origin chain, `salt` =
+    keccak256(version) and no `verifyingContract`
+    (`{:intent_mismatch, :intent_type | :intent_fields | {:intent_domain,
+    field}}`);
+  - an ERC-3009 origin pull must be `ReceiveWithAuthorization` on the
+    request's USDC under that chain's USDC domain; a Permit2 pull must be
+    `PermitWitnessTransferFrom` + `OriginPullWitness` under name `Permit2`, the
+    origin chain and the canonical Permit2 (`{:authorization_mismatch,
+    :pull_type | :pull_fields | :pull_token | :pull_chain | :pull_verifier |
+    {:pull_domain, field}}`);
+  - the Relay gasless block, which was signed unchecked, must be that same
+    Permit2 pull for the request's token, chain and amount, with a pinned
+    spender (`{:authorization_mismatch, {:gasless, field}}`);
+  - x402 signs only for the registered USDC contract on a chain whose USDC
+    domain is known (`{:unsupported_asset, _}`), and `network` must be
+    `eip155:<chain id>` (`{:invalid_network, _}`);
+  - `EIP712.hash/3` refuses a types map with no single root
+    (`{:error, :no_primary_type}`) instead of guessing one, and the new
+    `EIP712.hash/4` hashes the primary type the caller names.
 - Error bodies recursively redact both `read_token` and `readToken`; no error
   tuple or replayable Action result carries the bearer secret.
 - A read token is never presented to, or deleted under, a different API origin,

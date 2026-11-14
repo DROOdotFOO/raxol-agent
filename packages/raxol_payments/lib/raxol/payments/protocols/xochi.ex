@@ -59,6 +59,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
 
   alias Raxol.Payments.Poll
   alias Raxol.Payments.Protocols.Permit2
+  alias Raxol.Payments.TypedData
   alias Raxol.Payments.Xochi.{Capabilities, Client, DepositAttestation, PullContracts}
 
   alias Raxol.Payments.Xochi.Schemas.{
@@ -469,9 +470,41 @@ defmodule Raxol.Payments.Protocols.Xochi do
   defp emit_settled(_request, _quote_resp, _status, _elapsed_ms), do: :ok
 
   @intent_primary_type "XochiIntent"
-  @intent_bound_fields MapSet.new(
-                         ~w(wallet recipient fromChainId toChainId fromToken toToken fromAmount toAmount settlementPreference deadline)
-                       )
+
+  # SPEC §2.1 (XochiIntent v3): the only struct the agent signs as an intent,
+  # fields in order. The served types must equal this map exactly, and the
+  # struct must encode to @intent_type_hash, keccak256 of
+  # "XochiIntent(string intentId,string quoteId,address wallet,string recipient,
+  # uint256 fromChainId,uint256 toChainId,string fromToken,string toToken,
+  # uint256 fromAmount,uint256 toAmount,string settlementPreference,uint256 deadline)".
+  @intent_types %{
+    "XochiIntent" => [
+      {"intentId", "string"},
+      {"quoteId", "string"},
+      {"wallet", "address"},
+      {"recipient", "string"},
+      {"fromChainId", "uint256"},
+      {"toChainId", "uint256"},
+      {"fromToken", "string"},
+      {"toToken", "string"},
+      {"fromAmount", "uint256"},
+      {"toAmount", "uint256"},
+      {"settlementPreference", "string"},
+      {"deadline", "uint256"}
+    ]
+  }
+  @intent_type_hash Base.decode16!(
+                      "4fa2b313c9b182c2ea701a5a9c932b340c256ea2c2135b5456c792ccd59c64b6",
+                      case: :lower
+                    )
+  @intent_kind %{
+    primary: @intent_primary_type,
+    types: @intent_types,
+    type_hash: @intent_type_hash
+  }
+  # SPEC §2.2: the domain `version` is deployment-scoped ("3", or a scoped
+  # "3-prod"), but its major is the struct version, and the canonical types above
+  # are v3 (see `intent_domain_version?/1`). The salt is keccak256 of the version.
   # Riddler issues quotes valid for ~300s; an hour of headroom tolerates a slow
   # local clock. A fast clock fails open -- the wall clock is the one value on
   # this path the server does not supply. Matches riddler-sdk's
@@ -505,20 +538,65 @@ defmodule Raxol.Payments.Protocols.Xochi do
       do: {:error, {:intent_mismatch, :intent_type}}
 
   def validate_intent(%QuoteResponse{eip712_data: eip712} = quote_resp, %QuoteRequest{} = request) do
-    message = intent_message(eip712)
+    with :ok <- intent_typed_data(eip712, request) do
+      message = intent_message(eip712)
 
-    intent_mismatch(
-      Enum.concat([
-        [{:intent_type, intent_envelope?(eip712)}],
-        route_checks(message, request),
-        [
-          {:deadline, deadline_bounded?(message["deadline"])},
-          {:quoted_to_amount, int_match?(message["toAmount"], quote_resp.to_amount)}
-        ],
-        amount_checks(message, request)
-      ])
-    )
+      intent_mismatch(
+        Enum.concat([
+          route_checks(message, request),
+          [
+            {:deadline, deadline_bounded?(message["deadline"])},
+            {:quoted_to_amount, int_match?(message["toAmount"], quote_resp.to_amount)}
+          ],
+          amount_checks(message, request)
+        ])
+      )
+    end
   end
+
+  @doc """
+  The `XochiIntent` canonical types the agent signs: `%{primary, types,
+  type_hash}`.
+  """
+  @spec intent_kind() :: TypedData.kind()
+  def intent_kind, do: @intent_kind
+
+  # The envelope: exactly the v3 `XochiIntent` types, a message with exactly
+  # its fields, and the domain SPEC §2.2 defines: name "Xochi", a v3 version,
+  # chainId = the request's origin chain, salt = keccak256(version), no
+  # verifyingContract. Anything else is a payload the agent will not sign.
+  defp intent_typed_data(eip712, request) do
+    case TypedData.check_shape(eip712, @intent_kind) do
+      :ok ->
+        case TypedData.check_domain(eip712["domain"], intent_domain(eip712, request)) do
+          :ok -> :ok
+          {:error, {:domain, key}} -> {:error, {:intent_mismatch, {:intent_domain, key}}}
+        end
+
+      {:error, :message_fields} ->
+        {:error, {:intent_mismatch, :intent_fields}}
+
+      {:error, _type_mismatch} ->
+        {:error, {:intent_mismatch, :intent_type}}
+    end
+  end
+
+  defp intent_domain(eip712, %QuoteRequest{from_chain_id: chain_id}) do
+    version =
+      case get_in(eip712, ["domain", "version"]) do
+        v when is_binary(v) -> if intent_domain_version?(v), do: v
+        _ -> nil
+      end
+
+    %{
+      "name" => "Xochi",
+      "version" => version,
+      "chainId" => chain_id,
+      "salt" => if(version, do: keccak_hex(version))
+    }
+  end
+
+  defp keccak_hex(value), do: "0x" <> Base.encode16(ExKeccak.hash_256(value), case: :lower)
 
   @doc """
   The origin amount the served intent signs (`fromAmount`), as a string, or nil
@@ -574,10 +652,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
 
   defp amount_checks(_message, %QuoteRequest{}), do: [{:swap_kind, false}]
 
-  defp intent_envelope?(eip712) do
-    eip712["primaryType"] == @intent_primary_type and
-      MapSet.subset?(@intent_bound_fields, type_field_names(eip712, @intent_primary_type))
-  end
+  defp intent_domain_version?(version), do: Regex.match?(~r/\A3(-[a-z0-9]+)*\z/, version)
 
   # No lower bound: a lapsed deadline is the server's to reject.
   defp deadline_bounded?(value) do
@@ -835,13 +910,14 @@ defmodule Raxol.Payments.Protocols.Xochi do
 
   defp validate_quote(%QuoteResponse{can_solve: true}), do: :ok
 
-  # `validate_intent/2` has already refused a quote with no `eip712_data`.
+  # `validate_intent/2` has already checked the served payload is exactly the
+  # canonical XochiIntent with the pinned domain; the agent signs the canonical
+  # types, so the hashed root is `XochiIntent` whatever map the quote served.
   defp sign_quote(%QuoteResponse{eip712_data: eip712}, wallet) do
     domain = eip712_domain(eip712)
-    types = eip712_types(eip712)
     message = eip712_message(eip712)
 
-    case wallet.sign_typed_data(domain, types, message) do
+    case wallet.sign_typed_data(domain, @intent_types, message) do
       {:ok, sig_bytes} ->
         {:ok, "0x" <> Base.encode16(sig_bytes, case: :lower)}
 
@@ -862,17 +938,23 @@ defmodule Raxol.Payments.Protocols.Xochi do
        ),
        do: {:ok, nil}
 
-  defp sign_pull_authorization(%QuoteResponse{pull_authorization: pull}, wallet) do
-    domain = eip712_domain(pull)
-    types = eip712_types(pull)
-    message = eip712_message(pull)
+  # Signed with the canonical types for the method `validate_pull_authorization/3`
+  # checked, never the served map.
+  defp sign_pull_authorization(
+         %QuoteResponse{pull_authorization: pull, payment_method: method},
+         wallet
+       ) do
+    with {:ok, %{types: types}} <- pull_kind(method) do
+      domain = eip712_domain(pull)
+      message = eip712_message(pull)
 
-    case wallet.sign_typed_data(domain, types, message) do
-      {:ok, sig_bytes} ->
-        {:ok, "0x" <> Base.encode16(sig_bytes, case: :lower)}
+      case wallet.sign_typed_data(domain, types, message) do
+        {:ok, sig_bytes} ->
+          {:ok, "0x" <> Base.encode16(sig_bytes, case: :lower)}
 
-      {:error, reason} ->
-        {:error, {:pull_sign_failed, reason}}
+        {:error, reason} ->
+          {:error, {:pull_sign_failed, reason}}
+      end
     end
   end
 
@@ -907,16 +989,78 @@ defmodule Raxol.Payments.Protocols.Xochi do
     end
   end
 
-  # The wallet signs whatever typed data the quote serves, so the validator must
-  # check the served `primaryType` + `types` -- not just the `message` fields by
-  # name. Without this a hostile quote could claim `payment_method: "erc3009"`,
-  # pass the field checks, yet serve a `TransferWithAuthorization` (no on-chain
-  # `msg.sender == to` guard) or a struct carrying extra signable fields. These
-  # canonical shapes are what the agent is willing to sign.
-  @erc3009_primary_type "ReceiveWithAuthorization"
-  @erc3009_fields MapSet.new(~w(from to value validAfter validBefore nonce))
-  @permit2_primary_type "PermitWitnessTransferFrom"
-  @permit2_fields MapSet.new(~w(permitted spender nonce deadline witness))
+  # The wallet would sign whatever typed data the quote serves, so the served
+  # payload must be exactly the canonical struct for the method -- primary type,
+  # every type with its ordered fields, the message's fields and the domain --
+  # not merely carry the right field names. A payload that adds a type, retypes
+  # a field (`nonce: Dummy` making `Permit` the hashed root), carries an extra
+  # signable field, or names another domain is refused before any signature.
+  @erc3009_kind %{
+    primary: "ReceiveWithAuthorization",
+    types: %{
+      "ReceiveWithAuthorization" => [
+        {"from", "address"},
+        {"to", "address"},
+        {"value", "uint256"},
+        {"validAfter", "uint256"},
+        {"validBefore", "uint256"},
+        {"nonce", "bytes32"}
+      ]
+    },
+    # EIP-3009 RECEIVE_WITH_AUTHORIZATION_TYPEHASH.
+    type_hash:
+      Base.decode16!("d099cc98ef71107a616c4f0f941f04c322d8e254fe26b3c6668db87aae413de8",
+        case: :lower
+      )
+  }
+  @permit2_kind %{
+    primary: "PermitWitnessTransferFrom",
+    types: Permit2.types(),
+    # keccak256("PermitWitnessTransferFrom(TokenPermissions permitted,address spender,
+    # uint256 nonce,uint256 deadline,OriginPullWitness witness)OriginPullWitness(bytes32
+    # orderId)TokenPermissions(address token,uint256 amount)"), SPEC §2.3.
+    type_hash:
+      Base.decode16!("4409a64154fcc59d975b06e8a233149d93d9fe0311a3d359f399a4333b11c3f5",
+        case: :lower
+      )
+  }
+
+  defp pull_kind("erc3009"), do: {:ok, @erc3009_kind}
+  defp pull_kind("permit2"), do: {:ok, @permit2_kind}
+
+  defp pull_kind(other),
+    do: {:error, {:authorization_mismatch, {:unsupported_pull_method, other}}}
+
+  # Shape, then domain, as `first_mismatch/1` would: `:pull_type` for the types
+  # or primary type, `:pull_fields` for the message's fields. A domain mismatch
+  # keeps the field names this check always reported: `:pull_chain` for
+  # `chainId`, `verifier_field` for `verifyingContract` (`:pull_token` on
+  # ERC-3009, whose verifier is the token; `:pull_verifier` on Permit2), and
+  # `{:pull_domain, key}` for the rest.
+  defp pull_typed_data(pull, kind, expected_domain, verifier_field) do
+    case TypedData.check_shape(pull, kind) do
+      :ok ->
+        case TypedData.check_domain(pull["domain"], expected_domain) do
+          :ok ->
+            :ok
+
+          {:error, {:domain, :chain_id}} ->
+            {:error, {:authorization_mismatch, :pull_chain}}
+
+          {:error, {:domain, :verifying_contract}} ->
+            {:error, {:authorization_mismatch, verifier_field}}
+
+          {:error, {:domain, key}} ->
+            {:error, {:authorization_mismatch, {:pull_domain, key}}}
+        end
+
+      {:error, :message_fields} ->
+        {:error, {:authorization_mismatch, :pull_fields}}
+
+      {:error, _type_mismatch} ->
+        {:error, {:authorization_mismatch, :pull_type}}
+    end
+  end
 
   # ERC-3009 ReceiveWithAuthorization: token is the EIP-712 verifyingContract,
   # `from` is the signer, `value` the pulled amount, `validBefore` the expiry.
@@ -924,19 +1068,40 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # the pinned allowlist when one is configured, and against a hard pin when
   # the pin is required (by config, or by default in production). With neither, an unpinned `to` is left
   # bounded by ERC-3009's `msg.sender == to` plus the value cap.
+  #
+  # ERC-3009 is USDC's (SPEC §2.3): the request's origin token must be USDC on
+  # its chain, and the domain is that token's own name/version
+  # (`Assets.UsdcDomains`), chainId and contract.
   defp validate_erc3009_pull(pull, request, signer) do
-    domain = pull["domain"] || %{}
     message = pull["message"] || %{}
 
-    first_mismatch([
-      {:pull_type, valid_envelope?(pull, @erc3009_primary_type, @erc3009_fields)},
-      {:pull_from, addr_match?(message["from"], signer)},
-      {:pull_token, addr_match?(domain["verifyingContract"], request.from_token)},
-      {:pull_chain, int_match?(domain["chainId"], request.from_chain_id)},
-      {:pull_value, int_within?(message["value"], pull_ceiling(request))},
-      {:pull_to, solver_allowed?(message["to"], :erc3009)},
-      {:pull_expiry, valid_window?(message["validBefore"])}
-    ])
+    with :ok <- erc3009_token(request),
+         :ok <- pull_typed_data(pull, @erc3009_kind, erc3009_domain(request), :pull_token) do
+      first_mismatch([
+        {:pull_from, addr_match?(message["from"], signer)},
+        {:pull_value, int_within?(message["value"], pull_ceiling(request))},
+        {:pull_to, solver_allowed?(message["to"], :erc3009)},
+        {:pull_expiry, valid_window?(message["validBefore"])}
+      ])
+    end
+  end
+
+  defp erc3009_token(%QuoteRequest{from_chain_id: chain, from_token: token}) do
+    if Raxol.Payments.Assets.symbol_for(chain, token) == "USDC" and
+         chain in Raxol.Payments.Assets.UsdcDomains.known_chain_ids(),
+       do: :ok,
+       else: {:error, {:authorization_mismatch, :pull_token}}
+  end
+
+  defp erc3009_domain(%QuoteRequest{from_chain_id: chain, from_token: token}) do
+    %{name: name, version: version} = Raxol.Payments.Assets.UsdcDomains.lookup(chain)
+
+    %{
+      "name" => name,
+      "version" => version,
+      "chainId" => chain,
+      "verifyingContract" => token
+    }
   end
 
   # Permit2 PermitWitnessTransferFrom: token + amount live under `permitted`,
@@ -956,42 +1121,62 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # at one address on every chain raxol settles on; see
   # `Permit2.verifying_contract/0` for the exception that would end that.
   defp validate_permit2_pull(pull, request) do
-    domain = pull["domain"] || %{}
-    message = pull["message"] || %{}
-    permitted = message["permitted"] || %{}
-
-    first_mismatch([
-      {:pull_type, valid_envelope?(pull, @permit2_primary_type, @permit2_fields)},
-      {:pull_token, addr_match?(permitted["token"], request.from_token)},
-      {:pull_verifier, addr_match?(domain["verifyingContract"], Permit2.verifying_contract())},
-      {:pull_chain, int_match?(domain["chainId"], request.from_chain_id)},
-      {:pull_value, int_within?(permitted["amount"], pull_ceiling(request))},
-      {:pull_spender, solver_allowed?(message["spender"], :permit2)},
-      {:pull_expiry, valid_window?(message["deadline"])}
-    ])
+    validate_permit2_authorization(
+      pull,
+      request.from_token,
+      request.from_chain_id,
+      pull_ceiling(request)
+    )
   end
+
+  @doc """
+  Check a served Permit2 `PermitWitnessTransferFrom` + `OriginPullWitness`
+  authorization before signing it: exactly the canonical types, message
+  fields and domain (`name` "Permit2", `chainId` = `chain_id`,
+  `verifyingContract` = `Permit2.verifying_contract/0`), `permitted.token` =
+  `token`, `permitted.amount` at most `ceiling`, a `spender` the solver pin
+  allows (the pin is always required for Permit2) and a bounded `deadline`.
+
+  Returns `:ok` or `{:error, {:authorization_mismatch, field}}`. Used for the
+  Xochi origin pull and for the Relay gasless pull, which serve the same
+  envelope.
+  """
+  @spec validate_permit2_authorization(term(), String.t(), pos_integer(), term()) ::
+          :ok | {:error, {:authorization_mismatch, term()}}
+  def validate_permit2_authorization(pull, token, chain_id, ceiling) when is_map(pull) do
+    domain = %{
+      "name" => "Permit2",
+      "chainId" => chain_id,
+      "verifyingContract" => Permit2.verifying_contract()
+    }
+
+    with :ok <- pull_typed_data(pull, @permit2_kind, domain, :pull_verifier) do
+      message = pull["message"]
+      permitted = message["permitted"]
+
+      first_mismatch([
+        {:pull_token, addr_match?(permitted["token"], token)},
+        {:pull_value, int_within?(permitted["amount"], ceiling)},
+        {:pull_spender, solver_allowed?(message["spender"], :permit2)},
+        {:pull_expiry, valid_window?(message["deadline"])}
+      ])
+    end
+  end
+
+  def validate_permit2_authorization(_pull, _token, _chain_id, _ceiling),
+    do: {:error, {:authorization_mismatch, :pull_type}}
+
+  @doc """
+  The canonical Permit2 pull kind (`%{primary, types, type_hash}`) the agent
+  signs.
+  """
+  @spec permit2_kind() :: TypedData.kind()
+  def permit2_kind, do: @permit2_kind
 
   # The most the pull may authorize: the exact origin amount on `exact_input`,
   # the caller's ceiling on `exact_output` (the solver picks the amount).
   defp pull_ceiling(%QuoteRequest{swap_kind: "exact_output", max_from_amount: max}), do: max
   defp pull_ceiling(%QuoteRequest{from_amount: from_amount}), do: from_amount
-
-  # The served envelope must be exactly the canonical struct for the method: the
-  # right `primaryType` and precisely its field set (no missing, no extra signable
-  # fields). This binds the object validated to the object signed.
-  defp valid_envelope?(pull, primary_type, fields) do
-    pull["primaryType"] == primary_type and
-      type_field_names(pull, primary_type) == fields
-  end
-
-  defp type_field_names(pull, type_name) do
-    pull
-    |> get_in(["types", type_name])
-    |> List.wrap()
-    |> Enum.map(fn f -> f["name"] || f[:name] end)
-    |> Enum.reject(&is_nil/1)
-    |> MapSet.new()
-  end
 
   # The authorization expiry must be a real future timestamp within a bounded
   # window, so a hostile quote cannot get a long-lived / standing pull signed.
@@ -1103,18 +1288,12 @@ defmodule Raxol.Payments.Protocols.Xochi do
   defp to_uint(_), do: nil
 
   # The execute `nonce` is the worker's replay-dedup key (wallet, nonce); it is
-  # NOT part of the intent signature -- the served XochiIntent type carries no
-  # nonce field, so the wallet never signs over it. When the signed message does
-  # embed an integer nonce, echo it. Otherwise derive a unique, deterministic
-  # value from the pull authorization's server-issued nonce: echoing a constant 0
-  # for every intent makes the worker reject the second non-terminal intent from
-  # a wallet ("Nonce already used"). Fall back to 0 only when neither a signed
-  # nonce nor a readable pull nonce is present.
-  defp signed_nonce(%QuoteResponse{
-         eip712_data: %{"message" => %{"nonce" => nonce}}
-       })
-       when is_integer(nonce),
-       do: nonce
+  # NOT part of the intent signature -- XochiIntent v3 has no nonce field, and
+  # `validate_intent/2` refuses a message carrying one. Derive a unique,
+  # deterministic value from the pull authorization's server-issued nonce:
+  # echoing a constant 0 for every intent makes the worker reject the second
+  # non-terminal intent from a wallet ("Nonce already used"). Fall back to 0
+  # only when no readable pull nonce is present.
 
   defp signed_nonce(%QuoteResponse{pull_authorization: %{"message" => %{"nonce" => nonce}}}),
     do: replay_nonce_from(nonce)

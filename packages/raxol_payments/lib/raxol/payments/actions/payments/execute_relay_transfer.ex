@@ -102,6 +102,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
 
   alias Raxol.Payments.Actions.SpendGate
   alias Raxol.Payments.{Assets, Checkpoint, DeliveryFloor, Failure, Relay, Router}
+  alias Raxol.Payments.Protocols.Xochi
   alias Raxol.Payments.Relay.Schemas.{QuoteRequest, QuoteResponse}
 
   @spec run(map(), map()) :: {:ok, map()} | {:error, Failure.t()}
@@ -146,7 +147,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   end
 
   defp fund(config, request, amount, warnings, context, store, key, quote) do
-    with {:ok, signature} <- maybe_sign_gasless(quote, context, amount),
+    with {:ok, signature} <- maybe_sign_gasless(quote, request, context, amount),
          {:ok, status} <- execute(config, quote, signature, context, amount),
          {:ok, deposit_tx} <- maybe_broadcast(quote, request, signature, context, amount) do
       summary = summary(quote, status, warnings, signature, deposit_tx)
@@ -322,40 +323,41 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   end
 
   # A (gasless): sign the quote's typed data before execute so the solver pulls.
-  defp maybe_sign_gasless(%QuoteResponse{gasless: gasless}, context, amount)
+  # The block is the same Permit2 `PermitWitnessTransferFrom` + `OriginPullWitness`
+  # pull the Xochi origin pull uses, and it is checked the same way before the
+  # wallet sees it (`Xochi.validate_permit2_authorization/4`): exactly the
+  # canonical types, fields and Permit2 domain on the origin chain, the request's
+  # token, an amount at most the request's, a pinned spender, a bounded deadline.
+  # Anything else is refused, the reservation released, and nothing signed.
+  defp maybe_sign_gasless(%QuoteResponse{gasless: gasless}, request, context, amount)
        when is_map(gasless) do
     case Map.get(context, :wallet) do
       nil -> release_and_error(context, amount, {:missing_context, :wallet})
-      wallet -> sign_gasless(gasless, wallet, context, amount)
+      wallet -> sign_gasless(gasless, request, wallet, context, amount)
     end
   end
 
-  defp maybe_sign_gasless(_quote, _context, _amount), do: {:ok, nil}
+  defp maybe_sign_gasless(_quote, _request, _context, _amount), do: {:ok, nil}
 
-  defp sign_gasless(gasless, wallet, context, amount) do
-    domain = eip712_domain(gasless["domain"] || %{})
-    types = eip712_types(gasless["types"] || %{})
-    message = gasless["message"] || %{}
+  defp sign_gasless(gasless, request, wallet, context, amount) do
+    case Xochi.validate_permit2_authorization(
+           gasless,
+           request.from_token,
+           request.from_chain_id,
+           request.from_amount
+         ) do
+      :ok ->
+        %{types: types} = Xochi.permit2_kind()
+        domain = Xochi.eip712_domain(gasless)
 
-    case wallet.sign_typed_data(domain, types, message) do
-      {:ok, sig} -> {:ok, "0x" <> Base.encode16(sig, case: :lower)}
-      {:error, reason} -> release_and_error(context, amount, {:sign_failed, reason})
+        case wallet.sign_typed_data(domain, types, gasless["message"]) do
+          {:ok, sig} -> {:ok, "0x" <> Base.encode16(sig, case: :lower)}
+          {:error, reason} -> release_and_error(context, amount, {:sign_failed, reason})
+        end
+
+      {:error, {:authorization_mismatch, field}} ->
+        release_and_error(context, amount, {:authorization_mismatch, {:gasless, field}})
     end
-  end
-
-  defp eip712_domain(d) do
-    %{
-      name: d["name"],
-      version: d["version"],
-      chainId: d["chainId"],
-      verifyingContract: d["verifyingContract"]
-    }
-  end
-
-  defp eip712_types(types) do
-    types
-    |> Map.drop(["EIP712Domain"])
-    |> Map.new(fn {name, fields} -> {name, Enum.map(fields, &{&1["name"], &1["type"]})} end)
   end
 
   defp execute(config, quote, signature, context, amount) do

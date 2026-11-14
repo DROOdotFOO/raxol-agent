@@ -53,21 +53,53 @@ defmodule Raxol.Payments.EIP712 do
     `:version`, `:chainId` (or `:chain_id`), `:verifyingContract` (or
     `:verifying_contract`), and `:salt` (bytes32). Only the keys present in
     the map are included in the domain type, matching reference implementations.
-  - `types` — map of struct type names to field definitions. The first
-    key in the map is treated as the primary type.
+  - `types` — map of struct type names to field definitions. The primary type
+    is the one type no other type references; a map with no such type (a
+    cycle) or with several is refused rather than guessed.
   - `message` — map of field values for the primary type.
 
   Returns `{:ok, digest}` on success or `{:error, reason}` if a value
   cannot be encoded under its declared type.
+
+  A caller signing typed data it did not build should use `hash/4` with the
+  primary type it expects, so the struct that gets hashed is not chosen by the
+  served `types` map.
   """
   @spec hash(map(), map(), map()) :: {:ok, binary()} | {:error, term()}
   def hash(domain, types, message) do
-    with {:ok, domain_separator} <-
-           hash_struct("EIP712Domain", domain, eip712_domain_types(domain)),
-         {:ok, message_hash} <- hash_struct(primary_type(types), message, types) do
-      {:ok, ExKeccak.hash_256(<<0x19, 0x01, domain_separator::binary, message_hash::binary>>)}
+    case primary_type(types) do
+      nil -> {:error, :no_primary_type}
+      primary -> hash(domain, primary, types, message)
     end
   end
+
+  @doc """
+  Hash `message` as the struct `primary_type` of `types`, under `domain`.
+
+  The root is the caller's, not the map's: `{:error, {:unknown_primary_type,
+  name}}` when `types` does not define it.
+  """
+  @spec hash(map(), String.t(), map(), map()) :: {:ok, binary()} | {:error, term()}
+  def hash(domain, primary_type, types, message)
+      when is_binary(primary_type) and is_map(types) do
+    if Map.has_key?(types, primary_type) do
+      with {:ok, domain_separator} <-
+             hash_struct("EIP712Domain", domain, eip712_domain_types(domain)),
+           {:ok, message_hash} <- hash_struct(primary_type, message, types) do
+        {:ok, ExKeccak.hash_256(<<0x19, 0x01, domain_separator::binary, message_hash::binary>>)}
+      end
+    else
+      {:error, {:unknown_primary_type, primary_type}}
+    end
+  end
+
+  @doc """
+  The EIP-712 `typeHash` of `type_name` in `types`: `keccak256(encodeType)`,
+  with the referenced struct types appended in name order.
+  """
+  @spec type_hash(String.t(), map()) :: binary()
+  def type_hash(type_name, types) when is_binary(type_name) and is_map(types),
+    do: encode_type(type_name, types)
 
   @doc """
   Hash a typed message against a domain separator obtained from somewhere other
@@ -88,8 +120,12 @@ defmodule Raxol.Payments.EIP712 do
   """
   @spec hash_with_separator(term(), map(), map()) :: {:ok, binary()} | {:error, term()}
   def hash_with_separator(<<domain_separator::binary-size(32)>>, types, message) do
-    with {:ok, message_hash} <- hash_struct(primary_type(types), message, types) do
+    with primary when is_binary(primary) <- primary_type(types),
+         {:ok, message_hash} <- hash_struct(primary, message, types) do
       {:ok, ExKeccak.hash_256(<<0x19, 0x01, domain_separator::binary, message_hash::binary>>)}
+    else
+      nil -> {:error, :no_primary_type}
+      {:error, _} = err -> err
     end
   end
 
@@ -210,15 +246,10 @@ defmodule Raxol.Payments.EIP712 do
       [primary] ->
         primary
 
-      [] ->
-        # Cycles or zero candidates: fall back to insertion-ish order so
-        # single-type maps keep working.
-        types |> Map.keys() |> List.first()
-
-      multiple ->
-        raise ArgumentError,
-              "EIP-712 types map is ambiguous: multiple root types #{inspect(multiple)}. " <>
-                "Every type should be referenced by exactly one other, except the primary."
+      # No root (a cycle) or several roots: there is no primary type to hash,
+      # and guessing one lets the map choose the struct that gets signed.
+      _none_or_several ->
+        nil
     end
   end
 

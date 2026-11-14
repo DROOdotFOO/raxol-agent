@@ -43,12 +43,15 @@ defmodule Raxol.Payments.Protocols.X402 do
          pay_to when not is_nil(pay_to) <- decoded["payTo"] || decoded["pay_to"],
          :ok <- validate_address(pay_to),
          currency = decoded["asset"] || decoded["currency"],
-         :ok <- reject_fx_asset(decoded["network"], currency) do
+         :ok <- reject_fx_asset(decoded["network"], currency),
+         {:ok, chain_id} <- parse_network(decoded["network"]),
+         :ok <- require_usdc(chain_id, currency) do
       {:ok,
        %{
          price: price,
          currency: currency,
          network: decoded["network"],
+         chain_id: chain_id,
          pay_to: pay_to,
          nonce: decoded["nonce"],
          valid_after: decoded["validAfter"] || decoded["valid_after"] || 0,
@@ -73,13 +76,39 @@ defmodule Raxol.Payments.Protocols.X402 do
     end
   end
 
+  # The wallet signs a USDC `TransferWithAuthorization` under USDC's own EIP-712
+  # domain for the chain (`Assets.UsdcDomains`), with the asset as the
+  # verifying contract. So the asset must be the registered USDC contract on a
+  # chain whose USDC domain is known; anything else would be signed under a
+  # domain that is not its own. The chain comes from `network`, which must be
+  # `eip155:<chain id>` (or absent, meaning Base).
+  defp require_usdc(chain_id, asset) do
+    if Raxol.Payments.Assets.symbol_for(chain_id, asset) == "USDC" and
+         chain_id in Raxol.Payments.Assets.UsdcDomains.known_chain_ids(),
+       do: :ok,
+       else: {:error, {:unsupported_asset, %{chain_id: chain_id, asset: asset}}}
+  end
+
+  defp parse_network(nil), do: {:ok, 8453}
+  defp parse_network(chain_id) when is_integer(chain_id) and chain_id > 0, do: {:ok, chain_id}
+
+  defp parse_network("eip155:" <> digits = network) do
+    case Integer.parse(digits) do
+      {chain_id, ""} when chain_id > 0 -> {:ok, chain_id}
+      _ -> {:error, {:invalid_network, network}}
+    end
+  end
+
+  defp parse_network(network), do: {:error, {:invalid_network, network}}
+
   @impl true
   @spec build_payment(map(), module()) ::
           {:ok, Headers.headers()} | {:error, term()}
   def build_payment(challenge, wallet) do
-    case atomic_value(challenge.price) do
-      {:ok, value} -> build_signed_payment(challenge, wallet, value)
-      {:error, _} = err -> err
+    with {:ok, value} <- atomic_value(challenge.price),
+         {:ok, chain_id} <- parse_network(Map.get(challenge, :network)),
+         :ok <- require_usdc(chain_id, challenge.currency) do
+      build_signed_payment(challenge, wallet, value, chain_id)
     end
   end
 
@@ -89,8 +118,7 @@ defmodule Raxol.Payments.Protocols.X402 do
   # malformed as atomic units and would let the signed value diverge from the
   # gated amount (a gate-bypass), so it is rejected before signing rather than
   # coerced.
-  defp build_signed_payment(challenge, wallet, value) do
-    chain_id = chain_id_from_network(challenge.network)
+  defp build_signed_payment(challenge, wallet, value, chain_id) do
     %{name: name, version: version} = Raxol.Payments.Assets.UsdcDomains.lookup(chain_id)
 
     domain = %{
@@ -167,17 +195,6 @@ defmodule Raxol.Payments.Protocols.X402 do
   end
 
   # -- Private --
-
-  defp chain_id_from_network(nil), do: 8453
-
-  defp chain_id_from_network(network) when is_binary(network) do
-    case String.split(network, ":") do
-      ["eip155", chain_id] -> String.to_integer(chain_id)
-      _ -> 8453
-    end
-  end
-
-  defp chain_id_from_network(chain_id) when is_integer(chain_id), do: chain_id
 
   # Parse the challenge price strictly as non-negative atomic units. Only an
   # integer or an all-digit string is a valid atomic amount; a float or a

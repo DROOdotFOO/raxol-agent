@@ -180,13 +180,25 @@ defmodule Raxol.Earn.Xochi.JourneyTest do
       assert {:accept_failed, {:rejected, {:over_capacity, 10, ^dst}}} = error(scenario)
     end
 
-    test "a closed-origin order (Robinhood until the USDG exit is fixed) is rejected" do
+    test "a closed-origin order is rejected by the seller" do
+      # Origin 10 rather than Robinhood (4663): the buyer signs an ERC-3009 pull
+      # only under a registered USDC domain, and 4663 has none, so a Robinhood
+      # order now stops at the buyer before the seller's check is reached.
       scenario =
-        new(wallet: BuyerWallet, closed_origins: [4663])
+        new(wallet: BuyerWallet, closed_origins: [10])
+        |> order("USDC", from: 10, to: 8453, amount: @amount)
+        |> assert_order_rejected()
+
+      assert {:accept_failed, {:rejected, {:origin_closed, 10}}} = error(scenario)
+    end
+
+    test "a Robinhood-origin ERC-3009 pull is refused by the buyer before signing" do
+      scenario =
+        new(wallet: BuyerWallet)
         |> order("USDC", from: 4663, to: 8453, amount: @amount)
         |> assert_order_rejected()
 
-      assert {:accept_failed, {:rejected, {:origin_closed, 4663}}} = error(scenario)
+      assert {:quote_failed, {:authorization_mismatch, :pull_token}} = error(scenario)
     end
   end
 

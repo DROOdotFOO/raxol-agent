@@ -31,7 +31,7 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     %{
       "maxAmountRequired" => amount,
       "payTo" => "0x" <> String.duplicate("cd", 20),
-      "asset" => "0x" <> String.duplicate("ef", 20),
+      "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
       "network" => "eip155:8453",
       "nonce" => "0x" <> String.duplicate("12", 32),
       "validAfter" => 0,
