@@ -45,12 +45,14 @@ defmodule Raxol.Payments.Protocols.Xochi do
 
       config :raxol_payments, :pull_solver_allowlist, ["0xsolver...", "0xsolver2..."]
 
-  When set, a pull whose `to` (ERC-3009) or `spender` (Permit2) is not in the list
-  is rejected before any signature. When unset, a Permit2 pull is always
-  rejected, and an ERC-3009 pull is rejected when the pin is required:
-  `config :raxol_payments, :pull_require_solver_pin` defaults to
-  `Raxol.Payments.Deployment.production?/0`, so a deployed release requires it
-  and development and tests do not. An explicit `true` or `false` wins either way.
+  When the list is set, a pull whose `to` (ERC-3009) or `spender` (Permit2) is
+  not in it is rejected before any signature, whatever
+  `:pull_require_solver_pin` says. When the list is empty, a Permit2 pull is
+  always rejected, and an ERC-3009 pull is rejected when
+  `config :raxol_payments, :pull_require_solver_pin` is `true`. That setting
+  defaults to `Raxol.Payments.Deployment.production?/0`, so a deployed release
+  requires the pin and development and tests do not; an explicit `true` or
+  `false` overrides the default, and `false` matters only with an empty list.
   """
 
   @behaviour Raxol.Payments.Protocol
@@ -676,9 +678,12 @@ defmodule Raxol.Payments.Protocols.Xochi do
   `XOCHI_SOLVER_OPTIMISM`, `XOCHI_SOLVER_POLYGON` and `XOCHI_SOLVER_ROBINHOOD`
   name the solver collection address the agent signs pulls to. The allowlist is
   flat, so one address that serves every chain needs one variable.
-  `XOCHI_PULL_REQUIRE_SOLVER_PIN=true` pins ERC-3009 with no address set, and
-  `false` unpins it; unset, it follows `Raxol.Payments.Deployment.production?/0`.
-  Permit2 is fail-closed regardless.
+  `XOCHI_PULL_REQUIRE_SOLVER_PIN` (`true` or `false`; unset, it follows
+  `Raxol.Payments.Deployment.production?/0`) becomes `:pull_require_solver_pin`.
+  The returned allowlist always holds the verified pull contracts, so every pull
+  this configuration admits is pinned whatever the flag says: the flag decides
+  only whether a boot with no `XOCHI_SOLVER_*` address set goes ahead (`true`)
+  or raises (`false`). Permit2 is fail-closed regardless.
 
   Raises as `assert_origin_pull_pinned!/2` does when no address is set and the
   pin is not required, so the release does not boot fail-open. The returned
