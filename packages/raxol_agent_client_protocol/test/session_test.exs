@@ -311,6 +311,9 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
       # the cancel path was in fact prompt).
       assert_receive {:perm, {:ok, :cancelled}}, 1_000
 
+      # The asker is answered before the client's request is withdrawn
+      # (`abort_pending_perms/2`), so the withdrawal can land just after.
+      wait_until(fn -> FakeConnection.count(conn, :cancel_request) == 1 end)
       assert FakeConnection.count(conn, :cancel_request) == 1
       reply = wait_for_reply(conn)
       assert {:reply, _, {:ok, %PromptResponse{stop_reason: :cancelled}}} = reply
