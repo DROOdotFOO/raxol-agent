@@ -1,6 +1,6 @@
 defmodule Raxol.Agent.SpendGate.Reservations do
   @moduledoc false
-  # Long-lived owner of the SpendGate reservation registry (U7 / AD-6a).
+  # Long-lived owner of the SpendGate reservation registry.
   #
   # Tracks which `cost_ref`s are currently *reserved but not yet settled*, keyed
   # per budget scope, so a duplicate reserve for the same `cost_ref` is rejected
@@ -18,14 +18,14 @@ defmodule Raxol.Agent.SpendGate.Reservations do
   # identity share a reservation namespace; the tags keep values from
   # different fields from ever aliasing, so independent budgets never collide.
   #
-  # SECURITY TRADEOFF (documented, accepted for U7): the table is `:public` —
+  # SECURITY TRADEOFF (accepted): the table is `:public` —
   # required by the direct-to-ETS `claim`/`release` design (`:protected` would
   # force every reserve through this process, serializing the hot path). Any
   # co-resident VM process (a plugin, another agent) can therefore delete a
   # live claim (permitting one bounded duplicate reserve per cost_ref) or
   # insert a fake claim (wedging a cost_ref until swept). Money-adjacent but
-  # cap-bounded; revisit at U7-I if untrusted in-VM code becomes a real
-  # deployment shape.
+  # cap-bounded; revisit if untrusted in-VM code becomes a real deployment
+  # shape.
   #
   # Ownership: in production this registry belongs in the agent supervision
   # tree. The agent application does not boot under `MIX_ENV=test`, so the gate
@@ -83,14 +83,14 @@ defmodule Raxol.Agent.SpendGate.Reservations do
 
   Claims are otherwise removed only on settle or refusal, so a reserver killed
   mid-flight (crash contour) or a run/session budget that simply ended leaks its
-  claims forever, growing the table without bound (finding #6). The owner of a
+  claims forever, growing the table without bound. The owner of a
   `scope` (a run/session budget) MUST call this when that scope ends; growth is
   then bounded by scope lifetime, not by process uptime. Returns the number of
   claims reclaimed.
 
-  NOT YET WIRED IN PRODUCTION: nothing in `lib/` drives the gate yet (U7-I —
-  the primary-loop integration — is where a run/session scope first EXISTS to
-  end). U7-I MUST call `sweep_scope/1` from its scope-teardown path (e.g. the
+  NOT YET WIRED IN PRODUCTION: nothing in `lib/` drives the gate yet, so no
+  run/session scope exists to end. Whatever drives it MUST call
+  `sweep_scope/1` from its scope-teardown path (e.g. the
   budget owner's `terminate/2` or the run supervisor's shutdown); until then
   the leak-and-reclaim behavior is pinned by the robustness suite, including
   the brutal-`:kill` contour (`Process.exit(_, :kill)` runs no `rescue`/
@@ -129,7 +129,7 @@ defmodule Raxol.Agent.SpendGate.Reservations do
   # The owner holds the named ETS table (dedup claims). It MUST survive stray
   # traffic: the GenServer default `handle_call`/`handle_cast` STOP the process
   # on an unexpected message ({:bad_call}/{:bad_cast}), which would destroy the
-  # table and vanish every live claim → double-charge (finding #5). Log + ignore
+  # table and vanish every live claim → double-charge. Log + ignore
   # instead of dying. The table has no in-process protocol; claim/release go
   # straight to ETS, so there is genuinely nothing these should service.
   @impl GenServer

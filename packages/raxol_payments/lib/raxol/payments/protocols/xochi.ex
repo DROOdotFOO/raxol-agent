@@ -47,7 +47,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
 
   When set, a pull whose `to` (ERC-3009) or `spender` (Permit2) is not in the list
   is rejected before any signature. When unset (the default), the address is not
-  bound. See GitHub #333.
+  bound.
   """
 
   @behaviour Raxol.Payments.Protocol
@@ -641,7 +641,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   Raise when the origin-pull solver pin is fail-open for the given allowlist and
   requirement flag, otherwise return `:ok`. Call at boot in a fund-moving
   deployment so a missing solver pin halts startup instead of silently signing
-  ERC-3009 pulls to an unverified recipient. See GitHub #333.
+  ERC-3009 pulls to an unverified recipient.
   """
   @spec assert_origin_pull_pinned!([String.t()] | nil, boolean()) :: :ok
   def assert_origin_pull_pinned!(allowlist, require_pin?) do
@@ -910,7 +910,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # The recipient (`to`) is the solver collection address; it is enforced against
   # the pinned allowlist when one is configured, and against a hard pin when
   # `:pull_require_solver_pin` is set. With neither, an unpinned `to` is left
-  # bounded by ERC-3009's `msg.sender == to` plus the value cap. See GitHub #333.
+  # bounded by ERC-3009's `msg.sender == to` plus the value cap.
   defp validate_erc3009_pull(pull, request, signer) do
     domain = pull["domain"] || %{}
     message = pull["message"] || %{}
@@ -932,7 +932,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # is no on-chain recipient guard -- the spender chooses where funds go -- so the
   # spender pin is ALWAYS required (fail-closed): with no allowlist configured a
   # permit2 pull is rejected before signing. The `OriginPullWitness` ties the
-  # permit to one intent on-chain. See GitHub #333.
+  # permit to one intent on-chain.
   #
   # `verifyingContract` is pinned to the canonical Permit2 for the same reason
   # the ERC-3009 rail pins its own to the request's token: it decides WHO checks
@@ -1009,7 +1009,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # required -- an unpinned permit2 pull is rejected (fail-closed).
   #
   # When Xochi serves a verifiable/attested solver set in the quote, this resolver
-  # is the seam to prefer it over static config. See GitHub #333.
+  # is the seam to prefer it over static config.
   defp solver_allowed?(addr, method) do
     case solver_allowlist() do
       [] ->
@@ -1142,13 +1142,12 @@ defmodule Raxol.Payments.Protocols.Xochi do
   field list from the keys present, so a key carrying `nil` still declares that
   field and hashes a domain the verifier never built. No served domain uses all
   five: the canonical XochiIntent domain omits `verifyingContract` and carries a
-  `salt`, and Permit2's omits `version` (see GitHub #772 -- signing a 4-field
-  domain against Permit2's 3-field one reverts InvalidContractSignature on the
-  pull).
+  `salt`, and Permit2's omits `version` (signing a 4-field domain against
+  Permit2's 3-field one reverts InvalidContractSignature on the pull).
 
   Public because the served-to-signed projection is what the conformance oracle
   has to exercise. A test that rebuilds this mapping proves only that the test
-  agrees with itself, which is how #772 reached production with a green suite.
+  agrees with itself, which is how a wrong domain once passed a green suite.
   """
   @spec eip712_domain(map()) :: map()
   def eip712_domain(eip712) do

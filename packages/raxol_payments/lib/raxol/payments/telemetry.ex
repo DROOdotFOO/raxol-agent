@@ -220,8 +220,8 @@ defmodule Raxol.Payments.Telemetry do
       # `{:error, :timeout}`: the intent never reached a terminal status inside
       # the poll budget, so the origin pull may have moved funds while delivery
       # stayed unconfirmed. The cause is the solver or the chain being slow,
-      # unreachable or refusing -- issue #772 (funded ACP jobs never settling
-      # behind a Xochi 502 `validation_failed`) is exactly this shape. Our
+      # unreachable or refusing -- funded ACP jobs that never settled behind a
+      # Xochi 502 `validation_failed` were exactly this shape. Our
       # bookkeeping is behaving correctly when it fires: it refuses to report
       # success and hands the operator an intent id to reconcile.
       [:raxol, :payments, :xochi, :intent_stranded] => :peer,

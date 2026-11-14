@@ -1,24 +1,20 @@
 defmodule Raxol.Agent.SpendGate do
   @moduledoc """
-  U7 — reserve-before-call at the harness primary-loop tool/provider boundary
-  (AD-6a). The permanent U7-R red suite
-  (`test/raxol/agent/red/u7_spend_gate_red_test.exs`) — authored against this
-  seam *before* the implementation existed (the red-first fan-out) — drives
-  these functions and is now GREEN.
+  Reserve-before-call at the agent loop's tool/provider boundary.
 
-  ## Deferred (documented follow-ups, post-U11)
+  ## Not wired here
 
     * **`cost_ref` ↔ journal tie.** The gate emits its reserve/call/settle
       records through the injected `context.emit` sink; binding that sink to the
       real durable per-session journal (`family: :meta` records carrying
       `cost_ref`; see `docs/harness/architecture.md`, "The safety substrate")
-      is U7-I wiring, not done here.
+      is the caller's job.
     * **Budget-side release on settle.** `settle/3` records the authoritative
       `actual`; the refund of `estimate - actual` is *derivable* from the
-      `(reserve, settle)` pair. Wiring that release back to the real
-      `Raxol.Payments.Ledger.try_spend/5`-shaped budget is U7-I work — the
-      frozen `context` exposes only the reserve seam, and the reserve/refund is
-      a Gate↔budget-internal step (freeze §"Settlement is internal").
+      `(reserve, settle)` pair. Wiring that release back to a
+      `Raxol.Payments.Ledger.try_spend/5`-shaped budget is the caller's job —
+      `context` exposes only the reserve seam, and the reserve/refund is a
+      Gate↔budget-internal step (see "Settlement is internal" below).
 
   ## The law
 
@@ -31,7 +27,7 @@ defmodule Raxol.Agent.SpendGate do
   boundary (`Raxol.Payments.Ledger.try_spend/5` +
   `Raxol.Payments.Actions.SpendGate`), generalized to the harness loop.
   raxol_agent does **not** depend on raxol_payments (the dependency runs the
-  other way), so U7 replicates the atomic `try_spend` *shape* — it does not
+  other way), so the gate replicates the atomic `try_spend` *shape* — it does not
   import the module.
 
     * **Fail-closed.** No reserve ⇒ no call, EVER. A refused reserve means the
@@ -45,7 +41,7 @@ defmodule Raxol.Agent.SpendGate do
       spend state, including a reserve left dangling by a crash between reserve
       and call (visible in the fold, never silently lost).
 
-  ## Observable seam (frozen by the red suite)
+  ## Observable seam
 
   The Gate emits one cost record per step through an injectable sink in
   `context` — `context.emit.(record)` where `record` is
@@ -58,10 +54,9 @@ defmodule Raxol.Agent.SpendGate do
 
   In production the sink is wired to the per-session journal (the durable
   reserve/call/settle records — likely `family: :meta` with a `cost_ref`; see
-  `docs/harness/architecture.md`, "The safety substrate"); in the red suite it
-  is an in-memory recorder the checkers fold. Binding `emit` to the real
-  journal is U7
-  implementation work, not part of this skeleton.
+  `docs/harness/architecture.md`, "The safety substrate"); in the tests it is
+  an in-memory recorder the checkers fold. Binding `emit` to the real journal
+  is the caller's job.
 
   **A real `emit` failure is never swallowed.** The fold is the accounting, so
   a silently dropped record on irreversible spend state (a charged reserve, a
@@ -69,8 +64,7 @@ defmodule Raxol.Agent.SpendGate do
   this gate exists to prevent. A raising sink propagates as
   `Raxol.Agent.SpendGate.JournalWriteError`, carrying the record so the budget
   owner can reconcile (refund the estimate, halt the run). The only tolerated
-  failure is an ephemeral `:noproc` exit — a dead in-memory test bus (the U12
-  `safe_emit` narrowing).
+  failure is an ephemeral `:noproc` exit — a dead in-memory test bus.
 
   ## The reserve seam (frozen — binds atomicity to the GATE, not a test helper)
 
@@ -82,18 +76,16 @@ defmodule Raxol.Agent.SpendGate do
 
   This is the `try_spend` shape (mirrors `Raxol.Payments.Ledger.try_spend/5`),
   generalized as a plain closure so raxol_agent doesn't need to depend on
-  raxol_payments. **Both** the eventual U7 implementation of `reserve/3` and
-  any test/injector caller MUST reserve through this SAME callable — freezing
-  it here in the context shape (rather than letting each caller reach into a
-  test-support module function directly) is what makes the atomicity
-  guarantee a property of the GATE's contract, not an artifact of the probe.
-  A run-level and session-level cap can each be represented as their own
-  `try_reserve` seam, composed by the caller that builds `context`.
+  raxol_payments. **Both** `reserve/3` and any test caller MUST reserve through
+  this SAME callable — fixing it in the context shape (rather than letting
+  each caller reach into a test-support module function directly) is what
+  makes the atomicity guarantee a property of the GATE's contract, not an
+  artifact of the probe. A run-level and session-level cap can each be
+  represented as their own `try_reserve` seam, composed by the caller that
+  builds `context`.
 
-  **U7-I must accept and invoke `context.try_reserve`** when it implements
-  `reserve/3` — wiring the production closure to the real
-  `Raxol.Payments.Ledger.try_spend/5`-shaped budget is production work, not
-  part of this skeleton.
+  Wiring the production closure to a real
+  `Raxol.Payments.Ledger.try_spend/5`-shaped budget is the caller's job.
   """
 
   alias Raxol.Agent.SpendGate.JournalWriteError
@@ -134,7 +126,7 @@ defmodule Raxol.Agent.SpendGate do
   `:atomics` reference, dead outside the VM that created it. Handing a
   reservation across nodes (swarm) or persisting/replaying it silently voids
   double-settle protection — settle where you reserved. (Cross-node settle is
-  out of scope for U7; the harness primary loop is node-local.)
+  not supported; the agent loop is node-local.)
   """
   @type reservation :: %{cost_ref: cost_ref(), estimate: estimate()}
 
@@ -196,7 +188,7 @@ defmodule Raxol.Agent.SpendGate do
             ) ::
               {:ok, result :: term()} | {:error, {:reserve_refused, refusal()}}
 
-  # --- implementation (U7 / AD-6a) ------------------------------------------
+  # --- implementation ---------------------------------------------------------
 
   @doc """
   Reserve `estimate` for `cost_ref`. See the `reserve/3` callback for the
@@ -325,8 +317,8 @@ defmodule Raxol.Agent.SpendGate do
     case :atomics.compare_exchange(guard, 1, 0, 1) do
       :ok ->
         # First settle: release the active claim and journal the authoritative
-        # `actual`. Budget-side refund of `estimate - actual` is a deferred
-        # follow-up (see moduledoc) — derivable from the (reserve, settle) pair.
+        # `actual`. Budget-side refund of `estimate - actual` is not done here
+        # (see moduledoc) — derivable from the (reserve, settle) pair.
         #
         # The CAS flip above is IRREVERSIBLE — settle can never retry, and by
         # the time we emit, the claim is already released: settle accounting IS
@@ -405,8 +397,7 @@ defmodule Raxol.Agent.SpendGate do
   # is never swallowed into `:ok`.
   #
   # The ONLY tolerated failure is an ephemeral `:noproc` exit — a dead
-  # in-memory test bus, where no durable journal existed to diverge from. This
-  # is the same narrowing U12 applies in its `safe_emit`.
+  # in-memory test bus, where no durable journal existed to diverge from.
   defp guarded_emit(context, record) do
     context.emit.(record)
     :ok
@@ -441,7 +432,7 @@ defmodule Raxol.Agent.SpendGate do
   end
 
   # The reservation namespace (dedup scope). Keying on the `try_reserve` CLOSURE
-  # TERM is caller-fragile (finding #4): a caller that rebuilds the closure per
+  # TERM is caller-fragile: a caller that rebuilds the closure per
   # call — or composes run+session caps into a fresh closure each time — gets a
   # DIFFERENT term for the SAME budget, fragmenting the namespace so one cost_ref
   # can reserve twice; conversely two distinct budgets whose closures happen to
@@ -452,12 +443,11 @@ defmodule Raxol.Agent.SpendGate do
   # is tagged so values from different fields can never alias. Only when NONE is
   # present do we fall back to the closure term (documented requirement below).
   #
-  # NOTE (follow-up): the frozen SpendGate `context` shape (§ AD-6a) freezes only
-  # `:emit` and `:try_reserve` — it has no stable budget-identity field yet.
-  # U7-I callers SHOULD pass a stable `:budget_id` (one per run/session budget);
-  # promoting `:budget_id` into the frozen context shape is the clean fix and is
-  # tracked as a follow-up. Until then the closure-term fallback holds only for
-  # callers that reuse ONE `try_reserve` closure per budget.
+  # NOTE: the SpendGate `context` shape fixes only `:emit` and `:try_reserve`
+  # — it has no stable budget-identity field. Callers SHOULD pass a stable
+  # `:budget_id` (one per run/session budget). Without one, the closure-term
+  # fallback holds only for callers that reuse ONE `try_reserve` closure per
+  # budget.
   defp reserve_scope(context) do
     cond do
       Map.has_key?(context, :budget_id) -> {:budget_id, context.budget_id}

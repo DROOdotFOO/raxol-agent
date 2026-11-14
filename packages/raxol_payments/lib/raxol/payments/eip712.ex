@@ -79,9 +79,9 @@ defmodule Raxol.Payments.EIP712 do
   computed, and any disagreement over which fields the domain has cancels out on
   both sides. Supplying the counterparty's separator removes that: the domain
   half of the digest comes from the contract that will verify it, so a projection
-  that drops or invents a field is visible rather than self-consistent. See
-  GitHub #772, where a `version` we added and Permit2 never declared reverted the
-  origin pull.
+  that drops or invents a field is visible rather than self-consistent: a
+  `version` field we added to a Permit2 domain, which Permit2 never declares,
+  reverted the origin pull.
 
   The struct half is still encoded here, and is covered against ethers-generated
   vectors by the Permit2 and ERC-3009 conformance suites.

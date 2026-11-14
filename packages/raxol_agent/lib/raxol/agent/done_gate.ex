@@ -1,10 +1,9 @@
 defmodule Raxol.Agent.DoneGate do
   @moduledoc """
-  U21 — Evidence-gated done (FI-6). A pure read/decision function over a turn
-  journal: it never touches a shared write path (see
-  `packages/raxol_agent/test/raxol/agent/red/u21_evidence_done_red_test.exs`).
+  Evidence-gated done. A pure read/decision function over a turn journal: it
+  never touches a shared write path.
 
-  ## What U21 gates
+  ## What it gates
 
   An agent may not declare a turn "done" on its own say-so. The
   done/turn-success transition (a `turn_completed` with `final: true`) is
@@ -18,7 +17,7 @@ defmodule Raxol.Agent.DoneGate do
     2. **be evidence-class** — a tool result / verification output, never the
        agent's own `:message` self-report and never an internal `:state_change`,
        else `{:error, {:not_evidence, offset}}`;
-    3. **belong to the claiming turn** (H2) — a ref journaled under a *different*
+    3. **belong to the claiming turn** — a ref journaled under a *different*
        turn is `{:error, {:foreign_turn, offset}}`, even when its offset
        postdates this turn's last mutation (the cross-turn evidence spoof this
        check exists to close);
@@ -51,8 +50,8 @@ defmodule Raxol.Agent.DoneGate do
       producer must not be able to widen the valid-evidence window and launder
       stale evidence past a real mutation;
     * the only future seam that may refine a `:tool_use` OUT of the mutation
-      set is a structural effect classification from the F2 `Raxol.Action`
-      draft (see `classified_effect_free?/1`), which does not exist yet.
+      set is a structural effect classification (see
+      `classified_effect_free?/1`), which does not exist yet.
 
   Because a `:tool_result` always postdates its own `:tool_use`, check 5 pins
   the corollary: the last mutation's own result echo is not evidence that the
@@ -94,7 +93,7 @@ defmodule Raxol.Agent.DoneGate do
 
   ### A nil claiming turn is structurally rejected (`:unturned_done`)
 
-  The whole gate hinges on turn identity: same-turn ownership (H2, check 3) and
+  The whole gate hinges on turn identity: same-turn ownership (check 3) and
   the per-turn last-mutation window (check 4) are both keyed on `turn_id`. A
   done whose *claiming* `turn_id` is `nil` therefore cannot be gated — its
   ownership check degenerates to `nil == nil` (any nil-turn ref would satisfy
@@ -110,18 +109,16 @@ defmodule Raxol.Agent.DoneGate do
   Evidence **class** is checked, not its **content**: a `:tool_result` that ran
   and reported *failure* (e.g. `"tests: 0 passed, 12 FAILED"`) still class-passes
   — the gate pins that a verification tool RAN and was journaled, not that it
-  passed. A future unit may add content gating (parsing pass/fail out of the
-  result payload); U21 deliberately stops at "a verification tool ran".
+  passed. Content gating (parsing pass/fail out of the result payload) is not
+  done here; the gate stops at "a verification tool ran".
 
   ## Gating strength (policy note)
 
-  The roadmap's U21 wording is the *weaker* reading: "`turn_completed{final:
-  true}` carries verification artifacts ... as data" — i.e. the final event
-  merely *reports* whatever evidence a run happened to produce. This
-  implementation deliberately follows the **stronger** reading that the U21-R
-  red suite encodes: a done that cites no journaled evidence (or cites refs
+  A weaker reading would have `turn_completed{final: true}` merely *report*
+  whatever evidence a run happened to produce. This module follows the
+  **stronger** reading: a done that cites no journaled evidence (or cites refs
   that don't hold up) is **REJECTED** — the turn does not transition to done.
-  The red suite (`Oracle.verdict/3` + `Contours`) is the authoritative contract
+  The test oracle (`Oracle.verdict/3` + `Contours`) is the authoritative contract
   here; this module matches it. The separate parked policy question about
   **zero-tool turns** (whether a turn that legitimately ran no tools may ever
   declare done) is left UNRESOLVED on purpose — this module does not
@@ -130,21 +127,11 @@ defmodule Raxol.Agent.DoneGate do
 
   ## Behaviour
 
-  `gate/3` is declared as a behaviour callback so the red suite can drive
-  deliberately-broken *dead injectors* (an impl that skips the ref check, one
-  that checks existence but not ordering, one that lets self-reported text
-  count as evidence, one that skips the turn-ownership check) through the same
-  shape and prove each one fails its targeted red.
-
-  ## Label key (review cross-references)
-
-  Labels like `H2` and `M1` in this module and its red suite are finding ids
-  from PR #570's adversarial review rounds — severity (High/Medium/Low) plus
-  index — kept so each fix stays traceable to the finding it closes. `§0
-  decision-time-fold law` names the rule that admission gates fold truth
-  synchronously at decision time, never re-derived later; `§5.2` names the
-  effect-class taxonomy; `FI-6` is the future-invariant this unit implements;
-  `meta-inv N` refers to the red suite's own meta-invariants.
+  `gate/3` is declared as a behaviour callback so the tests can drive
+  deliberately-broken implementations (one that skips the ref check, one that
+  checks existence but not ordering, one that lets self-reported text count as
+  evidence, one that skips the turn-ownership check) through the same shape and
+  prove each one is caught.
   """
 
   alias Raxol.Agent.Contract.Event
@@ -242,7 +229,7 @@ defmodule Raxol.Agent.DoneGate do
   end
 
   # -- ref classification -----------------------------------------------------
-  # Order: existence -> class -> same-turn (H2) -> ordering -> mutation-echo.
+  # Order: existence -> class -> same-turn -> ordering -> mutation-echo.
   # First violation wins; refs are walked in caller order.
 
   defp classify_ref(journal, by_offset, turn_id, last_mut, ref) do
@@ -288,11 +275,11 @@ defmodule Raxol.Agent.DoneGate do
   end
 
   # Mutation predicate — FAIL-SAFE, derived at decision time from the event's
-  # intrinsic type (§0 decision-time-fold law: ADMISSION gates fold truth
+  # intrinsic type (admission gates fold truth
   # synchronously; a producer stamp is display/audit metadata, the fold is the
   # security boundary). Every completed `:tool_use` is a mutation: the real
   # producer (`StreamPump.pump/3`) stamps no effect metadata, and the frozen
-  # effect taxonomy (§5.2) contains only effect-BEARING classes, so neither an
+  # effect taxonomy contains only effect-BEARING classes, so neither an
   # absent `effect_class` nor any self-reported flag (`mutating: false`, a
   # `destructiveHint`-style claim) may ever REMOVE a tool call from the
   # mutation set — a lying producer must not be able to widen the
@@ -309,7 +296,7 @@ defmodule Raxol.Agent.DoneGate do
 
   # The one refinement seam: a tool call leaves the mutation set ONLY via a
   # structural, compiled-in-our-own-tree classification proving it effect-free
-  # (the F2 `Raxol.Action` draft — see the moduledoc). No such class exists in
+  # (see the moduledoc). No such class exists in
   # the frozen taxonomy today, so this is constantly false: unclassified and
   # unknown both resolve toward "is a mutation".
   defp classified_effect_free?(_ev), do: false

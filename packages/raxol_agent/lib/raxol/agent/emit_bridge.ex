@@ -111,7 +111,7 @@ defmodule Raxol.Agent.EmitBridge do
   Anything else passes through as an `:item_completed` with its tier preserved.
   `family` and `turn_id` carry through unchanged; `ts` is preserved.
 
-  ## U11 envelope carry-through (freeze §2.1)
+  ## Envelope carry-through
 
   `scope` / `provenance` / `actor` flow end-to-end: the neutral map's values are
   stamped onto the live `Event` (`map_event/3`) AND the journal record
@@ -162,10 +162,10 @@ defmodule Raxol.Agent.EmitBridge do
           branch_id: String.t()
         }
 
-  # The frozen grandfather defaults (freeze §2.1). An event carrying exactly
-  # these values persists WITHOUT the envelope-growth keys — a record without
-  # them decodes back to these defaults, so a default event stays byte-identical
-  # to its pre-U11 form (I2). Non-default values ARE written and carried.
+  # The grandfather defaults. An event carrying exactly these values persists
+  # WITHOUT the envelope-growth keys — a record without them decodes back to
+  # these defaults, so a default event stays byte-identical to its form before
+  # the envelope fields existed. Non-default values ARE written and carried.
   @default_scope :session
   @default_provenance %{source: :primary, trust: :trusted}
   @default_branch_id "main"
@@ -201,19 +201,19 @@ defmodule Raxol.Agent.EmitBridge do
       to); default `[]`
     * `:actor` — the write-generation actor (`%{kind, id}`) stamped onto every
       event this bridge emits when the neutral map does not already carry one
-      (freeze §2.1: actor is producer-seam stamped, modules never invent it);
+      (actor is producer-seam stamped, modules never invent it);
       default `nil` (system emission)
     * `:provenance` — the write-generation provenance context
       (`%{source, trust}`) met against every event this bridge emits, under
-      the TAINT-ABSORBING meet (freeze §2.1 taint law pt.3): a generation
+      the TAINT-ABSORBING meet: a generation
       classified `trust: :tainted` (e.g. a tool-result generation from an
-      untrusted source — the classification itself is U8 policy) force-taints
+      untrusted source — the classification itself is the caller's policy) force-taints
       every event in the generation, a module-supplied `:tainted` is never
       overwritten, and an omitted module provenance takes the generation's.
       Default `nil` — no generation classification; an event whose module
       supplied no provenance is then written without the key
-    * `:branch_id` — the speculation branch these events belong to (freeze
-      §1.1); default `"main"`, which is implicit on the wire (grandfather-safe)
+    * `:branch_id` — the speculation branch these events belong to; default
+      `"main"`, which is implicit on the wire (grandfather-safe)
     * `:name` — process name (default anonymous)
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -499,10 +499,10 @@ defmodule Raxol.Agent.EmitBridge do
 
   Pure. `id` becomes the contract event's offset (the journal offset for durable
   events; the last durable offset for ephemeral ones). `session_id` overrides the
-  neutral map's (they are the same in practice). The U11 envelope fields
+  neutral map's (they are the same in practice). The envelope fields
   (`scope`/`provenance`/`actor`) are carried through from the neutral map,
-  falling back to the frozen grandfather defaults so a producer that stamps
-  nothing still yields a well-formed default envelope (freeze §2.1).
+  falling back to the grandfather defaults so a producer that stamps
+  nothing still yields a well-formed default envelope.
   """
   @spec map_event(map(), non_neg_integer(), term()) :: Event.t()
   def map_event(neutral, id, session_id) when is_map(neutral) do
@@ -522,7 +522,7 @@ defmodule Raxol.Agent.EmitBridge do
       provenance: Map.get(neutral, :provenance, @default_provenance),
       actor: Map.get(neutral, :actor),
       # The live path carries branch_id so it agrees with the durable record
-      # (the durable + live envelopes must never diverge on a field, §1.1).
+      # (the durable + live envelopes must never diverge on a field).
       branch_id: Map.get(neutral, :branch_id, @default_branch_id)
     }
   end
@@ -638,7 +638,7 @@ defmodule Raxol.Agent.EmitBridge do
   defp put_actor(record, actor), do: Map.put(record, :actor, actor)
 
   # Stamp the write-generation actor + branch id onto a neutral map at the
-  # producer seam (freeze §2.1: "EmitBridge stamps actor from the command/attach
+  # producer seam ("EmitBridge stamps actor from the command/attach
   # context ... Individual modules never invent it"). The bridge value WINS
   # unconditionally (`Map.put`, not `Map.put_new`): a neutral map that already
   # carries an `:actor` — a module inventing its own — must NOT bypass the
@@ -655,7 +655,7 @@ defmodule Raxol.Agent.EmitBridge do
   end
 
   # Provenance at the producer seam. Unlike actor/branch_id this is NOT a
-  # blind `Map.put`: taint is one-way (§2.1 taint law pt.3, "no laundering"),
+  # blind `Map.put`: taint is one-way ("no laundering"),
   # so the stamp is the TAINT-ABSORBING MEET of the module-supplied value and
   # the write-generation context — the bridge can only ADD taint, never remove
   # it. An unconditional overwrite here would itself be a laundering machine
@@ -712,7 +712,7 @@ defmodule Raxol.Agent.EmitBridge do
   defp contract_type(:error, _tier), do: :error
   defp contract_type(:turn_canceled, _tier), do: :turn_canceled
   defp contract_type(:agent_started, _tier), do: :agent_started
-  # Frozen-but-not-landed loop vocabulary (freeze §1.1 / storage-foundations):
+  # Loop vocabulary the contract defines but the loop does not yet emit:
   # these bracket events pass through with their own type instead of collapsing
   # to :item_completed. `approval_requested` is a durable bracket (a resume-point
   # cannot be a bare item), `item_started` opens an item the later

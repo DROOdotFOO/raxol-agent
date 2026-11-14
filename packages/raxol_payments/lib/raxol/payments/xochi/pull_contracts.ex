@@ -1,7 +1,7 @@
 defmodule Raxol.Payments.Xochi.PullContracts do
   @moduledoc """
-  Verified XochiPull / XochiPullPermit2 origin-pull contracts (Riddler #591,
-  deployed 2026-07-23 by the then-solver wallet `0x97D4...d80b`, since swept).
+  Verified XochiPull / XochiPullPermit2 origin-pull contracts (deployed
+  2026-07-23 by the then-solver wallet `0x97D4...d80b`, since swept).
 
   The Blockaid EOA-scam fix moved the origin pull off the bare solver EOA and onto
   these verified, per-chain contracts. With them enabled on the solver side
@@ -15,14 +15,14 @@ defmodule Raxol.Payments.Xochi.PullContracts do
   protection (an unknown `to`/`spender` is still rejected) while accepting the
   verified contracts.
 
-  Mirror of Riddler `XOCHIPULL_DEPLOYMENTS.md`; keep in sync on redeploy. The USDC
+  Mirrors the solver's deployment record; keep in sync on redeploy. The USDC
   proxy differs per chain (the token address enters the proxy initcode); the
   Permit2 proxy is uniform across chains.
   """
 
   # The solver / settlement wallet -- still a legitimate direct recipient.
-  # Rotated 2026-08-19; `settlementWallet()` on every proxy returns this address
-  # (Riddler #1130). The CREATE2 deployer `0x97D4...d80b` was swept and its key is
+  # Rotated 2026-08-19; `settlementWallet()` on every proxy returns this
+  # address. The CREATE2 deployer `0x97D4...d80b` was swept and its key is
   # public: it must never re-enter `pull_recipients/0`.
   @solver_wallet "0x8d7d8AcfC25E999273394F7Ab44C239806724e2B"
 

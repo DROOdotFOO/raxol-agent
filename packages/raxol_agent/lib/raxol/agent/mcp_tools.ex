@@ -91,7 +91,7 @@ defmodule Raxol.Agent.McpTools do
   with another `:base_dir`.
 
   `agent_spawn` is refused on Windows, where the journal has no cross-process
-  writer lock (#1299).
+  writer lock.
   """
 
   use GenServer

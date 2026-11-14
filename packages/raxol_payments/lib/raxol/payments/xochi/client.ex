@@ -40,7 +40,7 @@ defmodule Raxol.Payments.Xochi.Client do
 
   For a non-`public` (stealth/shielded) intent the worker withholds the
   on-chain legs (`tx_hash`, `receiving_tx_hash`, ...) on `get_status/3` and
-  `get_intent/3` unless the caller proves ownership (xochi#563). `execute/2`
+  `get_intent/3` unless the caller proves ownership. `execute/2`
   returns a one-time `read_token` (`ExecuteResponse.read_token`; nil from an
   older worker); pass it back as `read_token:` and it travels only in the
   `X-Xochi-Read-Token` request header, never in a URL. It is a bearer secret

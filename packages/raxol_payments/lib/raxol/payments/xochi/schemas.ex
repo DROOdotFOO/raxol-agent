@@ -484,7 +484,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
   defmodule ExecuteResponse do
     @moduledoc false
-    # `read_token` is a bearer secret (xochi#563): it reveals a non-public
+    # `read_token` is a bearer secret: it reveals a non-public
     # intent's settlement tx hashes to whoever presents it. Keep it out of
     # inspect output so a logged or crash-dumped response never carries it.
     @derive {Inspect, except: [:read_token]}
@@ -538,7 +538,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
         # 5xx/timeout wrapped as a 200) and kept the intent non-terminal. Funds
         # may be in flight; the caller must poll to resolve, never re-execute.
         reconciling: pick(json, ["reconciling"]) || false,
-        # Read capability (xochi#563), returned once by execute. The client
+        # Read capability, returned once by execute. The client
         # rejects a present malformed value with context; this parser accepts
         # both worker naming conventions and never coerces it.
         read_token: read_token(json)
@@ -597,7 +597,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
       # The destination fill receipt and its chain (owner view only).
       :settlement_tx_hash,
       :settlement_chain_id,
-      # Anonymous view of a private settlement (xochi#563): the legs are
+      # Anonymous view of a private settlement: the legs are
       # withheld, and `settlement_confirmed` says whether the fill receipt
       # exists. Reporting markers only; never a reason to release or re-execute.
       settlement_confirmed: false,
