@@ -2,7 +2,8 @@ defmodule RaxolPayments.MixProject do
   use Mix.Project
 
   @version "0.3.0"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "raxol_payments-v#{@version}"
 
   def project do
     [
@@ -121,8 +122,7 @@ defmodule RaxolPayments.MixProject do
       links: %{
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/raxol_payments",
-        "Changelog" =>
-          "https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_payments/CHANGELOG.md",
+        "Changelog" => "#{@source_url}/blob/main/packages/raxol_payments/CHANGELOG.md",
         "Website" => "https://raxol.io"
       },
       maintainers: ["Raxol Team"]
@@ -133,12 +133,11 @@ defmodule RaxolPayments.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      # `raxol_payments-v0.2.0`, not `v0.2.0`: the bare form is a root `raxol`
-      # tag, and `v0.2.0` there points at raxol from 2025 -- so every source
-      # link in the published docs went to unrelated code. Matches
-      # raxol_earn and raxol_gateway.
-      source_ref: "raxol_payments-v#{@version}",
-      extras: ["README.md"]
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_payments in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_payments/%{path}#L%{line}",
+      extras: ["README.md", "CHANGELOG.md"]
     ]
   end
 end

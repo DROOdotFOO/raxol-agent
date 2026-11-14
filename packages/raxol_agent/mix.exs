@@ -2,7 +2,8 @@ defmodule RaxolAgent.MixProject do
   use Mix.Project
 
   @version "3.0.0"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "raxol_agent-v#{@version}"
 
   def project do
     [
@@ -112,7 +113,7 @@ defmodule RaxolAgent.MixProject do
   # marks by unpacking hex_metadata.config beside mix.exs; a path dep anywhere
   # else, whether or not the directory exists. Dependabot resolves a bump in a
   # sandbox holding only mix.exs and mix.lock, and reading that absence as a
-  # Hex install locked the siblings as Hex packages (#1252), which
+  # Hex install locked the siblings as Hex packages, which
   # scripts/check_lock_path_shadows.exs rejects. The directory check also made
   # `../..` a path dep inside a consumer's deps/: a parent always exists.
   defp hex_package? do
@@ -130,12 +131,12 @@ defmodule RaxolAgent.MixProject do
   defp package do
     [
       name: "raxol_agent",
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE.md),
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE.md CHANGELOG.md),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/raxol_agent",
-        "Changelog" => "https://github.com/DROOdotFOO/raxol/blob/master/CHANGELOG.md",
+        "Changelog" => "#{@source_url}/blob/main/packages/raxol_agent/CHANGELOG.md",
         "Website" => "https://raxol.io"
       },
       maintainers: ["Raxol Team"]
@@ -146,10 +147,11 @@ defmodule RaxolAgent.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      source_ref: "v#{@version}",
-      extras: [
-        "README.md"
-      ]
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_agent in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_agent/%{path}#L%{line}",
+      extras: ["README.md", "CHANGELOG.md"]
     ]
   end
 end
