@@ -730,11 +730,17 @@ defmodule Raxol.Payments.Req.AutoPayTest do
          |> Req.Response.put_header("payment-required", challenge)}
       end
 
-      resp = autopay_req(ledger, policy, stub) |> Req.Request.run!()
+      {resp, log} =
+        ExUnit.CaptureLog.with_log(fn ->
+          autopay_req(ledger, policy, stub) |> Req.Request.run!()
+        end)
 
       assert resp.status == 402
       refute_received :wallet_signed
       assert Decimal.equal?(lifetime(ledger, policy), "0")
+      # The refusal is logged by its tag only; the served challenge is not.
+      assert log =~ "AutoPay passed a x402 402 through unpaid: :unsupported_asset"
+      refute log =~ "0x4200000000000000000000000000000000000006"
     end
 
     test "MPP and x402 payments add up against one session cap", %{ledger: ledger} do

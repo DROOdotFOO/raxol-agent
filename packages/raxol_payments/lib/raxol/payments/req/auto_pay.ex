@@ -34,11 +34,16 @@ defmodule Raxol.Payments.Req.AutoPay do
     `currency` (`SpendingPolicy.unit/1`; US dollars by default): an x402
     challenge is priced only for USDC, an MPP challenge from its currency
     (ISO 4217 minor units for USD, EUR and CHF; registered decimals for a
-    stablecoin), and a challenge in any other unit is refused with
-    `%{error: :currency_mismatch}` before anything is reserved. `attach/2`
-    raises `ArgumentError` without a policy, or when `per_request_max` (and,
-    with a `:ledger`, `session_max`, `session_window_ms` and `lifetime_max`) is
-    not a finite positive value; for development pass `SpendingPolicy.dev()`
+    stablecoin). A parsed challenge in a unit other than the policy's is
+    refused with `%{error: :currency_mismatch}` before anything is reserved.
+    A challenge AutoPay cannot parse or price (an MPP currency it cannot
+    scale, an x402 asset other than registered USDC, a malformed or
+    over-long `validBefore`, `validAfter` or `nonce`, an amount wider than a
+    uint256) is passed through as the unpaid 402, and the refusal reason is
+    logged as a warning. `attach/2` raises `ArgumentError` without a policy,
+    or when `per_request_max` (and, with a `:ledger`, `session_max`,
+    `session_window_ms` and `lifetime_max`) is not a finite positive value;
+    for development pass `SpendingPolicy.dev()`
   - `:ledger` -- Ledger server; with it, every payment is also reserved
     against the policy's session and lifetime caps, atomically, before
     signing (optional). The reservation is given back only if nothing was
@@ -50,6 +55,8 @@ defmodule Raxol.Payments.Req.AutoPay do
     synchronously inside the Req response step. Absent or non-`:approve`
     return denies the payment.
   """
+
+  require Logger
 
   alias Raxol.Payments.{Ledger, PolicyGate, Protocol, SpendingPolicy}
 
@@ -259,12 +266,27 @@ defmodule Raxol.Payments.Req.AutoPay do
 
       if mod.detect?(402, headers) do
         case mod.parse_challenge(headers) do
-          {:ok, challenge} -> {:ok, mod, challenge}
-          {:error, _} -> nil
+          {:ok, challenge} ->
+            {:ok, mod, challenge}
+
+          {:error, reason} ->
+            log_unparsed_challenge(proto_atom, reason)
+            nil
         end
       end
     end)
   end
+
+  # The challenge is server data, so only the reason's tag is logged.
+  defp log_unparsed_challenge(protocol, reason) do
+    Logger.warning(
+      "AutoPay passed a #{protocol} 402 through unpaid: #{inspect(reason_tag(reason))}"
+    )
+  end
+
+  defp reason_tag(reason) when is_atom(reason), do: reason
+  defp reason_tag(reason) when is_tuple(reason) and is_atom(elem(reason, 0)), do: elem(reason, 0)
+  defp reason_tag(_reason), do: :invalid_challenge
 
   # `amount/1` is in human units of the challenge's `:unit`; the caps are in
   # the policy's. A challenge priced in another unit (or in none) is refused

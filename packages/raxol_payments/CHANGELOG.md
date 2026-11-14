@@ -7,8 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-11-14
 
-**Breaking.** 0.3.0 breaks 0.2 (see Removed and Changed), and a `~> 0.2`
-requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
+### Upgrading from 0.2
+
+0.3.0 breaks 0.2, and a `~> 0.2` requirement resolves to it; pin `~> 0.2.1`
+to stay on 0.2. Each change below needs action from a 0.2.1 user; the entry
+named in parentheses describes it and is marked **Breaking**.
+
+- Pass a `SpendingPolicy` to `Req.AutoPay.attach/2`,
+  `Req.AgentPlugin.auto_pay/1` and the Xochi `{:x402, opts}` auth; a
+  non-finite cap is refused (Changed, "`AutoPay.attach/2` ... require
+  `:policy`").
+- Caps are human amounts of the policy's currency for every protocol, a
+  custom `Protocol` sets `:unit` in its parsed challenge, and
+  `Ledger.get_totals/3` takes only a `SpendingPolicy` (Changed, "Every
+  `SpendingPolicy` cap").
+- `SpendGate.authorize/3` requires `asset:` and returns `{:ok, amount}`; pass
+  that amount to `release/3` and `tag_reservation/3` (Changed, "`SpendGate`
+  converts every spend").
+- Spending a token that is not a stablecoin needs a price source (`:price_fn`
+  or `price_source:`), and `Prices.Static` and `Prices.CoinGecko` prices
+  expire after 300 seconds (same entry).
+- EURC, EURe and ZCHF are spent only under a policy in their own currency
+  (Added, "`ExecuteXochiIntent`, `ExecuteRelayTransfer`, `payment_transfer`
+  and ACP buys").
+- A deployed release requires a solver pin for ERC-3009 origin pulls
+  (Changed, "`:pull_require_solver_pin` defaults").
+- AutoPay keeps a signed spend recorded when the paid retry fails, and an
+  x402 `validBefore` is at most one hour out (Security, "`Req.AutoPay` keeps
+  the spend recorded").
+- A served EIP-712 payload must be the canonical typed data, and
+  `EIP712.hash/3` returns `{:error, :no_primary_type}` for a types map without
+  a single root (Security, "Every EIP-712 payload").
+- `Pxe.Client` follows the pxe-bridge contract: idempotency keys, new results
+  and errors (Changed, "`Raxol.Payments.Pxe.Client`").
+- The Riddler Commerce API client is removed (Removed, "The Riddler Commerce
+  API client").
+- `Protocols.Xochi.execute/3` and `sign_intent/2` are removed; use `execute/4`
+  and `sign_intent/3` (Removed).
+- In `{:delivery_below_floor, detail}`, `min_to_amount` is the quote's own
+  minimum and `:floor` the caller's (Changed, "`{:delivery_below_floor,
+  detail}`").
+- `PrivacyTier`'s `data_retention` no longer has `:nothing` (Changed,
+  "`Raxol.Payments.PrivacyTier`").
+- EURe leaves `Assets.symbols/0` and `evm_tokens/0` (Added,
+  "`Raxol.Payments.Assets` registers the non-USD stablecoins").
+- Requires `decimal ~> 3.1`, whose default context differs from decimal 2's,
+  and `req ~> 0.6` (Security, "Requires `decimal`" and "Requires `req`").
+- Requires `raxol_agent ~> 3.0` and `raxol_core ~> 2.8` (Changed, "Requires
+  `raxol_agent`").
+- A release that depends on `raxol_payments` from Hex starts `raxol_agent`,
+  `raxol`, `raxol_mcp` and `raxol_journal` (Changed, "A release that depends
+  on `raxol_payments`").
 
 ### Added
 
@@ -73,7 +122,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   uint256, and `Assets.to_decimal/1` converts an amount to a `Decimal`, taking
   an integer string of up to 78 digits through the integer (decimal 3's
   string parse stops at 34 digits).
-- `Raxol.Payments.Assets` registers the non-USD stablecoins of ADR-0040:
+- **Breaking.**
+  `Raxol.Payments.Assets` registers the non-USD stablecoins of ADR-0040:
   EURC on 1 and 8453, EURe on 1, 100, 137, 8453 and 42161, and ZCHF on 1 plus
   the CCIP-bridged contract on 10, 100, 137, 8453 and 42161, each at its
   on-chain decimals. EURe was previously registered on 1 and 42161 only, so
@@ -88,7 +138,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   listed on Arbitrum. `Xochi.Capabilities.fallback/0` and the capacity
   deriver read `evm_tokens/0`, so they drop EURe on 42161 too; only
   `supported_chain_ids/0` and the stealth chain check are unchanged.
-- `ExecuteXochiIntent`, `ExecuteRelayTransfer`, `payment_transfer` and ACP
+- **Breaking.**
+  `ExecuteXochiIntent`, `ExecuteRelayTransfer`, `payment_transfer` and ACP
   buys spend one only under a policy in its own currency (a EUR policy counts
   EURe at par) and otherwise refuse it as
   `{:unpriced_asset, %{reason: :fx_unsupported}}` (see Changed),
@@ -96,8 +147,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   `min_to_amount`, as `{:unpriced_asset, detail}` (ADR-0040 decision 6),
   until an FX rate gates the conversion (decision 7). A `min_to_amount` of `0`
   bounds nothing: Relay and the deposit route read it as absent and Xochi
-  refuses it. x402 refuses a challenge whose asset is a non-USD stablecoin,
-  which the spend gate would otherwise reserve and charge at par.
+  refuses it. x402 pays only in registered USDC (see Security), so it refuses
+  a non-USD stablecoin challenge at parse, as `{:unpriced_asset, detail}`.
 - `ExecuteRelayTransfer` accepts `min_to_amount` and refuses a quote delivering
   less before the spend is authorized. It previously had no delivery floor, so
   a quote could deliver any amount.
@@ -106,6 +157,12 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   type declares the field. A null or missing value counts as 0, which is what
   `EIP712` signs, and a whitespace or sign variant fails closed at the floor or
   the encoder, so a quote whose signed amount is 0 is refused.
+- `Raxol.Payments.TypedData` checks a served EIP-712 payload against the
+  canonical typed data for one message kind: `check_shape/2` (primary type,
+  types, `typeHash`, message fields) and `check_domain/2` (exactly the
+  expected domain fields and values).
+- `EIP712.type_hash/2` returns the `typeHash` of a struct type, and
+  `EIP712.hash/4` hashes the primary type the caller names.
 
 - Euro and franc stablecoins can be priced in accounting (ADR-0040 decision 6).
   `RAXOL_FX_ENABLED=true` with `RAXOL_SLEUTH_API_KEY` and `RPC_BASE` or `RPC_ETH`
@@ -160,8 +217,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 
 ### Changed
 
-- Requires `raxol_agent ~> 3.0` (was `~> 2.7`) and `raxol_core ~> 2.8` (was
-  `~> 2.7`).
+- **Breaking.** Requires `raxol_agent ~> 3.0` (was `~> 2.7`) and
+  `raxol_core ~> 2.8` (was `~> 2.7`).
 - **Breaking.** A release that depends on `raxol_payments` from Hex includes
   and starts `raxol_agent` and the applications under it: `raxol`,
   `raxol_mcp` and `raxol_journal`. 0.2.1 declared `raxol_agent`
@@ -192,9 +249,10 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   so an MPP charge of 5 USDC base units was gated as $5; it now scales by the
   challenge currency (ISO 4217 minor units for USD, EUR and CHF, registered
   decimals for a dollar or registered non-USD stablecoin), and a challenge in
-  any other currency is refused at parse (`{:unpriced_currency, currency}`).
-  A parsed challenge carries its `:unit`; AutoPay refuses one whose unit is
-  not the policy's (`%{error: :currency_mismatch}`) before anything is
+  any other currency is refused at parse (`{:unpriced_currency, currency}`);
+  AutoPay passes such a challenge through as the unpaid 402 and logs the
+  refusal. A parsed challenge carries its `:unit`; AutoPay refuses one whose
+  unit is not the policy's (`%{error: :currency_mismatch}`) before anything is
   reserved, so MPP and x402 payments add up against the same caps. A
   custom `Protocol` must set `:unit` in its parsed challenge. The Ledger
   refuses a non-`SpendingPolicy` or a nil or non-finite cap as
@@ -234,7 +292,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   tarball, pinned by committed SHA-512 integrity and fetched through a cached,
   verified script. `XOCHI_SPEC_DIR` is the single package-root contract, and
   `RIDDLER_CHECKOUT_DIR` explicitly names any built Riddler checkout.
-- `Raxol.Payments.PrivacyTier`: Sovereign's `data_retention` is `:wallet`, not
+- **Breaking.**
+  `Raxol.Payments.PrivacyTier`: Sovereign's `data_retention` is `:wallet`, not
   `:nothing`; `:nothing` is removed from the `t()` typespec. No design promises
   zero retention and Sovereign is excluded. `examples/privacy_modes.exs` /
   `examples/README.md` describe shielded as unavailable: on testnet the
@@ -266,7 +325,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   - Modelled on `@xochi/client`'s transport, which uses separate timeouts for
     long writes and reads and retries only idempotent reads on 502/503/504.
 
-- In `{:delivery_below_floor, detail}`, `min_to_amount` is the quote's own
+- **Breaking.**
+  In `{:delivery_below_floor, detail}`, `min_to_amount` is the quote's own
   stated minimum; the caller's floor is `:floor`, and `:lowest` is what was
   compared. In v0.2.1 `min_to_amount` was the caller's floor. The refusal's
   message no longer says "refusing to sign", which was wrong on the deposit
@@ -283,7 +343,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   delegated to) for cross-chain intents. `Raxol.Payments.Relay.Client` is
   unaffected.
 
-- `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
+- **Breaking.**
+  `Protocols.Xochi.execute/3` and `Protocols.Xochi.sign_intent/2`. Use
   `execute/4` and `sign_intent/3`, which take the `QuoteRequest` the quote was
   fetched with.
 
@@ -344,11 +405,9 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   below a tenth of the source amount rescaled to the destination's decimals is
   refused as `{:implausible_min_to_amount, detail}`, which catches a floor
   written in the source's 6 decimals for 18-decimal EURe. A quote is judged on
-  the lowest amount it states: its `to_amount`, its own `min_to_amount` when it
-  gives one, and on `ExecuteXochiIntent` the `toAmount` of the EIP-712 message
-  the wallet signs, so neither a high stated minimum beside a 1-wei estimate
-  nor a signed amount below the advertised one passes. A floor of more than 78
-  digits is refused rather than parsed.
+  the lowest amount it states, its `to_amount` and its own `min_to_amount` when
+  it gives one, so a high stated minimum beside a 1-wei estimate does not
+  pass. A floor of more than 78 digits is refused rather than parsed.
 - `ExecuteDepositRoute` returned a verified Tron deposit address for an EURC,
   EURe or ZCHF destination with no delivery floor, so the payer could fund a
   quote stating any amount. It now takes `min_to_amount`, as
@@ -365,7 +424,7 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   being treated as EVM or 6-decimal. `ExecuteXochiIntent` refuses,
   before quoting, a source or destination token without registered decimals
   (`:route_unsupported`, `{:unknown_asset, _}`; `min_to_amount` does not waive
-  it) and a non-positive `min_to_amount`, and routes with chain ids so a Tron
+  it), and routes with chain ids so a Tron
   leg is sent to Relay. `Xochi.Schemas.QuoteRequest.validate/1` refuses stealth
   settlement to any chain outside `Assets.evm_chain_ids/0`, on every quote
   path. `Xochi.Capabilities.vm_type/2` returns `nil` for an unlisted chain, and
@@ -399,7 +458,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 
 ### Security
 
-- **Every EIP-712 payload a server serves is checked to be exactly the
+- **Breaking.**
+  **Every EIP-712 payload a server serves is checked to be exactly the
   canonical typed data before the wallet signs it, and is signed with the
   canonical types, not the served map.** The checks looked at field names
   only, while the encoder hashed whatever root the served `types` map implied,
@@ -427,7 +487,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   - `EIP712.hash/3` refuses a types map with no single root
     (`{:error, :no_primary_type}`) instead of guessing one, and the new
     `EIP712.hash/4` hashes the primary type the caller names.
-- **`Req.AutoPay` keeps the spend recorded once a signed payment has left the
+- **Breaking.**
+  **`Req.AutoPay` keeps the spend recorded once a signed payment has left the
   process.** A paid retry answered with a non-2xx status, or lost in
   transport, used to release the reservation, although the server held a
   signed authorization it could still settle; a server answering every paid
@@ -443,7 +504,9 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   (`{:invalid_valid_after, value}`) and its `nonce` 32 bytes of `0x`-hex
   (`{:invalid_nonce, value}`), so a malformed value is refused before
   anything is reserved or signed. An MPP `methods` field that
-  is not a list is refused at parse (`{:invalid_methods, value}`).
+  is not a list is refused at parse (`{:invalid_methods, value}`). AutoPay
+  passes a challenge refused at parse through as the unpaid 402 and logs the
+  refusal's tag; the caller does not see these reasons.
 - Error bodies recursively redact both `read_token` and `readToken`; no error
   tuple or replayable Action result carries the bearer secret.
 - A read token is never presented to, or deleted under, a different API origin,
@@ -456,7 +519,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   client parse a header-sized number, run a quadratic `Decimal.div` on it, or
   hand `on_confirm` and the telemetry logger a `Decimal` too wide for decimal
   3's 6_178-digit `to_string` limit (which raised, or detached the logger).
-- Requires `decimal ~> 3.1 and >= 3.1.2` (was `~> 2.0`) for
+- **Breaking.**
+  Requires `decimal ~> 3.1 and >= 3.1.2` (was `~> 2.0`) for
   EEF-CVE-2026-32686 (unbounded exponent DoS) and CVE-2026-97853 (below
   3.1.2, `Decimal.round/3` allocates in proportion to its `places`
   argument). Decimal 3 defaults to the decimal128 context: precision 34 (was
@@ -467,7 +531,8 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   reaches AutoPay's gates: the required `SpendingPolicy`'s `per_request_max`
   with or without a `:ledger`, and its `session_max` and `lifetime_max` with
   one, compared in the policy's unit.
-- Requires `req ~> 0.6 and >= 0.6.1` (was `~> 0.5`) for CVE-2026-49755 and
+- **Breaking.**
+  Requires `req ~> 0.6 and >= 0.6.1` (was `~> 0.5`) for CVE-2026-49755 and
   CVE-2026-49756, and, when present, `plug ~> 1.19 and >= 1.19.3` (was
   `~> 1.16`) for CVE-2026-54892 and CVE-2026-8468, and `plug_cowboy ~> 2.8 and
   >= 2.8.1` (was `~> 2.7`) for CVE-2026-32688.

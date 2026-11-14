@@ -3,9 +3,9 @@ defmodule Raxol.Payments.Actions.SpendGate do
   Single spending choke point for payment Actions.
 
   Every agent Action that releases a wallet signature for real funds calls
-  `authorize/3` first and proceeds only on `:ok`. This routes the request
-  through the non-budget policy gate (`Raxol.Payments.PolicyGate`) and the
-  atomic ledger reservation (`Raxol.Payments.Ledger.try_spend/5`) before any
+  `authorize/3` first and proceeds only on `{:ok, amount}`. This routes the
+  request through the non-budget policy gate (`Raxol.Payments.PolicyGate`) and
+  the atomic ledger reservation (`Raxol.Payments.Ledger.try_spend/5`) before any
   `wallet.sign_*` call.
 
   ## Amounts
@@ -29,7 +29,11 @@ defmodule Raxol.Payments.Actions.SpendGate do
 
   ## Context keys
 
-  * `:policy` -- a `SpendingPolicy` (nil means unrestricted: the gate is a no-op).
+  * `:policy` -- a `SpendingPolicy`. With nil there are no caps and no
+    conversion, but `asset:` is still required and a stablecoin pegged to a
+    currency other than the dollar (EURC, EURe, ZCHF) is still refused. Where
+    a policy is required (`:require_policy`, the default in a deployed
+    release) nil is refused as `{:policy_required, :no_spending_policy}`.
   * `:ledger` -- a `Ledger` server (nil disables budget reservation).
   * `:agent_id` -- ledger key (default `:unknown`).
   * `:on_confirm` -- `(Decimal.t(), String.t() -> :approve | :deny)` consulted
