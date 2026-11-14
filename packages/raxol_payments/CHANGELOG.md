@@ -376,6 +376,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exponent DoS). Decimal 3 defaults to the decimal128 context: precision 34
   (was 28), `emax: 6_144` / `emin: -6_143` with over/underflow signalled, and
   string parses reject more than 34 digits or an exponent past 6_144.
+- Requires `req ~> 0.6 and >= 0.6.1` (was `~> 0.5`) for CVE-2026-49755 and
+  CVE-2026-49756, and, when present, `plug ~> 1.19 and >= 1.19.3` (was
+  `~> 1.16`) for CVE-2026-54892 and CVE-2026-8468, and `plug_cowboy ~> 2.8 and
+  >= 2.8.1` (was `~> 2.7`) for CVE-2026-32688.
 
 ## [0.2.1] - 2026-09-09
 

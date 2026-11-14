@@ -43,7 +43,8 @@ defmodule RaxolAgent.MixProject do
       {:circular_buffer, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:yaml_elixir, "~> 2.12"},
-      {:req, "~> 0.5", optional: true},
+      # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
+      {:req, "~> 0.6 and >= 0.6.1", optional: true},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

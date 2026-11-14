@@ -39,7 +39,8 @@ defmodule RaxolPayments.MixProject do
       raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", []),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
-      {:req, "~> 0.5"},
+      # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
+      {:req, "~> 0.6 and >= 0.6.1"},
       {:ex_secp256k1, "~> 0.8"},
       {:ex_keccak, "~> 0.7"},
       {:jason, "~> 1.4"},
@@ -52,8 +53,11 @@ defmodule RaxolPayments.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       # Optional: only needed when running EchoServer (`mix raxol_payments.echo`).
-      {:plug, "~> 1.16", optional: true},
-      {:plug_cowboy, "~> 2.7", optional: true}
+      # Floors: plug CVE-2026-54892 (quadratic parameter decoding), fixed in
+      # 1.19.3 on the 1.19 line; plug_cowboy CVE-2026-32688 (HTTP/2 atom
+      # exhaustion), fixed in 2.8.1.
+      {:plug, "~> 1.19 and >= 1.19.3", optional: true},
+      {:plug_cowboy, "~> 2.8 and >= 2.8.1", optional: true}
     ] ++ web3_dep()
   end
 
