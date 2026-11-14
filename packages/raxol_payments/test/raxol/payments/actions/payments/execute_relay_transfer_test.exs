@@ -1,5 +1,6 @@
 defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
-  use ExUnit.Case, async: true
+  # Writes the global solver-pin settings, which other modules read.
+  use ExUnit.Case, async: false
 
   alias Raxol.Payments.Actions.Payments.{ExecuteRelayTransfer, PollRelayStatus}
   alias Raxol.Payments.Relay.Broadcaster

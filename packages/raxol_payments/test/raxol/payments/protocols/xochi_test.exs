@@ -1,5 +1,6 @@
 defmodule Raxol.Payments.Protocols.XochiTest do
-  use ExUnit.Case, async: true
+  # Writes the global solver-pin settings, which other modules read.
+  use ExUnit.Case, async: false
   use ExUnitProperties
 
   alias Raxol.Payments.Protocols.Xochi
