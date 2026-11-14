@@ -158,8 +158,8 @@ defmodule Raxol.Payments.Req.AutoPay do
 
   # Sign and retry under a reservation already made by `reserve_budget/4`.
   #
-  # The reservation is released only when signing failed (an error or a raise
-  # out of `build_payment/2`), because then no payment left this process. Once
+  # The reservation is released only when signing failed (an error, a raise, an
+  # exit or a throw out of `build_payment/2`), because then no payment left this process. Once
   # the signed payment is sent, the server holds an authorization it can settle
   # on-chain until it expires, whatever status it answers with or whether the
   # connection survives: a 500 or a dropped retry keeps the spend recorded, so a
@@ -190,14 +190,18 @@ defmodule Raxol.Payments.Req.AutoPay do
     end
   end
 
-  # A raise while building the payment (a malformed challenge field the parser
-  # let through) happens before any header is sent: refund the reservation
-  # rather than leak it. The exception module is kept, its message (which may
+  # A raise, exit or throw while building the payment (a malformed challenge
+  # field the parser let through, or a wallet process that crashed or timed
+  # out) happens before any header is sent: no signed payment left this
+  # process, so refund the reservation rather than leak it. The exception
+  # module or the exit/throw kind is kept; the message or reason (which may
   # carry challenge data) is not.
   defp build_payment_safely(protocol_mod, challenge, wallet) do
     protocol_mod.build_payment(challenge, wallet)
   rescue
     error -> {:error, {:build_payment_raised, error.__struct__}}
+  catch
+    kind, _reason when kind in [:exit, :throw] -> {:error, {:build_payment_failed, kind}}
   end
 
   defp payment_retry_error(response, reason) do

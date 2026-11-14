@@ -56,6 +56,26 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     def sign_hash(_digest), do: raise("wallet unavailable")
   end
 
+  # A GenServer-backed wallet whose call exits (a crash or a timeout), and one
+  # that throws: neither returns a signature.
+  defmodule ExitingWallet do
+    @moduledoc false
+    def address, do: "0x" <> String.duplicate("aa", 20)
+    def chain_id, do: 8453
+    def sign_message(_msg), do: exit(:timeout)
+    def sign_typed_data(_domain, _types, _message), do: exit({:timeout, {GenServer, :call, []}})
+    def sign_hash(_digest), do: exit(:timeout)
+  end
+
+  defmodule ThrowingWallet do
+    @moduledoc false
+    def address, do: "0x" <> String.duplicate("aa", 20)
+    def chain_id, do: 8453
+    def sign_message(_msg), do: throw(:locked)
+    def sign_typed_data(_domain, _types, _message), do: throw(:locked)
+    def sign_hash(_digest), do: throw(:locked)
+  end
+
   # Build a base64-encoded x402 `payment-required` challenge body.
   defp x402_challenge(amount) do
     %{
@@ -586,6 +606,21 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       assert %{error: :payment_failed} = resp.body
       :timer.sleep(20)
       assert Decimal.equal?(lifetime(ledger, policy), "0")
+    end
+
+    test "an exit or throw before anything is signed releases the reservation", %{
+      ledger: ledger,
+      policy: policy
+    } do
+      for wallet <- [ExitingWallet, ThrowingWallet] do
+        resp =
+          autopay_req(ledger, policy, stub_402_then_ok(1_000_000), wallet)
+          |> Req.Request.run!()
+
+        assert resp.status == 402
+        assert %{error: :payment_failed} = resp.body
+        assert Decimal.equal?(lifetime(ledger, policy), "0")
+      end
     end
 
     test "a malformed (float) price is rejected before any reservation or signing", %{

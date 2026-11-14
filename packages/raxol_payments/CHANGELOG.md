@@ -416,11 +416,16 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   signed authorization it could still settle; a server answering every paid
   retry with 500 could collect signatures past `session_max` and
   `lifetime_max`. The reservation is now released only when nothing was
-  signed: `build_payment/2` returned an error or raised (a raise no longer
-  leaks the reservation). An x402 challenge's `validBefore` must be a whole
+  signed: `build_payment/2` returned an error, or a raise, exit or throw
+  before signing (a wallet process that crashed or timed out) no longer
+  leaks the reservation. An x402 challenge's `validBefore` must be a whole
   second in the future and at most one hour out, the validity AutoPay signs
   when the challenge names none (`{:invalid_valid_before, value}`), so a
-  withheld authorization expires within the hour. An MPP `methods` field that
+  withheld authorization expires within the hour. Its `validAfter` must be a
+  non-negative whole second no later than that `validBefore`
+  (`{:invalid_valid_after, value}`) and its `nonce` 32 bytes of `0x`-hex
+  (`{:invalid_nonce, value}`), so a malformed value is refused before
+  anything is reserved or signed. An MPP `methods` field that
   is not a list is refused at parse (`{:invalid_methods, value}`).
 - Error bodies recursively redact both `read_token` and `readToken`; no error
   tuple or replayable Action result carries the bearer secret.

@@ -35,7 +35,8 @@ defmodule Raxol.Payments.Protocols.X402Test do
           "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           "network" => "eip155:8453",
           "payTo" => "0x1234567890abcdef1234567890abcdef12345678",
-          "nonce" => "0xabc123",
+          "nonce" => "0x" <> String.duplicate("ab", 32),
+          "validAfter" => "5",
           "validBefore" => valid_before
         })
 
@@ -47,7 +48,8 @@ defmodule Raxol.Payments.Protocols.X402Test do
       assert challenge.currency == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
       assert challenge.network == "eip155:8453"
       assert challenge.pay_to == "0x1234567890abcdef1234567890abcdef12345678"
-      assert challenge.nonce == "0xabc123"
+      assert challenge.nonce == "0x" <> String.duplicate("ab", 32)
+      assert challenge.valid_after == 5
       assert challenge.valid_before == valid_before
     end
 
@@ -68,6 +70,56 @@ defmodule Raxol.Payments.Protocols.X402Test do
 
         assert {:error, {:invalid_valid_before, ^valid_before}} =
                  X402.parse_challenge([{"payment-required", encoded}])
+      end
+    end
+
+    defp challenge_with(fields) do
+      encoded =
+        %{
+          "maxAmountRequired" => "1000000",
+          "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+          "network" => "eip155:8453",
+          "payTo" => "0x1234567890abcdef1234567890abcdef12345678"
+        }
+        |> Map.merge(fields)
+        |> Jason.encode!()
+        |> Base.encode64()
+
+      X402.parse_challenge([{"payment-required", encoded}])
+    end
+
+    test "reads an absent validAfter as 0" do
+      assert {:ok, %{valid_after: 0, nonce: nil}} = challenge_with(%{})
+    end
+
+    test "refuses a validAfter that is not a whole second, or is after validBefore" do
+      valid_before = System.system_time(:second) + 600
+
+      for valid_after <- [-1, 1.5, "1.5", "+5", "-1", "soon", %{}, valid_before + 1] do
+        assert {:error, {:invalid_valid_after, ^valid_after}} =
+                 challenge_with(%{"validAfter" => valid_after, "validBefore" => valid_before})
+      end
+
+      # With no validBefore the signed one is an hour out.
+      too_late = System.system_time(:second) + 7200
+
+      assert {:error, {:invalid_valid_after, ^too_late}} =
+               challenge_with(%{"validAfter" => too_late})
+
+      assert {:ok, %{valid_after: ^valid_before}} =
+               challenge_with(%{"validAfter" => valid_before, "validBefore" => valid_before})
+    end
+
+    test "refuses a nonce that is not 32 bytes of 0x-hex" do
+      for nonce <- [
+            "0xabc123",
+            "0x" <> String.duplicate("ab", 33),
+            String.duplicate("ab", 32),
+            "0x" <> String.duplicate("zz", 32),
+            12_345,
+            ["0x"]
+          ] do
+        assert {:error, {:invalid_nonce, ^nonce}} = challenge_with(%{"nonce" => nonce})
       end
     end
 

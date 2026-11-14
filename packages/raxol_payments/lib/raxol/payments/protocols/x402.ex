@@ -47,7 +47,11 @@ defmodule Raxol.Payments.Protocols.X402 do
          {:ok, chain_id} <- parse_network(decoded["network"]),
          :ok <- require_usdc(chain_id, currency),
          valid_before = decoded["validBefore"] || decoded["valid_before"],
-         :ok <- validate_valid_before(valid_before) do
+         :ok <- validate_valid_before(valid_before),
+         {:ok, valid_after} <-
+           parse_valid_after(decoded["validAfter"] || decoded["valid_after"], valid_before),
+         nonce = decoded["nonce"],
+         :ok <- validate_nonce(nonce) do
       {:ok,
        %{
          price: price,
@@ -57,8 +61,8 @@ defmodule Raxol.Payments.Protocols.X402 do
          network: decoded["network"],
          chain_id: chain_id,
          pay_to: pay_to,
-         nonce: decoded["nonce"],
-         valid_after: decoded["validAfter"] || decoded["valid_after"] || 0,
+         nonce: nonce,
+         valid_after: valid_after,
          valid_before: valid_before,
          extra: decoded
        }}
@@ -86,6 +90,45 @@ defmodule Raxol.Payments.Protocols.X402 do
       _ -> {:error, {:invalid_valid_before, value}}
     end
   end
+
+  # `validAfter` is signed as a uint256 of whole seconds: absent means 0, and
+  # otherwise it must be a non-negative integer (or a string of digits) no
+  # later than the `validBefore` that will be signed. Anything else would make
+  # the encoder raise inside the wallet, after the budget is reserved.
+  defp parse_valid_after(nil, _valid_before), do: {:ok, 0}
+
+  defp parse_valid_after(value, valid_before) do
+    with t when is_integer(t) <- whole_seconds(value),
+         true <- t <= signed_valid_before(valid_before) do
+      {:ok, t}
+    else
+      _ -> {:error, {:invalid_valid_after, value}}
+    end
+  end
+
+  defp whole_seconds(value) when is_integer(value) and value >= 0, do: value
+
+  defp whole_seconds(value) when is_binary(value) do
+    if Regex.match?(~r/\A[0-9]{1,20}\z/, value), do: String.to_integer(value)
+  end
+
+  defp whole_seconds(_value), do: nil
+
+  defp signed_valid_before(nil), do: System.system_time(:second) + @max_validity_seconds
+  defp signed_valid_before(value), do: to_seconds(value)
+
+  # The ERC-3009 `nonce` is a `bytes32`: `0x` and 64 hex digits, or absent
+  # (a random one is generated). Anything else would make the encoder raise
+  # inside the wallet.
+  defp validate_nonce(nil), do: :ok
+
+  defp validate_nonce(nonce) when is_binary(nonce) do
+    if Regex.match?(~r/\A0x[0-9a-fA-F]{64}\z/, nonce),
+      do: :ok,
+      else: {:error, {:invalid_nonce, nonce}}
+  end
+
+  defp validate_nonce(nonce), do: {:error, {:invalid_nonce, nonce}}
 
   defp to_seconds(value) when is_integer(value), do: value
 
