@@ -168,7 +168,7 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
   with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull
   before signing. An explicit `true` or `false` still wins.
-- Cross-repository parity now uses the published `@xochi/spec@0.9.0`
+- Cross-repository parity now uses the published `@xochi/spec@0.14.0`
   tarball, pinned by committed SHA-512 integrity and fetched through a cached,
   verified script. `XOCHI_SPEC_DIR` is the single package-root contract, and
   `RIDDLER_CHECKOUT_DIR` explicitly names any built Riddler checkout.
