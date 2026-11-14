@@ -1,8 +1,9 @@
 defmodule RaxolAgentClientProtocol.MixProject do
   use Mix.Project
 
-  @version "0.1.0-rc.1"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @version "0.1.0"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "raxol_agent_client_protocol-v#{@version}"
 
   def project do
     [
@@ -76,12 +77,14 @@ defmodule RaxolAgentClientProtocol.MixProject do
       name: "raxol_agent_client_protocol",
       # NOTE: priv/schema-oracle is deliberately EXCLUDED — the official ACP
       # JSON Schema is an Apache-2.0 dev/test oracle and is never shipped.
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE.md NOTICE.md),
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE.md NOTICE.md CHANGELOG.md),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
         "ACP spec" => "https://agentclientprotocol.com",
-        "Docs" => "https://hexdocs.pm/raxol_agent_client_protocol"
+        "Docs" => "https://hexdocs.pm/raxol_agent_client_protocol",
+        "Changelog" =>
+          "#{@source_url}/blob/main/packages/raxol_agent_client_protocol/CHANGELOG.md"
       },
       maintainers: ["Raxol Team"]
     ]
@@ -91,8 +94,11 @@ defmodule RaxolAgentClientProtocol.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      source_ref: "v#{@version}",
-      extras: ["README.md"]
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_agent_client_protocol in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_agent_client_protocol/%{path}#L%{line}",
+      extras: ["README.md", "CHANGELOG.md", "NOTICE.md"]
     ]
   end
 end

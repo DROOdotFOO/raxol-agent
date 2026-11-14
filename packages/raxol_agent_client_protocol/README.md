@@ -4,11 +4,19 @@ Elixir/OTP implementation of [ACP (Agent Client Protocol)](https://agentclientpr
 the JSON-RPC 2.0 protocol between code editors and AI coding agents (the protocol
 Zed and a growing ecosystem of editors/agents speak).
 
-**Status: pre-alpha, not yet published to Hex.**
+## Installation
 
-> Not to be confused with `Raxol.Earn` (`packages/raxol_earn/`), the Virtuals
-> **Agent Commerce Protocol**, an unrelated on-chain payments protocol. This
-> package is the **Agent Client Protocol**: editor↔agent JSON-RPC.
+```elixir
+def deps do
+  [
+    {:raxol_agent_client_protocol, "~> 0.1"}
+  ]
+end
+```
+
+> Not to be confused with the Virtuals **Agent Commerce Protocol**, an
+> unrelated on-chain payments protocol that Raxol also speaks (`Raxol.Earn`).
+> This package is the **Agent Client Protocol**: editor↔agent JSON-RPC.
 
 ## What this is
 
@@ -271,9 +279,9 @@ protocol experience:
   in-package access control.
 
 Today's journal store (`Ext.Journal.Mem`) is in-memory, durable across
-*connections* within one node's lifetime, not yet across node restarts. A
-disk-backed store is future work; see [Danger-zone gates](#danger-zone-gates)
-below for what must be true before one ships.
+*connections* within one node's lifetime, not across node restarts. No
+disk-backed store ships; see [Invariants a change must keep](#invariants-a-change-must-keep)
+for what one would have to satisfy.
 
 **The moat ships opt-in, not turnkey.** `Ext.*` (journal, `Reattach`,
 `AttachPolicy`) is a set of primitives your agent handler wires together,
@@ -282,7 +290,7 @@ below for what must be true before one ships.
 `Agent`/`Client` callback body can know your session-to-journal mapping or
 which `AttachPolicy` you want. Turning it on is the ~30 lines below in your
 own `new_session`/`raxol_load_session` callbacks, plus the three shared
-processes in [`RaxolAgentClientProtocol.Application.children/0`](lib/raxol/agent_client_protocol/application.ex)
+processes in `RaxolAgentClientProtocol.Application.children/0`
 started somewhere in your supervision tree.
 
 ### Enabling durable resumable sessions
@@ -294,8 +302,9 @@ into your own supervisor, or let the package's own `Application` auto-start
 them, see its moduledoc), and (2) your agent handler implements `new_session/2`
 to open a journal + start the durable `Session`, and `raxol_load_session/2` to
 route `_raxol/session.load` through `Reattach.attach/1`. Adapted from the
-end-to-end test's `RefAgent` (`test/integration/end_to_end_test.exs`), the
-real public-API sequence:
+end-to-end test's `RefAgent`
+([`test/integration/end_to_end_test.exs`](https://github.com/DROOdotFOO/raxol-agent/blob/main/packages/raxol_agent_client_protocol/test/integration/end_to_end_test.exs)),
+the real public-API sequence:
 
 ```elixir
 defmodule MyDurableAgent do
@@ -372,7 +381,7 @@ lifetime tied to the connection rather than the single dispatch.
 
 ## Provenance
 
-See `NOTICE.md` for the full attribution. Summary:
+See [NOTICE.md](NOTICE.md) for the full attribution. Summary:
 
 - **Schema/serialization layer + wire-byte test fixtures**: ported
   MIT→MIT from [`f1729/agent_client_protocol`](https://github.com/f1729/agent-client-protocol-elixir)
@@ -395,11 +404,15 @@ See `NOTICE.md` for the full attribution. Summary:
   pure-MIT despite studying an Apache-2.0 spec.
 
 This layered provenance is a deliberate license-discipline decision, not an
-accident. See `docs/adr/0041-agent-client-protocol-package.md` for the full reasoning.
+accident. See [ADR-0041](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/adr/0041-agent-client-protocol-package.md)
+for the full reasoning.
 
 ## Conformance
 
-Three independent nets, each catching a different class of drift:
+Three independent nets, each catching a different class of drift. The
+suites live in the package's
+[`test/`](https://github.com/DROOdotFOO/raxol-agent/tree/main/packages/raxol_agent_client_protocol/test)
+directory in the repository; none of them ships in the Hex package.
 
 - **`test/conformance/acpx_cases_test.exs`** replays the 21 ported `acpx`
   case fixtures (`test/conformance/cases/*.json`) through a native Elixir
@@ -412,11 +425,13 @@ Three independent nets, each catching a different class of drift:
   just from `acpx`'s interpretation of it.
 - **`test/torture/`**: `wire_torture_test.exs` (malformed/adversarial wire
   input, total-decode fuzzing) and `pbus_coverage_audit_test.exs` (an
-  audit that every P-BUS invariant the reattach design names has at least
-  one exercising test): the interop/robustness net beyond happy-path
+  audit that every journal and reattach invariant has at least one
+  exercising test): the interop/robustness net beyond happy-path
   conformance.
 
 ## Testing
+
+From a checkout of [the repository](https://github.com/DROOdotFOO/raxol-agent):
 
 ```bash
 cd packages/raxol_agent_client_protocol && MIX_ENV=test mix test
@@ -437,89 +452,32 @@ MIX_ENV=test mix test test/conformance/ test/torture/
 MIX_ENV=test mix test test/schema/roundtrip_property_test.exs
 ```
 
-## Danger-zone gates
+## Invariants a change must keep
 
-Design review gates that any change to the reattach/attach-policy surface
-(`Ext.*`) or the connection/router core must pass, cited inline in the
-relevant moduledocs (`grep -rn '\[G5' lib/` to find every load-bearing
-site):
+Any change to the reattach/attach-policy surface (`Ext.*`) or to the
+connection/router core must keep these:
 
-- **G2**: the `Connection`/`Router` correctness convergence gate
-  (`acp-connection-design.md` v2, "G2-CONVERGED"): the Connection never
-  blocks on a peer, never runs handler code in its own process, never
-  mints an atom from wire input, and the response-count invariant (at
-  most one response frame per inbound id) holds under cancellation races.
-- **G5**: the attach-policy security triad (`acp-attachpolicy-design.md`,
-  `acp-reattach-design.md`): exactly one fail-closed authorization funnel
-  for every attach (no second try/catch wrapper; the "dual-ownership
-  hole" G5 exists specifically to close), the register-before-`h` gate-arm
-  invariant, and the `RXC1` token's structural anti-downgrade properties.
-  Every `[G5:*]` tag in `lib/raxol/agent_client_protocol/ext/` traces back
-  to a specific finding this gate raised.
-- **G6**: on-disk write discipline (file modes: durable records must
-  never land world-readable). **Not yet load-bearing in this package**:
-  `Ext.Journal.Mem` is in-memory only, so there is no on-disk artifact for
-  G6 to gate today. It becomes binding the moment a disk-backed journal
-  store ships: any such store MUST write with `0600`/`0700` permissions
-  from the first commit that creates a file, not as a follow-up hardening
-  pass.
+- **Connection and router.** The `Connection` never blocks on a peer,
+  never runs handler code in its own process, never mints an atom from
+  wire input, and sends at most one response frame per inbound id, also
+  under cancellation races.
+- **Attach.** Every attach is decided by exactly one fail-closed
+  authorization funnel (no second try/catch wrapper around it), a
+  reattacher registers as a live subscriber before it reads the high
+  watermark, and the `RXC1` token format has no algorithm field to
+  downgrade.
+- **On-disk writes.** `Ext.Journal.Mem` keeps the journal in memory, so
+  nothing is written to disk. A store that writes to disk must create its
+  files with `0600`/`0700` permissions: durable records never land
+  world-readable.
 
-See `docs/adr/0041-agent-client-protocol-package.md` for how these gates shaped the
-package's structure.
+## Two `Ctx` modules
 
-## Glossary
-
-Moduledocs and inline comments throughout this package cite short tags
-(`IC-2`, `CDI-5`, `J7a`, `G5`, `I8`, `D1-6`, `W17`, `P-JS5`, `R-C14`, `T-24`,
-`AD-U`, `NC-12`, and similar) back to the design docs that ratified each
-decision (`acp-{connection,supervision,reattach,attachpolicy,methodtable}-design.md`).
-**Those design docs are external**: they live in this project's working
-scratchpad (`scratchpad/specs/`), not in this repository, so a tag is only
-a traceability breadcrumb here, not a link you can click. This section
-resolves the tag *families* well enough to read the code without them;
-it does not attempt to enumerate every individual tag.
-
-- **`IC-*`** ("invariant/contract", connection design): `Connection`-level
-  contracts: `IC-2` is the per-dispatch `Ctx` struct shape, `IC-3` is the
-  primitive-`async_request`-vs-wrapper-`request` split, `IC-4` is the
-  `:deferred`/`delegate_reply` early-reply protocol, `IC-5` (and `IC-5a`
-  /`IC-5b`/`IC-5c`) are the cancellation-id-ownership rules, `IC-8` is the
-  `ConnectionSupervisor` subtree shape `Agent`/`Client`'s library-mode
-  wiring builds (see "Library-mode wiring" in both moduledocs).
-- **`CDI-*`** ("cross-device/durable-identity", reattach + attach-policy
-  design): the reattach/attach contract: `CDI-1` is the one-funnel
-  authorization rule, `CDI-2` is the attach `ctx` shape, `CDI-5`/`CDI-6`
-  are the wire envelopes for a denied attach and a mid-stream
-  `_raxol/session.closed`.
-- **`G1`..`G6`** ("gates"): the named design-review gates a change to
-  the affected surface must keep passing; `G2`, `G5`, `G6` are documented
-  in full above under "Danger-zone gates".
-- **`I1`..`I17`** ("invariant"): numbered protocol invariants (e.g. `I3`
-  "no `session/update` after its turn's response", `I8`/`I9` "a turn
-  cancel fails closed / aborts open permission asks").
-- **`J1`..`J12`** (and lettered variants like `J7a`): journal/durability
-  invariants for `Ext.Journal.Writer` (append-then-publish ordering,
-  offset monotonicity, turn-boundary bookkeeping).
-- **`D1-*`**: `MethodTable`-derived invariants (e.g. `D1-6`: a
-  `params: nil` row generates an arity-1 callback).
-- **`W17`..`W20`**: client/ergonomics-layer decisions (`W17` is the
-  `subscribe/3`/`prompt/3`/`prompt_stream/4` design this README's
-  quickstart uses).
-- **`P-JS*`**, **`P-BUS*`**: named correctness *properties* (as in
-  property-based tests), e.g. `P-JS5`: replayed history plus live tail
-  equals the durable stream, no gap, no dup.
-- **`R-C*`**: Writer-restart/recovery rulings (e.g. `R-C14`: what the
-  Writer does with its latch on restart, before honoring the first
-  `append`/`subscribe`).
-- **`T-*`**, **`AD-*`**, **`NC-*`**: individual numbered test/finding
-  IDs from the design docs' own review process; these are the most
-  breadcrumb-only of the tags (no family-level summary applies).
-
-One naming note while we're here: `Connection.Ctx` (`IC-2`, the per-dispatch
-struct every handler callback receives) and `Raxol.AgentClientProtocol.Ctx`
-(a separate ergonomic DX layer of plain pid-taking wrapper functions for
-code running *inside* a `session/prompt` turn task) share the "Ctx" name
-but are deliberately two different things: a turn task cannot structurally
-reach the dispatch-time `Connection.Ctx` at all, so `Raxol.AgentClientProtocol.Ctx`
-does not compete with it as a second struct; `ctx.ex`'s own moduledoc has
-the full "why this isn't built on `Connection.Ctx`" rationale.
+`Raxol.AgentClientProtocol.Connection.Ctx` (the per-dispatch struct every
+handler callback receives) and `Raxol.AgentClientProtocol.Ctx` (a separate
+ergonomic layer of plain pid-taking wrapper functions for code running
+*inside* a `session/prompt` turn task) share the "Ctx" name but are
+deliberately two different things: a turn task cannot structurally reach
+the dispatch-time `Connection.Ctx` at all, so `Raxol.AgentClientProtocol.Ctx`
+does not compete with it as a second struct; its moduledoc has the full
+"why this isn't built on `Connection.Ctx`" rationale.

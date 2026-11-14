@@ -14,6 +14,10 @@ defmodule Mix.Tasks.Acp.Schema.Verify do
   `mix.exs` `:files` and exist purely so tests can validate our
   hand-written/generated ACP types against the protocol's own JSON Schema.
 
+  The task therefore runs only in `packages/raxol_agent_client_protocol` of a
+  checkout of https://github.com/DROOdotFOO/raxol-agent. Anywhere else (this
+  package installed from Hex) it refuses with a message saying so.
+
   Exits with a non-zero status (via `Mix.raise/1`) if either file is missing
   or its hash no longer matches the pinned value -- which means either the
   file was edited locally (don't -- re-run the pin procedure in
@@ -34,6 +38,8 @@ defmodule Mix.Tasks.Acp.Schema.Verify do
 
   @impl Mix.Task
   def run(_argv) do
+    ensure_checkout!()
+
     results = Enum.map(@pinned, &verify_one/1)
 
     failures = Enum.filter(results, &match?({:error, _, _}, &1))
@@ -53,6 +59,19 @@ defmodule Mix.Tasks.Acp.Schema.Verify do
       )
     else
       Mix.shell().info("ACP schema oracle matches pin (schema-v1.19.0).")
+    end
+  end
+
+  # The oracle ships only with the repository: a Hex install has no `priv/`
+  # at all, and reporting that as drift would be wrong.
+  defp ensure_checkout! do
+    unless File.regular?(Path.expand("../PINNED.md", @schema_dir)) do
+      Mix.raise(
+        "mix acp.schema.verify checks the ACP schema oracle that only a checkout of " <>
+          "https://github.com/DROOdotFOO/raxol-agent carries " <>
+          "(packages/raxol_agent_client_protocol/priv/schema-oracle); the Hex package " <>
+          "does not ship it, and #{Path.dirname(@schema_dir)} does not exist here."
+      )
     end
   end
 
