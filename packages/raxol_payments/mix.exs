@@ -14,10 +14,10 @@ defmodule RaxolPayments.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       dialyzer: [
-        # raxol_agent is runtime: false here (see deps/0), so it is not in the
-        # application tree dialyzer derives. Add it (with :mix, for the
-        # Mix.Task callbacks) to the PLT so the Action behaviour, CommandHook
-        # and Mix.Task callbacks resolve.
+        # In this repository raxol_agent is runtime: false (see deps/0), so it
+        # is not in the application tree dialyzer derives (the Hex form drops
+        # the flag). Add it (with :mix, for the Mix.Task callbacks) to the PLT
+        # so the Action behaviour, CommandHook and Mix.Task callbacks resolve.
         plt_add_apps: [:raxol_agent, :mix],
         ignore_warnings: ".dialyzer_ignore.exs"
       ],

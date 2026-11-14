@@ -16,10 +16,12 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
 
   ## Availability
 
-  raxol_payments depends on raxol_agent at compile time only (`runtime: false`).
-  When raxol_agent is not loaded (raxol_payments used outside an agent app) the
-  store degrades to a no-op: `fetch` misses, `put`/`delete` do nothing, and
-  recovery is simply disabled -- the same as configuring no checkpoint at all.
+  As a Hex dependency, raxol_agent is an ordinary dependency of raxol_payments:
+  a release that depends on raxol_payments includes and starts it, so this
+  store is available. Inside this package's repository the dependency is
+  `runtime: false`; where raxol_agent's modules are not loaded the store
+  degrades to a no-op: `fetch` misses, `put`/`delete` do nothing, and recovery
+  is simply disabled -- the same as configuring no checkpoint at all.
 
   ## Durability
 

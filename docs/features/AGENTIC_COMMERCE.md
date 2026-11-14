@@ -249,7 +249,7 @@ client = Req.new(base_url: "https://api.example.com")
 
 ## Package details
 
-Standalone package at `packages/raxol_payments/`. Depends on `raxol_agent` at compile time only (`runtime: false`) for the Action macro and CommandHook behaviour. Runtime deps: `req`, `ex_secp256k1`, `ex_keccak`, `jason`, `decimal`.
+Standalone package at `packages/raxol_payments/`. Uses `raxol_agent` for the Action macro, the CommandHook behaviour and `Raxol.Agent.ContextStore`. As a Hex dependency `raxol_agent` is an ordinary dependency, so a release that depends on `raxol_payments` includes and starts `raxol_agent`, `raxol`, `raxol_mcp` and `raxol_journal`; set `RAXOL_MODE=minimal` (or `config :raxol, :startup_mode, :minimal`) to keep `raxol` to its error recovery, event manager and telemetry. In this repository the dependency is `runtime: false`, so the `raxol_earn` release loads the agent modules without starting the agent applications. Runtime deps: `raxol_agent`, `raxol_core`, `req`, `ex_secp256k1`, `ex_keccak`, `jason`, `decimal`.
 
 ## See also
 

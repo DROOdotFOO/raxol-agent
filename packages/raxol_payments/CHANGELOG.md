@@ -162,6 +162,16 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 
 - Requires `raxol_agent ~> 3.0` (was `~> 2.7`) and `raxol_core ~> 2.8` (was
   `~> 2.7`).
+- **Breaking.** A release that depends on `raxol_payments` from Hex includes
+  and starts `raxol_agent` and the applications under it: `raxol`,
+  `raxol_mcp` and `raxol_journal`. 0.2.1 declared `raxol_agent`
+  `runtime: false`, which left it out of a consumer's release, so the payment
+  Actions raised at run time. `raxol` boots in `:full` mode unless
+  `RAXOL_MODE=minimal` (or `config :raxol, :startup_mode, :minimal`), which
+  starts only its error recovery, event manager and telemetry (when enabled).
+  `raxol_agent` starts `Raxol.Agent.Supervisor` (its MCP agent tools register
+  only on an `:mcp` node or with `config :raxol_agent, :mcp_tools, true`) and
+  refuses to boot on a malformed `config :raxol_agent, :web3`.
 - **Breaking.** `Raxol.Payments.Req.AutoPay.attach/2`,
   `Req.AgentPlugin.auto_pay/1` and the Xochi client's `{:x402, opts}` auth
   require `:policy`, a `SpendingPolicy`, and raise `ArgumentError` without
