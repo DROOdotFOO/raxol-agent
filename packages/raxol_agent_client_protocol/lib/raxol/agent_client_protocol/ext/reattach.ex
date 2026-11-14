@@ -87,6 +87,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   require Logger
 
   alias Raxol.AgentClientProtocol.Error
+  alias Raxol.AgentClientProtocol.Ext.AttachPolicy
   alias Raxol.AgentClientProtocol.Ext.Journal
   alias Raxol.AgentClientProtocol.Ext.Journal.Writer
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.LoadSessionResponse
@@ -147,7 +148,9 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   @typedoc """
   Attach inputs. `:journal` is `{module, handle}` (the durable store, per-session
   handle). `:authorize` is the authorization funnel; when absent it binds to
-  `AttachPolicy.Runner.authorize(policy, ctx)`.
+  `AttachPolicy.Runner.authorize(policy, ctx)`, where `policy` is `:policy` or,
+  when that is absent, `AttachPolicy.default_policy/0` (the configured
+  `:attach_policy`, else `LocalNode`).
   """
   @type opts :: %{
           required(:conn) => pid(),
@@ -219,7 +222,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     fun =
       Map.get(opts, :authorize) ||
         fn c ->
-          policy = Map.get(opts, :policy)
+          policy = Map.get(opts, :policy) || AttachPolicy.default_policy()
           @default_runner.authorize(policy, c)
         end
 

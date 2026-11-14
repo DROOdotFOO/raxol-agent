@@ -62,6 +62,8 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
   alias Raxol.AgentClientProtocol.Ext.Reattach
   alias Raxol.AgentClientProtocol.Test.FakeConnection
 
+  import ExUnit.CaptureLog
+
   setup do
     start_supervised!({Registry, keys: :unique, name: Writer.registry()})
     :ok
@@ -1176,5 +1178,59 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
 
       assert {:error, %Error{code: -32_000}} = res
     end
+  end
+
+  describe "attach with neither :authorize nor :policy" do
+    test "uses the configured :attach_policy, else LocalNode, and logs no error" do
+      start_supervised!(
+        {Task.Supervisor, name: Raxol.AgentClientProtocol.Ext.AttachPolicy.TaskSupervisor}
+      )
+
+      {sid, j, _w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
+      local = %{authorize: nil, transport: %{kind: :process, peer: self()}}
+      prev = Application.fetch_env(:raxol_agent_client_protocol, :attach_policy)
+
+      on_exit(fn ->
+        case prev do
+          {:ok, policy} ->
+            Application.put_env(:raxol_agent_client_protocol, :attach_policy, policy)
+
+          :error ->
+            Application.delete_env(:raxol_agent_client_protocol, :attach_policy)
+        end
+      end)
+
+      Application.put_env(:raxol_agent_client_protocol, :attach_policy, __MODULE__.DenyAll)
+
+      log =
+        capture_log(fn ->
+          {conn, _ref, _sub, res} = attach(sid, j, local)
+          assert {:error, %Error{code: -32_000}} = res
+          assert FakeConnection.log(conn) == []
+        end)
+
+      assert log =~ "acp attach denied: :policy_error"
+      refute log =~ "[error]"
+
+      Application.delete_env(:raxol_agent_client_protocol, :attach_policy)
+
+      log =
+        capture_log(fn ->
+          {conn, ref, sub, res} = attach(sid, j, local)
+          assert res == :deferred
+          _ = sync(sub)
+          assert {:reply, ^ref, {:ok, _}} = reply_entry(conn)
+        end)
+
+      refute log =~ "[error]"
+    end
+  end
+
+  defmodule DenyAll do
+    @moduledoc false
+    @behaviour Raxol.AgentClientProtocol.Ext.AttachPolicy
+
+    @impl true
+    def authorize_attach(_ctx), do: {:error, :denied_by_test}
   end
 end
