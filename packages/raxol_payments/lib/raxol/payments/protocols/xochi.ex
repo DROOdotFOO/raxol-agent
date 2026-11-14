@@ -471,9 +471,10 @@ defmodule Raxol.Payments.Protocols.Xochi do
 
   @intent_primary_type "XochiIntent"
 
-  # SPEC §2.1 (XochiIntent v3): the only struct the agent signs as an intent,
-  # fields in order. The served types must equal this map exactly, and the
-  # struct must encode to @intent_type_hash, keccak256 of
+  # XochiIntent v3, section 2.1 of SPEC.md in `@xochi/spec` 0.14.0
+  # (https://www.npmjs.com/package/@xochi/spec): the only struct the agent
+  # signs as an intent, fields in order. The served types must equal this map
+  # exactly, and the struct must encode to @intent_type_hash, keccak256 of
   # "XochiIntent(string intentId,string quoteId,address wallet,string recipient,
   # uint256 fromChainId,uint256 toChainId,string fromToken,string toToken,
   # uint256 fromAmount,uint256 toAmount,string settlementPreference,uint256 deadline)".
@@ -502,13 +503,14 @@ defmodule Raxol.Payments.Protocols.Xochi do
     types: @intent_types,
     type_hash: @intent_type_hash
   }
-  # SPEC §2.2: the domain `version` is deployment-scoped ("3", or a scoped
-  # "3-prod"), but its major is the struct version, and the canonical types above
-  # are v3 (see `intent_domain_version?/1`). The salt is keccak256 of the version.
+  # `@xochi/spec` SPEC.md section 2.2: the domain `version` is deployment-scoped
+  # ("3", or a scoped "3-prod"), but its major is the struct version, and the
+  # canonical types above are v3 (see `intent_domain_version?/1`). The salt is
+  # keccak256 of the version.
   # Riddler issues quotes valid for ~300s; an hour of headroom tolerates a slow
   # local clock. A fast clock fails open -- the wall clock is the one value on
-  # this path the server does not supply. Matches riddler-sdk's
-  # MAX_INTENT_DEADLINE_AHEAD_OF_NOW_SECONDS.
+  # this path the server does not supply. Riddler's SDK applies the same
+  # one-hour bound.
   @intent_max_deadline_ahead_seconds 3600
 
   @doc """
@@ -527,7 +529,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   those fields, so every compared value is one the signature covers.
 
   Returns `:ok` or `{:error, {:intent_mismatch, field}}` naming the first field
-  that does not match. Mirrors riddler-sdk's `assertIntentMatchesRequest`.
+  that does not match.
   """
   @spec validate_intent(QuoteResponse.t(), QuoteRequest.t()) :: :ok | {:error, term()}
   def validate_intent(%QuoteResponse{eip712_data: nil}, %QuoteRequest{}),
@@ -562,9 +564,10 @@ defmodule Raxol.Payments.Protocols.Xochi do
   def intent_kind, do: @intent_kind
 
   # The envelope: exactly the v3 `XochiIntent` types, a message with exactly
-  # its fields, and the domain SPEC §2.2 defines: name "Xochi", a v3 version,
-  # chainId = the request's origin chain, salt = keccak256(version), no
-  # verifyingContract. Anything else is a payload the agent will not sign.
+  # its fields, and the domain `@xochi/spec` SPEC.md section 2.2 defines: name
+  # "Xochi", a v3 version, chainId = the request's origin chain, salt =
+  # keccak256(version), no verifyingContract. Anything else is a payload the
+  # agent will not sign.
   defp intent_typed_data(eip712, request) do
     case TypedData.check_shape(eip712, @intent_kind) do
       :ok ->
@@ -1018,7 +1021,8 @@ defmodule Raxol.Payments.Protocols.Xochi do
     types: Permit2.types(),
     # keccak256("PermitWitnessTransferFrom(TokenPermissions permitted,address spender,
     # uint256 nonce,uint256 deadline,OriginPullWitness witness)OriginPullWitness(bytes32
-    # orderId)TokenPermissions(address token,uint256 amount)"), SPEC §2.3.
+    # orderId)TokenPermissions(address token,uint256 amount)"), `@xochi/spec`
+    # SPEC.md section 2.3.
     type_hash:
       Base.decode16!("4409a64154fcc59d975b06e8a233149d93d9fe0311a3d359f399a4333b11c3f5",
         case: :lower
@@ -1069,9 +1073,9 @@ defmodule Raxol.Payments.Protocols.Xochi do
   # the pin is required (by config, or by default in production). With neither, an unpinned `to` is left
   # bounded by ERC-3009's `msg.sender == to` plus the value cap.
   #
-  # ERC-3009 is USDC's (SPEC §2.3): the request's origin token must be USDC on
-  # its chain, and the domain is that token's own name/version
-  # (`Assets.UsdcDomains`), chainId and contract.
+  # ERC-3009 is USDC's (`@xochi/spec` SPEC.md section 2.3): the request's
+  # origin token must be USDC on its chain, and the domain is that token's own
+  # name/version (`Assets.UsdcDomains`), chainId and contract.
   defp validate_erc3009_pull(pull, request, signer) do
     message = pull["message"] || %{}
 

@@ -3,7 +3,7 @@ defmodule Raxol.Payments.FeeSchedule do
   The canonical Xochi fee schedule, mirrored in Elixir.
 
   The solver's fee policy is the authority; this module mirrors it, as
-  `@xochi/client`'s `fee.ts` does on the TypeScript side. A test in this
+  `@xochi/client` does on the TypeScript side. A test in this
   package's repository pins it against the same generated schedule both of
   those are checked against, so a fee rate cannot quietly go stale here while
   the solver charges something else.

@@ -7,9 +7,7 @@ defmodule Raxol.Payments.Assets.UsdcDomains do
   `"USDC"`. Signing with the wrong name produces a digest USDC's
   `transferWithAuthorization` will reject.
 
-  Values were verified on-chain via Blockscout. Source of truth for
-  cross-checking: `riddler-client/src/config.js` (`usdcName`
-  and `usdcVersion` per chain).
+  Values were verified on-chain via Blockscout.
 
   ## Example
 

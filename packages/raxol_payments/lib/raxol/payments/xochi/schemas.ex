@@ -521,7 +521,6 @@ defmodule Raxol.Payments.Xochi.Schemas do
     # `stealth_address`, ...); older/sim responses are camelCase. Accept both, as
     # QuoteResponse does, so the client reads the canonical worker shape -- reading
     # only camelCase left `intent_id` nil and tripped the Action output contract.
-    # See xochi/packages/worker-lib/src/handlers/intents.ts (handleExecuteIntent).
     @spec from_json(map()) :: t()
     def from_json(json) do
       %__MODULE__{
@@ -649,8 +648,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
     # The Xochi worker's status response is snake_case (`intent_id`, `tx_hash`,
     # `terminal`, ...); older/sim responses are camelCase. Accept both so the poll
     # reads the canonical worker shape -- reading only camelCase dropped
-    # `intent_id`/`tx_hash` (status/terminal happened to match either way). See
-    # xochi/packages/worker-lib/src/handlers/intents.ts (handlePollIntentStatus).
+    # `intent_id`/`tx_hash` (status/terminal happened to match either way).
     @spec from_json(map()) :: t()
     def from_json(json) do
       status = parse_status(json["status"])
@@ -738,10 +736,8 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
     Unlike `IntentStatus` (settlement/tx state only), this carries the
     authoritative corridor and amounts written at quote time (`status: :quoted`),
-    so a relayer can read what the buyer signed before settlement -- see the
-    worker's `handleGetIntent`
-    (`xochi/packages/worker-lib/src/handlers/intents/read.ts`). Amounts are token
-    base-unit strings; `fee_rate` is the tier fraction (e.g. `0.003`).
+    so a relayer can read what the buyer signed before settlement. Amounts are
+    token base-unit strings; `fee_rate` is the tier fraction (e.g. `0.003`).
     """
 
     @enforce_keys [:intent_id, :status]

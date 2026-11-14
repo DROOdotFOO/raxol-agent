@@ -9,10 +9,9 @@ defmodule Raxol.Payments.Protocols.Permit2 do
   orderId into the digest. The Permit2 contract verifies the signature
   on-chain when the solver calls `permitWitnessTransferFrom`.
 
-  Mirrors `riddler-client/src/signing.js#signPermit2`. The EIP-712
-  domain has no `version` field (Permit2 deployed without versioning); the
-  `verifyingContract` is the same universal Permit2 address on every EVM
-  chain.
+  The EIP-712 domain has no `version` field (Permit2 deployed without
+  versioning); the `verifyingContract` is the same universal Permit2 address
+  on every EVM chain.
 
   ## Signed-object encoding
 
@@ -83,7 +82,7 @@ defmodule Raxol.Payments.Protocols.Permit2 do
   Sign a Permit2 `PermitWitnessTransferFrom` from a Riddler `/quote`
   response.
 
-  `quote` shape mirrors `signing.js#signPermit2`:
+  `quote` is a Riddler `/quote` response:
 
       %{
         "request" => %{"inputAmount" => "1000000", "inputToken" => "0x..."},
@@ -226,8 +225,8 @@ defmodule Raxol.Payments.Protocols.Permit2 do
   end
 
   # Encode `tuple(tuple(address,uint256),address,uint256,uint256)` as the
-  # plain concatenation of the static fields. This matches what the CLI
-  # produces after it strips the ABI offset pointer (`signing.js:291-304`).
+  # plain concatenation of the static fields: the ABI encoding with its offset
+  # pointer stripped, which is the form the solver reads.
   defp encode_signed_object(message) do
     permitted = Map.fetch!(message, "permitted")
 

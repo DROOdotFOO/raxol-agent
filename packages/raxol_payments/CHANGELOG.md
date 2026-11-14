@@ -491,7 +491,7 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 
 - `Raxol.Payments.Mandate`: Xochi delegation envelope. EIP-712-signed
   per-request authorization from a Member to a specific agent wallet.
-  Schema mirrors `xochi/packages/shared/src/eip712.ts` (snake_case
+  Schema mirrors the Mandate typed data the Xochi worker verifies (snake_case
   fields, `string[]` scopes, chainId pinned to 1). Digest verified
   byte-for-byte against viem's `hashTypedData`. Functions:
   `build/1`, `typed_data/1`, `digest/1`, `sign/2`, `verify/1`,
