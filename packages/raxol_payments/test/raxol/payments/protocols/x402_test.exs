@@ -27,6 +27,8 @@ defmodule Raxol.Payments.Protocols.X402Test do
 
   describe "parse_challenge/1" do
     test "decodes base64 JSON challenge" do
+      valid_before = System.system_time(:second) + 600
+
       payload =
         Jason.encode!(%{
           "maxAmountRequired" => "1000000",
@@ -34,7 +36,7 @@ defmodule Raxol.Payments.Protocols.X402Test do
           "network" => "eip155:8453",
           "payTo" => "0x1234567890abcdef1234567890abcdef12345678",
           "nonce" => "0xabc123",
-          "validBefore" => 1_700_000_000
+          "validBefore" => valid_before
         })
 
       encoded = Base.encode64(payload)
@@ -46,7 +48,50 @@ defmodule Raxol.Payments.Protocols.X402Test do
       assert challenge.network == "eip155:8453"
       assert challenge.pay_to == "0x1234567890abcdef1234567890abcdef12345678"
       assert challenge.nonce == "0xabc123"
-      assert challenge.valid_before == 1_700_000_000
+      assert challenge.valid_before == valid_before
+    end
+
+    test "refuses a validBefore past, too far out, or not a whole second" do
+      now = System.system_time(:second)
+
+      for valid_before <- [now - 1, now + 3601, 9_999_999_999, "soon", 1.5] do
+        encoded =
+          Base.encode64(
+            Jason.encode!(%{
+              "maxAmountRequired" => "1000000",
+              "asset" => "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+              "network" => "eip155:8453",
+              "payTo" => "0x1234567890abcdef1234567890abcdef12345678",
+              "validBefore" => valid_before
+            })
+          )
+
+        assert {:error, {:invalid_valid_before, ^valid_before}} =
+                 X402.parse_challenge([{"payment-required", encoded}])
+      end
+    end
+
+    test "refuses a network that is not eip155:<chain id>, and an asset that is not USDC there" do
+      for {network, asset, reason} <- [
+            {"eip155:abc", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", :invalid_network},
+            {"base", "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", :invalid_network},
+            # Ethereum USDC served as Base.
+            {"eip155:8453", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", :unsupported_asset},
+            # WETH on Base: no ERC-3009, and not a dollar.
+            {"eip155:8453", "0x4200000000000000000000000000000000000006", :unsupported_asset}
+          ] do
+        encoded =
+          Base.encode64(
+            Jason.encode!(%{
+              "maxAmountRequired" => "1000000000000000000",
+              "asset" => asset,
+              "network" => network,
+              "payTo" => "0x1234567890abcdef1234567890abcdef12345678"
+            })
+          )
+
+        assert {:error, {^reason, _}} = X402.parse_challenge([{"payment-required", encoded}])
+      end
     end
 
     test "returns error for missing header" do

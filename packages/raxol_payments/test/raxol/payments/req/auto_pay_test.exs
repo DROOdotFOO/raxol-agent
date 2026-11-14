@@ -26,6 +26,36 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     def sign_hash(_digest), do: {:ok, <<0::520>>}
   end
 
+  defmodule FailingWallet do
+    @moduledoc false
+    @behaviour Raxol.Payments.Wallet
+    @impl true
+    def address, do: "0x" <> String.duplicate("aa", 20)
+    @impl true
+    def chain_id, do: 8453
+    @impl true
+    def sign_message(_msg), do: {:error, :locked}
+    @impl true
+    def sign_typed_data(_domain, _types, _message), do: {:error, :locked}
+    @impl true
+    def sign_hash(_digest), do: {:error, :locked}
+  end
+
+  defmodule RaisingWallet do
+    @moduledoc false
+    @behaviour Raxol.Payments.Wallet
+    @impl true
+    def address, do: "0x" <> String.duplicate("aa", 20)
+    @impl true
+    def chain_id, do: 8453
+    @impl true
+    def sign_message(_msg), do: raise("wallet unavailable")
+    @impl true
+    def sign_typed_data(_domain, _types, _message), do: raise("wallet unavailable")
+    @impl true
+    def sign_hash(_digest), do: raise("wallet unavailable")
+  end
+
   # Build a base64-encoded x402 `payment-required` challenge body.
   defp x402_challenge(amount) do
     %{
@@ -35,7 +65,7 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       "network" => "eip155:8453",
       "nonce" => "0x" <> String.duplicate("12", 32),
       "validAfter" => 0,
-      "validBefore" => 9_999_999_999
+      "validBefore" => System.system_time(:second) + 300
     }
     |> Jason.encode!()
     |> Base.encode64()
@@ -431,7 +461,7 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     end
   end
 
-  describe "budget release on a payment that does not complete" do
+  describe "the reservation once a payment is signed, and when it is not" do
     setup do
       Process.put(:wallet_signal_target, self())
 
@@ -448,32 +478,36 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       %{ledger: ledger, policy: policy}
     end
 
-    defp autopay_req(ledger, policy, stub) do
+    defp autopay_req(ledger, policy, stub, wallet \\ StubWallet) do
       Req.new(url: "https://api.example.com/data", retry: false)
-      |> AutoPay.attach(wallet: StubWallet, ledger: ledger, policy: policy, agent_id: :test)
+      |> AutoPay.attach(wallet: wallet, ledger: ledger, policy: policy, agent_id: :test)
       |> Req.Request.prepend_request_steps(stub: stub)
     end
 
-    test "a non-2xx paid retry releases the reservation", %{ledger: ledger, policy: policy} do
-      resp = autopay_req(ledger, policy, stub_402_then_error(1)) |> Req.Request.run!()
+    defp lifetime(ledger, policy), do: Ledger.get_totals(ledger, :test, policy).lifetime
+
+    test "a paid retry answered 500 keeps the spend recorded", %{ledger: ledger, policy: policy} do
+      # 1_000_000 atomic = 1 USDC. The signed authorization has left the process
+      # and the server can settle it, so the spend stays.
+      resp = autopay_req(ledger, policy, stub_402_then_error(1_000_000)) |> Req.Request.run!()
       assert resp.status == 500
       assert_received :wallet_signed
 
       :timer.sleep(20)
-      # Spend was reserved then released; totals net back to zero.
-      assert Decimal.equal?(Ledger.get_totals(ledger, :test, policy).lifetime, "0")
+      assert Decimal.equal?(lifetime(ledger, policy), "1")
     end
 
-    test "a transport error on the paid retry releases the reservation", %{
+    test "a transport error on the paid retry keeps the spend recorded", %{
       ledger: ledger,
       policy: policy
     } do
-      # First request 402s; the retry (carrying x-payment) raises a transport error.
+      # First request 402s; the retry (carrying x-payment) fails in transport,
+      # possibly after the server received the signed payment.
       stub = fn req ->
         if Req.Request.get_header(req, "x-payment") == [] do
           resp =
             Req.Response.new(status: 402, body: "")
-            |> Req.Response.put_header("payment-required", x402_challenge(1))
+            |> Req.Response.put_header("payment-required", x402_challenge(1_000_000))
 
           {req, resp}
         else
@@ -484,7 +518,53 @@ defmodule Raxol.Payments.Req.AutoPayTest do
       _resp = autopay_req(ledger, policy, stub) |> Req.Request.run!()
 
       :timer.sleep(20)
-      assert Decimal.equal?(Ledger.get_totals(ledger, :test, policy).lifetime, "0")
+      assert Decimal.equal?(lifetime(ledger, policy), "1")
+    end
+
+    test "a server answering every paid retry with 500 is stopped at session_max", %{
+      ledger: ledger
+    } do
+      # dev(): per_request_max 0.10, session_max 1.00. Each 402 asks 0.10.
+      policy = SpendingPolicy.dev()
+
+      statuses =
+        for _ <- 1..15 do
+          resp = autopay_req(ledger, policy, stub_402_then_error(100_000)) |> Req.Request.run!()
+          {resp.status, resp.body}
+        end
+
+      signed = Enum.count(statuses, &match?({500, _}, &1))
+      refused = Enum.count(statuses, &match?({402, %{error: :budget_exceeded}}, &1))
+
+      assert signed == 10
+      assert refused == 5
+      :timer.sleep(20)
+      assert Decimal.equal?(lifetime(ledger, policy), "1.0")
+    end
+
+    test "a signing failure releases the reservation", %{ledger: ledger, policy: policy} do
+      resp =
+        autopay_req(ledger, policy, stub_402_then_ok(1_000_000), FailingWallet)
+        |> Req.Request.run!()
+
+      assert resp.status == 402
+      assert %{error: :payment_failed} = resp.body
+      :timer.sleep(20)
+      assert Decimal.equal?(lifetime(ledger, policy), "0")
+    end
+
+    test "an exception before anything is signed releases the reservation", %{
+      ledger: ledger,
+      policy: policy
+    } do
+      resp =
+        autopay_req(ledger, policy, stub_402_then_ok(1_000_000), RaisingWallet)
+        |> Req.Request.run!()
+
+      assert resp.status == 402
+      assert %{error: :payment_failed} = resp.body
+      :timer.sleep(20)
+      assert Decimal.equal?(lifetime(ledger, policy), "0")
     end
 
     test "a malformed (float) price is rejected before any reservation or signing", %{

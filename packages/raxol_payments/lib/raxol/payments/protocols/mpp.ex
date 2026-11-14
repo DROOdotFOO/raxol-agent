@@ -48,13 +48,14 @@ defmodule Raxol.Payments.Protocols.MPP do
          amount when not is_nil(amount) <- challenge_data["amount"],
          :ok <- validate_positive_amount(amount),
          recipient when not is_nil(recipient) <-
-           challenge_data["recipient"] || challenge_data["pay_to"] do
+           challenge_data["recipient"] || challenge_data["pay_to"],
+         {:ok, methods} <- parse_methods(challenge_data["methods"]) do
       {:ok,
        %{
          amount: amount,
          currency: challenge_data["currency"] || "USDC",
          recipient: recipient,
-         methods: challenge_data["methods"] || [],
+         methods: methods,
          network: challenge_data["network"],
          nonce: challenge_data["nonce"],
          expires: challenge_data["expires"],
@@ -170,6 +171,12 @@ defmodule Raxol.Payments.Protocols.MPP do
       :error -> {:error, {:invalid_amount, amount}}
     end
   end
+
+  # `build_payment/2` walks `methods`, so a non-list is refused here, before
+  # any budget is reserved, rather than raising after it.
+  defp parse_methods(nil), do: {:ok, []}
+  defp parse_methods(methods) when is_list(methods), do: {:ok, methods}
+  defp parse_methods(methods), do: {:error, {:invalid_methods, methods}}
 
   defp select_method([]), do: "evm"
 

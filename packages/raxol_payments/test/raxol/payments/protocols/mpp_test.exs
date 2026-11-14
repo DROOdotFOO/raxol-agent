@@ -57,6 +57,13 @@ defmodule Raxol.Payments.Protocols.MPPTest do
       assert {:error, {:missing_header, "www-authenticate"}} = MPP.parse_challenge([])
     end
 
+    test "refuses a methods field that is not a list" do
+      for methods <- ["tempo", %{"type" => "tempo"}, 1] do
+        assert {:error, {:invalid_methods, ^methods}} =
+                 MPP.parse_challenge(challenge_headers(%{"methods" => methods}))
+      end
+    end
+
     test "accepts an integer atomic amount" do
       assert {:ok, %{amount: 100}} = MPP.parse_challenge(challenge_headers(%{"amount" => 100}))
     end

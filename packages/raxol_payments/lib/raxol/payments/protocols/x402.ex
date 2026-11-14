@@ -45,7 +45,9 @@ defmodule Raxol.Payments.Protocols.X402 do
          currency = decoded["asset"] || decoded["currency"],
          :ok <- reject_fx_asset(decoded["network"], currency),
          {:ok, chain_id} <- parse_network(decoded["network"]),
-         :ok <- require_usdc(chain_id, currency) do
+         :ok <- require_usdc(chain_id, currency),
+         valid_before = decoded["validBefore"] || decoded["valid_before"],
+         :ok <- validate_valid_before(valid_before) do
       {:ok,
        %{
          price: price,
@@ -55,7 +57,7 @@ defmodule Raxol.Payments.Protocols.X402 do
          pay_to: pay_to,
          nonce: decoded["nonce"],
          valid_after: decoded["validAfter"] || decoded["valid_after"] || 0,
-         valid_before: decoded["validBefore"] || decoded["valid_before"],
+         valid_before: valid_before,
          extra: decoded
        }}
     else
@@ -64,6 +66,35 @@ defmodule Raxol.Payments.Protocols.X402 do
       _ -> {:error, :invalid_challenge}
     end
   end
+
+  # The longest an x402 authorization may stay redeemable: one hour, the
+  # validity this module already signs when the challenge names none. A server
+  # that asks for longer (or for an expiry already past, or one that is not a
+  # whole-second integer) is refused at parse, before any budget is reserved,
+  # so a signed payment the server withholds expires within the hour.
+  @max_validity_seconds 3600
+
+  defp validate_valid_before(nil), do: :ok
+
+  defp validate_valid_before(value) do
+    now = System.system_time(:second)
+
+    case to_seconds(value) do
+      t when is_integer(t) and t > now and t <= now + @max_validity_seconds -> :ok
+      _ -> {:error, {:invalid_valid_before, value}}
+    end
+  end
+
+  defp to_seconds(value) when is_integer(value), do: value
+
+  defp to_seconds(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {t, ""} -> t
+      _ -> nil
+    end
+  end
+
+  defp to_seconds(_value), do: nil
 
   # `amount/1` scales by the asset's registered decimals and the spend gate caps
   # in dollars, so a non-USD stablecoin would be reserved and charged at par.
@@ -144,7 +175,7 @@ defmodule Raxol.Payments.Protocols.X402 do
       to: challenge.pay_to,
       value: value,
       validAfter: challenge.valid_after,
-      validBefore: challenge.valid_before || :os.system_time(:second) + 3600,
+      validBefore: challenge.valid_before || :os.system_time(:second) + @max_validity_seconds,
       nonce: challenge.nonce || generate_nonce()
     }
 
