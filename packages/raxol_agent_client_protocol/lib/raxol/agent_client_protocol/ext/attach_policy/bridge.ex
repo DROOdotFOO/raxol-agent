@@ -4,7 +4,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Bridge do
   to the SAME fail-closed admission funnel (`Ext.AttachPolicy.Runner`) the
   untrusted ACP boundary uses.
 
-  ## Why this exists (the two-wire boundary — harness freeze §1.5, OQ-JS6/OQ-JS7)
+  ## Why this exists (the two-wire boundary)
 
   Admission is enforced at the process/trust boundary, NOT symmetrically on every
   wire:
@@ -18,7 +18,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Bridge do
       that fronts reattach with its own transport, not a boundary.
 
   This module is that seam's ready-made implementation. `authorizer/1` returns an
-  `authorize_fun` that translates the BEAM-local attach ctx into the CDI-2 Runner
+  `authorize_fun` that translates the BEAM-local attach ctx into the Runner
   ctx and returns the Runner's verdict verbatim. A host calls it before its own
   in-process attach reads anything:
 
@@ -79,7 +79,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Bridge do
 
   The returned fun reads the BEAM ctx's `:session_id`/`:from_offset`/`:surface`
   and merges the config-supplied `:actor`/`:capability`/`:transport` into the
-  CDI-2 Runner ctx, then calls `Runner.authorize/3`. The BEAM ctx's `:policy`
+  Runner ctx, then calls `Runner.authorize/3`. The BEAM ctx's `:policy`
   (the HISTORY policy) is not an attach policy and is deliberately dropped —
   admission is one decision gating both history and live.
   """

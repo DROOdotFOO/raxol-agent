@@ -1,6 +1,6 @@
 defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.LocalNode do
   @moduledoc """
-  The DEFAULT deny-by-default attach policy (`acp-attachpolicy-design.md` §3.2).
+  The DEFAULT deny-by-default attach policy.
 
   Grants iff the attach arrives over a transport that implies OS-level
   co-residency; denies everything else — including a **nil / absent** transport
@@ -15,15 +15,15 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.LocalNode do
     end
   ```
 
-  `ctx.transport` is **Connection-sourced only** and NEVER peer-asserted
-  (CDI-2 `[G5:X3, S17]`), so a network peer cannot present as `kind: :process`
-  to steal a local grant (`INV-AP18`). LocalNode never reads `ctx.capability`
-  (a token sent here is ignored, not an error — stock-client compatibility).
+  `ctx.transport` is **Connection-sourced only** and NEVER peer-asserted, so a
+  network peer cannot present as `kind: :process` to steal a local grant.
+  LocalNode never reads `ctx.capability` (a token sent here is ignored, not an
+  error — stock-client compatibility).
 
   **Why this is not a hole:** anyone who can present a co-resident transport can
   already read the journal files directly; the token would add zero security
-  against that principal (threat model §1). LocalNode refuses a *network
-  listener* transport, which is the actual A1 attacker.
+  against that principal. LocalNode refuses a *network listener* transport,
+  which is the actual attacker.
   """
 
   @behaviour Raxol.AgentClientProtocol.Ext.AttachPolicy

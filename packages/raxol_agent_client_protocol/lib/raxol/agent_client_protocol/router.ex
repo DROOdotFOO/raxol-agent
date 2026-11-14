@@ -6,8 +6,7 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
   # association in this module is these compile-time-generated clauses on
   # literal binaries (no `String.to_atom/1` on wire input, ever).
   #
-  # Per the design doc (scratchpad/specs/acp-methodtable-design.md §2.1),
-  # this builds a list of quoted expressions from the rows and splices them
+  # This builds a list of quoted expressions from the rows and splices them
   # with `unquote_splicing/1` -- no `Module.eval_quoted`.
   #
   # Each of the three artifacts is its own macro so its clauses land
@@ -22,18 +21,17 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
 
   @doc """
   Emits `decode/4` clauses for `side` (`:agent` | `:client`), covering every
-  `layer: :app` row `side` handles (`MethodTable.rows_for_side/1`), in the
-  fixed order the design doc §4 pins:
+  `layer: :app` row `side` handles (`MethodTable.rows_for_side/1`), in this
+  fixed order:
 
     1. Core rows (literal wire binaries).
-    2. Registered `_raxol/*` rows (literal binaries; none exist yet, so this
-       tier currently contributes zero clauses -- see `MethodTable` row
-       table).
+    2. Registered `_raxol/*` rows (literal binaries; the `ext: :raxol` rows
+       of the `MethodTable` row table).
     3. `"_" <> _rest` passthrough -- binary preserved, no atom created.
     4. Catch-all -- `{:error, :method_not_found}`.
 
   `layer: :protocol` and `layer: :session_control` rows are excluded from
-  this side's clauses entirely (D1-2 fix / §6.0 G2 delta): `Connection`
+  this side's clauses entirely: `Connection`
   pre-filters their wire method strings before ever calling `decode/4`, so
   neither `$/cancel_request` nor `session/cancel` ever reaches here.
   """
@@ -47,8 +45,8 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
     # literal-binary clauses generated the same way; tier 2 is simply the
     # subset with `ext == :raxol`. Splitting them keeps tier-2 rows (more
     # specific) emitted right after tier-1 core rows and strictly before
-    # the tier-3 `"_"` prefix clause, matching §4's ordering even though
-    # today's table has no tier-2 rows.
+    # the tier-3 `"_"` prefix clause, matching the tier order documented
+    # above.
     {core_rows, raxol_rows} = Enum.split_with(rows, &(&1.ext == nil))
 
     literal_clauses = Enum.map(core_rows ++ raxol_rows, &decode_clause(side, &1))
@@ -88,7 +86,7 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
   Emits `result_marker/1` clauses: one literal-binary clause per
   `kind: :request, layer: :app` row in the WHOLE table (not split by side).
 
-  D1-4 fix (design doc §2.3): a wire method string is globally unique
+  A wire method string is globally unique
   across the table (`MethodTable` invariant 1 keys on `{direction, wire}`,
   and no two rows share a wire string across directions in practice), so a
   single shared `result_marker/1` serves whichever side is sending -- there
@@ -99,8 +97,7 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
   Returns `{:decode, ResultModule}` for a core/registered row, or `:ext` for
   an `"_"`-prefixed outbound ext request. A final `:unknown` clause exists
   only as a defensive total-function fallback (self-sent wire strings
-  should always be one of the two real markers above); it is not part of
-  the two-marker taxonomy the design doc describes.
+  should always produce one of the two real markers above).
   """
   defmacro defresult_markers do
     rows =
@@ -192,7 +189,7 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
 
   # -- dispatch/4 clause builders ------------------------------------------------
 
-  # D1-6: params: nil rows drop the callback to arity 1 (ctx only).
+  # `params: nil` rows drop the callback to arity 1 (ctx only).
   defp dispatch_clause(side, %{params: nil, kind: :request} = row) do
     quote do
       def dispatch(unquote(side), handler, {unquote(row.callback), nil}, ctx) do
@@ -210,9 +207,8 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
   end
 
   # Notification dispatch always returns :ok, regardless of what the
-  # handler callback itself returns (design doc §2.2/§7: "Notification
-  # callback returns non-:ok -- ignored; nothing is ever written to the
-  # wire for a notification").
+  # handler callback itself returns: a non-:ok return is ignored, and
+  # nothing is ever written to the wire for a notification.
   defp dispatch_clause(side, %{kind: :notification} = row) do
     quote do
       def dispatch(unquote(side), handler, {unquote(row.callback), params}, ctx) do
@@ -236,28 +232,25 @@ defmodule Raxol.AgentClientProtocol.Router do
   `Router.Codegen` module (not part of the public docs; `@moduledoc
   false`) -- editing the table is the only way to change routing behavior;
   there is no hand-maintained parallel list of method strings anywhere in
-  this module. See
-  `scratchpad/specs/acp-methodtable-design.md` for the full design and its
-  G1/G2 gate-review fix log.
+  this module.
 
   ## What this module does NOT do (by design)
 
   * **No capability gating.** `Connection` consults `MethodTable`'s
     `capability` field and must reject a gated-and-unnegotiated method with
-    -32601 BEFORE ever calling `decode/4` (D1-3 fix) -- `Router` has no
+    -32601 BEFORE ever calling `decode/4` -- `Router` has no
     capability awareness at all.
   * **No `$/cancel_request` or `session/cancel` clauses.** Both are
     `Connection`-routed session-control paths pre-filtered on the wire
-    method string before `decode/4` is called (D1-2 fix; §6.0 G2 delta for
-    `session/cancel`). Calling `decode(side, :notification,
+    method string before `decode/4` is called. Calling `decode(side, :notification,
     "$/cancel_request", _)` or `decode(side, :notification,
     "session/cancel", _)` falls through to the catch-all like any other
     unrecognized method -- callers must pre-filter, not rely on `Router` to
     special-case them.
   * **No pending-map bookkeeping.** `result_marker/1` is a pure lookup;
     storing `pending[id] = %{marker: ..., from: ...}` and reading it back on
-    response arrival (D1-4/D1-5 fixes: markers computed once at send time,
-    ids include `nil`) is `Connection`'s job.
+    response arrival (markers computed once at send time; ids include `nil`)
+    is `Connection`'s job.
 
   ## Decoding
 
@@ -291,7 +284,7 @@ defmodule Raxol.AgentClientProtocol.Router do
           | {:ext_request, String.t(), map()}
           | {:ext_notification, String.t(), map()}
 
-  @typedoc "What `Connection` should do with a pending outbound request's response, per D1-4."
+  @typedoc "What `Connection` should do with a pending outbound request's response."
   @type result_marker :: {:decode, module()} | :ext | :unknown
 
   @doc """
@@ -313,7 +306,7 @@ defmodule Raxol.AgentClientProtocol.Router do
   @doc """
   Dispatch a decoded message (as produced by `decode/4`) to `handler`'s
   matching callback. Request callbacks are called with `(params, ctx)` (or
-  `(ctx)` alone for `params: nil` rows, per D1-6); notification callbacks
+  `(ctx)` alone for `params: nil` rows); notification callbacks
   are called with `(params, ctx)` and this function always returns `:ok`
   regardless of what the callback itself returns.
   """
@@ -323,7 +316,7 @@ defmodule Raxol.AgentClientProtocol.Router do
 
   @doc """
   Look up how the sending side should decode the response to an outbound
-  request for `wire`, computed once at send time (D1-4) -- never re-derive
+  request for `wire`, computed once at send time -- never re-derive
   this from the wire string when the response actually arrives; store the
   returned marker in the pending-request entry instead.
   """

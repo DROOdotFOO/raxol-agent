@@ -1,8 +1,7 @@
 defmodule Raxol.AgentClientProtocol.Ext.Journal.Mem do
   @moduledoc """
-  ETS-backed in-memory journal — the v1 default impl of
-  `Raxol.AgentClientProtocol.Ext.Journal` (the durable on-disk cell is later,
-  behind the SAME behaviour + the SAME OFFSET LAW).
+  ETS-backed in-memory journal — an implementation of
+  `Raxol.AgentClientProtocol.Ext.Journal` bound by its OFFSET LAW.
 
   ## Layout
 
@@ -16,14 +15,14 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Mem do
   `open/2` creates the table owned by the CALLING process (the app supervisor in
   production, the test process in tests) — deliberately NOT the Writer. The
   journal therefore outlives any single Writer crash/restart, which is the
-  precondition for the Writer-restart tip-fold orphan repair (design §2.6 / C14).
+  precondition for the Writer-restart tip-fold orphan repair.
 
   ## Protection level (`:public`, deliberate)
 
   The table is `:public`, not `:protected`. `:protected` would forbid all
   non-owner writes, but the single-publisher Writer is a DIFFERENT process from
-  the owner (the owner OUTLIVES the Writer, per the ownership note above — the
-  C14 precondition), so `:protected` would break every append. Offset integrity
+  the owner (the owner OUTLIVES the Writer, per the ownership note above), so
+  `:protected` would break every append. Offset integrity
   is instead structural: exactly one Writer per session (the unique Writer
   Registry) is the sole appender in production. Records are stored in PLAINTEXT —
   co-resident BEAM processes are trusted; this store is not a confidentiality
@@ -32,11 +31,11 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Mem do
   ## Atomic offset assignment — no counter
 
   `append/2` computes `offset = high_watermark(j) + 1` by reading the table max
-  (`:ets.last/1`), NEVER a cached counter (the decision-time-fold law, §1.3.2 /
-  J2). Atomicity across concurrent appenders is the Writer's job: a single Writer
+  (`:ets.last/1`), NEVER a cached counter (OFFSET LAW rule 2). Atomicity across
+  concurrent appenders is the Writer's job: a single Writer
   process per session serializes every `append` through one mailbox, so the
-  read-then-insert is race-free by construction (the behaviour may assume
-  single-writer-per-session, §1.4).
+  read-then-insert is race-free by construction (the behaviour may assume a
+  single writer per session).
   """
 
   @behaviour Raxol.AgentClientProtocol.Ext.Journal
@@ -51,7 +50,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Mem do
   @doc """
   Open a fresh per-session handle. The ETS table is owned by the caller (see the
   ownership note in the moduledoc). `opts` is accepted for behaviour conformance
-  and future latitude (ETS tuning); v1 ignores it.
+  and ignored.
   """
   @impl true
   @spec open(String.t(), keyword()) :: {:ok, t()}
@@ -87,7 +86,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Mem do
   @doc """
   Offset-ordered records in `[from, to]`. An empty or inverted range yields
   `{:ok, []}`. Reads directly from the store — value-identical to what `append`
-  stored (§1.3.3).
+  stored.
   """
   @impl true
   @spec read(t(), pos_integer(), non_neg_integer()) :: {:ok, [Record.t()]}
@@ -106,7 +105,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Mem do
 
   @doc """
   Last DURABLE offset, read from the store (`:ets.last/1`); `0` for an empty
-  session. NEVER a cached counter (§1.3.2 / J2).
+  session. NEVER a cached counter (OFFSET LAW rule 2).
   """
   @impl true
   @spec high_watermark(t()) :: non_neg_integer()

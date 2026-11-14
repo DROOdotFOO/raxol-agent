@@ -1,23 +1,21 @@
 defmodule Raxol.AgentClientProtocol.Ext.Schema do
   @moduledoc """
   Wire schema structs for the reattach extension's `_raxol/*` notification
-  vocabulary (`acp-reattach-design.md` §3.2 / §3.3).
+  vocabulary.
 
   These are the RECEIVER-side decode structs for the frames the reattach
   subscriber emits. The sender (`Raxol.AgentClientProtocol.Ext.Reattach`)
   builds JSON-safe string-keyed maps directly on the `notify` path — the
-  stamp-location rule (§3.3) is: fields on `_raxol/*` frames are FIRST-CLASS
+  stamp-location rule is: fields on `_raxol/*` frames are FIRST-CLASS
   (our vocabulary), while riders on core-protocol frames travel in
   `_meta["raxol.io"]`. An offset-aware client decodes these structs; a stock
-  client drops the `_raxol/*` notifications as unknown (legal, §3.4).
+  client drops the `_raxol/*` notifications as unknown (legal).
 
   Every struct follows the package convention: a total `from_json/1`
   (`{:ok, t} | {:error, reason}`, never raises), a `to_json/1`, and a
   `Jason.Encoder` impl. All fields are grow-only (add optional-with-default;
   never rename/retype/reorder/narrow) — a reader that meets an unknown field
   folds it into `_meta` and passes it through.
-
-  Derived from the frozen `acp-reattach-design.md` (danger-zone, G5-PASS).
   """
 
   @doc false
@@ -42,9 +40,9 @@ end
 
 defmodule Raxol.AgentClientProtocol.Ext.Schema.SessionRecordNotification do
   @moduledoc """
-  `_raxol/session.record` (§3.3): the generic, self-describing delivery frame
+  `_raxol/session.record`: the generic, self-describing delivery frame
   for every record kind OTHER than `session_update` (`turn_started`,
-  `turn_completed`, `session_created`, and every future kind). New record
+  `turn_completed`, `session_created`, and any kind added later). New record
   kinds require NO new method rows — readers skip-unknown-kind as a fold.
   """
 
@@ -105,7 +103,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Schema.SessionRecordNotification do
 end
 
 defmodule Raxol.AgentClientProtocol.Ext.Schema.CaughtUpNotification do
-  @moduledoc "`_raxol/session.caught_up` (§3.3): the history→live boundary UX signal (`offset = h+1`). OPTIONAL, non-load-bearing (bus §2.1)."
+  @moduledoc "`_raxol/session.caught_up`: the history→live boundary UX signal (`offset = h+1`). OPTIONAL, non-load-bearing."
 
   alias Raxol.AgentClientProtocol.Ext.Schema
 
@@ -133,7 +131,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Schema.CaughtUpNotification do
 end
 
 defmodule Raxol.AgentClientProtocol.Ext.Schema.LaggedNotification do
-  @moduledoc "`_raxol/session.lagged` (§3.2 / §5): terminal drop-on-lag. `lastOffset` is the subscriber's own last forwarded offset; heal by reattaching from `lastOffset + 1`."
+  @moduledoc "`_raxol/session.lagged`: terminal drop-on-lag. `lastOffset` is the subscriber's own last forwarded offset; heal by reattaching from `lastOffset + 1`."
 
   alias Raxol.AgentClientProtocol.Ext.Schema
 
@@ -163,7 +161,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Schema.LaggedNotification do
 end
 
 defmodule Raxol.AgentClientProtocol.Ext.Schema.ClosedNotification do
-  @moduledoc "`_raxol/session.closed` (§3.2 / CDI-5/CDI-6): terminate an ALREADY-REGISTERED subscriber mid-stream. `reason` is a grow-only string set."
+  @moduledoc "`_raxol/session.closed`: terminate an ALREADY-REGISTERED subscriber mid-stream. `reason` is a grow-only string set."
 
   alias Raxol.AgentClientProtocol.Ext.Schema
 
@@ -191,7 +189,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Schema.ClosedNotification do
 end
 
 defmodule Raxol.AgentClientProtocol.Ext.Schema.DetachNotification do
-  @moduledoc "`_raxol/session.detach` (§3.2): client→agent voluntary unsubscribe. Idempotent (bus §2.2)."
+  @moduledoc "`_raxol/session.detach`: client→agent voluntary unsubscribe. Idempotent."
 
   alias Raxol.AgentClientProtocol.Ext.Schema
 
@@ -229,7 +227,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Schema.SteerRequest do
     * `expected_turn_id` — the turn ordinal the client believes is running; the
       compare-and-swap target. A JSON scalar (the turn `turnId` the client
       learned from the turn's start event); carried through opaquely.
-    * `client_msg_id` — the client-supplied idempotency key (§5.1), or `nil`.
+    * `client_msg_id` — the client-supplied idempotency key, or `nil`.
 
   `expected_turn_id` is grow-only opaque: this layer never interprets it, it
   only round-trips the JSON value to the CAS decision core.
@@ -300,14 +298,14 @@ defmodule Raxol.AgentClientProtocol.Ext.Schema.SteerResponse do
     * `"accepted"`  — landed in the running turn; carries the accept `ref`
       (`turnId`/`offset`/`clientMsgId`).
     * `"duplicate"` — the same `clientMsgId` was already accepted; `ref`
-      references the ORIGINAL accept (§5.1 mobile-retry idempotency).
+      references the ORIGINAL accept (mobile-retry idempotency).
     * `"stale"`     — the CAS lost (turn ended, or another steer won);
       carries `expectedTurnId`/`actualTurnId`. Nothing journaled.
     * `"no_live_turn"`      — no turn is currently running.
     * `"client_msg_id_reuse"` — the same idempotency key arrived with different
       content (a client bug/attack, never a retry).
     * `"no_steer_channel"`  — the session has no steer adapter wired (the honest
-      refusal, unchanged from the legacy lane).
+      refusal).
   """
 
   alias Raxol.AgentClientProtocol.Session.SteerAdapter

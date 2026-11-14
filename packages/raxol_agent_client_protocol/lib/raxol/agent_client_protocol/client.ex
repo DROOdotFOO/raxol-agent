@@ -5,8 +5,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   terminal requests, and receives `session/update` streaming notifications.
 
   This is a **thin ergonomic layer** over `Raxol.AgentClientProtocol.Connection`
-  (design doc `scratchpad/specs/acp-connection-design.md`) -- see
-  `Raxol.AgentClientProtocol.Agent`'s moduledoc for the shared rationale
+  -- see `Raxol.AgentClientProtocol.Agent`'s moduledoc for the shared rationale
   (identical wiring, mirrored side). Nothing here re-implements protocol
   correlation, cancellation, or the turn/permission state machine; those
   live in `Connection` and (agent-side) `Session`.
@@ -22,7 +21,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   has `params != nil`, so every generated callback is arity 2:
   `callback(params, ctx)` (request or notification alike).
 
-  `ctx` is `Raxol.AgentClientProtocol.Connection.Ctx.t()` (IC-2): read-only
+  `ctx` is `Raxol.AgentClientProtocol.Connection.Ctx.t()`: read-only
   per dispatch, carries `conn` (the `Connection` pid, for
   `Connection.request/async_request/notify/reply/delegate_reply`),
   `handler_state` (produced once by `c:init/1`), `reply_ref`, `rx_seq`,
@@ -32,7 +31,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   A request callback (`request_permission`, `write_text_file`,
   `read_text_file`, the four `terminal/*` methods) returns `{:ok,
   result_struct}`, `{:error, %Error{}}`, or `:deferred` (legal only after
-  `Connection.delegate_reply/3` -- IC-4). `session_update/2`'s return value
+  `Connection.delegate_reply/3`). `session_update/2`'s return value
   is always ignored (`Router.dispatch/4`) -- it is the streaming sink for
   `session/update` notifications during a prompt turn.
 
@@ -116,11 +115,10 @@ defmodule Raxol.AgentClientProtocol.Client do
   they arrive in wire order with NO reorder buffer, NO settle timer, and a
   synchronous, deterministic failure (`{:error, {:delivery_gap, _}}`) if
   the turn-end count and the delivered-update count ever disagree. This
-  is the actual fix for the drop/reorder bug the previous
-  `subscribe/3`-based implementation of these two functions had (a
-  separate handler task per notification vs. the Connection's own
-  terminal-result send -- two different senders, no cross-sender FIFO
-  guarantee).
+  is why these two functions do not consume `subscribe/3`: that path runs a
+  separate handler task per notification while the Connection sends the
+  terminal result itself -- two different senders, no cross-sender FIFO
+  guarantee.
 
   ## `fs_sandbox`: a working filesystem client with zero callbacks
 
@@ -135,9 +133,9 @@ defmodule Raxol.AgentClientProtocol.Client do
   `terminal/*` handlers are deliberately NOT defaulted by any option here --
   they stay `method_not_found` unless you implement them yourself.
 
-  ## Library-mode wiring (IC-8, supervision doc §1.2/§1.4)
+  ## Library-mode wiring
 
-  `start_link/2` and `child_spec/1` build exactly the pinned subtree
+  `start_link/2` and `child_spec/1` build exactly this subtree
   (identical shape to the agent side, `role: :client`):
 
       ConnectionSupervisor          Supervisor, :one_for_all,
@@ -149,10 +147,9 @@ defmodule Raxol.AgentClientProtocol.Client do
   See `Raxol.AgentClientProtocol.Agent`'s moduledoc for why `parent_sup` is
   resolved via `self()` inside the nested supervisor's `init/1` rather than
   passed in from outside. A client connection gets its own
-  `Session.Supervisor`/`SessionRegistry` slot too -- unused unless/until the
-  client side ever hosts sessions (it does not today), kept only because
-  the subtree shape is uniform across roles (one less special case in
-  `Connection`).
+  `Session.Supervisor`/`SessionRegistry` slot too -- unused, since the client
+  side hosts no sessions, and kept only because the subtree shape is uniform
+  across roles (one less special case in `Connection`).
   """
 
   require Logger
@@ -170,7 +167,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   # MUST recompile when the table source changes. See `MethodTable.depend_on_source/0`.
   MethodTable.depend_on_source()
 
-  @typedoc "Per-dispatch context (IC-2). See `Raxol.AgentClientProtocol.Connection.Ctx`."
+  @typedoc "Per-dispatch context. See `Raxol.AgentClientProtocol.Connection.Ctx`."
   @type ctx :: Connection.Ctx.t()
 
   @doc """
@@ -208,15 +205,15 @@ defmodule Raxol.AgentClientProtocol.Client do
   end
 
   # ===========================================================================
-  # Session-update subscription (W17-client ergonomics) -- see moduledoc.
+  # Session-update subscription (client ergonomics) -- see moduledoc.
   #
   # A single `:bag` ETS table, created lazily and idempotently (race-safe:
   # `:ets.new/2` on an already-existing named table raises `ArgumentError`,
   # caught and treated as "someone else won the race"). Keyed by
   # `{conn_pid, session_id}` -> subscriber pid, exactly mirroring
-  # `SessionRegistry`'s `{conn_pid, session_id}` key shape (supervision doc
-  # §1.3) even though this table is a client-ergonomics convenience, not
-  # part of the protocol/supervision contract.
+  # `SessionRegistry`'s `{conn_pid, session_id}` key shape even though this
+  # table is a client-ergonomics convenience, not part of the
+  # protocol/supervision contract.
   # ===========================================================================
 
   @subs_table :raxol_acp_client_session_subscriptions
@@ -266,8 +263,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   # `send`). Deliberately never raises: a broadcast is best-effort delivery
   # to processes we don't control the lifetime of, and the request/
   # notification handler task calling this must never crash on its account
-  # (design docs' "handler crash never reaches the wire" spirit, applied
-  # here even though a notification crash is already log-only, IC/§4.4).
+  # (a handler crash never reaches the wire).
   @spec broadcast_update(pid(), String.t(), term()) :: :ok
   def broadcast_update(conn, session_id, update) do
     ensure_subs_table!()
@@ -301,23 +297,21 @@ defmodule Raxol.AgentClientProtocol.Client do
   decode), logs a warning and returns `{:raw, map}` instead of propagating
   the error. Never raises. Every variant the pinned v1.19.0 oracle defines
   is ported, `usage_update` included (`Schema.UsageUpdate`), so an
-  unrecognized discriminator now means a wire value from outside that
-  schema rather than a known gap -- see `SessionUpdate`'s moduledoc for the
-  variant list.
+  unrecognized discriminator means a wire value from outside that schema --
+  see `SessionUpdate`'s moduledoc for the variant list.
 
   **Not on the live wire-dispatch path.** `Connection`/`Router` decode
   `session/update` centrally, via `SessionNotification.from_json/1`
   (`method_table.ex`'s `session/update` row), and DROP the whole
   notification + telemetry (`[:raxol, :acp, :unknown_notification]`)
-  *before a handler ever runs* when that decode fails (connection design
-  §4.4) -- `c:session_update/2`, and therefore `subscribe/3`'s broadcast,
-  is only ever invoked with an already-successfully-decoded payload. This
+  *before a handler ever runs* when that decode fails -- `c:session_update/2`,
+  and therefore `subscribe/3`'s broadcast, is only ever invoked with an
+  already-successfully-decoded payload. This
   function exists for callers that decode a raw `"update"` wire map
   themselves (manual/offline processing, replay tooling, tests) and want
-  best-effort passthrough instead of Connection's silent drop. Making the
-  live pipeline itself tolerant would require a change to
-  `SessionNotification`/`Router` decode -- out of this module's scope;
-  flagged, not silently worked around.
+  best-effort passthrough instead of Connection's silent drop. The live
+  pipeline stays strict; tolerating undecodable variants there would require
+  a change to `SessionNotification`/`Router` decode.
   """
   @spec decode_update(map()) :: {:ok, SessionUpdate.t()} | {:raw, map()}
   def decode_update(raw) when is_map(raw) do
@@ -336,7 +330,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   # ===========================================================================
   # prompt/3, prompt_stream/4 -- session-consumer convenience over
-  # Connection.async_request/6 (IC-3), consuming the DIRECT turn-delivery
+  # Connection.async_request/6, consuming the DIRECT turn-delivery
   # channel (Raxol.AgentClientProtocol.Delivery's moduledoc), not the
   # multi-sender subscribe/3 broadcast. `Connection` opens a turn at
   # submit time and sends every `session/update` belonging to it, the
@@ -365,7 +359,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   No settle pass, no timer: the direct channel makes updates, the turn-end
   count, and the result all arrive from the Connection itself, so mailbox
-  order already equals wire order (transport-ordering design §4.4/§4.8).
+  order already equals wire order.
   """
   @spec prompt(pid(), struct(), pos_integer()) ::
           {:ok, {[update()], struct() | {:ext, map()}}} | {:error, term()}
@@ -451,7 +445,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   end
 
   # Failing the turn is the only lossless resolution of a gap, so it is the
-  # default: emit exactly one `:fail` telemetry event (D9) and return the
+  # default: emit exactly one `:fail` telemetry event and return the
   # error tuple. Never a silent partial list, and never a timer/retry, since
   # a hole in streamed content is corruption rather than late arrival.
   @spec fail_turn(atom(), map()) :: {:error, {atom(), map()}}
@@ -531,11 +525,11 @@ defmodule Raxol.AgentClientProtocol.Client do
     end
   end
 
-  # -- Library-mode wiring (IC-8 / supervision doc §1.2, §1.4) --------------
+  # -- Library-mode wiring ---------------------------------------------------
 
   defmodule ConnectionSupervisor do
     @moduledoc false
-    # The IC-8 §1.2 subtree, client role. Infrastructure children come
+    # The per-connection subtree, client role. Infrastructure children come
     # straight from `Session.Supervisor.child_specs/1`, same as the agent
     # side -- see `Agent.ConnectionSupervisor` for the rationale (shared
     # verbatim; not duplicated here beyond what's needed to keep this
@@ -607,7 +601,7 @@ defmodule Raxol.AgentClientProtocol.Client do
       start: {ConnectionSupervisor, :start_link, [{handler, handler_arg, transport}, sup_opts]},
       type: :supervisor,
       # One-shot by design: the subtree `auto_shutdown`s on a significant
-      # child's exit and is never restarted in place (§1.1) — connection
+      # child's exit and is never restarted in place — connection
       # recovery is a fresh reattach against the durable journal, not a
       # supervisor restart. Embedders may override (`%{spec | restart: ...}`).
       restart: :temporary
@@ -639,9 +633,8 @@ defmodule Raxol.AgentClientProtocol.Client do
   supported way to reach the pid `Connection.request/4`, `async_request/6`,
   `notify/3`, and this module's own `subscribe/3`/`prompt/3`/`prompt_stream/4`
   need, since `start_link/2`/`child_spec/1` deliberately return/register the
-  `ConnectionSupervisor`, not the `Connection` child itself (IC-8 §1.2: the
-  supervisor is the stable handle across the child's `:temporary` restart
-  policy).
+  `ConnectionSupervisor`, not the `Connection` child itself (the supervisor is
+  the stable handle across the child's `:temporary` restart policy).
 
   Getting `sup`:
 
@@ -701,9 +694,9 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   (`test/support/boundary_vectors/path_{reject,accept}_vectors.json`,
   copied verbatim from raxol_core; see `test/client/fs_sandbox_vectors_test.exs`)
   so a divergence between the two independent confinement implementations
-  is a red test here, not a silent fork (migration P5, confinement-seam-
-  proposal option b). `resolve/2` does not implement `Path.confine/3`'s
-  `ref_format` regex gate; vectors exercising it are skipped by that test.
+  is a red test here, not a silent fork. `resolve/2` does not implement
+  `Path.confine/3`'s `ref_format` regex gate; vectors exercising it are skipped
+  by that test.
   """
 
   alias Raxol.AgentClientProtocol.Error
@@ -791,7 +784,7 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   # `base`. A symlink is followed against `base` -- its REAL parent -- so a
   # relative target (including `..`) resolves against where the link actually
   # lives, not its lexical spelling. Resolving a relative target against the
-  # lexical parent instead (the previous bug) let a link under a symlinked
+  # lexical parent instead would let a link under a symlinked
   # ANCESTOR escape the sandbox while still looking interior. `.`/`..` adjust
   # `base` directly; a component that is not a symlink -- or does not exist (the
   # write-leaf case) -- is accepted literally, so the deepest existing ancestor
@@ -836,9 +829,9 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   # OS-dependent: a Windows absolute target splits as `["c:/", "tmp", ...]`,
   # keeping the drive as its own anchor, while the SAME string on Unix splits as
   # `["c:", "tmp", ...]` with no anchor at all. Matching only the POSIX `"/"`
-  # anchor therefore sent every Windows-absolute target down the relative branch,
-  # where it was spliced onto `base` and landed back INSIDE the root -- an escape
-  # the post-resolution re-check could not see, because nothing had left.
+  # anchor would send every Windows-absolute target down the relative branch,
+  # where it is spliced onto `base` and lands back INSIDE the root -- an escape
+  # the post-resolution re-check cannot see, because nothing has left.
   #
   # A drive anchor counts on EVERY host rather than only on Windows. Deciding it
   # per-host would mean the same link is contained on one platform and not on
@@ -872,10 +865,10 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
        when letter in ?A..?Z or letter in ?a..?z,
        do: <<letter, ?:, ?/>>
 
-  # UNC, the same anchor bug one shape over. `:filename.split/1` on Windows gives
+  # UNC, the same anchor issue one shape over. `:filename.split/1` on Windows gives
   # a UNC path its own `"//"` component (both `"//host/share/x"` and the
   # `"\\\\host\\share\\x"` spelling land there), which is no drive letter -- so it
-  # took the very relative branch the drive case was fixed out of.
+  # would otherwise take the relative branch, exactly like an unanchored drive.
   #
   # The clause matches TWO IDENTICAL separators, mirroring the `Slash, Slash`
   # guard `:filename.win32_splitb/1` decides UNC by. That also covers the shape

@@ -17,45 +17,37 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes do
   Known load-bearing string fields (`cwd`, `sessionId`, `modeId`,
   `methodId`) are type-checked via `fetch/3`, not just presence-checked via
   `fetch/2`: a wrong-typed value returns `{:error, {:invalid_field, key,
-  value}}` rather than decoding the raw value through, matching the STRICT
-  ruling on G6 finding-14 (a lenient presence-only decode on these fields
-  let e.g. a non-string `sessionId` reach a handler, changing error class
-  from `-32602 Invalid params` at decode to whatever the handler's own
-  lookup produced). Unknown wire keys are unaffected -- they still fold
-  into `_meta` via `extract_meta/2` -- so this does not narrow
-  forward-compat, only reject nonsense on fields this module already
-  claims to understand.
+  value}}` rather than decoding the raw value through. A lenient
+  presence-only decode on these fields would let e.g. a non-string
+  `sessionId` reach a handler, changing the error class from `-32602
+  Invalid params` at decode to whatever the handler's own lookup produced.
+  Unknown wire keys are unaffected -- they still fold into `_meta` via
+  `extract_meta/2` -- so this does not narrow forward-compat, only rejects
+  nonsense on fields this module already claims to understand.
 
   ## Cross-module references
 
   `PromptRequest.prompt` is a list of
-  `Raxol.AgentClientProtocol.Schema.ContentBlock` (ported separately from
-  `content.ex`); `InitializeRequest.client_capabilities` /
-  `InitializeResponse` reference
-  `Raxol.AgentClientProtocol.Schema.ClientTypes.ClientCapabilities` (ported
-  separately from `client_types.ex`); `ClientRequest`/`ClientNotification`
-  reference `Raxol.AgentClientProtocol.Schema.Ext.{ExtRequest, ExtNotification,
-  ExtResponse}` (ported separately from `ext.ex`); protocol version decode
-  uses `Raxol.AgentClientProtocol.Schema.Version.coerce/1` (ported separately
-  from `version.ex`, already landed). All referenced by their expected final
-  module names; until every sibling port lands in this package, `mix compile
-  --warnings-as-errors` on the whole package may flag the not-yet-landed ones
-  as undefined (this file's own structs, decode helpers, and tests are
-  self-contained and compile/test clean in isolation — see the coder's
-  report).
+  `Raxol.AgentClientProtocol.Schema.ContentBlock`;
+  `InitializeRequest.client_capabilities` / `InitializeResponse` reference
+  `Raxol.AgentClientProtocol.Schema.ClientTypes.ClientCapabilities`;
+  `ClientRequest`/`ClientNotification` reference
+  `Raxol.AgentClientProtocol.Schema.Ext.{ExtRequest, ExtNotification,
+  ExtResponse}`; protocol version decode uses
+  `Raxol.AgentClientProtocol.Schema.Version.coerce/1`.
 
   Note: `ACP.SessionUpdate` (the `session/update` notification's
   `sessionUpdate`-discriminated union) lives in upstream's
   `lib/acp/client_types.ex`, not `agent_types.ex` — it is intentionally NOT
-  ported here. It has since landed as
-  `Raxol.AgentClientProtocol.Schema.SessionUpdate` in its own file,
-  `session_update.ex` (not `client_types.ex`, since the union's own variant
-  payload structs — `ContentChunk`, `CurrentModeUpdate`,
+  ported here. It lives as `Raxol.AgentClientProtocol.Schema.SessionUpdate`
+  in its own file, `session_update.ex`, together with its variant payload
+  structs (`ContentChunk`, `CurrentModeUpdate`,
   `AvailableCommandsUpdate`/`AvailableCommand`/`AvailableCommandInput`/
-  `UnstructuredCommandInput` — had no other landed home yet); the
-  `ACP.SessionNotification` envelope (`{sessionId, update, _meta}`) that
-  wraps it for the wire, and the `AgentNotification` routing union that
-  carries it, still belong to whichever coder ports `client_types.ex`.
+  `UnstructuredCommandInput`). The `{sessionId, update, _meta}` envelope
+  that wraps it for the wire is
+  `Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification`;
+  this package has no `AgentNotification` routing union -- the
+  `session/update` method is routed by its `MethodTable` row.
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
@@ -79,17 +71,16 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes do
   # instead of decoding the raw value straight through. Mirrors
   # `Raxol.AgentClientProtocol.Schema.WireFields.require/3`, the decode
   # helper `ClientTypes`/`Content` already use for their own typed known
-  # fields (`sessionId`, `path`, `content`, ...) -- this closes the
-  # accidental agent-vs-client decode split G6 finding-14 flagged: without
-  # it, `cwd: 12345` / `sessionId: 12345` / `modeId: 12345` /
-  # `methodId: 12345` decoded fine here, then either bypassed a *handler's*
-  # own re-validation or changed error class further down the pipe (a
-  # non-string `sessionId` landing on a session-registry miss, `-32603`,
-  # instead of `-32602 Invalid params` at decode; a non-string
-  # `session/cancel` `sessionId` decoding fine and silently no-op'ing).
-  # Reserved for the specific load-bearing fields the finding-14 ruling
-  # named as STRICT; unknown wire keys are never run through this and still
-  # fold into `_meta` via `extract_meta/2`, so forward-compat is untouched.
+  # fields (`sessionId`, `path`, `content`, ...), so agent-side and
+  # client-side decode agree: without it, `cwd: 12345` / `sessionId: 12345` /
+  # `modeId: 12345` / `methodId: 12345` would decode fine here, then either
+  # bypass a *handler's* own re-validation or change error class further
+  # down the pipe (a non-string `sessionId` landing on a session-registry
+  # miss, `-32603`, instead of `-32602 Invalid params` at decode; a
+  # non-string `session/cancel` `sessionId` decoding fine and silently
+  # no-op'ing). Reserved for the specific load-bearing fields listed in the
+  # moduledoc; unknown wire keys are never run through this and still fold
+  # into `_meta` via `extract_meta/2`, so forward-compat is untouched.
   @spec fetch(map(), String.t(), (term() -> boolean())) ::
           {:ok, term()}
           | {:error, {:missing_field, String.t()} | {:invalid_field, String.t(), term()}}
@@ -146,10 +137,10 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes do
   # boolean survives; any non-boolean wire value (`0`, `""`, `[]`, `"false"`,
   # a nested object) reads as `false` -- an unparsable capability is treated
   # as NOT advertised, never coerced-true. A bare `Map.get(map, key, false)`
-  # let a truthy non-boolean (e.g. `0` is falsey in JS but truthy in Elixir,
-  # `"false"` is a non-empty string) flip a capability on (DROOdotFOO #624
-  # review). Every capability field's contract is boolean (its default here
-  # is `false`), so a non-boolean is malformed input, not a richer value.
+  # would let a truthy non-boolean (e.g. `0` is falsey in JS but truthy in
+  # Elixir, `"false"` is a non-empty string) flip a capability on. Every
+  # capability field's contract is boolean (its default here is `false`),
+  # so a non-boolean is malformed input, not a richer value.
   @spec decode_bool(map(), String.t()) :: boolean()
   def decode_bool(map, key) when is_map(map) do
     case Map.get(map, key) do
@@ -180,12 +171,11 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes do
   when empty -- matches the internal `WireFields.emit_meta/2` helper (not
   part of the public docs; `@moduledoc false`), the convention every
   sibling module in this package (`content.ex`,
-  `plan.ex`, `tool_call.ex`, `client_types.ex`) follows. Previously this
-  flattened `meta`'s contents directly onto the top-level wire object
-  (`Map.merge/2`), a genuine encode/decode asymmetry bug: `extract_meta/2`
-  above already folds an explicit `"_meta"` object correctly on decode, so
-  a round trip through the old `put_meta/2` silently promoted nested
-  `_meta` content to top-level fields instead of preserving the nesting.
+  `plan.ex`, `tool_call.ex`, `client_types.ex`) follows. The bucket is
+  nested, never flattened onto the top-level wire object, so encode is
+  symmetric with `extract_meta/2`, which folds an explicit `"_meta"`
+  object on decode: a round trip preserves nested `_meta` content instead
+  of promoting it to top-level fields.
   """
   @spec put_meta(map(), map()) :: map()
   def put_meta(json, meta) when map_size(meta) == 0, do: json
@@ -1400,9 +1390,9 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.AgentCapabilities do
   `auth` (`AgentAuthCapabilities`, carrying the optional `logout` leaf) is
   not in f1729; ported from the pinned v1.19.0 oracle schema
   (`priv/schema-oracle/v1/schema.json`, `$defs/AgentCapabilities.auth` +
-  `$defs/AgentAuthCapabilities`) to close the oracle-vs-f1729 gap that had
-  `logout` fail closed unconditionally (`MethodTable`'s `:never` gate --
-  see W17-caps). No upstream attribution for `auth`/`AgentAuthCapabilities`.
+  `$defs/AgentAuthCapabilities`) so that `logout` gates on
+  `auth.logout` (see `MethodTable`'s ORACLE-DIVERGENCE note). No upstream
+  attribution for `auth`/`AgentAuthCapabilities`.
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
@@ -1632,10 +1622,9 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.SessionCapabilities do
 
   `delete`/`close` (`SessionDeleteCapabilities`/`SessionCloseCapabilities`)
   are not in f1729; ported from the pinned v1.19.0 oracle schema
-  (`priv/schema-oracle/v1/schema.json`, `$defs/SessionCapabilities.delete`
-  + `.close`) to close the oracle-vs-f1729 gap that had `session/delete`
-  and `session/close` fail closed unconditionally at a missing struct leaf
-  (see `MethodTable`'s ORACLE-DIVERGENCE note, W17-caps). No upstream
+  (`priv/schema-oracle/v1/schema.json`, `$defs/SessionCapabilities.delete` +
+  `.close`) so that `session/delete` and `session/close` gate on a real
+  struct leaf (see `MethodTable`'s ORACLE-DIVERGENCE note). No upstream
   attribution for `delete`/`close`/`SessionDeleteCapabilities`/
   `SessionCloseCapabilities`.
 
@@ -1773,7 +1762,7 @@ end
 
 # -- SessionDeleteCapabilities / SessionCloseCapabilities / AgentAuthCapabilities / LogoutCapabilities --
 #
-# Closes the oracle-vs-f1729 gap (parked review item 5 / W17-caps): the pinned
+# Closes the oracle-vs-f1729 gap: the pinned
 # v1.19.0 oracle schema (`priv/schema-oracle/v1/schema.json`) documents these
 # four leaves -- `SessionCapabilities.delete`/`.close` and
 # `AgentCapabilities.auth.logout` -- none of which exist in f1729. All four

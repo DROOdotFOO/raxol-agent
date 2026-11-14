@@ -1,13 +1,13 @@
 defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   @moduledoc """
-  ONE GenServer per `session_id` — the SINGLE PUBLISHER of a session's live tail
-  (`acp-reattach-design.md` §2.1, the frozen bus §5 single-publisher law).
+  ONE GenServer per `session_id` — the SINGLE PUBLISHER of a session's live
+  tail.
 
   Every durable record — streamed updates, turn boundaries, genesis, orphan
   repairs — passes through this one process, so "append THEN publish" is
   structural, not conventional: the publish call sits lexically AFTER
   `journal.append/2` returns `{:ok, record}` (durable, read-visible) and only
-  post-write code holds a stamped record (I3 / no-publish-ahead). There is no
+  post-write code holds a stamped record (no publish-ahead). There is no
   second door to the subscriber set.
 
   ## Responsibilities (this cell)
@@ -15,8 +15,8 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     * **Append-then-publish** — `append/4` writes durably, then `send`s
       `{:reattach_live, session_id, %Record{}}` to every subscriber, at the tail
       (never publish-ahead).
-    * **Lazy genesis + Writer-restart tip-fold orphan repair** (C14 /
-      R-C14-lazy) — on (re)start, BEFORE honoring the first `append`/`subscribe`
+    * **Lazy genesis + Writer-restart tip-fold orphan repair** — on (re)start,
+      BEFORE honoring the first `append`/`subscribe`
       for a session (mailbox-serialized, strictly-before), the Writer:
         - if the journal is empty, appends the genesis `session_created` at
           offset 1; else
@@ -27,8 +27,8 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
       Running the fold *after* the first op is a defect with two witnesses
       (a new turn on top either buries the strand or double-completes it); the
       strictly-before ordering closes both. A test-only `:__dead_bootstrap_after_op__`
-      knob realizes the defect for the red controls.
-    * **Cross-connection turn latch** (§2.7) — `append("turn_started", …)` while
+      knob realizes the defect so tests can witness it.
+    * **Cross-connection turn latch** — `append("turn_started", …)` while
       a turn is latched returns `{:error, :turn_in_flight}`; the latch monitors
       the appender. Symmetrically, `append("turn_completed", …)` from a NON-holder
       while a turn is latched is REFUSED at the durable append itself
@@ -36,17 +36,17 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
       just the latch-clear, so a foreign connection can never write a phantom
       completion row that a reattacher would finalize from (log + telemetry, the
       journal is never corrupted).
-    * **Atomic latch clear** (C13) — appending `"turn_completed"` as the HOLDER
+    * **Atomic latch clear** — appending `"turn_completed"` as the HOLDER
       clears the turn latch INSIDE the same `handle_call`, before the reply.
       Success therefore never leaves the latch held: a Session crash immediately
       AFTER a successful `turn_completed` append produces ZERO orphan rows (no
       double `turn_completed`) and never wedges the next prompt at
       `:turn_in_flight`.
-    * **Orphan repair on appender death** (§2.6) — if the latched appender dies
+    * **Orphan repair on appender death** — if the latched appender dies
       between `turn_started` and `turn_completed`, the Writer appends exactly one
       orphaned `turn_completed{"outcome":"orphaned","stopReason":"cancelled"}`
       and clears the latch.
-    * **Credit-based lagged producer** (§5) — each subscriber carries a publish
+    * **Credit-based lagged producer** — each subscriber carries a publish
       credit (default `1024`, per-Writer configurable via `:subscriber_credit`).
       Every live publish consumes one credit; a subscriber that overruns its credit
       is sent EXACTLY ONE terminal `{:reattach_lagged, session_id, last_offset}`
@@ -55,18 +55,18 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
       blocks on a slow subscriber and never drops a middle record for one still
       attached. `credit/3` replenishes. A dead subscriber is pruned by its monitor.
 
-  ## Taint — annotate, never filter (§6)
+  ## Taint — annotate, never filter
 
   The Writer STAMPS taint into the record (via the store) and delivers the record
   to EVERY subscriber regardless of value. No code path here drops, withholds, or
   reroutes a record by taint.
 
-  ## Restart residuals (DEFERRED BY DESIGN — S9)
+  ## Restart limitations
 
-  The Writer-restart tip-fold (`[G5:C13, C14]`, §2.6 / J12(b)) is FROZEN one-way
-  design and is NOT changed here. It folds on the journal TIP alone, which leaves
-  two residual interleavings inherent to a tip-fold when the Writer dies but the
-  appender Session survives the restart:
+  The Writer-restart tip-fold folds on the journal TIP alone. It guarantees that
+  no dangling OPEN turn survives a restart, but it leaves two interleavings
+  inherent to a tip-fold when the Writer dies but the appender Session survives
+  the restart:
 
     * **(a) tip = `turn_started`, turn still live.** The fold reads a dangling
       `turn_started` and synthesizes one orphaned `turn_completed` — but the real
@@ -78,23 +78,13 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
       concurrent second `turn_started` then succeeds against a turn that is, on the
       wire, still open.
 
-  J12(b)'s guarantee ("no dangling OPEN turn survives a restart") still holds; what
-  the frozen design never ruled is a live-appender-across-Writer-restart. This is a
-  design residual, not an implementation defect (on-disk-journal / restart
-  hardening is on the design's deliberately-deferred list). The cheap v1.1
-  hardening — recorded here, not implemented — is to REBUILD the latch by scanning
-  BACKWARD from the tip to the last turn boundary instead of folding on the tip
-  alone; that is strictly stronger and does not violate the frozen atomic-clear +
-  tip-fold contract.
+  ## Supervision
 
-  ## Deviation note (reported)
-
-  The frozen §2.1 Writer holds the journal handle and is app-supervised (started
-  lazily under a `DynamicSupervisor` + `Registry`). This W18a foundation ships
-  the process, the Registry name (`via/1`), and the behaviours; the
-  `DynamicSupervisor`/lazy-start wiring is the integration coder's job. The
-  journal handle `{mod, j}` is passed in at `start_link` — its owning process
-  (the app supervisor in production, the test process here) OUTLIVES the Writer,
+  `Raxol.AgentClientProtocol.Ext.Journal.ensure_writer/3` starts Writers lazily
+  under the package's `WriterSupervisor` (`DynamicSupervisor`); each Writer is
+  registered by `session_id` in the Writer `Registry` (`via/1`). The journal
+  handle `{mod, j}` is passed in at `start_link` — its owning process (the app
+  supervisor in production, the test process in tests) OUTLIVES the Writer,
   which is exactly what lets the tip-fold survive a Writer crash.
   """
 
@@ -110,7 +100,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   @turn_started_kind "turn_started"
   @turn_completed_kind "turn_completed"
 
-  # Per-subscriber publish credit (§5): the Writer NEVER blocks on a slow
+  # Per-subscriber publish credit: the Writer NEVER blocks on a slow
   # subscriber. Each live publish consumes one credit; when a subscriber's credit
   # is exhausted the Writer emits ONE terminal `{:reattach_lagged, ...}` and drops
   # it (stops sending). `credit/3` replenishes.
@@ -183,7 +173,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     * `:journal` (required) — an already-open `{module, handle}`; the handle's
       owner MUST outlive the Writer (so a restart can tip-fold).
     * `:session_meta` — the genesis `session_created` payload (default `%{}`).
-    * `:subscriber_credit` — per-subscriber publish credit (§5, default
+    * `:subscriber_credit` — per-subscriber publish credit (default
       `#{@default_subscriber_credit}`); a subscriber that overruns it is sent one
       terminal `{:reattach_lagged, ...}` and dropped.
     * `:name` — override the `:via` name; pass `nil` to start unregistered
@@ -203,7 +193,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
 
   @doc """
   Register `subscriber` for the live tail. Serialized against appends in this
-  Writer's mailbox (the bus §4 seam). Idempotent per pid. Triggers the lazy
+  Writer's mailbox. Idempotent per pid. Triggers the lazy
   bootstrap (genesis / tip-fold) strictly BEFORE registering.
   """
   @spec subscribe(GenServer.server(), pid()) :: :ok
@@ -216,7 +206,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     do: GenServer.call(server, {:unsubscribe, subscriber})
 
   @doc """
-  Replenish `subscriber`'s publish credit by `n` (§5). A cast — the Writer never
+  Replenish `subscriber`'s publish credit by `n`. A cast — the Writer never
   blocks on credit accounting. A subscriber calls this after forwarding frames so
   its credit does not run down under a healthy delivery rate; an already-dropped
   (lagged) subscriber is a no-op.
@@ -234,7 +224,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   `{:error, :turn_in_flight}` if one is held); `kind == "turn_completed"` by the
   latch HOLDER clears the latch atomically in the same step, while a
   `turn_completed` from a NON-holder while a turn is latched is REFUSED at the
-  durable append (`{:error, :not_turn_holder}` — §2.7, no journal write, no false
+  durable append (`{:error, :not_turn_holder}` — no journal write, no false
   boundary); every other kind (and a `turn_completed` with no open turn) is a
   plain append. Triggers the lazy bootstrap strictly BEFORE the append (unless the
   dead `:__dead_bootstrap_after_op__` knob is set).
@@ -259,7 +249,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
       dead_bootstrap_after_op: Keyword.get(opts, :__dead_bootstrap_after_op__, false)
     }
 
-    # Bootstrap is LAZY (R-C14-lazy): it runs as the Writer's first action for
+    # Bootstrap is LAZY: it runs as the Writer's first action for
     # the session on the first append/subscribe, strictly before that op.
     {:ok, state}
   end
@@ -288,7 +278,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
 
   def handle_call({:append, kind, payload, taint}, {caller_pid, _tag}, state) do
     if state.dead_bootstrap_after_op do
-      # DEAD control (R-C14-lazy witness): honor the op first, fold after.
+      # DEAD control (lazy-bootstrap witness): honor the op first, fold after.
       {reply, state} = do_append(state, kind, payload, taint, caller_pid)
       {:reply, reply, ensure_bootstrapped(state)}
     else
@@ -303,7 +293,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     subscribers =
       case ref_of_pid(state.subscribers, pid) do
         nil ->
-          # Already dropped (lagged) or never subscribed — no-op (§5).
+          # Already dropped (lagged) or never subscribed — no-op.
           state.subscribers
 
         ref ->
@@ -323,12 +313,12 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
 
       match?(%{appender_ref: ^ref}, state.turn) ->
         # Appender died mid-turn (between turn_started and turn_completed).
-        # Orphan repair (§2.6): exactly one synthetic turn_completed, latch clear.
+        # Orphan repair: exactly one synthetic turn_completed, latch clear.
         {:noreply, orphan_repair(state)}
 
       true ->
         # Success-then-crash lands here: turn was already cleared atomically by
-        # the turn_completed append (C13), so state.turn is nil / a different
+        # the turn_completed append, so state.turn is nil / a different
         # ref — ZERO orphan rows.
         {:noreply, state}
     end
@@ -348,7 +338,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   defp bootstrap(%__MODULE__{journal: {mod, j}} = state) do
     case mod.high_watermark(j) do
       0 ->
-        # Genesis: offset 1 is ALWAYS session_created (§1.3.5).
+        # Genesis: offset 1 is ALWAYS session_created (OFFSET LAW rule 5).
         {:ok, record} =
           mod.append(j, %{
             kind: @genesis_kind,
@@ -387,7 +377,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
          _caller
        )
        when turn != nil do
-    # Turn latch held (§2.7): reject a concurrent second turn.
+    # Turn latch held: reject a concurrent second turn.
     {{:error, :turn_in_flight}, state}
   end
 
@@ -414,7 +404,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
          caller_pid
        )
        when holder != caller_pid do
-    # NON-HOLDER turn_completed (§2.7 single-holder law): another connection holds
+    # NON-HOLDER turn_completed (single-holder law): another connection holds
     # the latch. REFUSE the durable APPEND — not merely the latch-clear. Persisting
     # here would write a FALSE completion row into the journal while the holder's
     # turn is still open, and a reattacher could then finalize the turn from that
@@ -423,7 +413,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     # (which go through `persist` as the holder / the Writer itself) are unaffected.
     Logger.warning(
       "acp journal: turn_completed by a non-holder for turn #{inspect(turn_id)} " <>
-        "on session #{inspect(state.session_id)}; durable append REFUSED (§2.7)"
+        "on session #{inspect(state.session_id)}; durable append REFUSED"
     )
 
     emit_non_holder_rejected(state, turn_id)
@@ -432,7 +422,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
 
   defp do_append(state, @turn_completed_kind, payload, taint, _caller_pid) do
     record = persist(state, @turn_completed_kind, payload, taint)
-    # ATOMIC latch clear (C13): same step as the append, before the reply. The
+    # ATOMIC latch clear: same step as the append, before the reply. The
     # non-holder case was refused above, so this clause runs only for the LATCH
     # HOLDER (clears the turn) or a `turn_completed` with no open turn (`turn: nil`,
     # a no-op clear as before) — `clear_latch/1` handles both.
@@ -453,7 +443,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     record
   end
 
-  # Append exactly one orphaned turn_completed and clear the latch (§2.6).
+  # Append exactly one orphaned turn_completed and clear the latch.
   @spec append_orphan(t(), term()) :: t()
   defp append_orphan(state, turn_id) do
     payload = %{
@@ -484,7 +474,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     %{state | turn: nil}
   end
 
-  # §2.7 single-holder telemetry: a non-holder turn_completed whose durable append
+  # Single-holder telemetry: a non-holder turn_completed whose durable append
   # was refused. Guarded so :telemetry stays an optional dep (never raise into the
   # single-publisher mailbox).
   @spec emit_non_holder_rejected(t(), term()) :: :ok
@@ -519,7 +509,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     publish(state, phantom_record(state, record))
   end
 
-  # Single publish site with per-subscriber credit accounting (§5). Delivers the
+  # Single publish site with per-subscriber credit accounting. Delivers the
   # record to each subscriber that still has credit (decrementing it and advancing
   # its `sent_hi`); a subscriber whose credit is exhausted is sent ONE terminal
   # `{:reattach_lagged, sid, sent_hi}` — the highest offset it was actually sent —
@@ -556,7 +546,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
 
   defp deliver_or_lag(sid, ref, %{pid: pid, sent_hi: hi}, _record) do
     # Credit exhausted: terminal Lagged carrying the highest offset actually sent
-    # (so the client heals with `+1`, dup-free — §4.2 corollary), then demonitor +
+    # (so the client heals with `+1`, dup-free), then demonitor +
     # drop. No further live frame ever reaches this subscriber.
     send(pid, {:reattach_lagged, sid, hi})
     Process.demonitor(ref, [:flush])

@@ -1,13 +1,12 @@
 defmodule Raxol.AgentClientProtocol.Ext.Capability.Token do
   @moduledoc """
-  The `RXC1` capability token — offline-verifiable detached Ed25519 signature
-  (`acp-attachpolicy-design.md` §4).
+  The `RXC1` capability token — offline-verifiable detached Ed25519 signature.
 
   The headline capability: an attach to a **writerless** session (a tar'd journal
   directory, no live authority, no network, no issuer reachable) is authorized
   cryptographically from the token bytes + a shipped public key ALONE.
 
-  ## Encoding (§4.2) — version-pinned, no `alg` field anywhere
+  ## Encoding — version-pinned, no `alg` field anywhere
 
   ```
   token         := "RXC1." <> b64url_nopad(claims_json) <> "." <> b64url_nopad(sig)
@@ -15,13 +14,13 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Token do
   sig           := Ed25519-sign(issuer_priv, signing_input)  # 64 bytes, detached
   ```
 
-  Design rulings, each load-bearing:
+  Encoding rules, each load-bearing:
 
     * **No header, no `alg`.** The literal prefix `RXC1` *is* the algorithm
       binding (`RXC1 ⟺ Ed25519`). The JWT `alg:none` / RS256→HS256 confusion is
-      structurally UNEXPRESSIBLE — no code path reads an algorithm name (`INV-AP7`).
+      structurally UNEXPRESSIBLE — no code path reads an algorithm name.
     * **The prefix is inside the signed bytes**, so a signature minted for a
-      hypothetical `RXC2` can never be replayed under `RXC1` (downgrade, A4).
+      hypothetical `RXC2` can never be replayed under `RXC1` (downgrade).
     * **The signature covers the encoded blob, not re-canonicalized JSON.** The
       verifier base64url-decodes and JSON-*decodes* but NEVER re-encodes — there
       is no canonicalization step, hence no malleability class (key ordering,
@@ -30,17 +29,17 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Token do
       non-alphabet byte ⇒ decode failure ⇒ deny. Exactly three dot-separated
       non-empty segments — one token has exactly one valid byte form.
 
-  ## Verification is TOTAL (§4.4)
+  ## Verification is TOTAL
 
   `verify/4` is a **pure function**: same inputs ⇒ same output; no network, no
-  process dictionary, no clock read (`now` is a parameter), no filesystem
-  (`INV-AP4`). For ALL binaries it returns `{:ok, claims} | {:error, atom}` —
-  never raises, never creates an atom (`INV-AP5`). Reason atoms are internal
+  process dictionary, no clock read (`now` is a parameter), no filesystem.
+  For ALL binaries it returns `{:ok, claims} | {:error, atom}` — never raises,
+  never creates an atom. Reason atoms are internal
   (telemetry only); the wire sees a single bare deny (anti-oracle).
   """
 
   # Ed25519 in :crypto requires OTP >= 24 built against a capable OpenSSL. Fail
-  # LOUDLY at compile time rather than at verify time (design §8).
+  # LOUDLY at compile time rather than at verify time.
   unless :ed25519 in :crypto.supports(:curves) do
     raise "Ed25519 unavailable in :crypto (OTP>=24 w/ capable OpenSSL required); " <>
             "RXC1 capability tokens cannot be verified on this build"
@@ -49,13 +48,13 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Token do
   @max_token_bytes 4_096
   # year-2100 ceiling — reject out-of-range / bignum iat|exp before any arithmetic.
   @max_unix_s 4_102_444_800
-  # skew applied to `iat` ONLY (§5.3); `exp` is strict (§5.1). Deliberate asymmetry.
+  # skew applied to `iat` ONLY; `exp` is strict. Deliberate asymmetry.
   @clock_skew_s 60
 
-  # Restrictive claims NARROW access; they are enforce-if-present [G5:S23].
+  # Restrictive claims NARROW access; they are enforce-if-present.
   # A restrictive claim the verifier does not implement DENIES (never
   # admitted-by-ignoring — the JWT `crit`-ignored footgun). Informational claims
-  # (e.g. `jti`) are safely ignored in v1.
+  # (e.g. `jti`) are safely ignored.
   @restrictive_implemented ["surf"]
   @restrictive_reserved ["min_offset"]
 
@@ -127,7 +126,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Token do
     end
   end
 
-  # CANONICAL base64url decode — enforces ONE byte form (INV-AP6, §4.2 ruling 4).
+  # CANONICAL base64url decode — enforces ONE byte form.
   # `Base.url_decode64(padding: false)` accepts non-zero unused bits in the final
   # character (e.g. a 64-byte value's last char carries 4 unused bits ⇒ 16
   # accepted encodings of one signature). Re-encoding the decoded bytes and
@@ -232,7 +231,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Token do
       else: {:error, :issued_in_future}
   end
 
-  # V12a: restrictive-claim gate [G5:S23]. A present-but-unimplemented restrictive
+  # V12a: restrictive-claim gate. A present-but-unimplemented restrictive
   # claim denies; a present `surf` must be a JSON array of strings (shape only —
   # membership vs ctx.surface is enforced by the Token policy which holds surface).
   @spec v12a_restrictive(map()) ::
@@ -261,7 +260,7 @@ end
 
 defmodule Raxol.AgentClientProtocol.Ext.Capability.Keyring do
   @moduledoc """
-  Verifier-side keyring load + validation (`acp-attachpolicy-design.md` §6.1).
+  Verifier-side keyring load + validation.
 
   ```
   config :raxol_agent_client_protocol,
@@ -276,7 +275,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Capability.Keyring do
   keyring REFUSES to load (fail at boot, loudly — never a half-usable ring at
   verify time).
 
-  **HARD RULE (A6, `INV-AP11`):** the keyring comes from the VERIFIER's own
+  **HARD RULE:** the keyring comes from the VERIFIER's own
   configuration ONLY. It is NEVER read from inside an attached artifact — a
   `keyring.json` shipped in a tar'd session dir is untrusted data; loading it
   would let whoever produced the tar mint their own admission. Rotation is
@@ -346,13 +345,13 @@ end
 
 defmodule Raxol.AgentClientProtocol.Ext.Capability.Issuer do
   @moduledoc """
-  The signing side (`acp-attachpolicy-design.md` §6.3). Mints `RXC1` tokens.
+  The signing side. Mints `RXC1` tokens.
 
   **NEVER invoked on any verify path** — `Capability.Token`, `AttachPolicy.Token`
   and `Runner` have zero reference to this module or to any private-key source
-  (`INV-AP12`, grep/xref-verifiable). The private key never lives in the verifier.
+  (grep/xref-verifiable). The private key never lives in the verifier.
 
-  Issuance defaults are ENFORCED, not merely recommended `[G5:S6]`: an interactive
+  Issuance defaults are ENFORCED, not merely recommended: an interactive
   attach token is capped at TTL **1 hour**; a longer TTL (up to **30 days**)
   requires an explicit `archival: true` opt-in. A 30-day token is a deliberate
   operator choice (the expiry bounds an archive's protocol-readability window),
@@ -481,24 +480,24 @@ end
 
 defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Token do
   @moduledoc """
-  The capability-token attach policy (`acp-attachpolicy-design.md` §3.4).
+  The capability-token attach policy.
 
   Deny-by-default for anonymous attach: a tokenless attach denies
-  (`:token_required`, the A4 downgrade arm) BEFORE any verify runs. A present
+  (`:token_required`, the downgrade arm) BEFORE any verify runs. A present
   token is verified offline (one `Capability.Token.verify/4`), then the actor and
   surface bindings are checked:
 
     * **actor** — the signed `act` claim is the grant identity. If `ctx.actor` is
       asserted and its `"id"` differs from the token's, deny `:actor_mismatch`
-      (OQ-4 ruling: keep the deny — fail-closed).
-    * **surface** `[G5:S23]` — if the token carries `surf` (a list of surface
+      (fail-closed).
+    * **surface** — if the token carries `surf` (a list of surface
       strings), `ctx.surface` (an atom, Connection-sourced) MUST be a member,
-      else `:surface_not_allowed`. Absent `surf` ⇒ broad (v1 back-compat).
+      else `:surface_not_allowed`. Absent `surf` ⇒ unrestricted.
 
   `now` is **server-sourced** (`System.os_time(:second)` read here), never peer
-  input (`INV-AP20 [G5:S8]`). `ctx.transport` is ignored (a token gates the
+  input. `ctx.transport` is ignored (a token gates the
   protocol path regardless of transport). The policy consults NO live state, so
-  its decision is identical with and without a live Writer (`INV-AP13`).
+  its decision is identical with and without a live Writer.
   """
 
   @behaviour Raxol.AgentClientProtocol.Ext.AttachPolicy
@@ -556,11 +555,11 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Token do
 
   defp actor_check(_token_act, _ctx_actor), do: :ok
 
-  # Enforce-if-present [G5:S23]: a surf-bearing token is bound to its surfaces.
+  # Enforce-if-present: a surf-bearing token is bound to its surfaces.
   # A security gate MUST fail CLOSED on a type mismatch — a restrictive `surf`
   # claim paired with a non-atom or non-member `ctx.surface` (e.g. a string,
   # or `nil`) denies. There is no catch-all `:ok` once `surf` is present;
-  # nil (`surf` absent) is the ONLY unrestricted pass-through (G6 S5).
+  # nil (`surf` absent) is the ONLY unrestricted pass-through.
   @spec surf_check(term(), term()) :: :ok | {:error, :surface_not_allowed}
   defp surf_check(nil, _surface), do: :ok
 

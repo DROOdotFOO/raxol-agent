@@ -1,39 +1,37 @@
 defmodule RaxolAgentClientProtocol.Application do
   @moduledoc """
   The package OTP application — the single shared supervision tree that the
-  per-connection subtrees and the reattach extension depend on
-  (`acp-supervision-design.md` §1.3, `acp-reattach-design.md` §2.1,
-  `acp-attachpolicy-design.md` §3.3).
+  per-connection subtrees and the reattach extension depend on.
 
-  ## What it starts (the load-bearing wiring gap this module closes)
+  ## What it starts
 
   The `Connection`/`Session` per-connection subtree is started PER CONNECTION
   (library mode via `Agent.child_spec/1` / `Client.child_spec/1`, or standalone
   via `ConnectionsSupervisor`). But three things are **package-level shared** —
-  a durable session outlives every connection (supervision §1.1: process
-  identity ≠ session identity), and the attach funnel is one per node:
+  a durable session outlives every connection (process identity ≠ session
+  identity), and the attach funnel is one per node:
 
     1. `Raxol.AgentClientProtocol.SessionRegistry` — the ONE package-level unique
-       `Registry` keyed `{conn_pid, session_id}` (§1.3). The `Connection` reads
-       it for `session/cancel` direct dispatch (IC-5b), so its name is contract.
+       `Registry` keyed `{conn_pid, session_id}`. The `Connection` reads it for
+       `session/cancel` direct dispatch, so its name is contract.
     2. `Raxol.AgentClientProtocol.Ext.Journal.WriterRegistry` +
        `Raxol.AgentClientProtocol.Ext.Journal.WriterSupervisor` — the journal
-       single-publisher Writers, started lazily on first append/subscribe
-       (reattach §2.1). `Ext.Journal.ensure_writer/3` starts them here.
+       single-publisher Writers, started lazily on first append/subscribe.
+       `Ext.Journal.ensure_writer/3` starts them here.
     3. `Raxol.AgentClientProtocol.Ext.AttachPolicy.TaskSupervisor` — the
        `Task.Supervisor` the fail-closed admission funnel isolates policy tasks
-       under (attachpolicy §3.3). **Without it, a REAL attach denies
-       `:policy_infra` on every request** — the `[G5:S18]` fail-closed leg,
-       correct but useless for a legitimate attach.
+       under. **Without it, a REAL attach denies `:policy_infra` on every
+       request** — the fail-closed leg, correct but useless for a legitimate
+       attach.
 
   It also starts `Raxol.AgentClientProtocol.ConnectionsSupervisor`, the
   standalone-mode `DynamicSupervisor` an embedder `DynamicSupervisor.start_child/2`s
   a `ConnectionSupervisor` under (`Agent.child_spec/1` / `Client.child_spec/1`'s
   start MFA, wrapped in a plain child spec) when they want this module's shared
   tree to also host the connection subtree itself, rather than splicing
-  `Agent.child_spec/1`/`Client.child_spec/1` into their own supervisor (§1.3/§1.4).
-  There is no `mix acp.serve` task and no `connect/3` function today -- a
-  packaged one-line standalone launcher is planned, not yet implemented.
+  `Agent.child_spec/1`/`Client.child_spec/1` into their own supervisor.
+  There is no `mix acp.serve` task and no `connect/3` function: standalone mode
+  is this `DynamicSupervisor` plus the embedder's own `start_child/2` call.
 
   ## Test opt-out
 
@@ -78,9 +76,8 @@ defmodule RaxolAgentClientProtocol.Application do
   end
 
   @doc """
-  The package-level shared child specs (supervision §1.3, reattach §2.1,
-  attachpolicy §3.3). Library-mode embedders splice this into their own tree
-  instead of relying on the auto-started `Application`.
+  The package-level shared child specs. Library-mode embedders splice this into
+  their own tree instead of relying on the auto-started `Application`.
 
   All ids are the module names each spec registers under, which is exactly what
   the consuming modules resolve against by default — so nothing else needs to
@@ -89,24 +86,24 @@ defmodule RaxolAgentClientProtocol.Application do
   @spec children() :: [Supervisor.child_spec() | {module(), term()}]
   def children do
     [
-      # (1) the ONE package-level Session registry (IC-8 / §1.3).
+      # (1) the ONE package-level Session registry.
       {Registry, keys: :unique, name: @session_registry},
-      # (2) the journal single-publisher Writers (reattach §2.1).
+      # (2) the journal single-publisher Writers.
       {Registry, keys: :unique, name: @writer_registry},
       {DynamicSupervisor, name: @writer_supervisor, strategy: :one_for_one},
       # (3) the attach-policy fail-closed funnel's Task.Supervisor
-      #     (attachpolicy §3.3; without it every attach denies :policy_infra).
+      #     (without it every attach denies :policy_infra).
       {Task.Supervisor, name: @attach_task_supervisor},
-      # standalone-mode connection host (§1.3/§1.4).
+      # standalone-mode connection host.
       {DynamicSupervisor, name: @connections_supervisor, strategy: :one_for_one}
     ]
   end
 
-  @doc "The standalone-mode `DynamicSupervisor` name (§1.3/§1.4)."
+  @doc "The standalone-mode `DynamicSupervisor` name."
   @spec connections_supervisor() :: atom()
   def connections_supervisor, do: @connections_supervisor
 
-  @doc "The journal Writer `DynamicSupervisor` name (reattach §2.1) — where `Ext.Journal.ensure_writer/3` starts Writers."
+  @doc "The journal Writer `DynamicSupervisor` name — where `Ext.Journal.ensure_writer/3` starts Writers."
   @spec writer_supervisor() :: atom()
   def writer_supervisor, do: @writer_supervisor
 end

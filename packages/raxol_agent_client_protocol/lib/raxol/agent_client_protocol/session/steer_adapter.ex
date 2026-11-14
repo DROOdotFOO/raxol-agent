@@ -28,7 +28,7 @@ defmodule Raxol.AgentClientProtocol.Session.SteerAdapter do
     * `turn_ended(steer_state)` — the turn drained (any outcome). The adapter
       clears the CAS token so a steer arriving in the idle window between turns
       rejects `:no_live_turn` rather than landing on a dead turn. Returns the
-      next steer_state. The DEDUP index (session-lifetime window, freeze §5.1)
+      next steer_state. The DEDUP index (session-lifetime window)
       is NOT cleared here — only the turn liveness.
     * `resolve(steer_state, request)` — the CAS decision itself, run from the
       Session's mailbox. `request` is a plain map `%{text, expected_turn_id,
@@ -43,10 +43,10 @@ defmodule Raxol.AgentClientProtocol.Session.SteerAdapter do
 
   `Raxol.AgentClientProtocol.Session.SteerAdapter.Unsupported` is the default. It
   holds no state, no-ops both turn hooks, and answers every `resolve/2` with
-  `{:error, :no_steer_channel}` — so a base Session with no injected adapter is
-  byte-identical to the frozen v2 Session (the turn hooks are identity) and
-  honestly reports that live steering is not wired, exactly as the legacy lane
-  did. Live steering "finally works" only once a real adapter is injected.
+  `{:error, :no_steer_channel}` — so a base Session with no injected adapter
+  never mutates steer state (the turn hooks are identity) and honestly reports
+  that live steering is not wired. Live steering works only once a real adapter
+  is injected.
   """
 
   @typedoc """
@@ -95,11 +95,10 @@ end
 
 defmodule Raxol.AgentClientProtocol.Session.SteerAdapter.Unsupported do
   @moduledoc """
-  The DEFAULT steer adapter — refuses. A Session with no injected `:steer_adapter`
-  is byte-identical to the frozen v2 Session: the turn hooks are the identity
-  function (they never touch `steer_state`, which stays `nil`), and `resolve/2`
-  answers `{:error, :no_steer_channel}` — the same honest refusal the legacy
-  non-ACP lane returns when no live `TurnState` owner exists.
+  The DEFAULT steer adapter — refuses. With no injected `:steer_adapter`, the
+  turn hooks are the identity function (they never touch `steer_state`, which
+  stays `nil`), and `resolve/2` answers `{:error, :no_steer_channel}` — an
+  honest refusal: no live steering owner is wired.
   """
 
   @behaviour Raxol.AgentClientProtocol.Session.SteerAdapter

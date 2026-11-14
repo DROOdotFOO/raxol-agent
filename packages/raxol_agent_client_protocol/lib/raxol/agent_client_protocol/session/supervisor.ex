@@ -1,7 +1,7 @@
 defmodule Raxol.AgentClientProtocol.Session.Supervisor do
   @moduledoc """
   The per-connection `DynamicSupervisor` for `Raxol.AgentClientProtocol.Session`
-  processes (supervision design §1.2, §1.3).
+  processes.
 
   This is child #2 of the `ConnectionSupervisor` subtree
   (`:one_for_all, auto_shutdown: :any_significant`); its siblings are the
@@ -11,22 +11,22 @@ defmodule Raxol.AgentClientProtocol.Session.Supervisor do
     * A session crash is NOT auto-restarted. A blank respawned session would lie to
       the client (accept prompts against state the client believes exists). Instead
       the crash surfaces as an error on the in-flight request (adopter-death →
-      `-32603` at the Connection, IC-4) and the client re-establishes via
-      `session/load` — journal replay is the ONLY resurrection path (§1.1).
+      `-32603` at the Connection) and the client re-establishes via
+      `session/load` — journal replay is the ONLY resurrection path.
     * Restart intensity is therefore irrelevant (temporary children never count),
-      so a hot-crashing handler can't take the subtree down with it (§1.2).
+      so a hot-crashing handler can't take the subtree down with it.
 
   Cleanup is entirely monitor-based: a dead Session's `SessionRegistry` key is
   pruned by the Registry's own owner-monitor — there is **no hand-rolled sessions
-  map** anywhere (I11). The Session registers itself via its `:via` name inside
+  map** anywhere. The Session registers itself via its `:via` name inside
   `Session.start_link/1`, so `start_session/2` need only pass the child spec; the
-  register-before-respond ordering (I2) is a `start_link`/`init` property, not
+  register-before-respond ordering is a `start_link`/`init` property, not
   something this module arranges.
 
   ## Package `Registry` and `Task.Supervisor` wiring
 
   The `SessionRegistry` is a single package-level, name-registered `Registry` with
-  `:unique` keys `{conn_pid, session_id}` (§1.3). Registry names must be atoms, so
+  `:unique` keys `{conn_pid, session_id}`. Registry names must be atoms, so
   a per-connection registry would need dynamic atoms — the atom-DoS this package
   bans; hence ONE shared Registry, keyed by the (stable-for-the-subtree-lifetime)
   Connection pid. It is normally started by the library `Application`; the helpers
@@ -69,10 +69,10 @@ defmodule Raxol.AgentClientProtocol.Session.Supervisor do
   end
 
   @doc """
-  Start a Session under this supervisor as a `:temporary` child (§1.2). The Session
+  Start a Session under this supervisor as a `:temporary` child. The Session
   registers itself on `{conn, session_id}` via its `:via` name, so a duplicate live
   id returns `{:error, {:already_started, pid}}` — the caller (the `session/new` /
-  `session/load` handler) maps that to invalid-params (§2).
+  `session/load` handler) maps that to invalid-params.
 
   `session_opts` is the `Session.start_link/1` keyword list (`:session_id`,
   `:conn`, `:mode_state`, `:task_sup`, `:turn_runner`, `:config`, `:conn_mod`).
@@ -92,7 +92,7 @@ defmodule Raxol.AgentClientProtocol.Session.Supervisor do
   @doc """
   Child spec for the package-level `SessionRegistry` (unique keys). A host tree's
   `Application` starts exactly this once; the Connection reads the same Registry
-  for `session/cancel` direct dispatch (IC-5b), so the key shape is contract.
+  for `session/cancel` direct dispatch, so the key shape is contract.
   """
   @spec registry_child_spec() :: Supervisor.child_spec()
   def registry_child_spec do
@@ -101,7 +101,7 @@ defmodule Raxol.AgentClientProtocol.Session.Supervisor do
 
   @doc """
   The two per-connection infrastructure children that must start BEFORE the
-  Connection (IC-8 start order): the `Task.Supervisor` and this
+  Connection: the `Task.Supervisor` and this
   `Session.Supervisor`. A host `ConnectionSupervisor` prepends these to its child
   list (Connection last, `significant: true`); the returned `:id`s let the
   Connection resolve the sibling pids in `handle_continue/2`.

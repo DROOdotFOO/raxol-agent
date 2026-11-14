@@ -28,26 +28,20 @@
 #     `KillTerminalRequest`/`KillTerminalResponse` in the oracle (method
 #     `terminal/kill`, not `terminal/kill_command`). Renamed here to match.
 #
-# These are wire-format corrections, not stylistic choices -- flagged
-# explicitly per the port's own defect-fix mandate rather than resolved
-# silently.
+# These are wire-format corrections, not stylistic choices.
 #
 # `RequestPermissionRequest.tool_call` is a
-# `Raxol.AgentClientProtocol.Schema.ToolCallUpdate` (ported separately,
-# landed flat in `tool_call.ex`). `CreateTerminalRequest.env` is a list of
-# `Raxol.AgentClientProtocol.Schema.AgentTypes.EnvVariable` (ported
-# separately, landed *nested* under `AgentTypes` in `agent_types.ex` --
-# note the naming inconsistency across this fan-out: `content.ex`/
-# `plan.ex`/`tool_call.ex` use flat `Schema.<Type>` names matching the
-# official ACP schema's own top-level type names 1:1, while `ext.ex` and
-# `agent_types.ex` wrap their types under a file-named namespace
-# (`Schema.Ext.*`, `Schema.AgentTypes.*`). This file follows the latter
-# convention (`Schema.ClientTypes.*`) per its own assignment text, which
-# named the module `Schema.ClientTypes` explicitly and matches the
-# `agent_types.ex` precedent most closely (both are ACP's own "bag of
-# client/agent-side request-response types" files). Flagged, not silently
-# resolved -- reconcile at integration time if the two conventions need to
-# converge.
+# `Raxol.AgentClientProtocol.Schema.ToolCallUpdate` (flat, in
+# `tool_call.ex`). `CreateTerminalRequest.env` is a list of
+# `Raxol.AgentClientProtocol.Schema.AgentTypes.EnvVariable` (*nested* under
+# `AgentTypes` in `agent_types.ex`). The package uses two naming
+# conventions: `content.ex`/`plan.ex`/`tool_call.ex` use flat
+# `Schema.<Type>` names matching the official ACP schema's own top-level
+# type names 1:1, while `ext.ex` and `agent_types.ex` wrap their types
+# under a file-named namespace (`Schema.Ext.*`, `Schema.AgentTypes.*`).
+# This file follows the latter convention (`Schema.ClientTypes.*`), like
+# `agent_types.ex` (both are ACP's own "bag of client/agent-side
+# request-response types" files).
 
 # --- fs/read_text_file, fs/write_text_file ---
 
@@ -565,8 +559,8 @@ defmodule Raxol.AgentClientProtocol.Schema.ClientTypes.CreateTerminalRequest do
   Request to create a new terminal and execute a command (`terminal/create`).
 
   `env` is a list of `Raxol.AgentClientProtocol.Schema.AgentTypes.EnvVariable`
-  (ported separately, landed nested under `AgentTypes` in `agent_types.ex`;
-  see this file's header comment for the cross-module naming note).
+  (nested under `AgentTypes` in `agent_types.ex`; see this file's header
+  comment for the cross-module naming note).
 
   ## Fixed defect (wire-shape, vs. schema-oracle)
 

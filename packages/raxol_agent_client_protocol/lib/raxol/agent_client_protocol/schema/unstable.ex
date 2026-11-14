@@ -20,21 +20,17 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable do
   ## Cross-module references
 
   `SessionInfoUpdate` uses `Raxol.AgentClientProtocol.Schema.MaybeUndefined`
-  (ported separately from `maybe_undefined.ex`) for its three-state
-  undefined/null/value fields. `ForkSessionRequest`/`ResumeSessionRequest.
-  mcp_servers` and `ForkSessionResponse`/`ResumeSessionResponse.modes`
-  reference `Raxol.AgentClientProtocol.Schema.AgentTypes.{McpServer,
-  SessionModeState}` (this package's sibling file, `agent_types.ex`,
-  already ported alongside this one). Referenced by expected final module
-  names; see `agent_types.ex`'s moduledoc for the same compile-barrier
-  caveat.
+  for its three-state undefined/null/value fields.
+  `ForkSessionRequest`/`ResumeSessionRequest.mcp_servers` and
+  `ForkSessionResponse`/`ResumeSessionResponse.modes` reference
+  `Raxol.AgentClientProtocol.Schema.AgentTypes.{McpServer,
+  SessionModeState}`.
 
   Note: `ACP.SessionUpdate`'s unstable variants (`config_option_update`,
-  `session_info_update`) are NOT ported here — in the upstream source the
-  `SessionUpdate` union itself lives in `lib/acp/client_types.ex`, so its
-  variant wiring belongs to whichever coder ports that file. This file ports
-  only the payload structs those variants would carry
-  (`ConfigOptionUpdate`, `SessionInfoUpdate`).
+  `session_info_update`) are wired in
+  `Raxol.AgentClientProtocol.Schema.SessionUpdate` (`session_update.ex`),
+  not here. This file defines only the payload structs those variants
+  carry (`ConfigOptionUpdate`, `SessionInfoUpdate`).
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """

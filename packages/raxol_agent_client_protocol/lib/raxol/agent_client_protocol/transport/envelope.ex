@@ -1,13 +1,13 @@
 defmodule Raxol.AgentClientProtocol.Transport.Envelope do
   @moduledoc """
   A pure, process-free sequencing envelope for **unordered-carrier**
-  transports (design-stub — no shipped transport uses this yet; see
+  transports (no shipped transport uses it; see
   `Raxol.AgentClientProtocol.Transport.Reassembly` for the receive-side
   counterpart).
 
-  Every shipped transport (stdio, `Transport.Paired`, a future WebSocket)
-  is already an ordered carrier: frames arrive at the owner in exactly the
-  order the peer sent them, so no sequencing is needed. A future carrier
+  Every shipped transport (`Transport.Stdio`, `Transport.Paired`) is
+  already an ordered carrier: frames arrive at the owner in exactly the
+  order the peer sent them, so no sequencing is needed. A carrier
   that reorders frames in flight (e.g. frames fanned over several ordered
   streams, or datagrams with app-level retransmit below this layer) can
   satisfy the same ordered-delivery contract by wrapping each frame with a
@@ -29,9 +29,10 @@ defmodule Raxol.AgentClientProtocol.Transport.Envelope do
       per connection per direction. This is transport-internal framing,
       never ACP protocol content: it is stripped by `unwrap/1` before the
       frame reaches anything above the transport, and it must never be
-      threaded through `_meta` or any other ACP-visible location (that
-      was precisely the trust-boundary mistake this design corrects one
-      layer up, in the Connection's receiver-assigned delivery stamp).
+      threaded through `_meta` or any other ACP-visible location (a
+      peer-visible sequence number is not trusted for ordering, which is
+      why the Connection's delivery stamp one layer up is
+      receiver-assigned).
     * `"f"` — the original JSON-RPC frame (request, response, or
       notification map), untouched.
 

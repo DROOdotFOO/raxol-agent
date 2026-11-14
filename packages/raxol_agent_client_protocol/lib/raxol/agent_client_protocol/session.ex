@@ -1,15 +1,13 @@
 defmodule Raxol.AgentClientProtocol.Session.Turn do
   @moduledoc """
   Ephemeral per-turn state, held by a `Raxol.AgentClientProtocol.Session` only
-  while a `session/prompt` turn is in flight. See the supervision design §2 state
-  block; the write rules for `outcome` are in §3.2 (root leg is write-once, the
-  cancel leg overwrites).
+  while a `session/prompt` turn is in flight. `outcome` is written once by the
+  root leg; the cancel leg overwrites it.
 
   `monitors` is the turn's task group: `ref => pid` for every live task
-  (`async_nolink` monitor ref keyed to its pid). The design names it a `MapSet`
-  of refs; a `ref => pid` map is the faithful realization because the 30s backstop
-  must `Process.exit(pid, :kill)` each remaining member — the pids are load-bearing.
-  `map_size/1` is the drain gate (§3.1).
+  (`async_nolink` monitor ref keyed to its pid). It is a map rather than a set of
+  refs because the 30s backstop must `Process.exit(pid, :kill)` each remaining
+  member — the pids are load-bearing. `map_size/1` is the drain gate.
   """
 
   alias Raxol.AgentClientProtocol.Error
@@ -43,10 +41,9 @@ defmodule Raxol.AgentClientProtocol.Session.Turn do
             respond?: true,
             pending_perms: %{},
             backstop_timer: nil,
-            # -- streaming guards (W17-ctx): the cleanroom spec's streaming
-            # rules ("no empty chunks, >=1 update per non-empty prompt",
-            # supervision design §3.3) that this layer is positioned to
-            # enforce/observe. `non_empty_prompt?` is snapshotted at
+            # -- streaming guards: the streaming rules ("no empty chunks,
+            # >=1 update per non-empty prompt") that this layer is positioned
+            # to enforce/observe. `non_empty_prompt?` is snapshotted at
             # begin_prompt from the incoming PromptRequest; `updates_emitted?`
             # flips true the first time a (non-rejected) post_update goes out.
             non_empty_prompt?: true,
@@ -57,43 +54,42 @@ defmodule Raxol.AgentClientProtocol.Session do
   @moduledoc """
   One GenServer per `session_id`: the ACP turn state machine.
 
-  Implements the session layer of `acp-supervision-design.md` v2 EXACTLY:
+  It owns:
 
-    * turn state machine (`:idle | {:prompting, Turn} | {:cancelling, Turn}`,
-      §3.1 — including the born-cancelled and stale-timer rows),
-    * `rx_seq` latch consumption (IC-5c — cancel/prompt commute by wire order,
-      not scheduling order),
-    * register-before-respond by construction (I2; the `:via` name is minted in
+    * the turn state machine (`:idle | {:prompting, Turn} | {:cancelling, Turn}`,
+      including the born-cancelled and stale-timer cases),
+    * `rx_seq` latch consumption (cancel/prompt commute by wire order, not
+      scheduling order),
+    * register-before-respond by construction (the `:via` name is minted in
       `start_link/1` before `init/1` runs),
     * the prompt turn as a supervised `Task` with a task-group hold-open gate
-      (the drain fires only when the monitor count hits zero, §3.1/I4),
+      (the drain fires only when the monitor count hits zero),
     * `session/update` emission ordering (updates flow through the Connection on
       the same FIFO lane as the eventual prompt reply, so no update can serialize
-      after the response — I3),
+      after the response),
     * cancellation (graceful `:acp_cancel` interrupt, then a non-blocking 30s
       `Process.exit/2` backstop; cancel-of-idle is a clean latch-only no-op;
-      the disarm-on-response guard is the state machine itself, §4),
+      the disarm-on-response guard is the state machine itself),
     * the permission flow (`async_request` with a per-ask tag; fail-closed deny on
-      every non-`{:selected, _}` row; a turn cancel aborts open asks, §5/I8/I9),
+      every non-`{:selected, _}` row; a turn cancel aborts open asks),
     * the prompt reply via the Connection's delegated-reply mechanism (the Session
-      is the adopter and sends the one reply, IC-4),
-    * the `mode_state` seam (§2.3): `set_mode` validates against the injected
+      is the adopter and sends the one reply),
+    * the `mode_state` seam: `set_mode` validates against the injected
       `%SessionModeState{}`; a `nil` mode state makes `set_mode` invalid-params.
 
   ## Connection seam (dependency injection)
 
-  The design writes `Connection.reply/3`, `Connection.notify/3`, etc. literally.
   This module reaches the Connection through an injected module (`:conn_mod`,
   default `Raxol.AgentClientProtocol.Connection`) so the session layer compiles
   and tests independently of the sibling Connection module, and so the test
-  `FakeConnection` can double-check that the IC surface the Session consumes
-  (`delegate_reply/3`, `reply/3`, `notify/3`, `async_request/6`,
+  `FakeConnection` can double-check that the Connection surface the Session
+  consumes (`delegate_reply/3`, `reply/3`, `notify/3`, `async_request/6`,
   `cancel_request/2`) is sufficient. The semantics are unchanged — the Session
   still mints the reply, still owns the drain gate.
 
   ## Turn runner seam
 
-  `begin_prompt/4` has a fixed 4-arity per §2.1 and does not carry the turn
+  `begin_prompt/4` has a fixed 4-arity and does not carry the turn
   function, so the turn runner is injected at session start (`:turn_runner`, an
   arity-2 fun `(session_pid, %PromptRequest{}) -> {:stop, StopReason} |
   %PromptResponse{}`). It runs inside the supervised root `Task`; its return value
@@ -123,9 +119,9 @@ defmodule Raxol.AgentClientProtocol.Session do
   # this long, it idle-STOPS its durable Writer (via the emitter's `reap/1` seam)
   # and then stops itself — the journal is the durable state and OUTLIVES both, so
   # a fresh reattach (`session/load`) respawns the Writer + Session and replays the
-  # journal (the moat design). The default is `:infinity` (OFF) so the frozen base
-  # v2 behaviour is byte-identical; a durable/journalled deployment opts in with a
-  # finite `:idle_timeout` in `:config`.
+  # journal. The default is `:infinity` (OFF), so a Session never reaps itself
+  # unless a durable/journalled deployment opts in with a finite `:idle_timeout`
+  # in `:config`.
   #
   # ## Retention / truncation (durable state growth)
   #
@@ -133,7 +129,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   # NOT truncate the durable journal, which is deliberately append-only (offset law
   # + event-sourcing axiom — a reattach must replay from genesis). A long-lived node
   # therefore still accrues journal storage per session_id over its lifetime. That
-  # is a STORAGE-tier concern, out of this layer's scope: the journal store owner
+  # is a STORAGE-tier concern, handled outside this layer: the journal store owner
   # (production: the app supervisor holding `{mod, handle}`) is where retention
   # (age/size-based compaction, session GC, cold-storage eviction) belongs. This
   # layer's contribution is bounding the live-process footprint; the store's is
@@ -142,17 +138,17 @@ defmodule Raxol.AgentClientProtocol.Session do
   @default_idle_timeout :infinity
   @default_conn_mod Raxol.AgentClientProtocol.Connection
 
-  # The emit seam (acp-reattach-design.md §2.4). The DEFAULT is byte-identical to
-  # the base package (`Emitter.Direct`: `emit/2` forwards to `Connection.notify`,
-  # the boundary hooks are no-ops), so a Session with no journal ext behaves
-  # EXACTLY as frozen v2. `Emitter.Journal` reroutes updates + turn boundaries
-  # through the single-publisher Writer for durable, reattach-replayable sessions.
+  # The emit seam. The DEFAULT is `Emitter.Direct` (`emit/2` forwards to
+  # `Connection.notify`, the boundary hooks are no-ops), so a Session with no
+  # journal ext emits plain, non-durable updates. `Emitter.Journal` reroutes
+  # updates + turn boundaries through the single-publisher Writer for durable,
+  # reattach-replayable sessions.
   @default_emitter Raxol.AgentClientProtocol.Session.Emitter.Direct
 
   # The steer seam. The DEFAULT refuses every steer with
-  # `{:error, :no_steer_channel}` and no-ops the turn hooks, so a base Session is
-  # byte-identical to frozen v2 (no steer state ever mutates). A live-steering
-  # deployment injects a real `SteerAdapter` via `:steer_adapter`.
+  # `{:error, :no_steer_channel}` and no-ops the turn hooks, so a base Session
+  # never mutates steer state. A live-steering deployment injects a real
+  # `SteerAdapter` via `:steer_adapter`.
   @default_steer_adapter Raxol.AgentClientProtocol.Session.SteerAdapter.Unsupported
 
   @registry Raxol.AgentClientProtocol.SessionRegistry
@@ -201,12 +197,12 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   @doc """
   The package-level unique `Registry` name. Keys are `{conn_pid, session_id}`;
-  `session_id` stays a binary, never atomized (§1.3, I14).
+  `session_id` stays a binary, never atomized.
   """
   @spec registry() :: atom()
   def registry, do: @registry
 
-  @doc "The `:via` tuple that keys a Session on `{conn, session_id}` (§2, IC-8)."
+  @doc "The `:via` tuple that keys a Session on `{conn, session_id}`."
   @spec via(pid(), String.t()) :: {:via, module(), {atom(), {pid(), String.t()}}}
   def via(conn, session_id) when is_pid(conn) and is_binary(session_id) do
     {:via, Registry, {@registry, {conn, session_id}}}
@@ -214,15 +210,15 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   @doc """
   Start a Session. Registration happens via the `:via` name in `start_link/1`,
-  *before* `init/1` runs — this is the structural half of register-before-respond
-  (I2). A duplicate live `{conn, session_id}` returns `{:error, {:already_started,
-  pid}}` (§2, the `session/load`-of-a-live-session case).
+  *before* `init/1` runs — this is the structural half of register-before-respond.
+  A duplicate live `{conn, session_id}` returns `{:error, {:already_started,
+  pid}}` (the `session/load`-of-a-live-session case).
 
   Options:
 
     * `:session_id` (required, binary)
     * `:conn` (required, Connection pid — also the registry key half)
-    * `:mode_state` — `%SessionModeState{}` or `nil` (§2.3 producer seam)
+    * `:mode_state` — `%SessionModeState{}` or `nil`
     * `:task_sup` (required) — the per-connection `Task.Supervisor` (`ctx.task_sup`)
     * `:turn_runner` (required for prompting) — arity-2 fun (see moduledoc)
     * `:conn_mod` — Connection module (default `#{inspect(@default_conn_mod)}`)
@@ -238,14 +234,14 @@ defmodule Raxol.AgentClientProtocol.Session do
   end
 
   @doc """
-  Begin a prompt turn (called by the `session/prompt` handler task, IC-4).
+  Begin a prompt turn (called by the `session/prompt` handler task).
 
   Adopts the reply obligation via `delegate_reply/3`, then either starts the turn
   (spawns the supervised root task) or, if the prompt was wire-ordered before a
   latched cancel (`rx_seq < last_cancel_seq`), resolves it born-cancelled
-  immediately (§3.1, IC-5c). Returns `:ok` on the deferred path (the handler must
+  immediately. Returns `:ok` on the deferred path (the handler must
   then return `:deferred`) or `{:error, %Error{}}` when the session is busy — a
-  second prompt on a `:prompting`/`:cancelling` session (I12); in the busy case
+  second prompt on a `:prompting`/`:cancelling` session; in the busy case
   the handler replies with that error directly (no delegation happened).
   """
   @spec begin_prompt(GenServer.server(), struct(), reference(), non_neg_integer()) ::
@@ -258,7 +254,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   @doc """
   Set the active mode (called by the `session/set_mode` handler task). Validates
   `mode_id` against the injected `%SessionModeState{}`; legal mid-turn. A `nil`
-  mode state or an unknown mode replies `-32602` invalid-params (§2.3).
+  mode state or an unknown mode replies `-32602` invalid-params.
   """
   @spec set_mode(GenServer.server(), String.t()) ::
           {:ok, SetSessionModeResponse.t()} | {:error, Error.t()}
@@ -268,9 +264,9 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   @doc """
   Emit a `session/update` for the live turn (called by a turn task). Forwarded to
-  the Connection via `notify/3` (same FIFO lane as the eventual reply — I3). A post
+  the Connection via `notify/3` (same FIFO lane as the eventual reply). A post
   for a non-live turn returns `{:error, :turn_over}` and emits nothing (the
-  straggler-task guard, §3.3).
+  straggler-task guard).
   """
   @spec post_update(GenServer.server(), struct()) :: :ok | {:error, :turn_over}
   def post_update(session, notification) do
@@ -280,10 +276,10 @@ defmodule Raxol.AgentClientProtocol.Session do
   @doc """
   Request permission from the client (called by a turn task, blocks `:infinity`).
   The Session stays fully responsive while the task is parked, which is what lets a
-  cancel abort the ask (§5). Returns `{:ok, {:selected, %SelectedPermissionOutcome{}}}`
+  cancel abort the ask. Returns `{:ok, {:selected, %SelectedPermissionOutcome{}}}`
   ONLY on a decoded selected outcome; every other terminal (timeout, client error,
   decode failure, disconnect, session cancel) returns `{:ok, :cancelled}` — deny is
-  the zero value everywhere (I8, fail-closed).
+  the zero value everywhere (fail-closed).
   """
   @spec request_permission(GenServer.server(), struct()) ::
           {:ok, {:selected, struct()}} | {:ok, :cancelled}
@@ -294,7 +290,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   @doc """
   Spawn a subagent task inside the current turn group (called by a turn task). The
   task is monitored and its ref joins `monitors` — the hold-open gate: the prompt
-  reply is withheld until every group member is down (§3.1/I4). Returns
+  reply is withheld until every group member is down. Returns
   `{:ok, ref}`, or `{:error, :turn_over}` when there is no live prompting turn.
   """
   @spec spawn_task(GenServer.server(), (-> any())) :: {:ok, reference()} | {:error, :turn_over}
@@ -316,7 +312,7 @@ defmodule Raxol.AgentClientProtocol.Session do
       forwarded to the running turn (the `{:acp_steer, text}` runner seam) and
       one durable steer record was appended via the emitter.
     * `{:ok, {:duplicate, ref}}` — idempotent re-delivery of an already-accepted
-      `client_msg_id` (§5.1); `ref` is the ORIGINAL accept, nothing new happens.
+      `client_msg_id`; `ref` is the ORIGINAL accept, nothing new happens.
     * `{:error, {:stale_turn, expected, actual}}` — the CAS lost (the turn ended,
       or another steer won); nothing journaled, zero model effect.
     * `{:error, :no_live_turn}` — no turn is running.
@@ -347,18 +343,18 @@ defmodule Raxol.AgentClientProtocol.Session do
       mode_state: Keyword.get(opts, :mode_state),
       turn: :idle,
       last_cancel_seq: 0,
-      # Emit seam (§2.4): default Direct = base behavior; Journal = durable.
+      # Emit seam: default Direct = plain notify; Journal = durable.
       emitter: Keyword.get(opts, :emitter, @default_emitter),
       journal: Keyword.get(opts, :journal),
       turn_seq: 0,
-      # Steer seam: default = refuse (base v2 byte-identical).
+      # Steer seam: default = refuse.
       steer_adapter: Keyword.get(opts, :steer_adapter, @default_steer_adapter),
       steer_state: Keyword.get(opts, :steer_state),
       config: config
     }
 
     # A Session is born idle — arm the idle-reap timer (no-op when idle_timeout is
-    # :infinity, the OFF default that keeps base v2 byte-identical).
+    # :infinity, the OFF default).
     {:ok, arm_idle(state)}
   end
 
@@ -366,13 +362,13 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   @impl true
   def handle_call({:begin_prompt, req, reply_ref, rx_seq}, _from, %{turn: :idle} = state) do
-    # Adopt the reply obligation BEFORE anything else (IC-4). delegate_reply is a
+    # Adopt the reply obligation BEFORE anything else. delegate_reply is a
     # synchronous call into Connection, so the adopter is recorded before the
     # handler's later :deferred return can reach the Connection — no ordering hole.
     _ = state.conn_mod.delegate_reply(state.conn, reply_ref, self())
 
     if rx_seq < state.last_cancel_seq do
-      # Born-cancelled: the cancel was wire-ordered before this prompt (IC-5c).
+      # Born-cancelled: the cancel was wire-ordered before this prompt.
       # Adopt, resolve cancelled immediately, run nothing. Stays idle → re-arm the
       # idle timer so this activity postpones reaping.
       _ = state.conn_mod.reply(state.conn, reply_ref, {:ok, PromptResponse.new(:cancelled)})
@@ -380,19 +376,19 @@ defmodule Raxol.AgentClientProtocol.Session do
     else
       session = self()
 
-      # Turn boundary (§2.4/§2.5): the per-session turn ordinal, appended (in
-      # journal mode) as a `turn_started` record AFTER reply adoption, BEFORE the
-      # root-task spawn. Direct mode makes this a no-op — base behavior unchanged.
+      # Turn boundary: the per-session turn ordinal, appended (in journal mode)
+      # as a `turn_started` record AFTER reply adoption, BEFORE the root-task
+      # spawn. Direct mode makes this a no-op.
       #
-      # Cross-connection turn latch (reattach §2.7, v1 RULING): with N connections
-      # attached to one session_id, N Session processes exist (SessionRegistry keys
-      # are {conn_pid, session_id}), so the per-process I12 busy row cannot arbitrate
+      # Cross-connection turn latch: with N connections attached to one
+      # session_id, N Session processes exist (SessionRegistry keys are
+      # {conn_pid, session_id}), so the per-process busy check cannot arbitrate
       # across connections. The single-publisher Writer's turn latch IS the arbiter:
       # a `turn_started` append while a turn is in flight returns
       # `{:error, :turn_in_flight}`, and the Session HONORS it — reply the same busy
-      # error class as the I12 row on the adopted ref, spawn nothing, stay :idle, and
-      # do NOT bump `turn_seq`. Direct mode always returns `:ok` (no latch), so base
-      # behavior is unchanged.
+      # error as the per-process busy check on the adopted ref, spawn nothing, stay
+      # :idle, and do NOT bump `turn_seq`. Direct mode always returns `:ok` (no
+      # latch).
       turn_seq = state.turn_seq + 1
 
       case state.emitter.turn_started(state, req, turn_seq) do
@@ -425,7 +421,7 @@ defmodule Raxol.AgentClientProtocol.Session do
 
           # Steer seam: bind the running turn's CAS token to its
           # per-session ordinal so a steer's `expected_turn_id` can match it. A
-          # no-op for the default (refusing) adapter — base v2 byte-identical.
+          # no-op for the default (refusing) adapter.
           steer_state = state.steer_adapter.turn_started(state.steer_state, turn_seq)
 
           # A live turn is never idle — disarm the reaper until the turn drains.
@@ -444,7 +440,7 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   def handle_call({:begin_prompt, _req, _reply_ref, _rx_seq}, _from, state) do
     # Busy: a second prompt on a live turn. The in-flight turn is left untouched
-    # (I12); the handler replies with this error on its own (undelegated) reply_ref.
+    # and the handler replies with this error on its own (undelegated) reply_ref.
     {:reply, {:error, Error.new(-32_600, "prompt already in flight")}, state}
   end
 
@@ -464,7 +460,7 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   # ---- post_update ------------------------------------------------------------
   #
-  # Streaming guard #1 (W17-ctx, cleanroom spec §3.3 "no empty chunks"): an
+  # Streaming guard #1 ("no empty chunks"): an
   # agent_message_chunk/agent_thought_chunk whose content is empty text is
   # rejected outright — never forwarded to the Connection, never hits the
   # wire (a real client can choke on an empty streamed chunk). Every other
@@ -482,15 +478,15 @@ defmodule Raxol.AgentClientProtocol.Session do
       emit_telemetry([:raxol, :acp, :empty_chunk_rejected], %{session_id: state.session_id})
       {:reply, {:error, :empty_chunk}, state}
     else
-      # Emit seam (§2.4): Direct forwards to Connection.notify (base behavior);
-      # Journal ALSO durably appends the update to the Writer (J10 durability).
+      # Emit seam: Direct forwards to Connection.notify; Journal ALSO durably
+      # appends the update to the Writer.
       _ = state.emitter.emit(state, notification)
       {:reply, :ok, put_turn(state, ts, %{t | updates_emitted?: true})}
     end
   end
 
   def handle_call({:post_update, _notification}, _from, state) do
-    # Turn over (idle) — the straggler-task guard (§3.3). Emit nothing.
+    # Turn over (idle) — the straggler-task guard. Emit nothing.
     {:reply, {:error, :turn_over}, state}
   end
 
@@ -510,18 +506,18 @@ defmodule Raxol.AgentClientProtocol.Session do
       :ok ->
         # Park the task in the call (`{:noreply}`); the Session stays live. The
         # result arrives later as `{:acp_result, perm_tag, _}`. No Session-side
-        # timer — Connection is the single timeout authority (IC-3).
+        # timer — Connection is the single timeout authority.
         t = %{t | pending_perms: Map.put(t.pending_perms, perm_tag, %{from: from})}
         {:noreply, put_turn(state, :prompting, t)}
 
       {:error, _reason} ->
-        # Could not even submit (e.g. connection closed) — fail closed (I8).
+        # Could not even submit (e.g. connection closed) — fail closed.
         {:reply, {:ok, :cancelled}, state}
     end
   end
 
   def handle_call({:request_permission, _req}, _from, state) do
-    # Cancelling or idle: a cancel is in flight or the turn is gone — deny (I8/I9).
+    # Cancelling or idle: a cancel is in flight or the turn is gone — deny.
     {:reply, {:ok, :cancelled}, state}
   end
 
@@ -561,11 +557,11 @@ defmodule Raxol.AgentClientProtocol.Session do
     {:reply, result, state}
   end
 
-  # ---- session/cancel (Connection direct cast, IC-5b) -----------------------
+  # ---- session/cancel (Connection direct cast) ------------------------------
 
   @impl true
   def handle_cast({:acp_session_cancel, seq}, %{turn: :idle} = state) do
-    # Latch (IC-5c). No frame, no error — the only state change is the latch.
+    # Latch the cancel seq. No frame, no error — the only state change is the latch.
     Logger.debug("acp session cancel of idle session #{inspect(state.session_id)} (latch #{seq})")
     {:noreply, %{state | last_cancel_seq: max(state.last_cancel_seq, seq)}}
   end
@@ -579,7 +575,7 @@ defmodule Raxol.AgentClientProtocol.Session do
     {:noreply, state}
   end
 
-  # ---- $/cancel_request on the prompt id (IC-5a/d) --------------------------
+  # ---- $/cancel_request on the prompt id ------------------------------------
 
   @impl true
   def handle_info(
@@ -587,7 +583,7 @@ defmodule Raxol.AgentClientProtocol.Session do
         %{turn: {:prompting, %{reply_ref: rref} = t}} = state
       ) do
     # Peer abandoned the id: interrupt like a cancel, but ALSO void the reply
-    # obligation — no `reply/3` at drain (§4.5). Zero frames for the id (I17).
+    # obligation — no `reply/3` at drain. Zero frames for the id.
     {:noreply, begin_cancel(state, t, _respond? = false)}
   end
 
@@ -603,7 +599,7 @@ defmodule Raxol.AgentClientProtocol.Session do
     {:noreply, state}
   end
 
-  # ---- permission result (IC-3) ---------------------------------------------
+  # ---- permission result ----------------------------------------------------
 
   def handle_info({:acp_result, tag, result}, %{turn: {ts, t}} = state)
       when ts in [:prompting, :cancelling] do
@@ -620,7 +616,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   end
 
   def handle_info({:acp_result, _tag, _result}, %{turn: :idle} = state) do
-    # Stale: pending_perms no longer exist. Explicit no-op row (§3.1).
+    # Stale: pending_perms no longer exist. Explicit no-op.
     {:noreply, state}
   end
 
@@ -628,14 +624,14 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   def handle_info({:cancel_backstop, ref}, %{turn: {:cancelling, %{turn_ref: ref} = t}} = state) do
     # Force-cancel: the runner ignored :acp_cancel. Kill every remaining member;
-    # the DOWNs drain the monitor set through the normal path (§4/I13).
+    # the DOWNs drain the monitor set through the normal path.
     Enum.each(t.monitors, fn {_ref, pid} -> Process.exit(pid, :kill) end)
     {:noreply, state}
   end
 
   def handle_info({:cancel_backstop, _ref}, state) do
     # Stale-timer no-op: a fast finish + re-prompt can leave the old backstop in
-    # the mailbox; the turn_ref guard makes it provably inert (§3.1, I13).
+    # the mailbox; the turn_ref guard makes it provably inert.
     {:noreply, state}
   end
 
@@ -654,7 +650,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   end
 
   def handle_info({ref, _result}, state) when is_reference(ref) do
-    # Late task result of a finished turn (§3.1 stale DOWN row, defensive).
+    # Late task result of a finished turn (stale, defensive).
     {:noreply, state}
   end
 
@@ -665,7 +661,7 @@ defmodule Raxol.AgentClientProtocol.Session do
 
       t =
         if ref == t.root_ref and reason != :normal do
-          # Root crashed — fold internal error (write-once leg, §3.2).
+          # Root crashed — fold internal error (write-once leg).
           fold_crash(t)
         else
           # Subagent DOWN (crash ≠ turn crash; root decides), or root :normal
@@ -693,7 +689,7 @@ defmodule Raxol.AgentClientProtocol.Session do
     # proves no intervening activity re-armed a newer timer). Idle-STOP the durable
     # Writer via the emitter seam (Direct = no-op; Journal = stop the Writer), then
     # stop this Session. The journal OUTLIVES both and a fresh reattach respawns +
-    # replays (the moat). :temporary child ⇒ never restarted.
+    # replays. :temporary child ⇒ never restarted.
     Logger.debug("acp: idle-reaping session #{inspect(state.session_id)} after idle timeout")
     emit_telemetry([:raxol, :acp, :session_idle_reaped], %{session_id: state.session_id})
     reap_writer(state)
@@ -713,9 +709,9 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   # -- Internals --------------------------------------------------------------
 
-  # Begin cancelling a live turn (§4). Overwrites outcome to :cancelled
-  # unconditionally (§3.2 cancel leg), aborts open permission asks fail-closed
-  # (§5), sends the graceful interrupt, and arms the turn-ref-guarded backstop.
+  # Begin cancelling a live turn. Overwrites outcome to :cancelled
+  # unconditionally (the cancel leg), aborts open permission asks fail-closed,
+  # sends the graceful interrupt, and arms the turn-ref-guarded backstop.
   # Runs the drain check in case the group is already empty.
   @spec begin_cancel(t(), Turn.t(), boolean()) :: t()
   defp begin_cancel(state, t, respond?) do
@@ -726,7 +722,7 @@ defmodule Raxol.AgentClientProtocol.Session do
     if t.root_pid, do: send(t.root_pid, :acp_cancel)
 
     # Non-blocking 30s backstop; the message carries turn_ref so a backstop that
-    # outlives its turn is provably stale (§4, gate fix T3).
+    # outlives its turn is provably stale.
     timer =
       Process.send_after(self(), {:cancel_backstop, t.turn_ref}, state.config.cancel_backstop_ms)
 
@@ -743,12 +739,12 @@ defmodule Raxol.AgentClientProtocol.Session do
     # `:no_live_turn` (a dying turn has no next boundary to inject at) rather than
     # matching a token whose accept could never take effect. `finish/2` clears it
     # again (idempotent) on the cancelling→idle drain. No-op for the default
-    # adapter — base v2 byte-identical.
+    # adapter.
     steer_state = state.steer_adapter.turn_ended(state.steer_state)
     drain_check(%{state | turn: {:cancelling, t}, steer_state: steer_state})
   end
 
-  # Root leg — write-once (§3.2): the first root result wins.
+  # Root leg — write-once: the first root result wins.
   @spec fold_root(Turn.t(), term()) :: Turn.t()
   defp fold_root(%Turn{outcome: nil} = t, result),
     do: %{t | outcome: normalize_root_result(result)}
@@ -765,15 +761,15 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   # A runner that has ALREADY built a protocol error keeps it, `data` included.
   # Folding it into a bare `Error.internal_error()` like any other unrecognized
-  # shape discarded the only description of what went wrong: a provider
-  # refusing a request reached the peer as -32603 with no data, which is
+  # shape would discard the only description of what went wrong: a provider
+  # refusing a request would reach the peer as -32603 with no data,
   # indistinguishable from a crash. The runner is trusted to have decided the
   # code; this clause only stops the Session from overwriting it.
   defp normalize_root_result({:error, %Error{} = err}), do: {:error, err}
 
   defp normalize_root_result(_other), do: {:error, Error.internal_error()}
 
-  # Drain gate (§3.1): finish iff the task group is empty AND an outcome exists.
+  # Drain gate: finish iff the task group is empty AND an outcome exists.
   @spec drain_check(t()) :: t()
   defp drain_check(%{turn: {ts, t}} = state) when ts in [:prompting, :cancelling] do
     if map_size(t.monitors) == 0 and t.outcome != nil do
@@ -785,7 +781,7 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   defp drain_check(state), do: state
 
-  # Abort every parked permission ask (fail-closed, I9): the asker is denied
+  # Abort every parked permission ask (fail-closed): the asker is denied
   # and the client's request is withdrawn with `$/cancel_request`.
   @spec abort_pending_perms(t(), Turn.t()) :: :ok
   defp abort_pending_perms(state, t) do
@@ -795,7 +791,7 @@ defmodule Raxol.AgentClientProtocol.Session do
     end)
   end
 
-  # Single render + reply site (§3.2, I5): the wire stopReason equals turn.outcome.
+  # Single render + reply site: the wire stopReason equals turn.outcome.
   @spec finish(t(), Turn.t()) :: t()
   defp finish(state, t) do
     if t.backstop_timer, do: Process.cancel_timer(t.backstop_timer)
@@ -803,47 +799,41 @@ defmodule Raxol.AgentClientProtocol.Session do
     # parked when the root returns: the turn it asked for is over.
     abort_pending_perms(state, t)
     warn_if_zero_updates(state, t)
-    # SINGLE render site (§3.2, I5): the one `render(outcome)` value feeds BOTH
-    # the durable `turn_completed` record AND the prompt response — they cannot
-    # disagree (invariant J7a). The boundary append precedes the reply so a
-    # reattacher's `turn_completed` frame and the live response carry the same
-    # rendered value (§2.5). Direct mode makes the boundary a no-op.
+    # SINGLE render site: the one `render(outcome)` value feeds BOTH the durable
+    # `turn_completed` record AND the prompt response — they cannot disagree.
+    # The boundary append precedes the reply so a reattacher's `turn_completed`
+    # frame and the live response carry the same rendered value. Direct mode
+    # makes the boundary a no-op.
     rendered = render(t.outcome)
     _ = state.emitter.turn_completed(state, rendered, state.turn_seq)
-    # ALWAYS reply (S7): even when `respond? == false` (a $/cancel_request voided the
+    # ALWAYS reply: even when `respond? == false` (a $/cancel_request voided the
     # obligation), the drain MUST call `reply/3` so the Connection pops its
     # `pending_in`/`reply_refs` entry and demonitors the adopter — otherwise the
     # cancelled prompt id stays occupied and the entry + monitor leak for the whole
     # Session lifetime. The Connection's reply path suppresses the wire frame for a
-    # cancelled entry (IC-5a/d: "the id was abandoned; emit nothing"), so the
-    # frame-count invariant (I17: exactly zero frames) is preserved Connection-side.
-    # `respond?` is now vestigial (kept for documentation of the cancel leg).
+    # cancelled entry (the id was abandoned; emit nothing), so an abandoned id
+    # still gets exactly zero frames. `respond?` does not gate this reply; it
+    # records that the cancel leg voided the obligation.
     _ = state.conn_mod.reply(state.conn, t.reply_ref, rendered)
     # Steer seam: the turn drained — clear its CAS token so a
     # steer arriving in the idle window between turns rejects `:no_live_turn`
-    # rather than landing on a dead turn. The dedup index (session-lifetime, §5.1)
+    # rather than landing on a dead turn. The dedup index (session-lifetime)
     # is preserved. No-op for the default adapter.
     steer_state = state.steer_adapter.turn_ended(state.steer_state)
     # Back to idle → re-arm the idle-reap countdown from this last activity.
     arm_idle(%{state | turn: :idle, steer_state: steer_state})
   end
 
-  # Streaming guard #2 (W17-ctx, cleanroom spec §3.3 ">=1 update per
-  # non-empty prompt"): only the Session sees the whole turn, so this is the
-  # one place that can observe "the turn completed and never posted a single
-  # session/update". The two design docs handed to this task (acp-connection-
-  # design.md, acp-supervision-design.md) name the rule but give no algorithm
-  # for *what* to synthesize in the general zero-updates case — the one
-  # concrete synthesis case they DO name ("synthesize final text if
-  # tool-only", supervision §3.3) is narrower than "zero updates" (it
-  # requires at least one tool_call update with no text) and still specifies
-  # no content/shape to synthesize. Per this task's own instruction not to
-  # invent protocol behavior beyond the spec, this is therefore a
-  # **telemetry warning only** — a real agent violating the rule is a
-  # conformance bug in that agent, not something this library can safely
-  # paper over with invented text. Silent on cancelled/crashed turns (a
-  # turn cut short before producing anything is not a violation) and on
-  # opaque `req` shapes the Session can't inspect (`prompt_non_empty?/1`).
+  # Streaming guard #2 (">=1 update per non-empty prompt"): only the Session
+  # sees the whole turn, so this is the one place that can observe "the turn
+  # completed and never posted a single session/update". The rule defines no
+  # content or shape to synthesize in the zero-updates case, and this library
+  # does not invent protocol behavior, so this is a **telemetry warning
+  # only** — a real agent violating the rule is a conformance bug in that
+  # agent, not something this library can safely paper over with invented
+  # text. Silent on cancelled/crashed turns (a turn cut short before
+  # producing anything is not a violation) and on opaque `req` shapes the
+  # Session can't inspect (`prompt_non_empty?/1`).
   @spec warn_if_zero_updates(t(), Turn.t()) :: :ok
   defp warn_if_zero_updates(state, %Turn{non_empty_prompt?: true, updates_emitted?: false} = t) do
     if completed_normally?(t.outcome) do
@@ -852,8 +842,8 @@ defmodule Raxol.AgentClientProtocol.Session do
       Logger.warning(
         "ACP: turn for session #{inspect(state.session_id)} completed " <>
           "(stopReason: #{inspect(reason)}) with zero session/update notifications " <>
-          "for a non-empty prompt — conformance expectation on agents (cleanroom spec " <>
-          "§3.3), not enforced or synthesized by this library"
+          "for a non-empty prompt — a conformance expectation on agents, " <>
+          "not enforced or synthesized by this library"
       )
 
       emit_telemetry([:raxol, :acp, :zero_updates_turn], %{
@@ -897,8 +887,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   defp render({:stop, reason}), do: {:ok, PromptResponse.new(reason)}
   defp render({:error, %Error{} = e}), do: {:error, e}
 
-  # Permission resolution matrix (§5): allow is reachable ONLY from a decoded
-  # selected outcome; deny is the zero value everywhere else (I8, fail-closed).
+  # Permission resolution matrix: allow is reachable ONLY from a decoded
+  # selected outcome; deny is the zero value everywhere else (fail-closed).
   @spec map_perm_result(term()) :: {:ok, {:selected, struct()}} | {:ok, :cancelled}
   defp map_perm_result({:ok, %RequestPermissionResponse{outcome: {:selected, sel}}}),
     do: {:ok, {:selected, sel}}
@@ -973,7 +963,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   # Arm (or re-arm) the idle-reap timer. Epoch-guarded: every arm bumps the epoch
   # and cancels the prior timer, so a stale timer already in the mailbox from an
   # earlier idle window is provably inert (its epoch no longer matches). A no-op
-  # when idle_timeout is :infinity (the OFF default — base v2 unchanged).
+  # when idle_timeout is :infinity (the OFF default).
   @spec arm_idle(t()) :: t()
   defp arm_idle(state) do
     if state.idle_timer, do: Process.cancel_timer(state.idle_timer)
@@ -1024,27 +1014,27 @@ end
 
 defmodule Raxol.AgentClientProtocol.Session.Emitter do
   @moduledoc """
-  The Session emit seam (`acp-reattach-design.md` §2.4) — one injection point
-  through which every `session/update` and every turn boundary flows.
+  The Session emit seam — one injection point through which every
+  `session/update` and every turn boundary flows.
 
-  The base package binds `Emitter.Direct`, whose behavior is byte-identical to
-  the frozen v2 Session (`emit/2` calls `Connection.notify`; the boundary hooks
-  are no-ops). `Emitter.Journal` reroutes updates + turn boundaries through the
-  single-publisher Writer (`Ext.Journal.Writer`) so every delivered update is
-  ALSO durable and a reattacher replays an exact offset-addressed journal.
+  The base package binds `Emitter.Direct` (`emit/2` calls `Connection.notify`;
+  the boundary hooks are no-ops). `Emitter.Journal` reroutes updates + turn
+  boundaries through the single-publisher Writer (`Ext.Journal.Writer`) so every
+  delivered update is ALSO durable and a reattacher replays an exact
+  offset-addressed journal.
 
   ## Callbacks
 
     * `emit(session_state, notification)` — a `session/update` (in-turn
       `post_update` and out-of-turn `set_mode`'s `current_mode_update`).
     * `turn_started(session_state, prompt_req, turn_id)` — a turn begins; the
-      per-session ordinal `turn_id` is threaded from the Session (§1.2). Returns
+      per-session ordinal `turn_id` is threaded from the Session. Returns
       `{:error, :turn_in_flight}` when a cross-connection turn latch is already held
-      for this session_id (reattach §2.7) — the Session then replies busy and runs
+      for this session_id — the Session then replies busy and runs
       nothing; `:ok` otherwise (Direct always `:ok`; no latch).
     * `turn_completed(session_state, rendered, turn_id)` — a turn ends; `rendered`
       is the SINGLE-render-site value that ALSO becomes the prompt response
-      (invariant J7a: they are built from one `render(outcome)` call).
+      (both are built from one `render(outcome)` call).
 
   `session_state` is the `%Raxol.AgentClientProtocol.Session{}` struct; an emitter
   reads `conn`/`conn_mod`/`session_id`/`journal` from it.
@@ -1094,11 +1084,10 @@ end
 
 defmodule Raxol.AgentClientProtocol.Session.Emitter.Direct do
   @moduledoc """
-  The DEFAULT emitter — byte-identical to the frozen v2 Session. `emit/2` forwards
-  a `session/update` to `Connection.notify` on the same FIFO lane as the eventual
-  prompt reply (I3); the turn-boundary hooks are no-ops (the base package keeps no
-  durable journal). Selecting this emitter (or omitting `:emitter`) means the
-  reattach extension is OFF and nothing about the base behavior changes.
+  The DEFAULT emitter. `emit/2` forwards a `session/update` to
+  `Connection.notify` on the same FIFO lane as the eventual prompt reply; the
+  turn-boundary hooks are no-ops (it keeps no durable journal). Selecting this
+  emitter (or omitting `:emitter`) means the reattach extension is OFF.
   """
 
   @behaviour Raxol.AgentClientProtocol.Session.Emitter
@@ -1115,57 +1104,47 @@ defmodule Raxol.AgentClientProtocol.Session.Emitter.Direct do
   @impl true
   def turn_completed(_state, _rendered, _turn_id), do: :ok
 
-  # Base v2 keeps no durable Writer, so idle-reap has nothing to stop.
+  # Direct keeps no durable Writer, so idle-reap has nothing to stop.
   @impl true
   def reap(_state), do: :ok
 end
 
 defmodule Raxol.AgentClientProtocol.Session.Emitter.Journal do
   @moduledoc """
-  The durable emitter (`acp-reattach-design.md` §2.4) — reroutes updates and turn
-  boundaries through the single-publisher Writer (`Ext.Journal.Writer`) so the
-  session's durable, offset-addressed journal is FILLED by live turns, and every
-  attached reattacher replays it (P-JS5 / J1).
+  The durable emitter — reroutes updates and turn boundaries through the
+  single-publisher Writer (`Ext.Journal.Writer`) so the session's durable,
+  offset-addressed journal is FILLED by live turns, and every attached
+  reattacher replays it.
 
   ## What lands durably
 
     * `emit/2` → `Writer.append("session_update", SessionUpdate.to_json(update),
       taint)`. The Writer publishes the stamped record to every subscriber
-      (reattachers). Taint is stamped here and NEVER filtered (§6, W20).
+      (reattachers). Taint is stamped here and NEVER filters delivery.
     * `turn_started/3` → `Writer.append("turn_started", %{turnId, prompt}, "user")`
-      — acquires the Writer's cross-connection turn latch (§2.7).
+      — acquires the Writer's cross-connection turn latch.
     * `turn_completed/3` → `Writer.append("turn_completed", payload, "system")`
-      — clears the latch atomically (C13). Built from the single render value, so
-      a reattacher's `turn_completed` frame equals the live prompt response (J7a).
+      — clears the latch atomically. Built from the single render value, so
+      a reattacher's `turn_completed` frame equals the live prompt response.
 
-  ## Reported deviations from §2.4/§2.5 (not silently diverged — see the coder's
-  report)
+  ## Delivery and edge cases
 
-    * **Origin delivery is append-then-notify (two sites), not the single
-      subscriber-#1 path.** The frozen v2 Session already owns direct
-      `Connection.notify` for its own connection; `emit/2` KEEPS that (so I3
-      ordering and the 582-test base are untouched) and ADDS the durable append.
-      Reattachers on OTHER connections get the identical stamped stream via the
-      Writer subscription. The design's "origin == subscriber #1" symmetry (one
-      `notify` call site, the grep-gate J10) is thus NOT realized for the origin.
-      Observable guarantees actually proven: **durability** and **reattacher
-      stream-equality** hold; **append order is the single-publisher Writer's
-      arrival order** — the sole concurrent test asserts a set (offsets sorted),
-      so ordering is guaranteed only for the single-publisher / single-threaded
-      Writer sequence, NOT for multi-Task concurrent live-delivery interleaving
-      (see the J8 offset-law property + the `test/INVARIANTS.md` note on
-      multi-Task live-delivery ordering). Unifying the origin onto the subscriber
-      path is the §2.5 finalizing-drain rewrite, deferred to protect the frozen
-      drain.
+    * **Origin delivery is append-then-notify (two call sites).** `emit/2`
+      durably appends the update, then delivers it to the origin connection
+      with a direct `Connection.notify` (the same FIFO lane as the prompt
+      reply). Reattachers on OTHER connections get the identical stamped stream
+      via the Writer subscription. Every delivered update is durable and
+      reattachers see the same stream; append order is the single-publisher
+      Writer's arrival order, so ordering is guaranteed for the Writer's
+      sequence, NOT for interleaved live delivery from concurrent turn tasks.
     * **No Writer ⇒ degrade to notify-only.** If the session has no live Writer
       (`Writer.whereis == nil`), `emit/2` still notifies (never crashes a turn);
       the update is simply non-durable. Turn boundaries no-op.
-    * **Born-cancelled turns** (supervision IC-5c) do NOT append the
-      `turn_started`+`turn_completed` pair here (that path never reaches the
-      §2.4 seam); a Writer-side orphan-fold / repair covers dangling turns.
-    * **`prompt` capture is `[]` in v1.** `turn_started` records `turnId` (the
-      J7-totality key) with an empty prompt-block list; capturing the content
-      blocks is additive, grow-only.
+    * **Born-cancelled turns** append neither `turn_started` nor
+      `turn_completed`: that path resolves in the Session without reaching the
+      emitter.
+    * **`prompt` is recorded as `[]`.** `turn_started` records `turnId` (the
+      turn-totality key) with an empty prompt-block list.
   """
 
   @behaviour Raxol.AgentClientProtocol.Session.Emitter
@@ -1180,7 +1159,7 @@ defmodule Raxol.AgentClientProtocol.Session.Emitter.Journal do
   def emit(state, %SessionNotification{update: update} = notification) do
     payload = SessionUpdate.to_json(update)
     _ = append(state, "session_update", payload, taint_of(update))
-    # Origin delivery stays direct (reported deviation): base behavior preserved.
+    # Origin delivery: direct notify on the Session's own connection.
     _ = state.conn_mod.notify(state.conn, "session/update", notification)
     :ok
   end
@@ -1194,7 +1173,7 @@ defmodule Raxol.AgentClientProtocol.Session.Emitter.Journal do
 
   @impl true
   def turn_started(state, req, turn_id) do
-    # Propagate the Writer's cross-connection turn latch (§2.7): a held latch
+    # Propagate the Writer's cross-connection turn latch: a held latch
     # returns `{:error, :turn_in_flight}` and the Session replies busy. Every other
     # result — a successful append, no live Writer (degrade), or a caught Writer
     # crash (`safe_append`'s catch leg) — is `:ok`: a turn should never fail to
@@ -1219,9 +1198,8 @@ defmodule Raxol.AgentClientProtocol.Session.Emitter.Journal do
 
   # A durable `"steer"` record for an accepted steer so a
   # reattacher replays the redirected turn. Taint `"user"` — the steering text is
-  # user input (§6, W20 never filters taint). `client_msg_id`/`text` are nested in
-  # `payload` (freeze §5.1 layout, the same place they land in the pure decision
-  # core's event). Degrades to a no-op with no live Writer.
+  # user input (taint never filters delivery). `client_msg_id`/`text` are nested
+  # in `payload`. Degrades to a no-op with no live Writer.
   @impl true
   def steer_accepted(state, ref, request) do
     payload = %{
@@ -1262,7 +1240,7 @@ defmodule Raxol.AgentClientProtocol.Session.Emitter.Journal do
   # -- internals --------------------------------------------------------------
 
   # Append through the single publisher (Writer). No Writer ⇒ no durable record
-  # (degrade, never crash). Kind/latch semantics live in the Writer (§2.5/§2.7).
+  # (degrade, never crash). Kind/latch semantics live in the Writer.
   defp append(state, kind, payload, taint) do
     case Writer.whereis(state.session_id) do
       nil -> :ok
@@ -1278,8 +1256,7 @@ defmodule Raxol.AgentClientProtocol.Session.Emitter.Journal do
     kind_, reason -> {:caught, kind_, reason}
   end
 
-  # v1 taint classes (§6) derived from the SessionUpdate variant tag. A grow-only
-  # free string; converges with the harness §2.1 classes at wiring time (OQ-2).
+  # Taint classes derived from the SessionUpdate variant tag (a free string).
   defp taint_of({:user_message_chunk, _}), do: "user"
   defp taint_of({:agent_message_chunk, _}), do: "agent"
   defp taint_of({:agent_thought_chunk, _}), do: "agent"

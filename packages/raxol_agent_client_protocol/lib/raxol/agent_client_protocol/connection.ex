@@ -1,22 +1,20 @@
 defmodule Raxol.AgentClientProtocol.Connection.Ctx do
   @moduledoc """
-  Per-dispatch handler context (IC-2 in both `acp-connection-design.md` and
-  `acp-supervision-design.md`, v2).
+  Per-dispatch handler context.
 
   One `Ctx` is built by `Raxol.AgentClientProtocol.Connection` for every
   inbound request/notification and handed to the handler task that runs the
   matching callback OUTSIDE the Connection process. `handler_state` is
-  **read-only per dispatch** (connection design §4.5): handlers are
+  **read-only per dispatch**: handlers are
   concurrent tasks, so there is no safe way to thread mutable state through
   them — stateful per-session logic lives in the Session layer, not here.
 
   `reply_ref` is present (`reference()`) for requests and `nil` for
   notifications. `rx_seq` is the inbound frame's monotone sequence stamp
-  (IC-5c) — `begin_prompt` forwards it to the Session so cancel-vs-prompt
+  — `begin_prompt` forwards it to the Session so cancel-vs-prompt
   commutes by wire order. `delivery_stamp` is the receiver-assigned
   ordering key (`Raxol.AgentClientProtocol.Delivery.t()`) for a
-  `session/update` dispatch — `nil` for every other dispatch (transport-
-  ordering design §4.5).
+  `session/update` dispatch — `nil` for every other dispatch.
   """
 
   @enforce_keys [:conn, :role]
@@ -71,81 +69,68 @@ end
 defmodule Raxol.AgentClientProtocol.Connection do
   @moduledoc """
   ONE GenServer per peer link, either role — the correlation + dispatch brain
-  of ACP. Implements `acp-connection-design.md` v2 (G2-CONVERGED) exactly;
-  the shared Interface Contract (§IC-1..IC-8), byte-identical in the
-  connection and supervision designs, is the source of truth for every
-  cross-module seam cited below.
+  of ACP.
 
   The same module runs as `:agent` or `:client`; `role` only selects which
   MethodTable direction is *inbound* (`side = role`). The Connection:
 
     * **never blocks** — no `GenServer.call` to itself, no synchronous wait
-      on tasks, no transport call that waits on peer progress (§5, IC-7);
+      on tasks, no transport call that waits on peer progress;
     * **never runs handler code in its own process** — every inbound
       request/notification is dispatched to a `Task.Supervisor.async_nolink`
-      task (§4);
+      task;
     * **never creates an atom from wire input** — all method→atom mapping is
-      `Router`/`MethodTable` compile-time clauses (§1.1, Inv-7).
+      `Router`/`MethodTable` compile-time clauses.
 
   ## Correctness spine
 
-    * Outbound: `async_request/6` is THE primitive (IC-3); `request/4` is a
+    * Outbound: `async_request/6` is THE primitive; `request/4` is a
       caller-parking wrapper on the same `pending_out` table. The Connection
-      is the **single timeout authority** (`Process.send_after`, §2.3) — no
+      is the **single timeout authority** (`Process.send_after`) — no
       caller arms a parallel timer. Every pending_out entry leaves through
-      exactly one of: correlated response (§2.4), timeout (§2.3),
-      `cancel_request/2` (§2.5), or `reject_all_outgoing` (§3). No fifth path.
+      exactly one of: correlated response, timeout,
+      `cancel_request/2`, or `reject_all_outgoing`. No fifth path.
     * Inbound: dispatch via `async_nolink`; crash ⇒ `-32603` with the id
-      echoed at its exact wire type (§4.3); notification crash ⇒ log only,
-      never a frame (§4.4). `$/cancel_request` and `session/cancel` are
-      Connection-intercepted BEFORE `Router.decode/4` (§6, MethodTable rows
+      echoed at its exact wire type; notification crash ⇒ log only,
+      never a frame. `$/cancel_request` and `session/cancel` are
+      Connection-intercepted BEFORE `Router.decode/4` (MethodTable rows
       carry the `:protocol` / `:session_control` layer tags).
-    * Delegated reply (IC-4): `delegate_reply/3` + `reply/3` + `:deferred`
+    * Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred`
       let the Session own WHEN the `session/prompt` response is sent while
-      keeping updates and the response on ONE FIFO lane (§4.6).
-    * Response-count invariant (IC-6): at most one response frame per inbound
+      keeping updates and the response on ONE FIFO lane.
+    * Response-count invariant: at most one response frame per inbound
       id; exactly one unless the peer `$/cancel_request`'d it first (then
       zero).
 
-  ## Deviations from the design forced by shipped dependencies
+  ## Implementation notes
 
-  These are reported verbatim to the orchestrator; each is the minimal
-  adaptation the design's own escape hatch permits ("if a design detail
-  conflicts with the shipped Router API, report it and adapt minimally"):
-
-    1. The design's `MethodTable.result_decoder(method)` + `mod.from_map/1`
-       are realized as the shipped `Router.result_marker/1` +
-       `mod.from_json/1` (§2.4).
-    2. `Router.decode/4` returns the raw schema-decode error tuple (not the
-       design's `{:invalid_params, reason}`); any non-`:method_not_found`
-       decode error is mapped to `-32602` (§4.1).
+    1. A pending outbound request's response is decoded through the
+       `Router.result_marker/1` marker stored at send time + the result
+       module's `from_json/1`.
+    2. `Router.decode/4` returns the raw schema-decode error tuple; any
+       non-`:method_not_found` decode error is mapped to `-32602`.
     3. The capability gate is located BEFORE decode with the correct
-       `-32601`-beats-`-32602` ordering. The permissive seam is now CLOSED
-       (W17-caps wave): `capability_denied?/2` delegates to the real
+       `-32601`-beats-`-32602` ordering. `capability_denied?/2` delegates to
        `Capabilities.negotiated?/2`, which fails closed on any
-       missing/`nil`/`false` capability. Closing it required one change the
-       original deviation did not foresee ("only that predicate changes"):
-       the `caps` SNAPSHOT is now the RECEIVER's OWN capability tree, not the
-       whole `initialize` message. The agent snapshots `agent_capabilities`
-       from the response it sends; the client snapshots `client_capabilities`
-       from the request it sends (stashed in `own_caps` at outbound-submit
-       time, committed at handshake), because the client's own caps are not
-       present in the `initialize` RESPONSE it receives. See
-       `Capabilities` + `MethodTable`'s ORACLE-DIVERGENCE note
-       (`session/delete`/`close`/`logout` fail closed — the ported caps
-       structs cannot express those gates).
+       missing/`nil`/`false` capability. The `caps` SNAPSHOT is the
+       RECEIVER's OWN capability tree, not the whole `initialize` message.
+       The agent snapshots `agent_capabilities` from the response it sends;
+       the client snapshots `client_capabilities` from the request it sends
+       (stashed in `own_caps` at outbound-submit time, committed at
+       handshake), because the client's own caps are not present in the
+       `initialize` RESPONSE it receives. See `Capabilities` + the
+       `MethodTable` `capability` typedoc (ORACLE-DIVERGENCE note).
     4. `transport_ref` and the monitored carrier pid are both taken from the
        handle's `:pid` field (the Transport behaviour exposes no ref
-       accessor; Paired — and the future stdio reader — expose `:pid`, and
-       Paired's inbound frames are tagged with that same pid, verified by
-       `paired_test.exs`).
+       accessor; `Transport.Paired` and `Transport.Stdio` expose `:pid` and
+       tag their inbound frames with that same pid).
     5. Telemetry events are emitted only when `:telemetry` is loaded (it is
        not a package dependency); otherwise `Logger` carries the signal.
     6. Sibling `task_sup`/`session_sup` may be injected directly in
-       `start_link/1` opts (test convenience) in addition to the design's
-       `parent_sup` + `which_children` resolution in `handle_continue/2`
-       (IC-8); the shared IC pins the tree shape but not the child ids, so
-       resolution is by child module/type heuristic.
+       `start_link/1` opts (test convenience) instead of `parent_sup`; with
+       `parent_sup`, `handle_continue/2` resolves them from
+       `which_children` by child module/type (the `Task.Supervisor` child is
+       `task_sup`, the other `:supervisor` child is `session_sup`).
   """
 
   use GenServer
@@ -159,7 +144,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   @session_registry Raxol.AgentClientProtocol.SessionRegistry
 
-  # Inbound-request concurrency cap (flood-DoS shed, §4). `pending_in` (and its
+  # Inbound-request concurrency cap (flood-DoS shed). `pending_in` (and its
   # co-indexed `reply_refs`/`task_index`, plus one dispatch task each) is bounded
   # by this many CONCURRENT in-flight inbound requests; a peer that streams more
   # is SHED (`-32603` server-busy, dispatch nothing) rather than growing the maps
@@ -195,22 +180,21 @@ defmodule Raxol.AgentClientProtocol.Connection do
             handler_state: nil,
             task_sup: nil,
             max_in: @default_max_inbound,
-            # Client-role-only turn-delivery state (transport-ordering design
-            # §4.2). `turns`: session_id => %TurnState{} for the session's
-            # currently open `session/prompt` turn. `turn_ids`: the reverse
+            # Client-role-only turn-delivery state. `turns`: session_id =>
+            # %TurnState{} for the session's currently open `session/prompt`
+            # turn. `turn_ids`: the reverse
             # index, out_id => session_id, so the response/timeout/cancel
             # paths can pop a turn by the wire id they already have in hand.
             # `oot_seq`: session_id => count of out-of-turn (no open turn)
             # `session/update` notifications stamped so far — receiver-
-            # assigned, monotone, never reset (clause 5's out-of-turn
-            # namespace).
+            # assigned, monotone, never reset (the out-of-turn namespace).
             turns: %{},
             turn_ids: %{},
             oot_seq: %{}
 
   @type role :: :agent | :client
 
-  @typedoc "Outcome delivered for an accepted outbound submission (IC-3)."
+  @typedoc "Outcome delivered for an accepted outbound submission."
   @type outcome ::
           {:ok, struct()}
           | {:ok, {:ext, map()}}
@@ -218,17 +202,17 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   # ===========================================================================
   # Public API — every function raises ArgumentError when conn == self()
-  # (§2.1 / §5 cycle 1: no code running IN the Connection may call back into it).
+  # (no code running IN the Connection may call back into it).
   # ===========================================================================
 
-  @doc "Start a Connection. Opts: `:role`, `:transport` `{mod, handle}`, `:handler`, `:handler_arg`, `:max_inbound` (concurrent inbound-request cap, default #{@default_max_inbound}), and either `:parent_sup` (IC-8) or direct `:task_sup`/`:session_sup`."
+  @doc "Start a Connection. Opts: `:role`, `:transport` `{mod, handle}`, `:handler`, `:handler_arg`, `:max_inbound` (concurrent inbound-request cap, default #{@default_max_inbound}), and either `:parent_sup` or direct `:task_sup`/`:session_sup`."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
     GenServer.start_link(__MODULE__, opts, Keyword.take(opts, [:name]))
   end
 
   @doc """
-  PRIMITIVE outbound submit (IC-3). Non-blocking: returns `:ok` once the
+  PRIMITIVE outbound submit. Non-blocking: returns `:ok` once the
   frame is accepted by the transport, and later delivers **exactly one**
   `{:acp_result, tag, outcome}` to `owner` — unless `owner` consumed the
   entry first via `cancel_request/2` (then zero). Connection owns the timeout.
@@ -249,10 +233,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   @doc """
-  WRAPPER outbound request (IC-3): parks the caller on `pending_out` and
+  WRAPPER outbound request: parks the caller on `pending_out` and
   returns the outcome. Outer `GenServer.call` timeout is `:infinity` by
   design — the protocol timeout is the Connection's internal timer, the ONE
-  authority (§2.1).
+  authority.
   """
   @spec request(pid(), String.t(), struct() | map() | nil, pos_integer()) ::
           {:ok, struct()} | {:ok, {:ext, map()}} | {:error, term()}
@@ -262,21 +246,21 @@ defmodule Raxol.AgentClientProtocol.Connection do
     GenServer.call(conn, {:request, method, params, timeout_ms}, :infinity)
   end
 
-  @doc "Fire-and-forget notification (IC-3): a `GenServer.call` for per-sender FIFO + backpressure; touches no pending table, arms no timer."
+  @doc "Fire-and-forget notification: a `GenServer.call` for per-sender FIFO + backpressure; touches no pending table, arms no timer."
   @spec notify(pid(), String.t(), struct() | map() | nil) :: :ok | {:error, term()}
   def notify(conn, method, params) when is_pid(conn) and is_binary(method) do
     reject_self!(conn)
     GenServer.call(conn, {:notify, method, params})
   end
 
-  @doc "Cancel a pending `async_request` by its `{owner, tag}` (IC-3). Pops the entry, cancels its timer, best-effort `$/cancel_request`, delivers nothing. Unknown tag ⇒ `:ok`."
+  @doc "Cancel a pending `async_request` by its `{owner, tag}`. Pops the entry, cancels its timer, best-effort `$/cancel_request`, delivers nothing. Unknown tag ⇒ `:ok`."
   @spec cancel_request(pid(), term()) :: :ok
   def cancel_request(conn, tag) when is_pid(conn) do
     reject_self!(conn)
     GenServer.call(conn, {:cancel_request, tag})
   end
 
-  @doc "Transfer an inbound request's reply obligation to `adopter` (IC-4). MUST return before the handler returns `:deferred`. Connection monitors the adopter."
+  @doc "Transfer an inbound request's reply obligation to `adopter`. MUST return before the handler returns `:deferred`. Connection monitors the adopter."
   @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref}
   def delegate_reply(conn, reply_ref, adopter)
       when is_pid(conn) and is_reference(reply_ref) and is_pid(adopter) do
@@ -284,7 +268,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     GenServer.call(conn, {:delegate_reply, reply_ref, adopter})
   end
 
-  @doc "Discharge a delegated reply obligation (IC-4). Idempotent-safe: a consumed/unknown/cancelled `reply_ref` is a suppressed no-op (`[:raxol, :acp, :dup_reply]`) and still returns `:ok`."
+  @doc "Discharge a delegated reply obligation. Idempotent-safe: a consumed/unknown/cancelled `reply_ref` is a suppressed no-op (`[:raxol, :acp, :dup_reply]`) and still returns `:ok`."
   @spec reply(pid(), reference(), {:ok, struct()} | {:error, Error.t()}) :: :ok
   def reply(conn, reply_ref, result_or_error)
       when is_pid(conn) and is_reference(reply_ref) do
@@ -292,7 +276,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     GenServer.call(conn, {:reply, reply_ref, result_or_error})
   end
 
-  @doc "Graceful close (§7.3): reject outgoing, kill undelegated inbound tasks, close transport, stop `:normal`."
+  @doc "Graceful close: reject outgoing, kill undelegated inbound tasks, close transport, stop `:normal`."
   @spec close(pid()) :: :ok
   def close(conn) when is_pid(conn) do
     reject_self!(conn)
@@ -300,17 +284,15 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   @doc """
-  Race-free base-ordinal accessor for a session's delivery stream
-  (transport-ordering design §4.5). Because this is a `GenServer.call`
+  Race-free base-ordinal accessor for a session's delivery stream.
+  Because this is a `GenServer.call`
   (serialized with the demux point that assigns ordinals), a caller that
   subscribes to the broadcast path THEN calls this learns an exact base:
   every stamp assigned after this call returns is guaranteed to reach a
   live subscriber, and every stamp `<= ordinal` is pre-subscription.
   `turn: nil` means the session currently has no open `session/prompt`
-  turn (the out-of-turn namespace applies). NOTE: this accessor is the
-  seam the bounded Reorder engine (a later unit) consumes to compute its
-  `:next` base; the primary direct-delivery path (`Client.prompt/3`,
-  `prompt_stream/4`) does not need it at all.
+  turn (the out-of-turn namespace applies). The primary direct-delivery
+  path (`Client.prompt/3`, `prompt_stream/4`) does not need it at all.
   """
   @spec update_watermark(pid(), String.t()) ::
           {:ok, %{turn: reference() | nil, ordinal: non_neg_integer()}}
@@ -322,13 +304,13 @@ defmodule Raxol.AgentClientProtocol.Connection do
   defp reject_self!(conn) do
     if conn == self() do
       raise ArgumentError,
-            "Connection API called with conn == self(): forbidden re-entrant cycle (§5)"
+            "Connection API called with conn == self(): forbidden re-entrant cycle"
     end
   end
 
   # ===========================================================================
-  # Lifecycle (§7.1) — init stores args + traps exits; ALL sibling resolution
-  # and transport adoption happen in handle_continue (IC-8, avoids the
+  # Lifecycle — init stores args + traps exits; ALL sibling resolution
+  # and transport adoption happen in handle_continue (avoids the
   # which_children-from-init deadlock).
   # ===========================================================================
 
@@ -413,7 +395,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   defp carrier_pid(_handle), do: nil
 
   # ===========================================================================
-  # Outbound (§2)
+  # Outbound
   # ===========================================================================
 
   @impl GenServer
@@ -467,14 +449,14 @@ defmodule Raxol.AgentClientProtocol.Connection do
         {entry, pending_out} = Map.pop(state.pending_out, id)
         if entry && entry.timer_ref, do: Process.cancel_timer(entry.timer_ref)
         best_effort_cancel_notify(id, state)
-        # §4.6: pop any open turn SILENTLY — no `:acp_turn_end` — IC-3's
+        # Pop any open turn SILENTLY — no `:acp_turn_end` — so the
         # "delivers nothing" contract for a consumed entry is preserved.
         state = pop_turn_silent(id, %{state | pending_out: pending_out, out_tags: out_tags})
         {:reply, :ok, state}
     end
   end
 
-  # §4.5: race-free watermark accessor. A `GenServer.call`, so it is
+  # Race-free watermark accessor. A `GenServer.call`, so it is
   # serialized with the demux point (`dispatch_inbound_notification/3`) —
   # every ordinal assigned after this reply is observed is guaranteed not
   # yet delivered to any pre-existing broadcast subscriber.
@@ -488,7 +470,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     {:reply, {:ok, watermark}, state}
   end
 
-  # -- Delegated reply (§4.6, IC-4) --
+  # -- Delegated reply --
 
   def handle_call({:delegate_reply, reply_ref, adopter}, _from, state) do
     case Map.get(state.reply_refs, reply_ref) do
@@ -515,7 +497,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
         st = %{state | reply_refs: reply_refs, pending_in: pending_in}
 
         if entry.cancelled? do
-          # IC-5a/d: the id was abandoned; emit nothing.
+          # The id was abandoned via `$/cancel_request`; emit nothing.
           {:reply, :ok, st}
         else
           case push_frame(st, response_frame(id, result_or_error)) do
@@ -533,7 +515,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     {:stop, :normal, :ok, transport_down(:local_close, state)}
   end
 
-  # Gate + mint + send (§2.2). Returns {:parked, state} (entry pended, caller
+  # Gate + mint + send. Returns {:parked, state} (entry pended, caller
   # waits) or {:answered, answer, state} (gated or transport-refused now).
   defp submit_outbound(method, params, timeout_ms, reply_to, state) do
     cond do
@@ -557,7 +539,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
             case state.transport_mod.send_message(state.transport_state, frame) do
               {:error, reason} ->
-                # Nothing pended, no timer; counter still consumed (gaps harmless, §1.2).
+                # Nothing pended, no timer; counter still consumed (gaps harmless).
                 {:answered, {:error, {:transport, reason}}, state}
 
               {:ok, ts} ->
@@ -581,13 +563,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # ===========================================================================
-  # Turn open (§4.3) — a `session/prompt` submitted via `async_request`
+  # Turn open — a `session/prompt` submitted via `async_request`
   # (reply_to = {:owner, owner, tag}) opens a turn: a receiver-minted token
   # namespacing every subsequent `session/update` for its session until the
-  # turn closes (§4.6). A SYNC `Connection.request/4` caller (`{:call,
+  # turn closes. A SYNC `Connection.request/4` caller (`{:call,
   # from}`) is blocked in `GenServer.call` and cannot receive a `send/2`
-  # delivery anyway (the existing rationale at the top of this module,
-  # §5/§7), so its session's updates are stamped out-of-turn instead
+  # delivery anyway, so its session's updates are stamped out-of-turn instead
   # (`oot_seq`) — there is no owner pid to open a turn for.
   # ===========================================================================
 
@@ -614,11 +595,11 @@ defmodule Raxol.AgentClientProtocol.Connection do
   defp prompt_session_id(%{"sessionId" => session_id}) when is_binary(session_id), do: session_id
   defp prompt_session_id(_other), do: nil
 
-  # "One turn per session" (§4.3): a second `session/prompt` for a session
+  # "One turn per session": a second `session/prompt` for a session
   # with an already-open turn REPLACES it — the OLD turn's owner is sent its
-  # `{:acp_turn_end, old_tag, count}` companion first. Session invariant I12
-  # rejects this agent-side anyway; receiver behavior here is defined, not
-  # undefined.
+  # `{:acp_turn_end, old_tag, count}` companion first. The agent-side Session
+  # rejects a second prompt on a live turn anyway; receiver behavior here is
+  # defined, not undefined.
   defp close_replaced_turn(state, session_id) do
     case Map.get(state.turns, session_id) do
       nil ->
@@ -635,7 +616,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # §4.6: pop turn state for `out_id` and send its `{:acp_turn_end, ...}`
+  # Pop turn state for `out_id` and send its `{:acp_turn_end, ...}`
   # companion, if one is open. Called immediately BEFORE `deliver_outcome/2`
   # on both the response and timeout paths, from this same process, so the
   # owner's mailbox order is updates 0..count-1, then turn_end, then result
@@ -652,8 +633,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # §4.6: `cancel_request/2`'s silent pop — no `:acp_turn_end` (a cancelled
-  # entry delivers nothing, IC-3).
+  # `cancel_request/2`'s silent pop — no `:acp_turn_end` (a cancelled
+  # entry delivers nothing).
   defp pop_turn_silent(out_id, state) do
     case Map.pop(state.turn_ids, out_id) do
       {nil, _} ->
@@ -677,7 +658,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   defp drop_tag(out_tags, {:call, _from}), do: out_tags
 
   # ===========================================================================
-  # Timeout path (§2.3) — deliver AND delete in the same clause.
+  # Timeout path — deliver AND delete in the same clause.
   # ===========================================================================
 
   @impl GenServer
@@ -694,7 +675,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # -- Transport inbound (§4) --
+  # -- Transport inbound --
 
   def handle_info({:acp_transport, ref, {:message, frame}}, state) do
     if ref == state.transport_ref do
@@ -742,8 +723,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # transport a JSON array arrives here as `{:not_an_object, list}` instead,
   # so it is routed to the same -32600 batch response. Any other decode
   # failure (unparseable JSON, a non-object/non-array top-level scalar, an
-  # oversized frame) is a genuine parse error (§9). Never tears the
-  # connection down (Inv-15 parity).
+  # oversized frame) is a genuine parse error. Never tears the
+  # connection down (same as a malformed frame).
   def handle_info({:acp_transport, ref, {:decode_error, reason, _raw_line}}, state) do
     if ref == state.transport_ref do
       handle_decode_error(reason, state)
@@ -753,7 +734,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # -- Task success (§4.2 / §4.4) --
+  # -- Task success --
 
   def handle_info({ref, result}, state) when is_reference(ref) do
     case Map.get(state.task_index, ref) do
@@ -771,7 +752,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # -- DOWN: transport carrier | task crash | adopter death (§4.3 / §4.7 / §3) --
+  # -- DOWN: transport carrier | task crash | adopter death --
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
     cond do
@@ -792,7 +773,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   def handle_info(_msg, state), do: {:noreply, state}
 
   # ===========================================================================
-  # Inbound classification (§4)
+  # Inbound classification
   # ===========================================================================
 
   defp handle_message(frame, rx_seq, state) when is_list(frame) do
@@ -823,7 +804,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # A top-level JSON array is the same "batch" shape the `is_list(frame)`
   # clause of `handle_message/3` answers -32600 for; every other decode
   # failure (torn JSON, an oversized frame, a non-object/non-array scalar)
-  # is a genuine -32700 parse error (§9, S5).
+  # is a genuine -32700 parse error.
   @spec handle_decode_error(term(), %__MODULE__{}) ::
           {:noreply, %__MODULE__{}} | {:stop, :normal, %__MODULE__{}}
   defp handle_decode_error({:not_an_object, list}, state) when is_list(list) do
@@ -844,13 +825,13 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # A frame classified as a response (has "id" + "result"/"error") that
-  # fails to decode is DROPPED, never answered (S1): JSON-RPC 2.0 forbids
+  # fails to decode is DROPPED, never answered: JSON-RPC 2.0 forbids
   # answering a response, and this Connection's own `next_out_id` space can
   # overlap the peer's -- echoing a synthesized -32600 error back at the
   # response's id would land in the PEER's own `pending_out` table and get
   # cross-correlated to an unrelated in-flight request of theirs. Any real
   # in-flight request we made under this id resolves by its own timeout
-  # instead, per the design's row 15/16/19 precedent.
+  # instead.
   defp classify_response(frame, state) do
     case Response.from_json(frame) do
       {:ok, resp} -> handle_inbound_response(resp, state)
@@ -878,7 +859,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # A malformed frame is answered -32600 with its id if wire-valid, else null;
-  # the connection NEVER tears down on a malformed frame (§4, Inv-15).
+  # the connection NEVER tears down on a malformed frame.
   defp respond_malformed(frame, state) do
     id =
       case frame do
@@ -890,7 +871,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # ===========================================================================
-  # Inbound request (§4.1) — ordered checks, first hit wins.
+  # Inbound request — ordered checks, first hit wins.
   # ===========================================================================
 
   defp handle_inbound_request(%Request{} = req, rx_seq, state) do
@@ -917,7 +898,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
         Logger.warning("ACP: inbound request with null id (method #{method}) rejected -32600")
         emit_and_continue(response_frame(nil, {:error, Error.invalid_request()}), state)
 
-      # (3) duplicate in-flight id — DROP, no response (§4.1(3), Inv-14)
+      # (3) duplicate in-flight id — DROP, no response
       Map.has_key?(state.pending_in, id) ->
         emit_telemetry([:raxol, :acp, :duplicate_inflight_id], %{id: RequestId.display(id)})
         Logger.warning("ACP: duplicate in-flight request id #{RequestId.display(id)} dropped")
@@ -945,7 +926,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
         emit_and_continue(response_frame(id, {:error, error}), state)
 
-      # (5) capability gate BEFORE decode — -32601 beats -32602 (§4.1)
+      # (5) capability gate BEFORE decode — -32601 beats -32602
       capability_denied?(method, state) ->
         error = data_error(-32_601, "Method not found", method)
         emit_and_continue(response_frame(id, {:error, error}), state)
@@ -984,7 +965,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
       task_sup: state.task_sup
     }
 
-    # The `max_in` cap (§4.1(4)) sheds before we ever reach the task_sup's own
+    # The `max_in` cap (check (4) above) sheds before we ever reach the task_sup's own
     # `max_children` backstop, so this rejection path is defence-in-depth: if the
     # shared Task.Supervisor is nonetheless saturated (e.g. a co-tenant notif
     # flood), we SHED -32603 rather than let `async_nolink` raise and take the
@@ -1038,7 +1019,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # ===========================================================================
-  # Inbound request task result (§4.2)
+  # Inbound request task result
   # ===========================================================================
 
   defp handle_request_result(id, result, state) do
@@ -1057,7 +1038,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   defp finish_request_result(id, entry, :deferred, state) do
-    # (3) :deferred is legal iff the entry was delegated (IC-4).
+    # (3) :deferred is legal iff the entry was delegated.
     if entry.adopter != nil do
       nulled = %{entry | task_ref: nil, task_pid: nil}
       {:noreply, %{state | pending_in: Map.put(state.pending_in, id, nulled)}}
@@ -1095,7 +1076,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   defp result_to_response(_other), do: :malformed
 
   # ===========================================================================
-  # Inbound request task crash / adopter death (§4.3 / §4.7)
+  # Inbound request task crash / adopter death
   # ===========================================================================
 
   defp handle_task_down(ref, reason, state) do
@@ -1151,10 +1132,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # ===========================================================================
-  # Inbound notification (§4.4) + intercepts (§6)
+  # Inbound notification + intercepts
   # ===========================================================================
 
-  # $/cancel_request is protocol-layer and allowed pre-handshake (IC-5a, §7.2).
+  # $/cancel_request is protocol-layer and allowed pre-handshake.
   defp handle_inbound_notification(
          %Notification{method: "$/cancel_request", params: params},
          _rx_seq,
@@ -1187,12 +1168,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
         emit_telemetry([:raxol, :acp, :unknown_notification], %{method: method})
         {:noreply, state}
 
-      # §4.4: this is the actual demux-point fix. `session/update` is
+      # The demux point: `session/update` is
       # stamped AND delivered directly to the open turn's owner (or stamped
       # out-of-turn) BEFORE the handler dispatch task is spawned below —
       # the same `send/2`-from-this-process operation `deliver_outcome/2`
-      # already performs for the terminal result, never user code running
-      # on the Connection loop (that was round 1's mistake, not this one).
+      # performs for the terminal result; no user code runs on the
+      # Connection loop.
       {:ok, {:session_update, notif} = dispatchable} ->
         {stamp, state} = stamp_and_deliver_update(notif, rx_seq, state)
         dispatch_notification_task(method, dispatchable, stamp, state)
@@ -1202,12 +1183,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # §4.4/§4.5: the receiver-assigned contiguous per-turn ordinal, and the
+  # The receiver-assigned contiguous per-turn ordinal, and the
   # direct single-sender delivery to the turn owner. `notif.session_id` has
   # an open turn ⇒ deliver `{:acp_turn_update, tag, ordinal, notif}` to its
   # owner and advance `next_ordinal`; no open turn ⇒ stamp out-of-turn
-  # (`oot_seq`, per-session, monotone, never reset — clause 5's out-of-turn
-  # namespace). Returns the `Delivery.Stamp` for the broadcast path's `Ctx`.
+  # (`oot_seq`, per-session, monotone, never reset — the out-of-turn
+  # namespace). Returns the `Delivery` stamp for the broadcast path's `Ctx`.
   defp stamp_and_deliver_update(%{session_id: session_id} = notif, rx_seq, state) do
     case Map.get(state.turns, session_id) do
       %TurnState{owner: owner, tag: tag, token: token, next_ordinal: n} ->
@@ -1246,7 +1227,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
     # A notification carries no reply obligation, so an over-capacity spawn is
     # DROPPED (log + telemetry), never a wire frame — and never a raise that
-    # would take the Connection down (§4.4, flood-DoS guard symmetry).
+    # would take the Connection down (flood-DoS guard symmetry).
     case start_dispatch_task(state, fn ->
            run_dispatch(state.role, state.handler, dispatchable, ctx)
          end) do
@@ -1264,7 +1245,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # session/cancel — Connection-routed session control, NO app dispatch (IC-5b/c).
+  # session/cancel — Connection-routed session control, NO app dispatch.
   defp route_session_cancel(params, rx_seq, state) do
     case CancelNotification.from_json(params || %{}) do
       {:ok, %{session_id: session_id}} ->
@@ -1280,7 +1261,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  # $/cancel_request mechanics (§6.1, IC-5a). Mark cancelled? FIRST, then act.
+  # $/cancel_request mechanics. Mark cancelled? FIRST, then act.
   defp cancel_inbound(cancel_id, state) do
     case Map.get(state.pending_in, cancel_id) do
       nil ->
@@ -1303,7 +1284,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # ===========================================================================
-  # Correlated response arrival (§2.4)
+  # Correlated response arrival
   # ===========================================================================
 
   defp handle_inbound_response(resp, state) do
@@ -1342,12 +1323,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
   defp decode_response({:error, _id, %Error{} = err}, _method), do: {:error, err}
 
   # ===========================================================================
-  # Handshake phase transitions (§7.2). The `caps` snapshot is the RECEIVER's
-  # OWN capability tree (deviation #3, W17-caps): the agent snapshots the
+  # Handshake phase transitions. The `caps` snapshot is the RECEIVER's
+  # OWN capability tree: the agent snapshots the
   # `agent_capabilities` of the response it just sent; the client snapshots the
   # `client_capabilities` it stashed (`own_caps`) when it sent the request —
   # the client's own caps are absent from the response it receives. Written
-  # exactly once here and immutable after (Inv-11).
+  # exactly once here and immutable after.
   # ===========================================================================
 
   defp maybe_agent_initialized(
@@ -1387,7 +1368,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   defp own_client_caps(_other), do: nil
 
   # ===========================================================================
-  # reject_all_outgoing + inbound teardown (§3). One idempotent funnel.
+  # reject_all_outgoing + inbound teardown. One idempotent funnel.
   # ===========================================================================
 
   defp transport_down(_reason, %{phase: :closed} = state), do: state
@@ -1435,7 +1416,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # Small shared helpers
   # ===========================================================================
 
-  # Deliver an outcome to a parked sync caller or an async owner (§2.2).
+  # Deliver an outcome to a parked sync caller or an async owner.
   defp deliver_outcome({:call, from}, outcome), do: GenServer.reply(from, outcome)
 
   defp deliver_outcome({:owner, pid, tag}, outcome) do
@@ -1463,7 +1444,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end)
   end
 
-  # Best-effort $/cancel_request for a wire id (§6.3). Send failure is swallowed.
+  # Best-effort $/cancel_request for a wire id. Send failure is swallowed.
   defp best_effort_cancel_notify(id, state) do
     frame = wire(Notification.new("$/cancel_request", %{"requestId" => RequestId.to_json(id)}))
 
@@ -1477,7 +1458,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   # Build a JSON-RPC error/result response frame (wire map, id echoed exact-type).
-  # A handler-returned result that fails to encode (O6) falls back to
+  # A handler-returned result that fails to encode falls back to
   # `-32603` rather than raising inside the Connection -- the same "never
   # trust a handler's return value" posture `result_to_response/1`'s
   # `:malformed` clause already takes for a non-struct/non-Error return.
@@ -1496,7 +1477,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   # Flatten a struct/map to a plain string-keyed wire map so in-process
   # transports (Paired, zero-copy) hand the peer a decodable map, not a struct.
-  # Total: never raises (O6) -- a non-JSON-safe `params` value (a stray pid,
+  # Total: never raises -- a non-JSON-safe `params` value (a stray pid,
   # ref, or tuple; app misuse, not a protocol violation) is reported as
   # `{:error, {:encode, reason}}` instead of raising `Jason.encode!/1` INSIDE
   # a `handle_call`, which would otherwise kill this GenServer on caller
@@ -1540,9 +1521,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
     Router.dispatch(side, handler, dispatchable, ctx)
   end
 
-  # Capability gate (§4.1 step 5): located BEFORE decode so `-32601` beats
-  # `-32602`. Delegates to the real, fail-closed predicate over the receiver's
-  # own negotiated caps snapshot (W17-caps — deviation #3 seam CLOSED).
+  # Capability gate (check (5) in `handle_inbound_request/3`): located BEFORE
+  # decode so `-32601` beats `-32602`. Delegates to the fail-closed predicate
+  # over the receiver's own negotiated caps snapshot.
   defp capability_denied?(method, state) do
     not Capabilities.negotiated?(state.caps, method)
   end
