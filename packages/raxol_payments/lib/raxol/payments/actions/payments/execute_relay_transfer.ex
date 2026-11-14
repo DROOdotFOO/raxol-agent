@@ -9,6 +9,15 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   `deposit_address`; poll the result with
   `Raxol.Payments.Actions.Payments.PollRelayStatus`.
 
+  `amount` is a human amount of `from_token`. `SpendGate` converts it into the
+  spending policy's unit (`Raxol.Payments.SpendPricing`: a stablecoin pegged
+  to it at par, a token that is not a stablecoin at its USD price from the
+  configured source under a USD policy) and gates and reserves that, or
+  refuses the transfer as `{:unpriced_asset, detail}` before anything is
+  signed or broadcast. A stablecoin pegged to another currency (EURC, EURe,
+  ZCHF under a USD policy) and an unregistered or unpriced source token are
+  refused.
+
   Tron has no stealth settlement. A stealth or shielded request to a Tron
   destination fails closed with `{:error, :stealth_unsupported_on_chain}` and
   must be re-requested with public settlement, rather than silently downgrading
@@ -138,11 +147,11 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     with :ok <- assert_relay_route(request),
          {:ok, quote} <- fillable_quote(config, request),
          :ok <- assert_delivery_floor(quote, floor),
-         :ok <- authorize(context, config, amount) do
+         {:ok, reserved} <- authorize(context, config, request, amount) do
       # Checkpoint the dispatched transfer before any funds move so a crash in the
       # funding step leaves a record a resume can poll instead of re-funding.
       Checkpoint.put(store, key, dispatched_record(quote))
-      fund(config, request, amount, warnings, context, store, key, quote)
+      fund(config, request, reserved, warnings, context, store, key, quote)
     end
   end
 
@@ -234,10 +243,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   defp build_request(params, from_address) do
     to_chain = Map.fetch!(params, :to_chain_id)
 
-    with :ok <- reject_stealth_on_tron(Map.get(params, :settlement, "public"), to_chain),
-         from_chain = Map.fetch!(params, :from_chain_id),
-         from_token = Map.fetch!(params, :from_token),
-         :ok <- reject_fx_source(from_chain, from_token) do
+    with :ok <- reject_stealth_on_tron(Map.get(params, :settlement, "public"), to_chain) do
+      from_chain = Map.fetch!(params, :from_chain_id)
+      from_token = Map.fetch!(params, :from_token)
       amount = Decimal.new(Map.fetch!(params, :amount))
       decimals = Assets.decimals(from_chain, from_token)
       from_amount = Integer.to_string(Assets.to_atomic(amount, decimals))
@@ -267,19 +275,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
       {:error, :stealth_unsupported_on_chain}
     else
       :ok
-    end
-  end
-
-  # A non-USD stablecoin scales correctly but the spend gate caps in dollars and
-  # would count it at par, so it moves no funds (ADR-0040 decision 6) until an
-  # FX rate gates the conversion (decision 7).
-  defp reject_fx_source(chain, token) do
-    case Assets.fx_peg(chain, token) do
-      nil ->
-        :ok
-
-      peg ->
-        {:error, {:unpriced_asset, %{chain_id: chain, token: token, side: :source, peg: peg}}}
     end
   end
 
@@ -317,9 +312,16 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     end
   end
 
-  defp authorize(context, config, amount) do
+  # The gate reserves `amount` (human units of the source token) in the policy's
+  # unit; the release and tag calls that follow take the reserved amount.
+  defp authorize(context, config, request, amount) do
     host = config |> Map.fetch!(:base_url) |> URI.parse() |> Map.get(:host)
-    SpendGate.authorize(context, amount, target: {:domain, host}, metadata: %{protocol: :relay})
+
+    SpendGate.authorize(context, amount,
+      asset: {:token, request.from_chain_id, request.from_token},
+      target: {:domain, host},
+      metadata: %{protocol: :relay}
+    )
   end
 
   # A (gasless): sign the quote's typed data before execute so the solver pulls.

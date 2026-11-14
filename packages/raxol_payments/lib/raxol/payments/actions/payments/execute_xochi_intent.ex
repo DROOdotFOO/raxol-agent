@@ -12,8 +12,13 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
   present, otherwise the signing wallet address. Polling with the same context
   reads that private record automatically.
 
-  The spend is gated on the human-decimal `amount`; the atomic `from_amount`
-  sent to Xochi is derived from the token's decimals. Invalid endpoint
+  `amount` is a human amount of `from_token`; the atomic `from_amount` sent
+  to Xochi is derived from the token's registered decimals. `SpendGate`
+  converts it into the spending policy's unit (`Raxol.Payments.SpendPricing`:
+  a stablecoin pegged to it at par, a token that is not a stablecoin at its
+  USD price from the configured source under a USD policy; a stablecoin pegged
+  to another currency is refused) and gates and reserves that, or refuses the intent as
+  `{:unpriced_asset, detail}` before anything is signed. Invalid endpoint
   configuration, a connection failure proven to happen before send, a local
   signing failure, or a structurally valid clean server rejection releases the
   reservation and deletes the checkpoint. Once submission may have started, a
@@ -25,7 +30,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
 
   With `swap_kind: "exact_output"` the caller fixes the delivered
   `output_amount` instead, the solver picks the origin amount, and `amount` is
-  the most the caller will spend: it is what the gate reserves and the ceiling
+  the most the caller will spend: it is what the gate prices and reserves and the ceiling
   the signed `fromAmount` is held to.
 
   Before the spend is authorized, the served EIP-712 intent is bound to the
@@ -181,9 +186,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
          {:ok, floor} <- delivery_floor(request, params),
          {:ok, quote} <- solvable_quote(config, request),
          :ok <- assert_quote(quote, request, floor),
-         :ok <- authorize(context, config, amount),
+         {:ok, reserved} <- authorize(context, config, request, amount),
          {:ok, exec, filled_quote} <-
-           execute(config, request, quote, floor, wallet, context, amount, store, key),
+           execute(config, request, quote, floor, wallet, context, reserved, store, key),
          :ok <- assert_settlement_privacy(request, exec) do
       record_settled(context, request, filled_quote, exec, store, key)
     end
@@ -505,15 +510,12 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
   # source amount is scaled by them -- a guess would move 10^n the intended
   # amount -- and a destination amount (a `min_to_amount`, the same-asset floor)
   # means nothing without them. `min_to_amount` does not waive this: the caller
-  # setting it cannot know an unregistered token's decimals either. A non-USD
-  # stablecoin source scales correctly but is still refused: the spend gate caps
-  # in dollars and would count it at par (ADR-0040 decision 6).
+  # setting it cannot know an unregistered token's decimals either.
   defp registered_legs(params) do
     from_chain = Map.fetch!(params, :from_chain_id)
     from_token = Map.fetch!(params, :from_token)
 
     with {:ok, decimals} <- registered_asset(from_chain, from_token, :source),
-         :ok <- dollar_source(from_chain, from_token),
          {:ok, _} <-
            registered_asset(
              Map.fetch!(params, :to_chain_id),
@@ -524,22 +526,12 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     end
   end
 
-  defp dollar_source(chain, token) do
-    case Assets.fx_peg(chain, token) do
-      nil -> :ok
-      peg -> {:error, {:unpriced_asset, fx_detail(chain, token, :source, peg)}}
-    end
-  end
-
   defp registered_asset(chain, token, side) do
     case Assets.fetch_decimals(chain, token) do
       {:ok, decimals} -> {:ok, decimals}
       :error -> {:error, {:unknown_asset, %{chain_id: chain, token: token, side: side}}}
     end
   end
-
-  defp fx_detail(chain, token, side, peg),
-    do: %{chain_id: chain, token: token, side: side, peg: peg}
 
   defp settlement(params), do: Map.get(params, :settlement, "stealth")
 
@@ -599,9 +591,16 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     end
   end
 
-  defp authorize(context, config, amount) do
+  # The gate reserves `amount` in the policy's unit; the ledger calls that
+  # follow (release, tag) take the reserved amount it returns.
+  defp authorize(context, config, request, amount) do
     host = config |> Map.fetch!(:base_url) |> URI.parse() |> Map.get(:host)
-    SpendGate.authorize(context, amount, target: {:domain, host}, metadata: %{protocol: :xochi})
+
+    SpendGate.authorize(context, amount,
+      asset: {:token, request.from_chain_id, request.from_token},
+      target: {:domain, host},
+      metadata: %{protocol: :xochi}
+    )
   end
 
   # Load-balanced Riddler nodes occasionally miss a freshly issued quote and

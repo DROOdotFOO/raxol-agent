@@ -173,7 +173,10 @@ defmodule Raxol.Payments.Xochi.SettlementMatrixTest do
       xochi_config: config(),
       ledger: ledger,
       policy: policy(),
-      agent_id: "a1"
+      agent_id: "a1",
+      # WETH and RAXOL sources are priced into the dollar policy; at $1 every
+      # 0.50 cell stays under per_request_max.
+      price_fn: Raxol.Payments.Prices.Static.price_fn(%{"WETH" => "1", "RAXOL" => "1"})
     }
 
     ExecuteXochiIntent.run(params, ctx)

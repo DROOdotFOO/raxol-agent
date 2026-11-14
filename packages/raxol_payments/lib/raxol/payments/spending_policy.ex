@@ -6,9 +6,23 @@ defmodule Raxol.Payments.SpendingPolicy do
   Used by the `Ledger` to enforce budget constraints before signing payments.
 
   Caps are human amounts of `currency` (see `unit/1`): with the default
-  `"USDC"`, `Decimal.new("1.00")` is one US dollar, whichever protocol is
-  paying (an x402 USDC authorization, an MPP charge in USD cents or a dollar
-  stablecoin, a Xochi intent).
+  `"USDC"`, `Decimal.new("1.00")` is one US dollar. A payment is converted
+  into that unit before it is checked, reserved or signed:
+
+    * `Raxol.Payments.Req.AutoPay` scales an x402 or MPP challenge by its
+      currency's decimals and refuses one priced in another unit.
+    * `Raxol.Payments.Actions.SpendGate` (Xochi intents, Relay transfers,
+      `payment_transfer`, ACP buys) counts a stablecoin pegged to the unit at
+      par. Under a USD policy it converts any other token (WETH, RAXOL) at its
+      USD price from the configured source (`Raxol.Payments.SpendPricing`),
+      and refuses the spend when there is no source or no fresh positive
+      price.
+
+  No spend cap reads an FX rate. A stablecoin pegged to a currency other than
+  the policy's is refused: EURC, EURe and ZCHF under a USD policy, a dollar
+  stablecoin under a EUR or CHF policy. Under a policy whose unit is not USD,
+  every token that is not a stablecoin pegged to that unit is refused, since
+  every price source quotes US dollars.
 
   ## Example
 
@@ -112,8 +126,10 @@ defmodule Raxol.Payments.SpendingPolicy do
   @doc """
   The unit the caps are written in: `"USD"` for a `"USD"` or `"USDC"` policy
   (USDC counts at par), otherwise the currency code upper-cased. `nil` when
-  `currency` is not a string. A payment is gated only when it is priced in
-  this unit; `Raxol.Payments.Req.AutoPay` refuses a challenge in any other.
+  `currency` is not a string, which every payment path refuses.
+  `Raxol.Payments.Req.AutoPay` refuses a challenge in any other unit;
+  `Raxol.Payments.SpendPricing` converts a `SpendGate` spend into it or
+  refuses it.
   """
   @spec unit(t()) :: String.t() | nil
   def unit(%__MODULE__{currency: currency}) when is_binary(currency) do

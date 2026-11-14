@@ -321,12 +321,19 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
                ExecuteRelayTransfer.run(params, ctx())
     end
 
-    test "refuses a non-USD stablecoin source before any relay call (ADR-0040)" do
+    test "refuses a non-USD stablecoin source before execute (ADR-0040)" do
       parent = self()
 
       Req.Test.stub(__MODULE__, fn conn ->
         send(parent, {:relay_called, conn.request_path})
-        Req.Test.json(conn, %{})
+
+        Req.Test.json(conn, %{
+          "transfer_id" => "t_1",
+          "quote_id" => "q_1",
+          "can_fill" => true,
+          "to_amount" => "499000",
+          "deposit_address" => "0xdeposit"
+        })
       end)
 
       params = base_params(%{from_token: "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"})
@@ -334,10 +341,85 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
       assert {:error,
               %Failure{
                 reason: :invalid_request,
-                detail: {:unpriced_asset, %{side: :source, chain_id: 8453, peg: "EUR"}}
+                detail:
+                  {:unpriced_asset,
+                   %{side: :source, chain_id: 8453, peg: "EUR", reason: :fx_unsupported}}
               }} = ExecuteRelayTransfer.run(params, ctx())
 
-      refute_received {:relay_called, _}
+      refute_received {:relay_called, "/relay/execute"}
+    end
+  end
+
+  # `amount` is a human amount of `from_token`; the gate converts it into the
+  # policy's unit before it reserves anything or the transfer is funded.
+  describe "policy unit" do
+    @weth_base "0x4200000000000000000000000000000000000006"
+
+    defp weth_ctx(overrides \\ %{}) do
+      ctx(
+        Map.merge(
+          %{
+            policy: policy(%{per_request_max: Decimal.new("10"), session_max: Decimal.new("50")}),
+            price_fn: Raxol.Payments.Prices.Static.price_fn(%{"WETH" => "3000"})
+          },
+          overrides
+        )
+      )
+    end
+
+    test "0.002 WETH at $3,000 is reserved as 6 USD and broadcast at 18 decimals" do
+      stub_quote_and_execute()
+      ctx = weth_ctx(%{broadcaster: Broadcaster.InMemory})
+
+      assert {:ok, %{funding: "broadcast"}} =
+               ExecuteRelayTransfer.run(
+                 base_params(%{amount: "0.002", from_token: @weth_base}),
+                 ctx
+               )
+
+      assert [%{amount: amount, metadata: %{protocol: :relay}}] =
+               Ledger.get_history(ctx.ledger, "a1")
+
+      assert Decimal.equal?(amount, Decimal.new("6"))
+      assert [%{amount_atomic: "2000000000000000"}] = Broadcaster.InMemory.sent()
+    end
+
+    test "5 WETH at $3,000 is refused against a $10 per-request cap and nothing is funded" do
+      stub_quote_and_execute()
+      ctx = weth_ctx(%{broadcaster: Broadcaster.InMemory})
+
+      assert {:error, %Failure{reason: :over_budget}} =
+               ExecuteRelayTransfer.run(base_params(%{amount: "5", from_token: @weth_base}), ctx)
+
+      assert Ledger.get_history(ctx.ledger, "a1") == []
+      assert Broadcaster.InMemory.sent() == []
+    end
+
+    test "an unregistered source token is refused: it has no peg and no symbol to price" do
+      stub_quote_and_execute()
+      params = base_params(%{from_token: "0x" <> String.duplicate("ab", 20)})
+
+      assert {:error, %Failure{detail: {:unpriced_asset, %{reason: :no_price}}}} =
+               ExecuteRelayTransfer.run(params, weth_ctx())
+    end
+
+    test "a dollar stablecoin on Tron counts at par" do
+      stub_quote_and_execute()
+      ctx = ctx()
+
+      params =
+        base_params(%{
+          from_chain_id: @tron,
+          from_token: @usdt_trc20,
+          to_chain_id: 8453,
+          to_token: @usdc_base,
+          to_address: "0x" <> String.duplicate("ab", 20),
+          from_address: @tron_addr
+        })
+
+      assert {:ok, _} = ExecuteRelayTransfer.run(params, ctx)
+      assert [%{amount: amount}] = Ledger.get_history(ctx.ledger, "a1")
+      assert Decimal.equal?(amount, Decimal.new("0.50"))
     end
   end
 

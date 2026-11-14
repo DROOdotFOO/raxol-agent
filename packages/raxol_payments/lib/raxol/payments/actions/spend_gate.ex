@@ -8,6 +8,17 @@ defmodule Raxol.Payments.Actions.SpendGate do
   atomic ledger reservation (`Raxol.Payments.Ledger.try_spend/5`) before any
   `wallet.sign_*` call.
 
+  ## Amounts
+
+  `authorize/3` takes a human amount of an asset (`:asset`) and converts it
+  into the policy's unit (`Raxol.Payments.SpendPricing`) before the policy
+  gate, the ledger reservation and any signature: a stablecoin pegged to the
+  unit at par, a token that is not a stablecoin at its USD price from the
+  configured source under a USD policy, or the
+  spend is refused as `{:unpriced_asset, detail}`. It returns the converted
+  amount, which is what the caps and the confirmation threshold saw and what
+  the ledger recorded; pass that amount to `release/3` and `tag_reservation/3`.
+
   ## Targets
 
   * `{:domain, host}` -- HTTP/host-routed payment (x402, Xochi intent endpoint).
@@ -22,7 +33,9 @@ defmodule Raxol.Payments.Actions.SpendGate do
   * `:ledger` -- a `Ledger` server (nil disables budget reservation).
   * `:agent_id` -- ledger key (default `:unknown`).
   * `:on_confirm` -- `(Decimal.t(), String.t() -> :approve | :deny)` consulted
-    when the amount exceeds `policy.require_confirmation_above`.
+    when the converted amount exceeds `policy.require_confirmation_above`.
+  * `:price_fn` -- `(symbol -> Decimal.t() | nil)` USD prices; without it the
+    configured source is used (`Raxol.Payments.Prices`).
 
   ## Failed downstream execution
 
@@ -31,7 +44,7 @@ defmodule Raxol.Payments.Actions.SpendGate do
   a failed payment does not permanently consume the agent's budget.
   """
 
-  alias Raxol.Payments.{Ledger, PolicyGate, SpendingPolicy}
+  alias Raxol.Payments.{Ledger, PolicyGate, SpendingPolicy, SpendPricing}
 
   @type target :: {:domain, String.t()} | {:address, String.t()}
 
@@ -40,26 +53,45 @@ defmodule Raxol.Payments.Actions.SpendGate do
           | {:requires_confirmation, Decimal.t()}
           | {:invalid_amount, Decimal.t()}
           | {:policy_required, atom()}
+          | {:unpriced_asset, map()}
           | {:deny, PolicyGate.deny_reason()}
 
   @doc """
-  Authorize a spend before signing. Returns `:ok` or `{:error, reason}`.
+  Authorize a spend before signing. Returns `{:ok, amount}`, the spend in the
+  policy's unit (unchanged with no policy), or `{:error, reason}`.
 
   ## Options
 
+  * `:asset` -- what `amount` is a human amount of, required:
+    `{:token, chain_id, address}` or `{:symbol, ticker}`.
   * `:target` -- `{:domain, host}` or `{:address, addr}` (default `{:address, ""}`).
-  * `:metadata` -- map recorded with the ledger entry on success.
+  * `:metadata` -- map recorded with the ledger entry on success, with the
+    policy's `currency`, `source_asset` and `source_amount` (the unconverted
+    amount) added.
   """
-  @spec authorize(map(), Decimal.t(), keyword()) :: :ok | {:error, error()}
+  @spec authorize(map(), Decimal.t(), keyword()) :: {:ok, Decimal.t()} | {:error, error()}
   def authorize(context, %Decimal{} = amount, opts \\ []) when is_map(context) do
     target = Keyword.get(opts, :target, {:address, ""})
+    asset = Keyword.get(opts, :asset)
+    policy = Map.get(context, :policy)
 
     with :ok <- validate_amount(amount),
          :ok <- require_policy(context),
-         :ok <- gate(Map.get(context, :policy), amount, target, context) do
-      reserve(context, amount, opts)
+         {:ok, spend} <- SpendPricing.to_policy_unit(policy, amount, asset, context),
+         :ok <- validate_amount(spend),
+         :ok <- gate(policy, spend, target, context),
+         :ok <- reserve(context, spend, metadata(policy, opts, asset, amount)) do
+      {:ok, spend}
     end
   end
+
+  defp metadata(%SpendingPolicy{currency: currency}, opts, asset, amount) do
+    opts
+    |> Keyword.get(:metadata, %{})
+    |> Map.merge(%{currency: currency, source_asset: asset, source_amount: amount})
+  end
+
+  defp metadata(_policy, _opts, _asset, _amount), do: %{}
 
   @doc """
   Refund a previously authorized amount (e.g. when execution fails after the
@@ -200,13 +232,12 @@ defmodule Raxol.Payments.Actions.SpendGate do
 
   # -- Atomic budget reservation --
 
-  defp reserve(context, amount, opts) do
+  defp reserve(context, amount, metadata) do
     with {:ledger, ledger} when not is_nil(ledger) <-
            {:ledger, Map.get(context, :ledger)},
          {:policy, %SpendingPolicy{} = policy} <-
            {:policy, Map.get(context, :policy)} do
       agent_id = Map.get(context, :agent_id, :unknown)
-      metadata = Keyword.get(opts, :metadata, %{})
 
       case Ledger.try_spend(ledger, agent_id, amount, policy, metadata) do
         :ok -> :ok

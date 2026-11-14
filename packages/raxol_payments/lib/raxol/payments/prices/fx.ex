@@ -8,8 +8,9 @@ defmodule Raxol.Payments.Prices.FX do
   `rpc_urls:` for chains 1 and 8453) and returns a `price_fn` that answers
   every symbol in `Raxol.Payments.Assets.fx_pegs/0` (EURC, EURe, ZCHF) at the
   Chainlink rate for its registered peg when Sleuth's market price is within
-  100 bps of it, `nil` when it is not or the snapshot failed, and hands every
-  other symbol to `fallback`. See `Raxol.Web3.FX.price_fn/3`.
+  100 bps of it, `nil` when it is not, the snapshot failed, or the Chainlink
+  round is older than its feed's heartbeat allows, and hands every other
+  symbol to `fallback`. See `Raxol.Web3.FX.price_fn/3`.
 
   `raxol_web3` is an optional dependency. Without it, `price_fn(nil, fallback)`
   is still `fallback`, and any `:fx` opts raise: `Accounting` refuses

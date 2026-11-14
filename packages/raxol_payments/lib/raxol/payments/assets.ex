@@ -298,6 +298,38 @@ defmodule Raxol.Payments.Assets do
                        Map.new(@testnet_usdc, fn {chain, addr} -> {chain, %{addr => "USDC"}} end)
                      )
 
+  # Dollar stablecoins, which a spend cap in US dollars counts at par: by ticker
+  # for callers that carry only a symbol (MPP, `payment_transfer`), and by
+  # contract for callers that carry an address. The contracts are the
+  # USDC, USDT and USDG of `@evm_tokens`, USDbC (`@usdc`), the testnet USDC,
+  # and the registered contracts listed nowhere else: DAI on Ethereum, bridged
+  # USDC.e on Polygon, and USDT and USDC on Tron.
+  @dollar_stable_symbols ["USDC", "USDT", "USDBC", "USDG", "PYUSD", "DAI"]
+
+  @other_dollar_stables %{
+    1 => ["0x6b175474e89094c44da98b954eedeac495271d0f"],
+    137 => ["0x2791bca1f2de4661ed88a30c99a7a9449aa84174"],
+    728_126_428 => ["tr7nhqjekqxgtci8q8zy4pl8otszgjlj6t", "tekxitehnzsmse2xqrbj4w32run966rdz8"]
+  }
+
+  @dollar_stables [
+                    for(
+                      symbol <- ["USDC", "USDT", "USDG"],
+                      {chain, address} <- Map.fetch!(@evm_tokens, symbol),
+                      do: {chain, address}
+                    ),
+                    for({chain, addresses} <- @usdc, address <- addresses, do: {chain, address}),
+                    Map.to_list(@testnet_usdc),
+                    for(
+                      {chain, addresses} <- @other_dollar_stables,
+                      address <- addresses,
+                      do: {chain, address}
+                    )
+                  ]
+                  |> Enum.concat()
+                  |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+                  |> Map.new(fn {chain, addresses} -> {chain, Enum.uniq(addresses)} end)
+
   @doc """
   Look up decimals by chain id and ERC-20 contract address.
 
@@ -505,6 +537,45 @@ defmodule Raxol.Payments.Assets do
   """
   @spec fx_pegs() :: %{String.t() => String.t()}
   def fx_pegs, do: @fx_pegs
+
+  @fx_pegs_by_ticker Map.new(@fx_pegs, fn {symbol, peg} ->
+                       {String.upcase(symbol, :ascii), peg}
+                     end)
+
+  @doc """
+  The currency a registered stablecoin at `(chain_id, address)` is pegged to:
+  `"USD"` for a dollar stablecoin (USDC, USDbC, USDC.e, USDT, USDG, DAI, and
+  USDT and USDC on Tron), else `fx_peg/2`. `nil` for anything else, WETH,
+  RAXOL and unregistered tokens included. Case-insensitive; accepts an integer
+  chain id or a CAIP-2 string.
+  """
+  @spec peg(integer() | String.t() | nil, String.t() | nil) :: String.t() | nil
+  def peg(chain_id, address) when is_binary(address) and address != "" do
+    chain = normalize_chain_id(chain_id)
+    address = String.downcase(address)
+
+    if address in Map.get(@dollar_stables, chain, []),
+      do: "USD",
+      else: fx_peg(chain, address)
+  end
+
+  def peg(_chain, _address), do: nil
+
+  @doc """
+  The currency a stablecoin ticker is pegged to: `"USD"` for USDC, USDT,
+  USDbC, USDG, PYUSD and DAI, the `fx_pegs/0` peg for EURC, EURe and ZCHF,
+  `nil` for anything else. Compared in `fold_symbol/1` form.
+  """
+  @spec symbol_peg(String.t() | nil) :: String.t() | nil
+  def symbol_peg(symbol) when is_binary(symbol) do
+    code = fold_symbol(symbol)
+
+    if code in @dollar_stable_symbols,
+      do: "USD",
+      else: Map.get(@fx_pegs_by_ticker, code)
+  end
+
+  def symbol_peg(_symbol), do: nil
 
   @doc """
   The case-insensitive form of a token symbol: upper-cased in ASCII only, so a

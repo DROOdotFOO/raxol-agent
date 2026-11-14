@@ -154,6 +154,34 @@ defmodule Raxol.Earn.JobSession.ClientTest do
     assert Adapter.sent_calls(ctx.adapter) == []
   end
 
+  # The reservation is the AssetToken's human amount converted into the
+  # policy's unit: USDC counts at par (above), a token with no configured price
+  # source is refused.
+  test "a token with no price source is refused before any write", ctx do
+    saved = Application.get_env(:raxol_payments, :accounting)
+    Application.delete_env(:raxol_payments, :accounting)
+
+    on_exit(fn ->
+      if saved, do: Application.put_env(:raxol_payments, :accounting, saved)
+    end)
+
+    weth =
+      AssetToken.create(
+        address: "0x4200000000000000000000000000000000000006",
+        symbol: "WETH",
+        decimals: 18,
+        amount: Decimal.new("0.002"),
+        chain_id: 8453
+      )
+
+    c = client(ctx, amount: weth)
+
+    assert {:rejected, {:spend_rejected, {:unpriced_asset, %{reason: :no_price_source}}}} =
+             Client.buy(c)
+
+    assert Adapter.sent_calls(ctx.adapter) == []
+  end
+
   test "fail-closed: require_checkpoint with no store refuses before reserve", ctx do
     Application.put_env(:raxol_earn, :require_checkpoint, true)
     on_exit(fn -> Application.delete_env(:raxol_earn, :require_checkpoint) end)

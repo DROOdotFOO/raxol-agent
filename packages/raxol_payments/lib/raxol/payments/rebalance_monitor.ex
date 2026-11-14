@@ -106,7 +106,7 @@ defmodule Raxol.Payments.RebalanceMonitor do
     Keyword.get(opts, :price_fn) ||
       Prices.FX.price_fn(
         Keyword.get(opts, :fx),
-        build_price_fn(Keyword.get(opts, :price_source, :none))
+        Prices.source_fn(Keyword.get(opts, :price_source, :none)) || fn _sym -> nil end
       )
   end
 
@@ -155,9 +155,6 @@ defmodule Raxol.Payments.RebalanceMonitor do
       %{drain: SettlementLedger.native_drain_by_chain(ledger), demand: %{}}
     end
   end
-
-  defp build_price_fn(:coingecko), do: Raxol.Payments.Prices.CoinGecko.price_fn()
-  defp build_price_fn(_source), do: fn _sym -> nil end
 
   # Runs `with_demand/2` over the policy's OWN demand fields, which is a no-op
   # for a well-formed policy and raises the same named ArgumentError for a

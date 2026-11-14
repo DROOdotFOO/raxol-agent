@@ -1,8 +1,16 @@
 defmodule Raxol.Payments.Actions.SpendGateTest do
-  use ExUnit.Case, async: true
+  # Not async: the configured-source tests set `config :raxol_payments, :accounting`.
+  use ExUnit.Case, async: false
 
   alias Raxol.Payments.Actions.SpendGate
   alias Raxol.Payments.{Ledger, SpendingPolicy}
+  alias Raxol.Payments.Prices.Static
+
+  @usdc {:token, 8453, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"}
+  @weth {:token, 8453, "0x4200000000000000000000000000000000000006"}
+  @eurc {:token, 8453, "0x60a3E35Cc302bFA44Cb288Bc5a4F316Fdb1adb42"}
+  @usdt_tron {:token, 728_126_428, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"}
+  @unregistered {:token, 8453, "0x" <> String.duplicate("ab", 20)}
 
   defp start_ledger do
     ledger = start_supervised!({Ledger, [name: nil]})
@@ -19,13 +27,37 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
     }
   end
 
+  defp usd_policy do
+    %{policy() | per_request_max: Decimal.new("10"), session_max: Decimal.new("50")}
+  end
+
   defp context(extra) do
     Map.merge(%{agent_id: "agent_1"}, extra)
   end
 
+  defp lifetime(ledger, pol), do: Ledger.get_totals(ledger, "agent_1", pol).lifetime
+
+  defp authorize(ctx, amount, asset) do
+    SpendGate.authorize(ctx, Decimal.new(amount),
+      asset: asset,
+      target: {:domain, "xochi.example.com"}
+    )
+  end
+
   describe "authorize/3 with no policy" do
-    test "allows when policy is absent" do
-      assert :ok = SpendGate.authorize(context(%{}), Decimal.new("9999"))
+    test "allows when policy is absent and returns the amount unchanged" do
+      assert {:ok, amount} = SpendGate.authorize(context(%{}), Decimal.new("9999"), asset: @weth)
+      assert Decimal.equal?(amount, Decimal.new("9999"))
+    end
+
+    test "still refuses a spend that names no asset" do
+      assert {:error, {:unpriced_asset, %{reason: :invalid_asset}}} =
+               SpendGate.authorize(context(%{}), Decimal.new("1"))
+    end
+
+    test "still refuses a non-USD stablecoin" do
+      assert {:error, {:unpriced_asset, %{reason: :fx_unsupported, peg: "EUR"}}} =
+               SpendGate.authorize(context(%{}), Decimal.new("1"), asset: @eurc)
     end
   end
 
@@ -34,13 +66,13 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
       ledger = start_ledger()
       ctx = context(%{policy: policy(), ledger: ledger})
 
-      assert :ok =
+      assert {:ok, _} =
                SpendGate.authorize(ctx, Decimal.new("0.50"),
+                 asset: @usdc,
                  target: {:domain, "xochi.example.com"}
                )
 
-      totals = Ledger.get_totals(ledger, "agent_1", policy())
-      assert Decimal.equal?(totals.lifetime, Decimal.new("0.50"))
+      assert Decimal.equal?(lifetime(ledger, policy()), Decimal.new("0.50"))
     end
 
     test "denies and does NOT record when domain not approved" do
@@ -49,11 +81,11 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
 
       assert {:error, {:deny, {:domain_not_approved, "evil.example.com"}}} =
                SpendGate.authorize(ctx, Decimal.new("0.10"),
+                 asset: @usdc,
                  target: {:domain, "evil.example.com"}
                )
 
-      totals = Ledger.get_totals(ledger, "agent_1", policy())
-      assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+      assert Decimal.equal?(lifetime(ledger, policy()), Decimal.new("0"))
     end
 
     test "denies over per_request and does NOT record" do
@@ -62,11 +94,11 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
 
       assert {:error, {:over_budget, :per_request}} =
                SpendGate.authorize(ctx, Decimal.new("2.00"),
+                 asset: @usdc,
                  target: {:domain, "xochi.example.com"}
                )
 
-      totals = Ledger.get_totals(ledger, "agent_1", policy())
-      assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+      assert Decimal.equal?(lifetime(ledger, policy()), Decimal.new("0"))
     end
   end
 
@@ -80,11 +112,17 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
 
       # over threshold, no on_confirm -> denied
       assert {:error, {:requires_confirmation, _}} =
-               SpendGate.authorize(ctx, Decimal.new("0.50"), target: {:address, "0xabc"})
+               SpendGate.authorize(ctx, Decimal.new("0.50"),
+                 asset: @usdc,
+                 target: {:address, "0xabc"}
+               )
 
       # under threshold -> allowed even with no approved domain match
-      assert :ok =
-               SpendGate.authorize(ctx, Decimal.new("0.05"), target: {:address, "0xabc"})
+      assert {:ok, _} =
+               SpendGate.authorize(ctx, Decimal.new("0.05"),
+                 asset: @usdc,
+                 target: {:address, "0xabc"}
+               )
     end
 
     test "address target with on_confirm approve proceeds" do
@@ -98,8 +136,11 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
           on_confirm: fn _amount, _target -> :approve end
         })
 
-      assert :ok =
-               SpendGate.authorize(ctx, Decimal.new("0.50"), target: {:address, "0xabc"})
+      assert {:ok, _} =
+               SpendGate.authorize(ctx, Decimal.new("0.50"),
+                 asset: @usdc,
+                 target: {:address, "0xabc"}
+               )
     end
   end
 
@@ -108,36 +149,23 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
       ledger = start_ledger()
       ctx = context(%{policy: policy(), ledger: ledger})
 
-      assert {:error, {:invalid_amount, _}} =
-               SpendGate.authorize(ctx, Decimal.new("-1.00"),
-                 target: {:domain, "xochi.example.com"}
-               )
-
-      totals = Ledger.get_totals(ledger, "agent_1", policy())
-      assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+      assert {:error, {:invalid_amount, _}} = authorize(ctx, "-1.00", @usdc)
+      assert Decimal.equal?(lifetime(ledger, policy()), Decimal.new("0"))
     end
 
     test "rejects a zero amount" do
       ledger = start_ledger()
       ctx = context(%{policy: policy(), ledger: ledger})
 
-      assert {:error, {:invalid_amount, _}} =
-               SpendGate.authorize(ctx, Decimal.new("0"), target: {:domain, "xochi.example.com"})
+      assert {:error, {:invalid_amount, _}} = authorize(ctx, "0", @usdc)
     end
 
     test "rejects non-finite amounts without raising" do
       ledger = start_ledger()
       ctx = context(%{policy: policy(), ledger: ledger})
 
-      assert {:error, {:invalid_amount, _}} =
-               SpendGate.authorize(ctx, Decimal.new("Infinity"),
-                 target: {:domain, "xochi.example.com"}
-               )
-
-      assert {:error, {:invalid_amount, _}} =
-               SpendGate.authorize(ctx, Decimal.new("NaN"),
-                 target: {:domain, "xochi.example.com"}
-               )
+      assert {:error, {:invalid_amount, _}} = authorize(ctx, "Infinity", @usdc)
+      assert {:error, {:invalid_amount, _}} = authorize(ctx, "NaN", @usdc)
     end
 
     test "a negative authorize cannot create phantom budget headroom" do
@@ -148,26 +176,16 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
 
       # Spend up to the lifetime cap of 10.00 in per-request-sized chunks.
       for _ <- 1..10 do
-        assert :ok =
-                 SpendGate.authorize(ctx, Decimal.new("1.00"),
-                   target: {:domain, "xochi.example.com"}
-                 )
+        assert {:ok, _} = authorize(ctx, "1.00", @usdc)
       end
 
       # A negative amount must not net down the total to free up headroom.
-      assert {:error, {:invalid_amount, _}} =
-               SpendGate.authorize(ctx, Decimal.new("-5.00"),
-                 target: {:domain, "xochi.example.com"}
-               )
+      assert {:error, {:invalid_amount, _}} = authorize(ctx, "-5.00", @usdc)
 
       # The lifetime cap is still enforced: no further real spend gets through.
-      assert {:error, {:over_budget, :lifetime}} =
-               SpendGate.authorize(ctx, Decimal.new("1.00"),
-                 target: {:domain, "xochi.example.com"}
-               )
+      assert {:error, {:over_budget, :lifetime}} = authorize(ctx, "1.00", @usdc)
 
-      totals = Ledger.get_totals(ledger, "agent_1", pol)
-      assert Decimal.equal?(totals.lifetime, Decimal.new("10.00"))
+      assert Decimal.equal?(lifetime(ledger, pol), Decimal.new("10.00"))
     end
   end
 
@@ -177,21 +195,21 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
       ctx = context(%{require_policy: true})
 
       assert {:error, {:policy_required, :no_spending_policy}} =
-               SpendGate.authorize(ctx, Decimal.new("0.10"), target: {:domain, "x.test"})
+               SpendGate.authorize(ctx, Decimal.new("0.10"),
+                 asset: @usdc,
+                 target: {:domain, "x.test"}
+               )
     end
 
     test "proceeds when a policy is present even with require_policy" do
       ledger = start_ledger()
       ctx = context(%{require_policy: true, policy: policy(), ledger: ledger})
 
-      assert :ok =
-               SpendGate.authorize(ctx, Decimal.new("0.50"),
-                 target: {:domain, "xochi.example.com"}
-               )
+      assert {:ok, _} = authorize(ctx, "0.50", @usdc)
     end
 
     test "stays permissive without the flag (unchanged default)" do
-      assert :ok = SpendGate.authorize(context(%{}), Decimal.new("9999"))
+      assert {:ok, _} = SpendGate.authorize(context(%{}), Decimal.new("9999"), asset: @usdc)
     end
   end
 
@@ -200,13 +218,211 @@ defmodule Raxol.Payments.Actions.SpendGateTest do
       ledger = start_ledger()
       ctx = context(%{policy: policy(), ledger: ledger})
 
-      :ok =
-        SpendGate.authorize(ctx, Decimal.new("0.75"), target: {:domain, "xochi.example.com"})
+      {:ok, reserved} = authorize(ctx, "0.75", @usdc)
+      :ok = SpendGate.release(ctx, reserved)
 
-      :ok = SpendGate.release(ctx, Decimal.new("0.75"))
+      assert Decimal.equal?(lifetime(ledger, policy()), Decimal.new("0"))
+    end
+  end
 
-      totals = Ledger.get_totals(ledger, "agent_1", policy())
-      assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
+  # Every spend is converted into the policy's unit before it is gated or
+  # reserved (`Raxol.Payments.SpendPricing`).
+  describe "authorize/3 policy unit" do
+    setup do
+      saved = Application.get_env(:raxol_payments, :accounting)
+      Application.delete_env(:raxol_payments, :accounting)
+
+      on_exit(fn ->
+        if saved,
+          do: Application.put_env(:raxol_payments, :accounting, saved),
+          else: Application.delete_env(:raxol_payments, :accounting)
+      end)
+    end
+
+    test "a dollar stablecoin counts at par, on EVM and on Tron, with no price source" do
+      ledger = start_ledger()
+      ctx = context(%{policy: usd_policy(), ledger: ledger})
+
+      assert {:ok, usdc} = authorize(ctx, "2.50", @usdc)
+      assert Decimal.equal?(usdc, Decimal.new("2.50"))
+
+      assert {:ok, usdt} = authorize(ctx, "1.25", @usdt_tron)
+      assert Decimal.equal?(usdt, Decimal.new("1.25"))
+
+      assert {:ok, ticker} =
+               SpendGate.authorize(ctx, Decimal.new("1"),
+                 asset: {:symbol, "usdc"},
+                 target: {:address, "0xabc"}
+               )
+
+      assert Decimal.equal?(ticker, Decimal.new("1"))
+      assert Decimal.equal?(lifetime(ledger, usd_policy()), Decimal.new("4.75"))
+    end
+
+    test "5 WETH at $3,000 is refused against a $10 per-request cap and records nothing" do
+      ledger = start_ledger()
+
+      ctx =
+        context(%{
+          policy: usd_policy(),
+          ledger: ledger,
+          price_fn: Static.price_fn(%{"WETH" => "3000"})
+        })
+
+      assert {:error, {:over_budget, :per_request}} = authorize(ctx, "5", @weth)
+      assert Decimal.equal?(lifetime(ledger, usd_policy()), Decimal.new("0"))
+    end
+
+    test "0.002 WETH at $3,000 is reserved and recorded as 6 USD, with the token amount kept" do
+      ledger = start_ledger()
+
+      ctx =
+        context(%{
+          policy: usd_policy(),
+          ledger: ledger,
+          price_fn: Static.price_fn(%{"WETH" => "3000"})
+        })
+
+      assert {:ok, reserved} = authorize(ctx, "0.002", @weth)
+      assert Decimal.equal?(reserved, Decimal.new("6"))
+      assert Decimal.equal?(lifetime(ledger, usd_policy()), Decimal.new("6"))
+
+      assert [%{amount: amount, currency: "USDC", metadata: metadata}] =
+               Ledger.get_history(ledger, "agent_1")
+
+      assert Decimal.equal?(amount, Decimal.new("6"))
+      assert metadata.source_asset == @weth
+      assert Decimal.equal?(metadata.source_amount, Decimal.new("0.002"))
+    end
+
+    test "the confirmation threshold sees the converted amount" do
+      pol = %{usd_policy() | require_confirmation_above: Decimal.new("5")}
+      ctx = context(%{policy: pol, price_fn: Static.price_fn(%{"WETH" => "3000"})})
+
+      assert {:error, {:requires_confirmation, amount}} =
+               SpendGate.authorize(ctx, Decimal.new("0.002"),
+                 asset: @weth,
+                 target: {:address, "0xabc"}
+               )
+
+      assert Decimal.equal?(amount, Decimal.new("6"))
+    end
+
+    test "a token with no price source configured is refused" do
+      ctx = context(%{policy: usd_policy(), ledger: start_ledger()})
+
+      assert {:error, {:unpriced_asset, %{reason: :no_price_source, unit: "USD"}}} =
+               authorize(ctx, "0.002", @weth)
+    end
+
+    test "price_source: :none in the accounting config prices nothing" do
+      Application.put_env(:raxol_payments, :accounting, price_source: :none, fx: nil)
+      ctx = context(%{policy: usd_policy()})
+
+      assert {:error, {:unpriced_asset, %{reason: :no_price_source}}} =
+               authorize(ctx, "0.002", @weth)
+
+      assert {:error, {:unpriced_asset, %{reason: :fx_unsupported}}} =
+               authorize(ctx, "1", @eurc)
+    end
+
+    test "an unpriced token is refused: no symbol, or no price for it" do
+      ctx =
+        context(%{
+          policy: usd_policy(),
+          price_fn: Static.price_fn(%{"WETH" => "3000"})
+        })
+
+      assert {:error, {:unpriced_asset, %{reason: :no_price, token: _}}} =
+               authorize(ctx, "1", @unregistered)
+
+      assert {:error, {:unpriced_asset, %{reason: :no_price}}} =
+               SpendGate.authorize(ctx, Decimal.new("1"),
+                 asset: {:symbol, "RAXOL"},
+                 target: {:address, "0xabc"}
+               )
+    end
+
+    test "a stale price is refused" do
+      an_hour_ago = System.system_time(:second) - 3600
+
+      ctx =
+        context(%{
+          policy: usd_policy(),
+          price_fn: Static.price_fn(%{"WETH" => "3000"}, as_of: an_hour_ago)
+        })
+
+      assert {:error, {:unpriced_asset, %{reason: :no_price}}} = authorize(ctx, "0.002", @weth)
+    end
+
+    test "a zero, negative, NaN or non-Decimal price is refused" do
+      for price <- [Decimal.new("0"), Decimal.new("-3000"), Decimal.new("NaN"), 3000] do
+        ctx = context(%{policy: usd_policy(), price_fn: fn "WETH" -> price end})
+
+        assert {:error, {:unpriced_asset, %{reason: :invalid_price}}} =
+                 authorize(ctx, "0.002", @weth)
+      end
+    end
+
+    test "a price source that raises, exits or throws is refused" do
+      for price_fn <- [
+            fn _ -> raise "upstream down" end,
+            fn _ -> exit(:timeout) end,
+            fn _ -> throw(:unavailable) end
+          ] do
+        ctx = context(%{policy: usd_policy(), price_fn: price_fn})
+
+        assert {:error, {:unpriced_asset, %{reason: :price_source_error}}} =
+                 authorize(ctx, "0.002", @weth)
+      end
+    end
+
+    test "EURC, EURe and ZCHF are refused under a USD policy, even with a price for them" do
+      ctx =
+        context(%{
+          policy: usd_policy(),
+          ledger: start_ledger(),
+          price_fn: Static.price_fn(%{"EURC" => "1.08", "EURE" => "1.08", "ZCHF" => "1.1"})
+        })
+
+      assert {:error, {:unpriced_asset, %{reason: :fx_unsupported, peg: "EUR", unit: "USD"}}} =
+               authorize(ctx, "5", @eurc)
+
+      for ticker <- ["EURe", "ZCHF"] do
+        assert {:error, {:unpriced_asset, %{reason: :fx_unsupported}}} =
+                 SpendGate.authorize(ctx, Decimal.new("5"),
+                   asset: {:symbol, ticker},
+                   target: {:address, "0xabc"}
+                 )
+      end
+
+      assert Ledger.get_history(ctx.ledger, "agent_1") == []
+    end
+
+    test "a EUR policy counts EURC at par and refuses USDC and WETH" do
+      eur = %{usd_policy() | currency: "EUR"}
+
+      ctx =
+        context(%{
+          policy: eur,
+          price_fn: Static.price_fn(%{"WETH" => "3000", "USDC" => "1"})
+        })
+
+      assert {:ok, reserved} = authorize(ctx, "5", @eurc)
+      assert Decimal.equal?(reserved, Decimal.new("5"))
+
+      assert {:error, {:unpriced_asset, %{reason: :fx_unsupported, peg: "USD", unit: "EUR"}}} =
+               authorize(ctx, "1", @usdc)
+
+      assert {:error, {:unpriced_asset, %{reason: :policy_currency}}} =
+               authorize(ctx, "0.002", @weth)
+    end
+
+    test "a policy whose currency is not a string refuses every spend" do
+      ctx = context(%{policy: %{usd_policy() | currency: :usd}})
+
+      assert {:error, {:unpriced_asset, %{reason: :policy_currency, unit: nil}}} =
+               authorize(ctx, "1", @usdc)
     end
   end
 end

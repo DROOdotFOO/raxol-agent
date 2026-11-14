@@ -176,15 +176,12 @@ defmodule Raxol.Payments.Protocols.MPP do
   # the euro and Swiss franc the registered non-USD stablecoins are pegged to.
   @fiat_minor_units %{"USD" => 2, "EUR" => 2, "CHF" => 2}
 
-  # Dollar stablecoins, counted at par with USD.
-  @dollar_stablecoins ["USDC", "USDT", "USDBC", "PYUSD", "DAI", "USDG"]
-
   # The unit an MPP amount is priced in and its decimals, from the challenge's
   # `currency`: a fiat code by its ISO 4217 minor units (`"usd"` 150 is $1.50),
-  # a dollar stablecoin as USD by its registered decimals, a registered non-USD
-  # stablecoin (EURC, EURe, ZCHF) as its peg currency. Anything else -- a
-  # volatile token, a contract address, an unknown code -- has no unit a cap
-  # can be written in, so the challenge is refused.
+  # a stablecoin (`Assets.symbol_peg/1`: dollar stablecoins as USD, EURC, EURe
+  # and ZCHF as their peg currency) by its registered decimals. Anything else
+  # -- a volatile token, a contract address, an unknown code -- has no unit a
+  # cap can be written in, so the challenge is refused.
   defp currency_unit(currency) when is_binary(currency) do
     code = Raxol.Payments.Assets.fold_symbol(currency)
 
@@ -192,10 +189,7 @@ defmodule Raxol.Payments.Protocols.MPP do
       Map.has_key?(@fiat_minor_units, code) ->
         {:ok, code, Map.fetch!(@fiat_minor_units, code)}
 
-      code in @dollar_stablecoins ->
-        {:ok, "USD", Raxol.Payments.Assets.decimals(code)}
-
-      peg = fx_peg(code) ->
+      peg = Raxol.Payments.Assets.symbol_peg(code) ->
         {:ok, peg, Raxol.Payments.Assets.decimals(code)}
 
       true ->
@@ -204,12 +198,6 @@ defmodule Raxol.Payments.Protocols.MPP do
   end
 
   defp currency_unit(currency), do: {:error, {:unpriced_currency, currency}}
-
-  defp fx_peg(code) do
-    Enum.find_value(Raxol.Payments.Assets.fx_pegs(), fn {symbol, peg} ->
-      if Raxol.Payments.Assets.fold_symbol(symbol) == code, do: peg
-    end)
-  end
 
   # `build_payment/2` walks `methods`, so a non-list is refused here, before
   # any budget is reserved, rather than raising after it.

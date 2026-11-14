@@ -16,7 +16,8 @@ defmodule Raxol.Earn.JobSession.Client do
   ## Spend gating
 
   Every fund-moving step goes through `Raxol.Payments.Actions.SpendGate`: `buy/1`
-  reserves the quoted amount atomically (`authorize` -> `Ledger.try_spend`) and
+  prices the quoted amount in the policy's unit, reserves it atomically
+  (`authorize` -> `Ledger.try_spend`) and
   tags the reservation with the `request_key`. A completed job forgets the tag
   (the spend stands); a rejected or expired one releases it (idempotent refund).
   With no `SpendingPolicy` configured the gate fails closed in production
@@ -230,12 +231,17 @@ defmodule Raxol.Earn.JobSession.Client do
 
   # -- buy/1 phases --
 
+  # The gate prices the human token amount in the policy's unit and returns
+  # what it reserved; the tag (and a later release by it) carries that amount.
   defp reserve(c) do
     amount = AssetToken.to_human(c.amount)
 
-    case SpendGate.authorize(spend_ctx(c), amount, metadata: %{request_key: c.request_key}) do
-      :ok ->
-        :ok = SpendGate.tag_reservation(spend_ctx(c), c.request_key, amount)
+    case SpendGate.authorize(spend_ctx(c), amount,
+           asset: {:token, c.amount.chain_id, c.amount.address},
+           metadata: %{request_key: c.request_key}
+         ) do
+      {:ok, reserved} ->
+        :ok = SpendGate.tag_reservation(spend_ctx(c), c.request_key, reserved)
 
         rec = %{
           "phase" => "reserved",

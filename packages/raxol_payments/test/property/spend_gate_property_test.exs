@@ -14,6 +14,8 @@ defmodule Raxol.Payments.SpendGatePropertyTest do
   alias Raxol.Payments.Actions.SpendGate
   alias Raxol.Payments.{Ledger, SpendingPolicy}
 
+  @usdc {:token, 8453, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"}
+
   defp policy do
     %SpendingPolicy{
       per_request_max: Decimal.new("1.00"),
@@ -57,7 +59,7 @@ defmodule Raxol.Payments.SpendGatePropertyTest do
       ctx = %{policy: policy(), ledger: ledger, agent_id: "a"}
 
       Enum.each(amounts, fn amt ->
-        SpendGate.authorize(ctx, amt, target: {:domain, "x.test"})
+        SpendGate.authorize(ctx, amt, asset: @usdc, target: {:domain, "x.test"})
       end)
 
       totals = Ledger.get_totals(ledger, "a", policy())
@@ -76,7 +78,7 @@ defmodule Raxol.Payments.SpendGatePropertyTest do
       # that is not a finite positive is never a real payment and must be
       # rejected up front, leaving the ledger untouched.
       assert {:error, {:invalid_amount, _}} =
-               SpendGate.authorize(ctx, amt, target: {:domain, "x.test"})
+               SpendGate.authorize(ctx, amt, asset: @usdc, target: {:domain, "x.test"})
 
       assert Ledger.get_history(ledger, "a") == []
     end
@@ -90,7 +92,7 @@ defmodule Raxol.Payments.SpendGatePropertyTest do
       over = Decimal.div(Decimal.new(n), 100)
 
       assert {:error, {:over_budget, :per_request}} =
-               SpendGate.authorize(ctx, over, target: {:domain, "x.test"})
+               SpendGate.authorize(ctx, over, asset: @usdc, target: {:domain, "x.test"})
 
       totals = Ledger.get_totals(ledger, "a", policy())
       assert Decimal.equal?(totals.lifetime, Decimal.new("0"))
@@ -106,14 +108,14 @@ defmodule Raxol.Payments.SpendGatePropertyTest do
       1..20
       |> Task.async_stream(
         fn _ ->
-          SpendGate.authorize(ctx, Decimal.new("0.50"), target: {:domain, "x.test"})
+          SpendGate.authorize(ctx, Decimal.new("0.50"), asset: @usdc, target: {:domain, "x.test"})
         end,
         max_concurrency: 20,
         ordered: false
       )
       |> Enum.map(fn {:ok, r} -> r end)
 
-    ok_count = Enum.count(results, &(&1 == :ok))
+    ok_count = Enum.count(results, &match?({:ok, _}, &1))
     totals = Ledger.get_totals(ledger, "a", policy())
 
     assert ok_count == 10

@@ -64,9 +64,11 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
 - Registered RAXOL on Robinhood Chain (`0xf447...53af`, 18 decimals) in
   `Raxol.Payments.Assets`, so the Xochi client sizes, resolves and classifies
   USDC/USDT/USDG->RAXOL legs.
-- `Raxol.Payments.Prices.CoinGecko` prices EURe (USD quote, not dollar par)
-  and RAXOL. Neither is a settlement-ledger stablecoin, so an unpriced leg
-  reports `nil`, never $1.
+- `Raxol.Payments.Prices.CoinGecko` prices EURe (USD quote, not dollar par),
+  RAXOL and WETH. Neither EURe nor RAXOL is a settlement-ledger stablecoin, so
+  an unpriced leg reports `nil`, never $1. New `Raxol.Payments.Prices` reads
+  the configured `price_source:` and `fx:`, and new `Assets.peg/2` and
+  `Assets.symbol_peg/1` name a stablecoin's peg currency, the dollar included.
 - `Assets.parse_atomic/1` parses a positive atomic amount no wider than a
   uint256, and `Assets.to_decimal/1` converts an amount to a `Decimal`, taking
   an integer string of up to 78 digits through the integer (decimal 3's
@@ -86,16 +88,15 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   listed on Arbitrum. `Xochi.Capabilities.fallback/0` and the capacity
   deriver read `evm_tokens/0`, so they drop EURe on 42161 too; only
   `supported_chain_ids/0` and the stealth chain check are unchanged.
-- Registering them opens no fund-moving path. `ExecuteXochiIntent` and
-  `ExecuteRelayTransfer` refuse a non-USD source, and both refuse a non-USD
-  destination without a positive `min_to_amount`, as `{:unpriced_asset, detail}`
-  (ADR-0040 decision 6), until an FX rate gates the conversion (decision 7).
-  Dollar spend caps would otherwise count them at par. A `min_to_amount` of `0`
+- Registering them opens no fund-moving path. `ExecuteXochiIntent`,
+  `ExecuteRelayTransfer`, `payment_transfer` and ACP buys refuse a non-USD
+  source as `{:unpriced_asset, %{reason: :fx_unsupported}}` (see Changed),
+  and Xochi and Relay refuse a non-USD destination without a positive
+  `min_to_amount`, as `{:unpriced_asset, detail}` (ADR-0040 decision 6),
+  until an FX rate gates the conversion (decision 7). A `min_to_amount` of `0`
   bounds nothing: Relay and the deposit route read it as absent and Xochi
   refuses it. x402 refuses a challenge whose asset is a non-USD stablecoin,
-  which the spend gate would otherwise reserve and charge at par. The refusals
-  cover the FX tokens only: WETH and RAXOL sources are still counted at par by
-  the spend cap, as before (ADR-0040 context item 3).
+  which the spend gate would otherwise reserve and charge at par.
 - `ExecuteRelayTransfer` accepts `min_to_amount` and refuses a quote delivering
   less before the spend is authorized. It previously had no delivery floor, so
   a quote could deliver any amount.
@@ -183,6 +184,32 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   refuses a non-`SpendingPolicy` or a nil or non-finite cap as
   `{:over_limit, :invalid_policy}` instead of crashing, and `get_totals/3`
   takes only a `SpendingPolicy`. New `SpendingPolicy.validate/2`.
+- **Breaking.** `SpendGate` converts every spend into the policy's unit
+  before the policy gate, the ledger reservation and any signature
+  (`Raxol.Payments.SpendPricing`). It used to reserve the source token's own
+  amount, so a 5 WETH Xochi intent counted as 5 against a $10 cap. Now a
+  stablecoin pegged to the unit counts at par (USDC, USDT, USDG, DAI and Tron
+  USDT/USDC under a USD policy), and under a USD policy any other token
+  (WETH, RAXOL) counts at its USD price from the context's `:price_fn` or
+  `config :raxol_payments, :accounting, price_source:` (`RAXOL_PRICE_SOURCE`
+  when accounting is enabled). Non-pegged sources need a price source under
+  a policy: with none, with no fresh positive price, or with a source that
+  raises, the spend is refused as `{:unpriced_asset, %{reason: reason}}`
+  before anything is signed. `Prices.CoinGecko` asks for each price's
+  `last_updated_at` and answers `nil` for one older than `:max_age_s`
+  (default 300 seconds) or without one; `Prices.Static.price_fn/2` takes
+  `:as_of` (default when built) and `:max_age_s` (default 300) and answers
+  `nil` once its prices are older. No spend cap reads an FX rate, so a
+  stablecoin pegged to another currency is refused (EURC, EURe and ZCHF
+  under a USD policy or with no policy; a dollar stablecoin under a EUR or
+  CHF policy), and under a non-USD policy every token not pegged to it is
+  refused. `SpendGate.authorize/3` requires `asset:` (`{:token, chain_id,
+  address}` or `{:symbol, ticker}`) and returns `{:ok, amount}`, the
+  converted amount the caps saw and the ledger holds; pass it to
+  `release/3` and `tag_reservation/3`. The ledger entry's `currency` is the
+  policy's, and its metadata keeps `source_asset` and `source_amount`.
+  `payment_transfer` returns `reserved`. An unregistered Relay source token,
+  which was scaled at 6 decimals, is refused.
 - **Breaking.** `config :raxol_payments, :pull_require_solver_pin` defaults to
   `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
   with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull

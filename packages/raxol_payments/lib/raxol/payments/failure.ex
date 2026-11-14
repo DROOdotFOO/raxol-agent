@@ -266,16 +266,26 @@ defmodule Raxol.Payments.Failure do
         detail
       )
 
-  # A registered stablecoin pegged to a currency other than the dollar. Its
-  # amount scales, but no FX rate converts it for a dollar spend cap or a
-  # delivery floor yet, so it moves no funds (ADR-0040 decision 6; decision 7
-  # lifts the refusal).
+  # A registered stablecoin pegged to a currency other than the dollar as a
+  # destination: no FX rate converts it for a delivery floor, so it needs an
+  # explicit one (ADR-0040 decision 6).
   def from({:unpriced_asset, %{side: :destination}} = detail),
     do:
       build(
         :invalid_request,
         "The destination token is pegged to a non-USD currency; pass min_to_amount to bound delivery.",
         false,
+        detail
+      )
+
+  # A spend `SpendPricing` could not convert into the policy's unit. A price
+  # source that failed may answer on a retry; every other reason will not.
+  def from({:unpriced_asset, %{reason: reason}} = detail),
+    do:
+      build(
+        :invalid_request,
+        "The source token cannot be priced in the spending policy's currency (#{reason}).",
+        reason == :price_source_error,
         detail
       )
 
