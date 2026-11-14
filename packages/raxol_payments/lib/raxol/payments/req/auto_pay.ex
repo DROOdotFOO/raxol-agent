@@ -25,11 +25,15 @@ defmodule Raxol.Payments.Req.AutoPay do
 
   - `:wallet` (required) -- module implementing `Raxol.Payments.Wallet`
   - `:protocols` -- list of protocol atoms, default `[:x402, :mpp]`
-  - `:ledger` -- Ledger server for budget tracking (optional)
-  - `:policy` (required) -- `SpendingPolicy` struct; `approved_domains` and
-    `require_confirmation_above` are enforced against the request URL host
-    before the wallet is asked to sign. `attach/2` raises `ArgumentError`
-    without one; for development pass `SpendingPolicy.dev()`
+  - `:policy` (required) -- `SpendingPolicy` struct. On every payment the
+    request URL host must be in `approved_domains` (`nil` allows any), an amount above
+    `require_confirmation_above` needs `:on_confirm` to approve, and the
+    challenge amount must be at most `per_request_max`. The cumulative caps,
+    `session_max` and `lifetime_max`, are enforced only with a `:ledger`.
+    `attach/2` raises `ArgumentError` without a policy; for development pass
+    `SpendingPolicy.dev()`
+  - `:ledger` -- Ledger server; with it, every payment is also reserved
+    against the policy's session and lifetime caps, atomically (optional)
   - `:agent_id` -- identifier for ledger tracking (required if ledger given)
   - `:on_confirm` -- 2-arity function `(amount, domain) -> :approve | :deny`
     called when `policy.require_confirmation_above` is exceeded. Runs
@@ -64,8 +68,11 @@ defmodule Raxol.Payments.Req.AutoPay do
       nil ->
         raise ArgumentError,
               "Raxol.Payments.Req.AutoPay requires a :policy option (a " <>
-                "%Raxol.Payments.SpendingPolicy{}); none was given. Pass " <>
-                "policy: Raxol.Payments.SpendingPolicy.dev() for development"
+                "%Raxol.Payments.SpendingPolicy{}); none was given. The policy's " <>
+                "per_request_max, approved_domains and require_confirmation_above " <>
+                "apply to every payment; its session_max and lifetime_max need a " <>
+                ":ledger as well. Pass policy: Raxol.Payments.SpendingPolicy.dev() " <>
+                "for development"
 
       other ->
         raise ArgumentError,
@@ -248,7 +255,15 @@ defmodule Raxol.Payments.Req.AutoPay do
     )
   end
 
-  defp do_enforce_budget(_policy, nil, _proto, _amount, _host, _opts), do: :ok
+  # No ledger: no history to hold the cumulative caps against, but the
+  # per-request cap needs none, so it is enforced here with the same check and
+  # the same refusal as the ledger path.
+  defp do_enforce_budget(%SpendingPolicy{} = policy, nil, _proto, amount, _host, _opts) do
+    case Ledger.check_request(amount, policy) do
+      :ok -> :ok
+      {:over_limit, limit_type} -> {:error, {:over_budget, limit_type, amount}}
+    end
+  end
 
   defp do_enforce_budget(
          %SpendingPolicy{} = policy,

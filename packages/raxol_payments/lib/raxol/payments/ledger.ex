@@ -96,6 +96,21 @@ defmodule Raxol.Payments.Ledger do
   end
 
   @doc """
+  The per-request checks of `check_budget/4`, without a ledger: the amount
+  must be positive and finite and at most `policy.per_request_max`.
+
+  Returns `:ok` or `{:over_limit, :per_request | :invalid_amount}`. The
+  cumulative caps (`session_max`, `lifetime_max`) need the ledger's history;
+  this does not check them.
+  """
+  @spec check_request(Decimal.t(), SpendingPolicy.t()) :: :ok | {:over_limit, atom()}
+  def check_request(amount, %SpendingPolicy{} = policy) do
+    with :ok <- check_amount_positive(amount) do
+      check_per_request(amount, policy)
+    end
+  end
+
+  @doc """
   Release (refund) a previously reserved amount.
 
   Records a compensating entry of `-amount` so a spend that was reserved via
@@ -524,8 +539,7 @@ defmodule Raxol.Payments.Ledger do
   end
 
   defp do_check_budget(table, agent_id, amount, policy) do
-    with :ok <- check_amount_positive(amount),
-         :ok <- check_per_request(amount, policy),
+    with :ok <- check_request(amount, policy),
          entries = get_entries(table, agent_id),
          :ok <- check_session(entries, amount, policy),
          :ok <- check_lifetime(entries, amount, policy) do

@@ -368,6 +368,69 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     end
   end
 
+  describe "per-request cap" do
+    setup do
+      Process.put(:wallet_signal_target, self())
+      :ok
+    end
+
+    test "without a ledger, an amount over per_request_max is refused before signing" do
+      req =
+        Req.new(url: "https://api.example.com/data", retry: false)
+        # dev(): per_request_max 0.10 USDC; 100_000_000 atomic is 100 USDC.
+        |> AutoPay.attach(wallet: StubWallet, policy: SpendingPolicy.dev())
+        |> Req.Request.prepend_request_steps(stub: stub_402_then_ok(100_000_000))
+
+      resp = Req.Request.run!(req)
+
+      assert resp.status == 402
+      assert resp.body == %{error: :budget_exceeded, limit: :per_request}
+      refute_received :wallet_signed
+    end
+
+    test "without a ledger, an amount within per_request_max is paid" do
+      req =
+        Req.new(url: "https://api.example.com/data", retry: false)
+        |> AutoPay.attach(wallet: StubWallet, policy: SpendingPolicy.dev())
+        |> Req.Request.prepend_request_steps(stub: stub_402_then_ok(1))
+
+      resp = Req.Request.run!(req)
+
+      assert resp.status == 200
+      assert_received :wallet_signed
+    end
+
+    test "with a ledger, the same over-cap amount is refused with the same body" do
+      {:ok, ledger} =
+        Ledger.start_link(table_name: :"cap_ledger_#{:erlang.unique_integer([:positive])}")
+
+      on_exit(fn ->
+        try do
+          GenServer.stop(ledger)
+        catch
+          :exit, _ -> :ok
+        end
+      end)
+
+      req =
+        Req.new(url: "https://api.example.com/data", retry: false)
+        |> AutoPay.attach(
+          wallet: StubWallet,
+          ledger: ledger,
+          policy: SpendingPolicy.dev(),
+          agent_id: :cap
+        )
+        |> Req.Request.prepend_request_steps(stub: stub_402_then_ok(100_000_000))
+
+      resp = Req.Request.run!(req)
+
+      assert resp.status == 402
+      assert resp.body == %{error: :budget_exceeded, limit: :per_request}
+      refute_received :wallet_signed
+      assert Ledger.get_history(ledger, :cap) == []
+    end
+  end
+
   describe "budget release on a payment that does not complete" do
     setup do
       Process.put(:wallet_signal_target, self())

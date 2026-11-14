@@ -159,7 +159,14 @@ requirement resolves to it; pin `~> 0.2.1` to stay on 0.2.
   `Req.AgentPlugin.auto_pay/1` and the Xochi client's `{:x402, opts}` auth
   require `:policy`, a `SpendingPolicy`, and raise `ArgumentError` without
   one. Without a policy AutoPay used to pay any 402 with no domain or amount
-  gate. Pass `SpendingPolicy.dev()` for development.
+  gate. Every payment is now held to the policy's `approved_domains`,
+  `require_confirmation_above` and `per_request_max`, with or without a
+  `:ledger`; its `session_max` and `lifetime_max` are enforced only with a
+  `:ledger`. An amount over `per_request_max` is refused before signing with
+  the same `%{error: :budget_exceeded, limit: :per_request}` body either way.
+  Pass `SpendingPolicy.dev()` for development. New
+  `Raxol.Payments.Ledger.check_request/2` is the per-request check without a
+  ledger.
 - **Breaking.** `config :raxol_payments, :pull_require_solver_pin` defaults to
   `Raxol.Payments.Deployment.production?/0` (was `false`): a deployed release
   with no `:pull_solver_allowlist` rejects an unpinned ERC-3009 origin pull
