@@ -40,14 +40,15 @@ defmodule Raxol.Broker.PolicyHolidayTest do
 
   defp broker!(after_hours, start, fake_opts \\ []) do
     clock =
-      start_supervised!(
-        Supervisor.child_spec({Agent, fn -> start end}, id: make_ref())
-      )
+      start_supervised!(Supervisor.child_spec({Agent, fn -> start end}, id: make_ref()))
 
     now = fn -> Agent.get(clock, & &1) end
     ctx = Broker.journal!(clock: now)
     :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
-    fake = Fake.start(Keyword.merge([quotes: %{"AAPL" => "125"}, trade_approvals: true], fake_opts))
+
+    fake =
+      Fake.start(Keyword.merge([quotes: %{"AAPL" => "125"}, trade_approvals: true], fake_opts))
+
     executor = Broker.executor!(ctx.journal, fake, policy: policy(after_hours), clock: now)
     Map.merge(ctx, %{clock: clock, fake: fake, executor: executor})
   end
@@ -55,8 +56,10 @@ defmodule Raxol.Broker.PolicyHolidayTest do
   test "a known closed calendar day denies every equity order type regardless of after-hours permission" do
     {:ok, shares} = Intent.buy_shares("AAPL", d("2"), provenance: :strategy)
     {:ok, sell} = Intent.sell("AAPL", d("2"), provenance: :human)
+
     {:ok, stop_limit} =
       Intent.stop_limit(:sell, "AAPL", d("2"), d("125"), d("124"), provenance: :human)
+
     {:ok, stop_market} = Intent.stop_market(:sell, "AAPL", d("2"), d("125"), provenance: :human)
 
     for after_hours <- [false, true],
@@ -69,7 +72,8 @@ defmodule Raxol.Broker.PolicyHolidayTest do
 
   test "weekday overnight limits and explicitly enabled market orders retain their existing behavior" do
     for after_hours <- [false, true] do
-      assert {:allow, _} = Policy.evaluate(limit("overnight"), context(after_hours, true, :closed))
+      assert {:allow, _} =
+               Policy.evaluate(limit("overnight"), context(after_hours, true, :closed))
     end
 
     assert {:allow, _} = Policy.evaluate(market("enabled"), context(true, true, :closed))
@@ -164,11 +168,13 @@ defmodule Raxol.Broker.PolicyHolidayTest do
       assert Fake.calls(ctx.fake, "place_") == []
       assert Fake.approvals(ctx.fake) == []
       assert Fake.orders(ctx.fake) == []
+
       assert {:ok, notional} =
                Journal.today_notional(
                  MarketCalendar.day_start(~U[2027-12-24 17:00:00Z]),
                  ctx.journal
                )
+
       assert Decimal.equal?(notional, d("0"))
     end
   end
@@ -226,6 +232,7 @@ defmodule Raxol.Broker.PolicyHolidayTest do
 
   test "approving an ASK parked on a trading day rechecks the holiday calendar before sending" do
     ctx = broker!(true, ~U[2026-07-03 03:59:59Z], warnings: ["Review required"])
+
     assert {:ask, gid, _prompts} =
              Executor.run(ctx.executor, limit("parked-before-holiday"), %Context{})
 
@@ -238,6 +245,7 @@ defmodule Raxol.Broker.PolicyHolidayTest do
 
   test "executor can cancel an order and decline a held proposal during a holiday" do
     ctx = broker!(false, ~U[2026-07-02 14:00:00Z])
+
     assert {:ok, %{status: :pending_approval}} =
              Executor.run(ctx.executor, limit("to-cancel"), %Context{})
 
@@ -246,6 +254,7 @@ defmodule Raxol.Broker.PolicyHolidayTest do
     [%{"order_id" => order_id}] = Fake.orders(ctx.fake)
 
     {:ok, proposal} = Intent.buy_usd("AAPL", d("100"), provenance: :strategy, id: "to-decline")
+
     assert {:ok, %{status: :pending_approval}} =
              Executor.run(ctx.executor, proposal, %Context{})
 

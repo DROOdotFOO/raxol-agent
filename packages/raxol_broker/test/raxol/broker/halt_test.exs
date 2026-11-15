@@ -19,7 +19,12 @@ defmodule Raxol.Broker.HaltTest do
     fake = Fake.start(Keyword.merge([quotes: %{"F" => "9.80", "AAPL" => "125"}], fake_opts))
     sup = :"strategies_#{System.unique_integer([:positive])}"
     executor = Broker.executor!(ctx.journal, fake, Keyword.put(executor_opts, :strategies, sup))
-    start_supervised!({Strategy.Supervisor, name: sup, journal: ctx.journal, executor: executor, clock: &Broker.t0/0})
+
+    start_supervised!(
+      {Strategy.Supervisor,
+       name: sup, journal: ctx.journal, executor: executor, clock: &Broker.t0/0}
+    )
+
     {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "F", "usd" => "25"})
     :ok = Strategy.Supervisor.add(spec, journal: ctx.journal, supervisor: sup)
     :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
@@ -135,7 +140,10 @@ defmodule Raxol.Broker.HaltTest do
         assert_receive {:held, hook}, 5_000
         %{busy: %{pid: worker}} = :sys.get_state(ctx.executor)
         worker_ref = Process.monitor(worker)
-        queued = Task.async(fn -> Executor.run(ctx.executor, intent("queued-read"), %Context{}) end)
+
+        queued =
+          Task.async(fn -> Executor.run(ctx.executor, intent("queued-read"), %Context{}) end)
+
         wait_queued(ctx.executor)
 
         {micros, summary} = :timer.tc(fn -> kill!(ctx, 300) end)
@@ -170,7 +178,10 @@ defmodule Raxol.Broker.HaltTest do
       assert_receive {:held, hook}, 5_000
       %{busy: %{pid: worker, stage: :reconcile}} = :sys.get_state(ctx.executor)
       worker_ref = Process.monitor(worker)
-      queued = Task.async(fn -> Executor.run(ctx.executor, intent("queued-reconcile"), %Context{}) end)
+
+      queued =
+        Task.async(fn -> Executor.run(ctx.executor, intent("queued-reconcile"), %Context{}) end)
+
       wait_queued(ctx.executor)
 
       {micros, summary} = :timer.tc(fn -> kill!(ctx, 300) end)

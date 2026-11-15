@@ -133,7 +133,9 @@ defmodule Raxol.Broker.DashboardTest do
     :erlang.trace(dispatcher, true, [:receive])
     {:ok, before} = Raxol.Headless.get_model(id)
     :ok = Raxol.Headless.send_message(id, :tick)
-    operations = [:executor, :journal, :strategies] ++ if(before.account_loaded, do: [], else: [:account])
+
+    operations =
+      [:executor, :journal, :strategies] ++ if(before.account_loaded, do: [], else: [:account])
 
     for operation <- operations do
       assert_receive {:trace, ^dispatcher, :receive,
@@ -160,6 +162,37 @@ defmodule Raxol.Broker.DashboardTest do
     assert screen(dash) =~ "read-only: this surface has no operator; nothing sent"
     assert Fake.calls(ctx.fake, "place_") == []
     assert [_] = Executor.parked(ctx.executor)
+  end
+
+  test "authenticated LiveView approves under its session identity", ctx do
+    group = ask!(ctx, "browser-approved")
+    model = Dashboard.init(%{options: [environment: :liveview, authenticated_user: "alice"]})
+    model = model |> tick() |> press(["j", "a"])
+    assert model.status == "approve browser-approved: placed"
+
+    assert %{"by" => "liveview:alice", "group_id" => ^group} =
+             Enum.find(Broker.records(ctx.path), &(&1["type"] == "approval"))
+  end
+
+  test "LiveView cannot obtain approval authority from dashboard options or malformed identity",
+       ctx do
+    _ = ask!(ctx, "browser-readonly")
+
+    for user <- [nil, "", 123, "alice\nadmin"] do
+      model =
+        Dashboard.init(%{
+          options: [
+            environment: :liveview,
+            authenticated_user: user,
+            dashboard: [operator: "liveview:mallory"]
+          ]
+        })
+
+      model = model |> tick() |> press(["j", "a"])
+      assert model.status =~ "read-only"
+    end
+
+    assert Fake.calls(ctx.fake, "place_") == []
   end
 
   test "an operator approves the focused ASK into exactly one place, journaled by name", ctx do
@@ -328,10 +361,11 @@ defmodule Raxol.Broker.DashboardTest do
     assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
 
     assert [%{"by" => "ssh:alice"}] =
-             for %{"type" => "approval"} = record <- Broker.records(ctx.path), do: record
+             for(%{"type" => "approval"} = record <- Broker.records(ctx.path), do: record)
   end
 
-  test "a frozen executor cannot block ticks and only one refresh or approval is in flight", ctx do
+  test "a frozen executor cannot block ticks and only one refresh or approval is in flight",
+       ctx do
     _group = ask!(ctx, "frozen-executor")
     {heartbeat, clock} = heartbeat!(ctx)
     model = %{operator_model() | heartbeat: heartbeat} |> tick() |> press(["j"])
@@ -406,9 +440,7 @@ defmodule Raxol.Broker.DashboardTest do
 
   test "a frozen account client leaves refresh, heartbeat and input responsive", ctx do
     client =
-      start_supervised!(
-        {Raxol.Broker.MCP.Client, Fake.client_opts(ctx.fake)}
-      )
+      start_supervised!({Raxol.Broker.MCP.Client, Fake.client_opts(ctx.fake)})
 
     assert {:ok, [_ | _]} = Raxol.Broker.MCP.Client.list_tools(client)
     {heartbeat, _clock} = heartbeat!(ctx)

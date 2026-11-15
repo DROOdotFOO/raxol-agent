@@ -42,11 +42,12 @@ defmodule Raxol.Broker.SupervisorTest do
       start_supervised!(
         {Raxol.Broker.Supervisor,
          name: :"broker_sup_#{System.unique_integer([:positive])}",
-         journal: [name: journal, path: path],
+         journal: [name: journal, path: path, clock: &Raxol.Broker.Test.Broker.t0/0],
          executor: [
            name: executor,
            session: Fake.session(server),
            account_number: "FAKE-0001",
+           clock: &Raxol.Broker.Test.Broker.t0/0,
            policy: policy
          ]}
       )
@@ -99,12 +100,13 @@ defmodule Raxol.Broker.SupervisorTest do
   test "the executor's shutdown outlasts an order call" do
     {:ok, policy} = PolicyFile.new(Decimal.new("1000"), Decimal.new("5000"))
 
-    {:ok, {_flags, [_journal, %{shutdown: shutdown}]}} =
+    {:ok, {_flags, children}} =
       Raxol.Broker.Supervisor.init(
         journal: [name: :j, path: "unused"],
         executor: [session: [], account_number: "ACC-1", policy: policy, place_timeout: 60_000]
       )
 
+    %{shutdown: shutdown} = Enum.find(children, &(&1.id == Executor))
     assert is_integer(shutdown) and shutdown >= 60_000
   end
 

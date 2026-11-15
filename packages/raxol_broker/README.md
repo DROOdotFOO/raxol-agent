@@ -480,13 +480,17 @@ Initial account and snapshot loading starts on the first one-second tick.
 Only an operator may answer or kill, and the operator is what the
 approval's `by` and the kill's trigger record. The terminal's operator is
 `terminal:<OS user>`. An SSH session's comes from the server's
-`:tenant_opts` for the authenticated user. LiveView and headless sessions
-are read-only: `Raxol.LiveView.TEALive` passes no per-user options, so
-nothing ties a browser to a person.
+`:tenant_opts` for the authenticated user. LiveView uses
+`liveview:<user>` only when TEALive forwards an authenticated session
+identity with `authenticated_user_key: "user_id"` (requires the runtime
+identity-forwarding change). Protect the route with your application's
+authentication; never set that session key from untrusted input. Missing or
+malformed identities and headless sessions remain read-only.
 
 ```elixir
 Raxol.run(Raxol.Broker.Dashboard)                                    # terminal, in the broker's VM
-use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard      # LiveView, read-only
+Raxol.LiveView.TEALive.mount(params, session, socket,
+  app_module: Raxol.Broker.Dashboard, authenticated_user_key: "user_id")
 Raxol.SSH.serve(Raxol.Broker.Dashboard,
   port: 2222,
   authorized_keys_dir: dir,

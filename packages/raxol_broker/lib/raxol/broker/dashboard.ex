@@ -24,9 +24,9 @@ defmodule Raxol.Broker.Dashboard do
     * SSH: what the server's `:tenant_opts` function gives for the
       authenticated user, e.g.
       `tenant_opts: fn user -> {:ok, [dashboard: [operator: "ssh:" <> user]]} end`;
-    * LiveView and headless: read-only. `Raxol.LiveView.TEALive` passes no
-      per-user options to the app, so a browser session cannot be tied to a
-      person here; `a`, `d` and `K` answer "read-only" and send nothing.
+    * LiveView: `"liveview:<user>"`, from TEALive's opted-in
+      `:authenticated_user` context option, never a URL param;
+    * headless or an unauthenticated browser: read-only.
 
   The executor denies an unanswered ASK whether or not a dashboard is open.
   Refreshes, account reads, heartbeats and operator actions run as independent
@@ -39,7 +39,8 @@ defmodule Raxol.Broker.Dashboard do
   The app has no surface-specific code:
 
       Raxol.run(Raxol.Broker.Dashboard)                           # terminal
-      use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard  # LiveView, read-only
+      Raxol.LiveView.TEALive.mount(params, session, socket,
+        app_module: Raxol.Broker.Dashboard, authenticated_user_key: "user_id")
       Raxol.SSH.serve(Raxol.Broker.Dashboard,
         port: 2222,
         authorized_keys_dir: dir,
@@ -72,7 +73,7 @@ defmodule Raxol.Broker.Dashboard do
       journal: Keyword.get(config, :journal, Journal),
       strategies: Keyword.get(config, :strategies, Strategy.Supervisor),
       client: Keyword.get(config, :client, Client),
-      operator: operator(environment, dashboard(options)),
+      operator: operator(environment, options),
       heartbeat: Keyword.get(config, :heartbeat, Heartbeat),
       confirming_kill: false,
       in_flight: %{},
@@ -93,18 +94,31 @@ defmodule Raxol.Broker.Dashboard do
 
   # Only the surface's own options name an operator; the terminal is the
   # console of the broker's VM, so its user is the operator.
-  defp operator(environment, surface_options) when environment in [nil, :terminal] do
-    Keyword.get_lazy(surface_options, :operator, fn ->
+  defp operator(environment, options) when environment in [nil, :terminal] do
+    Keyword.get_lazy(dashboard(options), :operator, fn ->
       "terminal:" <> (System.get_env("USER") || "unknown")
     end)
   end
 
-  defp operator(_environment, surface_options) do
-    case Keyword.get(surface_options, :operator) do
+  defp operator(:liveview, options) do
+    case Keyword.get(options, :authenticated_user) do
+      user when is_binary(user) and byte_size(user) > 0 and byte_size(user) <= 128 ->
+        if String.valid?(user) and not String.contains?(user, ["\n", "\r", "\0"]),
+          do: "liveview:" <> user
+
+      _none ->
+        nil
+    end
+  end
+
+  defp operator(:ssh, options) do
+    case Keyword.get(dashboard(options), :operator) do
       operator when is_binary(operator) and operator != "" -> operator
       _none -> nil
     end
   end
+
+  defp operator(_environment, _options), do: nil
 
   @impl true
   def update(:tick, model) do
@@ -136,17 +150,31 @@ defmodule Raxol.Broker.Dashboard do
 
   def update(message, model) do
     case message do
-      key_match("j") -> {move(model, 1), []}
-      key_match("k") -> {move(model, -1), []}
-      key_match("a") -> answer(model, :approve)
-      key_match("d") -> answer(model, :decline)
+      key_match("j") ->
+        {move(model, 1), []}
+
+      key_match("k") ->
+        {move(model, -1), []}
+
+      key_match("a") ->
+        answer(model, :approve)
+
+      key_match("d") ->
+        answer(model, :decline)
+
       key_match("r") ->
         {model, effects} = refresh(model)
         {model, account} = launch_account(model)
         {model, effects ++ account}
-      key_match("K") -> {confirm_kill(model), []}
-      key_match("q") -> {model, [Directive.stop()]}
-      _other -> {model, []}
+
+      key_match("K") ->
+        {confirm_kill(model), []}
+
+      key_match("q") ->
+        {model, [Directive.stop()]}
+
+      _other ->
+        {model, []}
     end
   end
 
@@ -316,15 +344,17 @@ defmodule Raxol.Broker.Dashboard do
   defp refresh(model) do
     [
       {:executor, fn -> Executor.parked(model.executor, @call_timeout) end},
-      {:journal, fn ->
-        with {:ok, decisions} <- Journal.recent(model.journal, 5),
-             {:ok, mode, _record} <- Journal.mode(model.journal) do
-          {:ok, mode, decisions}
-        end
-      end},
-      {:strategies, fn ->
-        Enum.map(Strategy.Supervisor.running(model.strategies), &elem(&1, 1))
-      end}
+      {:journal,
+       fn ->
+         with {:ok, decisions} <- Journal.recent(model.journal, 5),
+              {:ok, mode, _record} <- Journal.mode(model.journal) do
+           {:ok, mode, decisions}
+         end
+       end},
+      {:strategies,
+       fn ->
+         Enum.map(Strategy.Supervisor.running(model.strategies), &elem(&1, 1))
+       end}
     ]
     |> Enum.reduce({model, []}, fn {operation, fun}, {model, effects} ->
       {model, next} = launch(model, operation, fun)

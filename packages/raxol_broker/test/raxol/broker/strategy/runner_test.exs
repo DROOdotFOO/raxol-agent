@@ -204,7 +204,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
 
     runner =
       start_supervised!(%{
-        id: registry,
+        id: {Strategy.Runner, registry},
         start: {Strategy.Runner, :start_link, [config, spec]}
       })
 
@@ -231,7 +231,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     assert Journal.pending_intents("dip_buy-AAPL", ctx.journal) == {:ok, []}
 
     assert [%{"intent_id" => id, "outcome" => "expired"}] =
-             for %{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record
+             for(%{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record)
 
     assert id == intent.id
   end
@@ -245,7 +245,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     _runner = pending_runner!(%{ctx | journal: journal.journal}, clock: clock)
 
     assert [%{"outcome" => "expired"}] =
-             for %{"type" => "dispatch"} = record <- Broker.records(journal.path), do: record
+             for(%{"type" => "dispatch"} = record <- Broker.records(journal.path), do: record)
 
     assert Fake.calls(ctx.fake, "review_") == []
   end
@@ -258,7 +258,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     _runner = pending_runner!(%{ctx | journal: journal.journal}, clock: clock)
 
     assert [%{"outcome" => outcome}] =
-             for %{"type" => "dispatch"} = record <- Broker.records(journal.path), do: record
+             for(%{"type" => "dispatch"} = record <- Broker.records(journal.path), do: record)
 
     # The executor is disarmed against its own journal: reaching it is
     # enough to distinguish a valid pending emit from an expired one.
@@ -278,8 +278,10 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     assert {:ok, [^intent]} = Journal.pending_intents("dip_buy-AAPL", journal.journal)
     executor = Broker.executor!(journal.journal, ctx.fake)
     now = DateTime.add(Broker.t0(), 300_000, :millisecond)
+
     _runner =
       pending_runner!(%{ctx | journal: journal.journal, executor: executor}, clock: fn -> now end)
+
     assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
   end
 
@@ -290,7 +292,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     _runner = pending_runner!(ctx, clock: fn -> now end)
 
     assert [%{"outcome" => "expired"}] =
-             for %{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record
+             for(%{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record)
 
     assert Fake.calls(ctx.fake, "review_") == []
   end
@@ -312,8 +314,10 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     assert Journal.pending_emissions("dip_buy-AAPL", ctx.journal) == {:ok, []}
 
     assert ["expired", "expired"] =
-             for %{"type" => "dispatch", "outcome" => outcome} <- Broker.records(ctx.path),
-                 do: outcome
+             for(
+               %{"type" => "dispatch", "outcome" => outcome} <- Broker.records(ctx.path),
+               do: outcome
+             )
 
     assert Fake.calls(ctx.fake, "review_") == []
   end
@@ -333,11 +337,13 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     sync(runner)
 
     assert {:ok, []} = Journal.pending_intents("dip_buy-AAPL", ctx.journal)
+
     assert [%{"outcome" => "expired"}] =
-             for %{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record
+             for(%{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record)
   end
 
-  test "an unreadable runner clock never replays and retries only after the clock recovers", ctx do
+  test "an unreadable runner clock never replays and retries only after the clock recovers",
+       ctx do
     arm!(ctx)
     {clock, agent} = Broker.clock(:unreadable)
     intent = pending_intent!(ctx.journal, "clock-unreadable")

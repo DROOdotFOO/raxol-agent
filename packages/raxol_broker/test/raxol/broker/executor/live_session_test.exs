@@ -94,6 +94,7 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
          account_number: "FAKE-0001",
          policy: Broker.policy(),
          mode: :live,
+         clock: &Broker.t0/0,
          credential: [store: ctx.store, auth: [http_fn: AuthServer.http_fn(auth)]]}
       )
 

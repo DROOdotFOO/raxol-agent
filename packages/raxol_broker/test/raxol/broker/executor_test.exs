@@ -297,52 +297,52 @@ defmodule Raxol.Broker.ExecutorTest do
       {executor, fn at -> Agent.update(now, fn _ -> at end) end}
     end
 
-    test "resets at New York midnight, not UTC midnight, before the spring DST change", ctx do
-      {executor, set} = day_window!(ctx, ~U[2026-03-07 23:30:00.000000Z])
+    test "resets at New York midnight, not UTC midnight, across the spring DST change", ctx do
+      {executor, set} = day_window!(ctx, ~U[2026-03-06 23:30:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-1"), context())
 
       # UTC has turned, New York (EST) has not.
-      set.(~U[2026-03-08 00:30:00.000000Z])
+      set.(~U[2026-03-07 00:30:00.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("spring-2"), context())
 
-      # Midnight EST, the day DST starts at 02:00.
-      set.(~U[2026-03-08 05:00:00.000000Z])
+      # The next trading day starts at midnight EDT after the weekend change.
+      set.(~U[2026-03-09 04:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-3"), context())
 
-      # Same New York day after the change (EDT).
-      set.(~U[2026-03-09 03:59:00.000000Z])
+      # Still that Monday in New York.
+      set.(~U[2026-03-10 03:59:00.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("spring-4"), context())
 
       # Midnight EDT.
-      set.(~U[2026-03-09 04:00:00.000000Z])
+      set.(~U[2026-03-10 04:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-5"), context())
     end
 
     test "resets at New York midnight on both sides of the autumn DST change", ctx do
-      {executor, set} = day_window!(ctx, ~U[2026-10-31 23:30:00.000000Z])
+      {executor, set} = day_window!(ctx, ~U[2026-10-30 23:30:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-1"), context())
 
-      set.(~U[2026-11-01 03:59:59.000000Z])
+      set.(~U[2026-10-31 03:59:59.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("fall-2"), context())
 
-      # Midnight EDT; DST ends at 02:00 that day.
-      set.(~U[2026-11-01 04:00:00.000000Z])
+      # The next trading day starts at midnight EST after the weekend change.
+      set.(~U[2026-11-02 05:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-3"), context())
 
-      # Still Sunday in New York (EST) an hour past where EDT would have turned.
-      set.(~U[2026-11-02 04:30:00.000000Z])
+      # Still Monday in New York, an hour past where EDT would have turned.
+      set.(~U[2026-11-03 04:30:00.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("fall-4"), context())
 
       # Midnight EST.
-      set.(~U[2026-11-02 05:00:00.000000Z])
+      set.(~U[2026-11-03 05:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-5"), context())
     end
   end
@@ -372,7 +372,7 @@ defmodule Raxol.Broker.ExecutorTest do
                Executor.approve(ctx.executor, gid, "droo@terminal")
 
       assert types(ctx.path, gid) ==
-               ~w(intent context verdict review verdict approval verdict placing order)
+               ~w(intent context verdict review verdict context approval verdict placing order)
 
       assert Fake.calls(ctx.server, "place_") == ["place_equity_order"]
       assert Executor.parked(ctx.executor) == []

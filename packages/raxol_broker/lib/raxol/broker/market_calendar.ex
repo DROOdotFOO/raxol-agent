@@ -77,7 +77,8 @@ defmodule Raxol.Broker.MarketCalendar do
     end
   end
 
-  defp trading_date?(date), do: Date.day_of_week(date) <= 5 and not MapSet.member?(@holidays, date)
+  defp trading_date?(date),
+    do: Date.day_of_week(date) <= 5 and not MapSet.member?(@holidays, date)
 
   defp local(now), do: DateTime.shift_zone!(now, @zone, @db)
 end

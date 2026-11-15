@@ -32,7 +32,14 @@ defmodule Raxol.Broker.MarketCalendarHolidayTest do
 
   test "every published 2026 and 2027 full-day holiday is closed all New York day" do
     for date <- @holidays,
-        time <- [~T[00:00:00], ~T[04:00:00], ~T[09:30:00], ~T[15:59:59], ~T[19:59:59], ~T[23:59:59]] do
+        time <- [
+          ~T[00:00:00],
+          ~T[04:00:00],
+          ~T[09:30:00],
+          ~T[15:59:59],
+          ~T[19:59:59],
+          ~T[23:59:59]
+        ] do
       now = local(date, time)
       refute MarketCalendar.trading_day?(now), "unexpected trading day: #{now}"
       assert MarketCalendar.session(now) == :closed, "unexpected open session: #{now}"
@@ -62,10 +69,10 @@ defmodule Raxol.Broker.MarketCalendarHolidayTest do
 
   test "holiday boundaries use New York midnight rather than UTC midnight in EST and EDT" do
     for {before_holiday, start, last, following_day} <- [
-          {~U[2026-01-01 04:59:59Z], ~U[2026-01-01 05:00:00Z],
-           ~U[2026-01-02 04:59:59Z], ~U[2026-01-02 05:00:00Z]},
-          {~U[2026-06-19 03:59:59Z], ~U[2026-06-19 04:00:00Z],
-           ~U[2026-06-20 03:59:59Z], ~U[2026-06-22 04:00:00Z]}
+          {~U[2026-01-01 04:59:59Z], ~U[2026-01-01 05:00:00Z], ~U[2026-01-02 04:59:59Z],
+           ~U[2026-01-02 05:00:00Z]},
+          {~U[2026-06-19 03:59:59Z], ~U[2026-06-19 04:00:00Z], ~U[2026-06-20 03:59:59Z],
+           ~U[2026-06-22 04:00:00Z]}
         ] do
       assert MarketCalendar.trading_day?(before_holiday)
       refute MarketCalendar.trading_day?(start)
