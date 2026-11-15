@@ -1364,7 +1364,7 @@ defmodule Raxol.Broker.Executor do
           :approval_context,
           %{group_id: token, group: group, by: by},
           group.context,
-          nil
+          group.intent
         )
       else
         not_armed(%{state | parked: Map.delete(state.parked, token)}, token)
@@ -1384,10 +1384,10 @@ defmodule Raxol.Broker.Executor do
   defp approved(state, group_id, group, by, context) do
     unparked = %{state | parked: Map.delete(state.parked, group_id)}
 
-    case append(state, group_id, {:approval, :approved, by}) do
-      :ok ->
-        recheck(unparked, group_id, group, context)
-
+    with :ok <- safe(fn -> Journal.record_context(group_id, context, state.journal) end),
+         :ok <- append(state, group_id, {:approval, :approved, by}) do
+      recheck(unparked, group_id, group, context)
+    else
       {:error, {:invalid_entry, _} = reason} ->
         {:reply, {:error, reason}, state}
 
@@ -1404,6 +1404,15 @@ defmodule Raxol.Broker.Executor do
       {{:error, reason}, _verdict} ->
         _ = close_group(state, group_id, :approval_failed)
         {:reply, {:error, reason}, state}
+
+      {:ok, {:deny, {:drawdown_breaker, detail} = reason}} ->
+        Halt.pause(:drawdown_halt,
+          journal: state.journal,
+          strategies: state.strategies,
+          detail: %{"group_id" => group_id, "detail" => Codec.term(detail)}
+        )
+
+        {:reply, {:deny, group_id, reason}, state}
 
       {:ok, {:deny, reason}} ->
         {:reply, {:deny, group_id, reason}, state}
@@ -1786,8 +1795,6 @@ defmodule Raxol.Broker.Executor do
       {:error, reason} -> {:error, {:context, reason}}
     end
   end
-
-  defp fetched(_state, context, nil, _now), do: context
 
   defp fetched(_state, context, %Intent{kind: kind}, _now) when kind in [:cancel, :decline],
     do: context

@@ -279,7 +279,7 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   page by page, and a listing that fails, cannot be read or is longer than
   its page limit leaves them empty too. Holidays are not modelled in the
   market session.
-* **Drawdown breaker.** A pre-review DENY by `:drawdown_breaker` disarms
+* **Drawdown breaker.** A pre-review or approval-time DENY by `:drawdown_breaker` disarms
   the broker, journals a `halt` record and pauses every strategy runner
   (`Raxol.Broker.Halt.pause/2`). The pause is the journal's
   (`Raxol.Broker.Journal.pauses/1`): a runner restarted, or a strategy
@@ -326,8 +326,10 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   `{:invalid_timeout, key, value}`.
 * **Any review warning asks.** A warning turns ALLOW into ASK
   (`:review_warning`); a review response that cannot be read counts as one.
-  `approve/3` reads the counters again, journals the approval and re-runs
-  the policy: a cap reached while the ASK waited still denies. `decline/3`
+  `approve/3` re-fetches quotes, positions, portfolio, calendar and journal
+  counters, records the refreshed context, journals approval and re-runs
+  policy. A cap reached or position weight changed while waiting denies.
+  A fresh drawdown DENY also disarms and pauses all runners. `decline/3`
   and `close/3` end the group. A bad approver name raises in the caller
   and leaves the group parked.
 * **Counters come from the journal.** Decisions are serialized, so two

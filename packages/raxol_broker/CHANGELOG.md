@@ -2,6 +2,7 @@
 
 ## 0.1.0 - Unreleased
 
+- Approving an ASK re-fetches positions, portfolio, quotes, market calendar and counters, then records that context before re-evaluating policy. A fresh drawdown DENY disarms and pauses runners. Placing uses the refreshed context for notional accounting and replay.
 - Prioritize halt over executor context, review and reconciliation reads and queued work. Discard interrupted task results so they cannot resume sending, and skip context reads entirely for disarmed intents; order writes remain with the sole journal claimant.
 - Cross-shell kill uses an owner-only 0600 halt request in the private journal directory rather than distributed RPC. Marker presence blocks orders and arming; a supervised worker polls every 100 ms, disarms and invokes the existing journal-before-send cancel/decline path. The CLI distinguishes submission from confirmed cancellation.
 - Add the standalone package and its fail-closed policy workflow. Policy files are parsed as bounded data rather than evaluated as Elixir, initialization publishes a complete file atomically without replacing an existing destination, and prompting is available only in interactive terminals (with deterministic process-shell coverage). Decimal 3 avoids EEF-CVE-2026-32686.

@@ -381,6 +381,10 @@ defmodule Raxol.Broker.Executor.StructureTest do
     assert callers(facts, &match?({Journal, :record_armed, _}, &1)) == [Raxol.Broker.Mode]
   end
 
+  test "only the Executor records an approval context", %{facts: facts} do
+    assert callers(facts, &match?({Journal, :record_context, _}, &1)) == [@executor]
+  end
+
   test "only the Heartbeat writes a resume record", %{facts: facts} do
     assert callers(facts, &match?({Journal, :record_resume, _}, &1)) == [Raxol.Broker.Heartbeat]
   end

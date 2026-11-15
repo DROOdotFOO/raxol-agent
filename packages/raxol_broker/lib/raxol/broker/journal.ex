@@ -190,7 +190,7 @@ defmodule Raxol.Broker.Journal do
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
   @decisions [:approved, :declined]
-  @before_placing [:verdict, :review, :approval, :placing]
+  @before_placing [:context, :verdict, :review, :approval, :placing]
   @minute_us 60_000_000
   @default_write_deadline 60_000
 
@@ -198,6 +198,7 @@ defmodule Raxol.Broker.Journal do
   @type group_id :: String.t()
   @type entry ::
           {:verdict, :pre_review | :post_review, Policy.result()}
+          | {:context, Context.t()}
           | {:review, map()}
           | {:approval, :approved | :declined, String.t()}
           | {:placing}
@@ -366,6 +367,11 @@ defmodule Raxol.Broker.Journal do
   def append_to_group(group_id, entry, server \\ __MODULE__, timeout \\ :infinity)
       when is_binary(group_id),
       do: GenServer.call(server, {:append_to_group, group_id, entry}, timeout)
+
+  @doc "Record a refreshed approval context, only from the claimant, before placing."
+  @spec record_context(group_id(), Context.t(), server()) :: :ok | {:error, term()}
+  def record_context(group_id, context, server \\ __MODULE__),
+    do: append_to_group(group_id, {:context, context}, server)
 
   @doc """
   Write a whole group (intent, context, then `entries` in order) as one
@@ -911,6 +917,13 @@ defmodule Raxol.Broker.Journal do
   defp entry_record(entry, id, %{placing: %{}}, _state)
        when is_tuple(entry) and tuple_size(entry) > 0 and elem(entry, 0) in @before_placing,
        do: {:error, {:already_placing, id}}
+
+  defp entry_record({:context, context}, id, group, state) do
+    with {:ok, context} <- Context.normalize(context) do
+      record = record(state, "context", id, %{"context" => Codec.encode_context(context)})
+      {:ok, record, %{group | context: context, post_action: nil, approved?: false}}
+    end
+  end
 
   defp entry_record({:verdict, phase, result}, id, group, state) when phase in @phases do
     with {:ok, encoded} <- Codec.encode_result(result) do
