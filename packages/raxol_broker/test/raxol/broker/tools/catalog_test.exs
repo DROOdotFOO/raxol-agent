@@ -11,11 +11,11 @@ defmodule Raxol.Broker.Tools.CatalogTest do
     defp named(class),
       do: for({name, ^class} <- Catalog.static(), do: name) |> Enum.sort()
 
-    test "only the allowlisted order and alert tools are :write" do
+    test "only the allowlisted order, alert and decline tools are :write" do
       assert named(:write) ==
                ~w(cancel_advanced_order cancel_crypto_order cancel_equity_order cancel_option_order
-                  create_alert place_advanced_order place_crypto_order place_equity_order
-                  place_option_order update_alert)
+                  create_alert decline_trade_approval place_advanced_order place_crypto_order
+                  place_equity_order place_option_order update_alert)
     end
 
     test "the review tools are :review, and every place tool resolves to one" do
@@ -35,8 +35,7 @@ defmodule Raxol.Broker.Tools.CatalogTest do
              )
 
       for name <-
-            ~w(exercise_option cancel_option_exercise delete_alert create_watchlist add_to_watchlist
-               decline_trade_approval),
+            ~w(exercise_option cancel_option_exercise delete_alert create_watchlist add_to_watchlist),
           do: assert(Catalog.classify(name) == :unknown, name)
     end
 
@@ -60,12 +59,12 @@ defmodule Raxol.Broker.Tools.CatalogTest do
     test "the write allowlist, and nothing else that mutates" do
       for name <-
             ~w(place_equity_order place_advanced_order cancel_option_order replace_equity_order
-                     create_price_alert update_alert),
+                     create_price_alert update_alert decline_trade_approval),
           do: assert(Catalog.classify(name, %{}) == :write, name)
 
       for name <-
             ~w(exercise_option create_watchlist add_to_watchlist delete_alert set_margin
-               decline_trade_approval approve_trade_approval),
+               approve_trade_approval decline_other_approval),
           do: assert(Catalog.classify(name, @read) == :unknown, name)
     end
 

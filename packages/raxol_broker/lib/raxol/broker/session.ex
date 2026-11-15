@@ -22,7 +22,10 @@ defmodule Raxol.Broker.Session do
 
   @doc """
   A `Raxol.MCP.Client` spec for `credential`: `extra` (its own `:url` wins,
-  e.g. a sandbox), the legacy era Robinhood speaks, and the bearer header.
+  e.g. a sandbox), the legacy era Robinhood speaks, pooled concurrency, and
+  the bearer header. A legacy session defaults to one request in flight;
+  Robinhood's own tool descriptions call for parallel calls on one session,
+  and the kill switch sends its cancels in parallel.
   """
   @spec spec(Credential.t(), keyword()) :: keyword()
   def spec(%Credential{} = credential, extra \\ []) do
@@ -33,6 +36,7 @@ defmodule Raxol.Broker.Session do
     extra
     |> Keyword.put_new(:url, @url)
     |> Keyword.put_new(:era, :legacy)
+    |> Keyword.put_new(:concurrency, :pooled)
     |> Keyword.put(:headers, headers)
   end
 

@@ -23,7 +23,8 @@ defmodule Raxol.Broker.PolicyFile do
     max_orders_per_minute: {{:integer_range_or_unset, 1, 10_000}, {:default, :unset}},
     drawdown_halt: {:weight_or_unset, {:default, :unset}},
     llm_ask_above: {:positive_decimal_or_unset, {:default, :unset}},
-    ask_timeout: {{:integer_range, 1, 4_294_967_295}, {:default, 300_000}}
+    ask_timeout: {{:integer_range, 1, 4_294_967_295}, {:default, 300_000}},
+    dead_man_timeout: {{:integer_range_or_off, 1, 4_294_967_295}, {:default, 86_400_000}}
   ]
   @keys Keyword.keys(@schema)
   @zero Decimal.new(0)
@@ -277,6 +278,11 @@ defmodule Raxol.Broker.PolicyFile do
   defp valid_value?({:integer_range_or_unset, _minimum, _maximum}, :unset), do: true
 
   defp valid_value?({:integer_range_or_unset, minimum, maximum}, value),
+    do: valid_value?({:integer_range, minimum, maximum}, value)
+
+  defp valid_value?({:integer_range_or_off, _minimum, _maximum}, :off), do: true
+
+  defp valid_value?({:integer_range_or_off, minimum, maximum}, value),
     do: valid_value?({:integer_range, minimum, maximum}, value)
 
   defp valid_value?({:integer_range, minimum, maximum}, value),

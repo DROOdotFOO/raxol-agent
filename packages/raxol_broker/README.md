@@ -19,7 +19,7 @@ use must supply both flags. A prompt accepts the entered line with surrounding
 whitespace trimmed; end of input (EOF) fails with a `Mix.Error` and writes
 nothing.
 
-The generated policy has all thirteen required keys. `Raxol.Broker.PolicyFile.new/2`
+The generated policy has all fourteen required keys. `Raxol.Broker.PolicyFile.new/2`
 is the single constructor for it: given the two required caps it returns
 `{:ok, policy}` with every default filled in, or `{:error, reason}`:
 
@@ -44,7 +44,8 @@ The rendered file is:
   max_orders_per_minute: :unset,
   drawdown_halt: :unset,
   llm_ask_above: :unset,
-  ask_timeout: 300_000
+  ask_timeout: 300_000,
+  dead_man_timeout: 86_400_000
 ]
 ```
 
@@ -63,11 +64,15 @@ The rendered file is:
 | `drawdown_halt` | `:unset`, or a `Decimal` greater than zero and less than or equal to one: the share of the start-of-day value today's loss may reach. |
 | `llm_ask_above` | `:unset`, or a `Decimal` strictly greater than zero. |
 | `ask_timeout` | An integer number of milliseconds from `1` to `4_294_967_295`; the generated default is `300_000` (five minutes). |
+| `dead_man_timeout` | `:off`, or an integer number of milliseconds from `1` to `4_294_967_295`: the longest silence from every heartbeat before strategies pause; the generated default is `86_400_000` (24 hours). |
 
 `:unset` means that the corresponding optional threshold is not configured and
 its rule abstains, except `llm_ask_above`, where `:unset` asks for every
 model-originated order. It is valid only for the optional keys; it never
 satisfies either required notional cap.
+
+A policy file written before `dead_man_timeout` existed fails to load with
+`{:missing_key, :dead_man_timeout}`; add the key.
 
 Policy files are data, not executable Elixir. The loader size-bounds the file,
 parses it with existing atoms only, and accepts only the keyword-list literals
@@ -363,15 +368,17 @@ with the group still parked, it records a post-review DENY with rule id
 mode, the agentic account with its buying power and positions, the
 strategies, each parked ASK with its rules, prompts and the minutes left
 before it is denied, and the last journal decisions. `j`/`k` pick an ASK,
-`a` approves it, `d` declines it, `r` re-reads the account, `q` quits. The
-focus is the ASK itself: if it is answered elsewhere or times out, nothing
-is answered until `j`/`k` picks again.
+`a` approves it, `d` declines it, `K` and then `y` pull the kill switch,
+`r` re-reads the account, `q` quits. The focus is the ASK itself: if it is
+answered elsewhere or times out, nothing is answered until `j`/`k` picks
+again.
 
-Only an operator may answer, and the operator is what the approval's `by`
-records. The terminal's operator is `terminal:<OS user>`. An SSH session's
-comes from the server's `:tenant_opts` for the authenticated user. LiveView
-and headless sessions are read-only: `Raxol.LiveView.TEALive` passes no
-per-user options, so nothing ties a browser to a person.
+Only an operator may answer or kill, and the operator is what the
+approval's `by` and the kill's trigger record. The terminal's operator is
+`terminal:<OS user>`. An SSH session's comes from the server's
+`:tenant_opts` for the authenticated user. LiveView and headless sessions
+are read-only: `Raxol.LiveView.TEALive` passes no per-user options, so
+nothing ties a browser to a person.
 
 ```elixir
 Raxol.run(Raxol.Broker.Dashboard)                                    # terminal, in the broker's VM
@@ -386,6 +393,39 @@ Raxol.SSH.serve(Raxol.Broker.Dashboard,
 The dashboard reads the processes registered under their default names;
 `config :raxol_broker, Raxol.Broker.Dashboard, executor: ..., journal: ...`
 names others.
+
+## Kill switch and dead-man switch
+
+```sh
+mix raxol.broker.kill   # in the broker's VM
+mix raxol.broker.beat
+```
+
+`Raxol.Broker.Halt.kill/1` (the task, or `K` then `y` on an operator's
+dashboard) disarms, stops every strategy runner, lists the account's open
+agent-initiated equity orders (`get_equity_orders`, `agent_initiated:
+true`, one listing per open state in lifecycle order, every page) and its
+pending trade approvals (`get_trade_approvals`, every page), then cancels
+each order and declines each approval through the executor, all in
+parallel, each call bounded (10 s by default), and journals a `halt`
+record naming the trigger and how each one ended. A cancel past the bound
+is journaled `unknown` with `:timeout` and reported; nothing is retried,
+but every kill uses its own intent ids, so running it again sends that
+cancel again. A listing that fails is reported as incomplete, and the
+orders that were read are still cancelled. `decline_trade_approval` is on
+the catalog's write allowlist and is reachable only through
+`Raxol.Broker.Executor.Place`. The baseline kill-to-all-cancelled latency
+against the Fake is in `bench/kill_latency.md`.
+
+`Raxol.Broker.Heartbeat` is the dead-man switch: with no beat within the
+policy's `dead_man_timeout` (24 hours by default, `:off` to disable) it
+journals `dead_man_pause` and pauses every strategy, cancelling nothing;
+the next beat journals `dead_man_resume` and resumes them. The pause is
+the journal's, so it holds across a runner or heartbeat restart, and only
+the heartbeat may write the resume. An operator's open dashboard beats
+every second (a read-only one does not); `mix raxol.broker.inspect` and
+`mix raxol.broker.beat` beat once. Start it with the `:heartbeat` option of
+`Raxol.Broker.Supervisor`.
 
 ## Strategies
 

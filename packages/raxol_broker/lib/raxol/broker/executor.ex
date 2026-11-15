@@ -242,7 +242,7 @@ defmodule Raxol.Broker.Executor do
 
   require Logger
 
-  alias Raxol.Broker.Executor.{Place, Port, Review, ReviewReceipt}
+  alias Raxol.Broker.Executor.{Place, Port, Read, Review, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
   alias Raxol.Agent.Auth.Credential
   alias Raxol.Broker.{CredentialStore, Halt, Intent, Journal, MarketCalendar, Mode, Plain, Policy}
@@ -316,9 +316,31 @@ defmodule Raxol.Broker.Executor do
       when is_binary(token) and is_atom(reason) and not is_nil(reason),
       do: GenServer.call(server, {:close, token, reason}, :infinity)
 
-  @doc "Parked ASKs: `[%{group_id, intent, prompts}]`, oldest first."
+  @doc "Parked ASKs: `[%{group_id, intent, prompts, expires_at}]`, oldest first."
   @spec parked(GenServer.server(), timeout()) :: [map()]
   def parked(server, timeout \\ :infinity), do: GenServer.call(server, :parked, timeout)
+
+  @doc """
+  The kill switch's order step: list the account's open agent-initiated
+  equity orders (`get_equity_orders` with `agent_initiated: true`, once
+  per open state, every page) and its pending trade approvals
+  (`get_trade_approvals`, every page), then cancel every order and decline
+  every approval through `Raxol.Broker.Executor.Place`, all at once, each
+  call bounded by `bound` milliseconds. Every cancel and decline is its own
+  journaled group, under an intent id unique to this kill
+  (`cancel-<order id>-<kill id>`), so a later kill sends again a cancel an
+  earlier one could not confirm. Cancels and declines are built with
+  `:human` provenance and run whatever the mode.
+
+  `{:ok, %{orders: listed, approvals: listed, results: results}}`, where a
+  listing is `{:ok, ids}`, or `{:error, {:incomplete, ids, reasons}}` when
+  some listing failed (the ids that were read are still cancelled), and
+  `results` are `%{kind, id, group_id, outcome}`; or `{:error,
+  :port_not_ready}`.
+  """
+  @spec halt_orders(GenServer.server(), pos_integer()) :: {:ok, map()} | {:error, term()}
+  def halt_orders(server, bound) when is_integer(bound) and bound > 0,
+    do: GenServer.call(server, {:halt_orders, bound}, :infinity)
 
   @doc """
   Wait until the port session is ready: `:ok`, or `{:error, :port_not_ready}`
@@ -915,6 +937,8 @@ defmodule Raxol.Broker.Executor do
   defp dispatch({:close, token, reason}, _from, state),
     do: finish_parked(state, token, {:close, reason})
 
+  defp dispatch({:halt_orders, bound}, _from, state), do: halt_orders_now(state, bound)
+
   defp dispatch(_request, _from, state), do: {:reply, {:error, :unknown_request}, state}
 
   defp awaiting({:await, pending, state}, from),
@@ -1236,6 +1260,131 @@ defmodule Raxol.Broker.Executor do
     {:reply, reply, state}
   end
 
+  # -- Halt -----------------------------------------------------------------------
+
+  # Robinhood lists open and closed orders together, newest first, a fixed
+  # number per page: one listing per open state, every page, keeps closed
+  # orders from pushing open ones off the first page. The states are read in
+  # lifecycle order, so an order that moves on between two listings is read
+  # by the later one.
+  @open_states ["new", "unconfirmed", "queued", "confirmed", "partially_filled"]
+  @closed_states ["filled", "cancelled", "canceled", "rejected", "failed", "expired", "voided"]
+
+  # Open orders and pending approvals are listed through the read stage;
+  # every cancel and decline gets its own group (no review tool, ALLOW by
+  # policy), then `Place.run_many/3` sends them all at once under `bound`.
+  defp halt_orders_now(state, bound) do
+    with :ok <- port_up(state) do
+      kill = Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false)
+      account = %{"account_number" => state.account}
+
+      orders =
+        listings(state, bound, ["orders", "results"], "order_id", fn ->
+          for s <- @open_states,
+              do:
+                {"get_equity_orders",
+                 Map.merge(account, %{"agent_initiated" => true, "state" => s})}
+        end)
+
+      approvals =
+        listings(state, bound, ["approvals", "results"], "approval_id", fn ->
+          [{"get_trade_approvals", account}]
+        end)
+
+      intents =
+        halt_intents(orders, &Intent.cancel(&1, provenance: :human, id: "cancel-#{&1}-#{kill}")) ++
+          halt_intents(
+            approvals,
+            &Intent.decline(&1, provenance: :human, id: "decline-#{&1}-#{kill}")
+          )
+
+      {ready, refused} =
+        intents
+        |> Enum.map(&open_unreviewed(state, &1))
+        |> Enum.split_with(&match?({:ok, _item}, &1))
+
+      sent = Place.run_many(Enum.map(ready, &elem(&1, 1)), send_env(state), bound)
+      intent_of = Map.new(ready, fn {:ok, {_receipt, intent, group_id}} -> {group_id, intent} end)
+
+      results =
+        Enum.map(sent, fn {group_id, outcome} ->
+          halt_result(Map.fetch!(intent_of, group_id), group_id, outcome)
+        end) ++
+          Enum.map(refused, fn {:error, intent, reason} -> halt_result(intent, nil, reason) end)
+
+      {:reply, {:ok, %{orders: orders, approvals: approvals, results: results}}, state}
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp listings(state, bound, keys, id_key, calls) do
+    {ids, errors} =
+      Enum.reduce(calls.(), {[], []}, fn {tool, args}, {ids, errors} ->
+        case Read.listing(state.port, state.catalog, tool, args, keys, bound) do
+          {:ok, items} -> {ids ++ open_ids(items, id_key), errors}
+          {:error, reason} -> {ids, [{tool, args["state"], reason} | errors]}
+        end
+      end)
+
+    ids = Enum.uniq(ids)
+    if errors == [], do: {:ok, ids}, else: {:error, {:incomplete, ids, Enum.reverse(errors)}}
+  end
+
+  defp open_ids(items, id_key) do
+    items
+    |> Enum.filter(&is_map/1)
+    |> Enum.reject(&(&1["state"] in @closed_states))
+    |> Enum.map(&(&1[id_key] || &1["id"]))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+  end
+
+  defp halt_intents(listed, build) do
+    ids =
+      case listed do
+        {:ok, ids} -> ids
+        {:error, {:incomplete, ids, _reasons}} -> ids
+      end
+
+    Enum.flat_map(ids, fn id ->
+      case build.(id) do
+        {:ok, intent} -> [intent]
+        {:error, _invalid_id} -> []
+      end
+    end)
+  end
+
+  defp open_unreviewed(state, intent) do
+    with {:ok, nil} <- placed_before(state, intent),
+         {:ok, context} <- fill(state, %Context{}),
+         {:ok, group_id} <- open(state, intent, context, true),
+         verdict = Policy.evaluate(intent, context),
+         :ok <- append(state, group_id, {:verdict, :pre_review, verdict}),
+         {:ok, response, []} <- Review.run(nil, %{}, intent, state.account, state.review_timeout),
+         :ok <- append(state, group_id, {:review, response}),
+         :ok <- append(state, group_id, {:verdict, :post_review, verdict}) do
+      {:ok, {ReviewReceipt.issue(state.key, intent, group_id), intent, group_id}}
+    else
+      {:ok, group_id} when is_binary(group_id) -> {:error, intent, {:duplicate, group_id}}
+      {:error, reason} -> {:error, intent, reason}
+    end
+  end
+
+  defp halt_result(intent, group_id, outcome) do
+    %{kind: intent.kind, id: intent.order_id, group_id: group_id, outcome: outcome}
+  end
+
+  defp send_env(state) do
+    %{
+      port: state.port,
+      catalog: state.catalog,
+      journal: state.journal,
+      account: state.account,
+      timeout: state.place_timeout,
+      customer_approval_required: false
+    }
+  end
+
   # -- Context and journal ------------------------------------------------------
 
   # The day starts at the New York midnight before this executor's clock;
@@ -1256,7 +1405,9 @@ defmodule Raxol.Broker.Executor do
   end
 
   defp fetched(_state, context, nil, _now), do: context
-  defp fetched(_state, context, %Intent{kind: :cancel}, _now), do: context
+
+  defp fetched(_state, context, %Intent{kind: kind}, _now) when kind in [:cancel, :decline],
+    do: context
 
   defp fetched(state, context, intent, now) do
     env = %{

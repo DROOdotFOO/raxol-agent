@@ -17,6 +17,10 @@ defmodule Raxol.Broker.Intent do
   | `:option` | `option/4` | options | the stated maximum notional |
   | `:advanced` | `advanced/4` | advanced | the stated maximum notional |
   | `:cancel` | `cancel/2` | none | none |
+  | `:decline` | `decline/2` | none | none |
+
+  A `:decline` declines a trade-approval proposal Robinhood holds for the
+  owner; its approval id is kept in `order_id`.
 
   Options and advanced orders carry an explicit `notional` because their
   exposure is not derivable from a share price; adapter-specific arguments go
@@ -41,7 +45,8 @@ defmodule Raxol.Broker.Intent do
     :stop_market,
     :option,
     :advanced,
-    :cancel
+    :cancel,
+    :decline
   ]
   @symbol ~r/\A[A-Z0-9][A-Z0-9.\-]{0,15}\z/
   @max_id_bytes 128
@@ -56,6 +61,7 @@ defmodule Raxol.Broker.Intent do
           | :option
           | :advanced
           | :cancel
+          | :decline
   @type side :: :buy | :sell
   @type provenance :: :strategy | :llm | :human | {:untrusted, atom() | String.t()}
   @type reason ::
@@ -146,6 +152,10 @@ defmodule Raxol.Broker.Intent do
   @doc "Cancel an open order by its broker order id."
   @spec cancel(String.t(), keyword()) :: {:ok, t()} | {:error, reason()}
   def cancel(order_id, opts), do: build(:cancel, opts, order_id: order_id)
+
+  @doc "Decline a pending trade-approval proposal by its approval id."
+  @spec decline(String.t(), keyword()) :: {:ok, t()} | {:error, reason()}
+  def decline(approval_id, opts), do: build(:decline, opts, order_id: approval_id)
 
   @doc """
   Rebuild `term` as an intent from validated plain fields.

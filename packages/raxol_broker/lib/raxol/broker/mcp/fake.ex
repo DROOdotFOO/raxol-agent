@@ -34,6 +34,9 @@ defmodule Raxol.Broker.MCP.Fake do
     * `:portfolio` - the map `get_portfolio` answers (default `%{"equity"
       => "100000", "adjusted_equity_previous_close" => "100000"}`);
       `portfolio/2` replaces it.
+    * `:page_size` - pages `get_equity_orders` and `get_trade_approvals`
+      (default `nil`, one page): each page holds at most this many entries
+      and a `"next"` cursor while more remain.
     * `:alerts` - fired alerts, answered by `get_alert_log`.
     * `:warnings` - the `"alerts"` every `review_*` returns (default `[]`).
     * `:reject` - symbols whose `place_*` answers `isError: true`.
@@ -125,6 +128,7 @@ defmodule Raxol.Broker.MCP.Fake do
     :alerts,
     :warnings,
     :portfolio,
+    :page_size,
     :reject,
     :trade_approvals,
     :order_states,
@@ -158,6 +162,7 @@ defmodule Raxol.Broker.MCP.Fake do
     %{
       account: string!(Keyword.get(opts, :account, "FAKE-0001"), :account),
       portfolio: portfolio!(Keyword.get(opts, :portfolio, @portfolio)),
+      page_size: Keyword.get(opts, :page_size),
       quotes: quotes!(Keyword.get(opts, :quotes, %{})),
       order_states: states!(Keyword.get(opts, :order_states, ["queued"])),
       trade_approvals: boolean!(Keyword.get(opts, :trade_approvals, false), :trade_approvals),
@@ -199,6 +204,7 @@ defmodule Raxol.Broker.MCP.Fake do
           seam: ReferenceServer.seam(Legacy, state),
           hooks: %{},
           orders: %{},
+          approvals: %{},
           calls: [],
           requests: [],
           statuses: %{},
@@ -218,6 +224,51 @@ defmodule Raxol.Broker.MCP.Fake do
   @doc "Replace the map `get_portfolio` answers."
   @spec portfolio(pid(), map()) :: :ok
   def portfolio(fake, map), do: Agent.update(fake, &%{&1 | portfolio: portfolio!(map)})
+
+  @doc """
+  Settle a pending trade approval as the owner would in the app:
+  `"approved"` turns it into an order (state `"queued"`) and records the
+  order id on the approval; `"declined"` or `"expired"` only change its
+  state.
+  """
+  @spec resolve_approval(pid(), String.t(), String.t()) :: :ok
+  def resolve_approval(fake, approval_id, outcome)
+      when outcome in ["approved", "declined", "expired"] do
+    Agent.update(fake, fn state ->
+      %{^approval_id => approval} = state.approvals
+      approval = %{approval | state: outcome}
+
+      if outcome == "approved" do
+        order = %{
+          id: "ord-" <> approval.ref,
+          step: 0,
+          state: hd(state.order_states),
+          args: approval.args,
+          seq: map_size(state.orders)
+        }
+
+        approval = %{approval | order_id: order.id}
+
+        %{
+          state
+          | approvals: Map.put(state.approvals, approval_id, approval),
+            orders: Map.put(state.orders, approval.ref, order)
+        }
+      else
+        %{state | approvals: Map.put(state.approvals, approval_id, approval)}
+      end
+    end)
+  end
+
+  @doc ~s(Trade approvals, oldest first: `%{"approval_id", "state", "order_id", "args"}`.)
+  @spec approvals(pid()) :: [map()]
+  def approvals(fake) do
+    fake
+    |> Agent.get(& &1.approvals)
+    |> Map.values()
+    |> Enum.sort_by(& &1.seq)
+    |> Enum.map(&approval_view/1)
+  end
 
   @doc "Append faults (same forms as the scenario's `:faults`)."
   @spec inject(pid(), [tuple()]) :: :ok
@@ -300,10 +351,14 @@ defmodule Raxol.Broker.MCP.Fake do
     |> Enum.map(&order_view/1)
   end
 
-  @doc "A sandbox `Raxol.Broker.Executor.Port.MCP.start/2` spec reaching this Fake."
+  @doc """
+  A sandbox `Raxol.Broker.Executor.Port.MCP.start/2` spec reaching this Fake,
+  with the pooled concurrency `Raxol.Broker.Session.spec/2` gives Robinhood.
+  """
   @spec session(pid()) :: keyword()
   def session(fake) do
-    [name: :broker_fake, sandbox: true, url: @url, era: :legacy] ++ mcp_opts(fake)
+    [name: :broker_fake, sandbox: true, url: @url, era: :legacy, concurrency: :pooled] ++
+      mcp_opts(fake)
   end
 
   @doc """
@@ -533,23 +588,20 @@ defmodule Raxol.Broker.MCP.Fake do
 
   defp tool("get_portfolio", _args, state), do: ok(state.portfolio, state)
 
-  defp tool("get_equity_orders", _args, state) do
+  defp tool("get_equity_orders", args, state) do
     orders =
       Map.new(state.orders, fn {ref, order} -> {ref, advance(order, state.order_states)} end)
 
     state = %{state | orders: orders}
 
-    ok(
-      %{
-        "orders" =>
-          state
-          |> Map.get(:orders)
-          |> Map.values()
-          |> Enum.sort_by(& &1.seq)
-          |> Enum.map(&order_view/1)
-      },
-      state
-    )
+    listed =
+      orders
+      |> Map.values()
+      |> Enum.sort_by(& &1.seq)
+      |> Enum.filter(&(not is_binary(args["state"]) or &1.state == args["state"]))
+      |> Enum.map(&order_view/1)
+
+    ok(paged("orders", listed, args, state), state)
   end
 
   defp tool("review_" <> _, args, state) do
@@ -571,7 +623,19 @@ defmodule Raxol.Broker.MCP.Fake do
         error(%{"error" => "order rejected", "symbol" => args["symbol"]}, state)
 
       state.trade_approvals ->
-        ok(%{"approval_id" => "apr-" <> ref, "state" => "pending"}, state)
+        id = "apr-" <> ref
+
+        approval =
+          Map.get(state.approvals, id, %{
+            id: id,
+            ref: ref,
+            state: "pending",
+            args: args,
+            order_id: nil,
+            seq: map_size(state.approvals)
+          })
+
+        ok(approval_view(approval), %{state | approvals: Map.put(state.approvals, id, approval)})
 
       order = state.orders[ref] ->
         ok(order_view(order), state)
@@ -600,10 +664,58 @@ defmodule Raxol.Broker.MCP.Fake do
     end
   end
 
+  defp tool("get_trade_approvals", args, state) do
+    case args["approval_ids"] do
+      ids when is_list(ids) ->
+        approvals = for id <- ids, a = state.approvals[id], do: a
+
+        ok(
+          %{"approvals" => approvals |> Enum.sort_by(& &1.seq) |> Enum.map(&approval_view/1)},
+          state
+        )
+
+      _all_pending ->
+        pending = for {_id, %{state: "pending"} = a} <- state.approvals, do: a
+        listed = pending |> Enum.sort_by(& &1.seq) |> Enum.map(&approval_view/1)
+        ok(paged("approvals", listed, args, state), state)
+    end
+  end
+
+  defp tool("decline_trade_approval", args, state) do
+    case state.approvals[args["approval_id"]] do
+      %{state: "pending"} = approval ->
+        approval = %{approval | state: "declined"}
+
+        ok(approval_view(approval), %{
+          state
+          | approvals: Map.put(state.approvals, approval.id, approval)
+        })
+
+      _missing_or_settled ->
+        error(%{"error" => "approval not pending", "approval_id" => args["approval_id"]}, state)
+    end
+  end
+
+  defp tool("get_trade_approval_setting", _args, state),
+    do: ok(%{"human_must_approve_trades" => state.trade_approvals}, state)
+
   # Every served tool has a clause above. One added to the capture without an
   # answer here fails the call loudly rather than answering a made-up shape.
   defp tool(name, _args, state),
     do: {{:error, {-32_603, "the Fake has no answer for #{name}"}}, state}
+
+  # The cursor is the offset of the page, as a string.
+  defp paged(key, listed, _args, %{page_size: nil}), do: %{key => listed}
+
+  defp paged(key, listed, args, %{page_size: size}) do
+    offset = String.to_integer(args["cursor"] || "0")
+    page = Enum.slice(listed, offset, size)
+    body = %{key => page}
+
+    if offset + size < length(listed),
+      do: Map.put(body, "next", Integer.to_string(offset + size)),
+      else: body
+  end
 
   defp advance(%{state: "cancelled"} = order, _states), do: order
 
@@ -614,6 +726,15 @@ defmodule Raxol.Broker.MCP.Fake do
 
   defp order_view(order),
     do: %{"order_id" => order.id, "state" => order.state, "args" => order.args}
+
+  defp approval_view(approval) do
+    %{
+      "approval_id" => approval.id,
+      "state" => approval.state,
+      "order_id" => approval.order_id,
+      "args" => approval.args
+    }
+  end
 
   defp price_quote(state, symbol) do
     case Map.fetch(state.quotes, symbol) do

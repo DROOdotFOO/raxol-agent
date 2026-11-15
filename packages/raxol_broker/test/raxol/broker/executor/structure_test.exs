@@ -54,7 +54,13 @@ defmodule Raxol.Broker.Executor.StructureTest do
   @upstream Raxol.MCP.Client
   @broker_client Raxol.Broker.MCP.Client
 
-  @sinks [{Place, :run}, {ReviewReceipt, :issue}, {Journal, :claim}, {@port_mcp, :start}]
+  @sinks [
+    {Place, :run},
+    {Place, :run_many},
+    {ReviewReceipt, :issue},
+    {Journal, :claim},
+    {@port_mcp, :start}
+  ]
   @sink_functions @sinks |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
 
   @banned [
@@ -156,7 +162,7 @@ defmodule Raxol.Broker.Executor.StructureTest do
   }
 
   @call_tool_atom_allowed [@port_mcp, @broker_client]
-  @order_atom ~r/^(place|cancel|replace)_\w*order/
+  @order_atom ~r/^((place|cancel|replace)_\w*order|decline_trade_approval)/
 
   setup_all do
     _ = Application.load(:raxol_broker)
@@ -375,6 +381,10 @@ defmodule Raxol.Broker.Executor.StructureTest do
     assert callers(facts, &match?({Journal, :record_armed, _}, &1)) == [Raxol.Broker.Mode]
   end
 
+  test "only the Heartbeat writes a resume record", %{facts: facts} do
+    assert callers(facts, &match?({Journal, :record_resume, _}, &1)) == [Raxol.Broker.Heartbeat]
+  end
+
   test "nothing calls Port.MCP.call/4 directly; it is reached only through Port",
        %{facts: facts} do
     assert callers(facts, &match?({@port_mcp, :call, _}, &1)) == []
@@ -531,7 +541,7 @@ defmodule Raxol.Broker.Executor.StructureTest do
 
   # -- Best-effort source scan ------------------------------------------------
 
-  @order_literal ~r/(["'}]|~[a-zA-Z].)(place|cancel|replace)_/
+  @order_literal ~r/(["'}]|~[a-zA-Z].)(place|cancel|replace|decline_trade)_/
 
   test "no order-writing tool name is spelled as a string outside executor/place.ex" do
     lib = Path.expand("../../../../lib", __DIR__)
