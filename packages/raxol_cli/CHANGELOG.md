@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 - 2026-11-15
+
+First release from `DROOdotFOO/raxol-agent`.
 
 - Releases, the `raxol-cli-channel` manifest and `raxol update` now use
   `DROOdotFOO/raxol-agent`. The updater installs only binaries attested by
