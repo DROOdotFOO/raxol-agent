@@ -112,7 +112,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
       executor = Broker.executor!(ctx.journal, fake, policy: policy, strategies: sup)
 
       start_supervised!(
-        {Strategy.Supervisor, name: sup, journal: ctx.journal, executor: executor}
+        {Strategy.Supervisor, name: sup, journal: ctx.journal, executor: executor, clock: &Broker.t0/0}
       )
 
       {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "F", "usd" => "25"})

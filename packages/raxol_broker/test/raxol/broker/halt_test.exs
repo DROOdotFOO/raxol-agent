@@ -19,7 +19,7 @@ defmodule Raxol.Broker.HaltTest do
     fake = Fake.start(Keyword.merge([quotes: %{"F" => "9.80", "AAPL" => "125"}], fake_opts))
     sup = :"strategies_#{System.unique_integer([:positive])}"
     executor = Broker.executor!(ctx.journal, fake, Keyword.put(executor_opts, :strategies, sup))
-    start_supervised!({Strategy.Supervisor, name: sup, journal: ctx.journal, executor: executor})
+    start_supervised!({Strategy.Supervisor, name: sup, journal: ctx.journal, executor: executor, clock: &Broker.t0/0})
     {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "F", "usd" => "25"})
     :ok = Strategy.Supervisor.add(spec, journal: ctx.journal, supervisor: sup)
     :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)

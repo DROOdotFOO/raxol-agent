@@ -500,10 +500,21 @@ defmodule Raxol.Broker.Journal do
   @doc "Intents `strategy_id` emitted that no `dispatch` record names yet, oldest first."
   @spec pending_intents(String.t(), server()) :: {:ok, [Intent.t()]} | {:error, term()}
   def pending_intents(strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
+    with {:ok, emissions} <- pending_emissions(strategy_id, server) do
+      {:ok, Enum.map(emissions, & &1.intent)}
+    end
+  end
+
+  @doc "Pending intents with their journal emit timestamp, oldest first. Invalid timestamps are preserved for fail-closed expiry."
+  @spec pending_emissions(String.t(), server()) ::
+          {:ok, [%{intent: Intent.t(), at: term()}]} | {:error, term()}
+  def pending_emissions(strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
     with :ok <- healthy(server),
          {:ok, emitted} <-
-           select(fn -> {:ok, by_seq(server, {{:emit, :_}, :_, strategy_id, :_})} end) do
-      decode_all(emitted, fn {_key, _seq, _strategy, intent} -> Codec.decode_intent(intent) end)
+           select(fn -> {:ok, by_seq(server, {{:emit, :_}, :_, strategy_id, :_, :_})} end) do
+      decode_all(emitted, fn {_key, _seq, _strategy, intent, at} ->
+        with {:ok, intent} <- Codec.decode_intent(intent), do: {:ok, %{intent: intent, at: at}}
+      end)
     end
   end
 
@@ -1258,7 +1269,7 @@ defmodule Raxol.Broker.Journal do
   defp index_event(table, %{"kind" => "broker", "type" => "emit"} = record) do
     case record do
       %{"intent" => %{"id" => id} = intent, "strategy_id" => strategy} when is_binary(id) ->
-        :ets.insert(table, {{:emit, id}, seq(), strategy, intent})
+        :ets.insert(table, {{:emit, id}, seq(), strategy, intent, record["at"]})
 
       _malformed ->
         true

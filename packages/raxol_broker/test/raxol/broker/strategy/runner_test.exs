@@ -6,7 +6,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
 
   import Raxol.Broker.Test.Broker, only: [d: 1]
 
-  alias Raxol.Broker.{Journal, Strategy}
+  alias Raxol.Broker.{Intent, Journal, Strategy}
   alias Raxol.Broker.MCP.Fake
   alias Raxol.Broker.Test.Broker
 
@@ -19,7 +19,8 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     sup_name = :"strategies_#{System.unique_integer([:positive])}"
 
     start_supervised!(
-      {Strategy.Supervisor, name: sup_name, journal: ctx.journal, executor: executor}
+      {Strategy.Supervisor,
+       name: sup_name, journal: ctx.journal, executor: executor, clock: &Broker.t0/0}
     )
 
     {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "F", "usd" => "25"})
@@ -188,5 +189,183 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
              DynamicSupervisor.start_child(runners(ctx.sup), {Raxol.Broker.Strategy.Runner, spec})
 
     assert [{^runner, _}] = Strategy.Supervisor.running(ctx.sup)
+  end
+
+  defp pending_runner!(ctx, extra \\ []) do
+    registry = :"runner_expiry_#{System.unique_integer([:positive])}"
+    start_supervised!({Registry, keys: :unique, name: registry})
+    {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "AAPL", "usd" => "25"})
+
+    config =
+      Keyword.merge(
+        [registry: registry, journal: ctx.journal, executor: ctx.executor, clock: &Broker.t0/0],
+        extra
+      )
+
+    runner =
+      start_supervised!(%{
+        id: registry,
+        start: {Strategy.Runner, :start_link, [config, spec]}
+      })
+
+    sync(runner)
+    runner
+  end
+
+  defp pending_intent!(journal, id) do
+    {:ok, intent} =
+      Intent.limit(:buy, "AAPL", d("1"), d("125"), provenance: :strategy, id: id)
+
+    :ok = Journal.emit(intent, "dip_buy-AAPL", journal)
+    intent
+  end
+
+  test "recovery expires emits older than the maximum age and never reviews them", ctx do
+    arm!(ctx)
+    intent = pending_intent!(ctx.journal, "expired-age")
+    now = DateTime.add(Broker.t0(), 300_001, :millisecond)
+    _runner = pending_runner!(ctx, clock: fn -> now end)
+
+    assert Fake.calls(ctx.fake, "review_") == []
+    assert Fake.calls(ctx.fake, "place_") == []
+    assert Journal.pending_intents("dip_buy-AAPL", ctx.journal) == {:ok, []}
+
+    assert [%{"intent_id" => id, "outcome" => "expired"}] =
+             for %{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record
+
+    assert id == intent.id
+  end
+
+  test "New York midnight expires even a recent emit from the previous local day", ctx do
+    {clock, agent} = Broker.clock(~U[2026-10-03 03:59:59Z])
+    journal = Broker.journal!(clock: clock)
+    :ok = Journal.record_armed(%{"by" => "test"}, journal.journal)
+    _intent = pending_intent!(journal.journal, "previous-ny-day")
+    Agent.update(agent, fn _ -> ~U[2026-10-03 04:00:01Z] end)
+    _runner = pending_runner!(%{ctx | journal: journal.journal}, clock: clock)
+
+    assert [%{"outcome" => "expired"}] =
+             for %{"type" => "dispatch"} = record <- Broker.records(journal.path), do: record
+
+    assert Fake.calls(ctx.fake, "review_") == []
+  end
+
+  test "UTC midnight alone does not expire an emit in the same New York day", ctx do
+    {clock, agent} = Broker.clock(~U[2026-10-03 23:59:59Z])
+    journal = Broker.journal!(clock: clock)
+    _intent = pending_intent!(journal.journal, "same-ny-day")
+    Agent.update(agent, fn _ -> ~U[2026-10-04 00:00:01Z] end)
+    _runner = pending_runner!(%{ctx | journal: journal.journal}, clock: clock)
+
+    assert [%{"outcome" => outcome}] =
+             for %{"type" => "dispatch"} = record <- Broker.records(journal.path), do: record
+
+    # The executor is disarmed against its own journal: reaching it is
+    # enough to distinguish a valid pending emit from an expired one.
+    assert outcome != "expired"
+  end
+
+  test "the journal emit timestamp survives restart and the age boundary is inclusive", ctx do
+    journal = Broker.journal!()
+    :ok = Journal.record_armed(%{"by" => "test"}, journal.journal)
+    intent = pending_intent!(journal.journal, "fresh-boundary")
+    GenServer.stop(journal.journal)
+    Broker.start_journal!(journal.journal_opts)
+
+    assert {:ok, [%{intent: ^intent, at: "2026-10-02T14:30:00.000000Z"}]} =
+             Journal.pending_emissions("dip_buy-AAPL", journal.journal)
+
+    assert {:ok, [^intent]} = Journal.pending_intents("dip_buy-AAPL", journal.journal)
+    executor = Broker.executor!(journal.journal, ctx.fake)
+    now = DateTime.add(Broker.t0(), 300_000, :millisecond)
+    _runner =
+      pending_runner!(%{ctx | journal: journal.journal, executor: executor}, clock: fn -> now end)
+    assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+  end
+
+  test "future emit timestamps fail closed rather than extending replay lifetime", ctx do
+    arm!(ctx)
+    _intent = pending_intent!(ctx.journal, "future-emit")
+    now = DateTime.add(Broker.t0(), -1, :second)
+    _runner = pending_runner!(ctx, clock: fn -> now end)
+
+    assert [%{"outcome" => "expired"}] =
+             for %{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record
+
+    assert Fake.calls(ctx.fake, "review_") == []
+  end
+
+  test "missing and malformed journal emit timestamps expire without execution", ctx do
+    arm!(ctx)
+
+    for {id, timestamp} <- [{"missing-at", nil}, {"invalid-at", "not-a-date"}] do
+      _intent = pending_intent!(ctx.journal, id)
+
+      :sys.replace_state(ctx.journal, fn state ->
+        [entry] = :ets.lookup(ctx.journal, {:emit, id})
+        :ets.insert(ctx.journal, put_elem(entry, 4, timestamp))
+        state
+      end)
+    end
+
+    _runner = pending_runner!(ctx)
+    assert Journal.pending_emissions("dip_buy-AAPL", ctx.journal) == {:ok, []}
+
+    assert ["expired", "expired"] =
+             for %{"type" => "dispatch", "outcome" => outcome} <- Broker.records(ctx.path),
+                 do: outcome
+
+    assert Fake.calls(ctx.fake, "review_") == []
+  end
+
+  test "a custom maximum age is enforced on retry and resume as the clock advances", ctx do
+    {clock, agent} = Broker.clock(Broker.t0())
+    _intent = pending_intent!(ctx.journal, "retry-expired")
+    runner = pending_runner!(ctx, executor: :not_running, clock: clock, max_age_ms: 1_000)
+    assert {:ok, [_]} = Journal.pending_intents("dip_buy-AAPL", ctx.journal)
+
+    send(runner, {:pause, :dead_man})
+    sync(runner)
+    Agent.update(agent, &DateTime.add(&1, 1_001, :millisecond))
+    send(runner, {:resume, :dead_man})
+    sync(runner)
+    send(runner, :retry)
+    sync(runner)
+
+    assert {:ok, []} = Journal.pending_intents("dip_buy-AAPL", ctx.journal)
+    assert [%{"outcome" => "expired"}] =
+             for %{"type" => "dispatch"} = record <- Broker.records(ctx.path), do: record
+  end
+
+  test "an unreadable runner clock never replays and retries only after the clock recovers", ctx do
+    arm!(ctx)
+    {clock, agent} = Broker.clock(:unreadable)
+    intent = pending_intent!(ctx.journal, "clock-unreadable")
+    runner = pending_runner!(ctx, clock: clock)
+
+    assert Journal.pending_intents("dip_buy-AAPL", ctx.journal) == {:ok, [intent]}
+    assert Fake.calls(ctx.fake, "review_") == []
+    assert Enum.all?(Broker.records(ctx.path), &(&1["type"] != "dispatch"))
+
+    Agent.update(agent, fn _ -> Broker.t0() end)
+    send(runner, :retry)
+    sync(runner)
+    assert Journal.pending_intents("dip_buy-AAPL", ctx.journal) == {:ok, []}
+    assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+  end
+
+  test "runner options reject invalid maximum ages and clocks before subscribing" do
+    {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "AAPL", "usd" => "25"})
+    {:ok, module, model} = Strategy.start(spec)
+
+    for value <- [0, -1, :infinity, "300000", 1.5] do
+      assert {:stop, {:invalid_max_age_ms, ^value}} =
+               Strategy.Runner.init({[max_age_ms: value], spec, module, model})
+    end
+
+    for clock <- [:not_a_clock, nil, fn _argument -> Broker.t0() end] do
+      assert {:stop, {:invalid_clock, ^clock}} =
+               Strategy.Runner.init({[clock: clock], spec, module, model})
+    end
   end
 end

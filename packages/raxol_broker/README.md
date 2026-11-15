@@ -568,10 +568,12 @@ mix raxol.broker.strategy stop dip_buy-F
 Each added strategy runs in a `Raxol.Broker.Strategy.Runner` under
 `Raxol.Broker.Strategy.Supervisor`. The runner journals every intent
 (`emit` record) before handing it to the executor and marks it once the
-executor answers (`dispatch` record). A runner that restarts re-sends each
-intent it emitted and never saw answered, with the same intent id, so the
-executor's idempotency check and the `ref_id` derived from that id keep it
-to one order.
+executor answers (`dispatch` record). On restart, only pending emissions
+from the current New York day and no older than `:max_age_ms` (default
+`300_000`) are replayed, with the same intent id. Older, future-dated or
+unreadable emit timestamps are journaled dispatched as `"expired"` and
+never reach the executor. Configure `:max_age_ms` and a zero-arity UTC
+`:clock` through `Strategy.Supervisor`. Idempotency still prevents duplicates.
 
 Adding and stopping are journaled, so the broker starts every added
 strategy when it starts. The task acts on the broker running in its own VM

@@ -6,12 +6,12 @@ defmodule Raxol.Broker.Strategy.Runner do
 
   Each intent is journaled with `Raxol.Broker.Journal.emit/3` before the
   executor sees it, and marked with `Raxol.Broker.Journal.dispatched/3` once
-  the executor answers. On start the runner re-sends every intent its id
-  emitted that was never marked, with the same intent id, so a runner killed
-  between the two is recovered from the journal: the executor's idempotency
-  check (`Raxol.Broker.Journal.placing_for_intent/2`) answers `{:ok,
-  :duplicate}` for one that already reached `placing`, and the `ref_id` sent
-  with a place derives from the same id.
+  the executor answers. On start the runner re-sends pending intents only
+  within the current New York day and `:max_age_ms` of their journal emit
+  timestamp. Older, future-dated or unreadable timestamps are journaled as
+  dispatched with outcome `"expired"` without reaching the executor.
+  Recovery keeps the same intent id, so the executor's idempotency check
+  answers `{:ok, :duplicate}` for one that already reached `placing`.
 
   An executor that is not ready (`{:error, :port_not_ready}`) or not running
   leaves the intent pending; the runner retries pending intents after
@@ -40,18 +40,20 @@ defmodule Raxol.Broker.Strategy.Runner do
   ## Options
 
   From the strategy supervisor: `:registry`, `:journal`, `:executor`,
-  `:feed` (nil: no
-  subscription) and `:retry_ms`. Then the spec map.
+  `:feed` (nil: no subscription), `:retry_ms`, `:max_age_ms` (positive
+  milliseconds, default 300_000), and `:clock` (zero-arity UTC clock,
+  default `DateTime.utc_now/0`). Then the spec map.
   """
 
   use GenServer
 
   require Logger
 
-  alias Raxol.Broker.{Executor, Feed, Journal, Strategy}
+  alias Raxol.Broker.{Executor, Feed, Journal, MarketCalendar, Strategy}
   alias Raxol.Broker.Policy.Context
 
   @default_retry_ms 5_000
+  @default_max_age_ms 300_000
 
   # The strategy supervisor prepends its config to the start arguments.
   @spec child_spec(Strategy.spec()) :: Supervisor.child_spec()
@@ -82,6 +84,24 @@ defmodule Raxol.Broker.Strategy.Runner do
 
   @impl GenServer
   def init({config, %{"id" => id} = spec, module, model}) do
+    max_age_ms = Keyword.get(config, :max_age_ms, @default_max_age_ms)
+    clock = Keyword.get(config, :clock, &DateTime.utc_now/0)
+
+    with :ok <- validate_max_age(max_age_ms),
+         :ok <- validate_clock(clock) do
+      init_state(config, spec, id, module, model, max_age_ms, clock)
+    else
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  defp validate_max_age(value) when is_integer(value) and value > 0, do: :ok
+  defp validate_max_age(value), do: {:error, {:invalid_max_age_ms, value}}
+
+  defp validate_clock(clock) when is_function(clock, 0), do: :ok
+  defp validate_clock(clock), do: {:error, {:invalid_clock, clock}}
+
+  defp init_state(config, spec, id, module, model, max_age_ms, clock) do
     state = %{
       id: id,
       spec: spec,
@@ -91,6 +111,8 @@ defmodule Raxol.Broker.Strategy.Runner do
       executor: Keyword.get(config, :executor, Executor),
       registry: Keyword.fetch!(config, :registry),
       retry_ms: Keyword.get(config, :retry_ms, @default_retry_ms),
+      max_age_ms: max_age_ms,
+      clock: clock,
       quotes: %{},
       paused: [],
       retry: nil
@@ -159,7 +181,7 @@ defmodule Raxol.Broker.Strategy.Runner do
   defp emit(intent, state) do
     case Journal.emit(intent, state.id, state.journal) do
       :ok ->
-        dispatch(intent, state)
+        send_pending(state)
 
       {:error, reason} ->
         Logger.error(
@@ -172,13 +194,66 @@ defmodule Raxol.Broker.Strategy.Runner do
   end
 
   defp send_pending(state) do
-    case Journal.pending_intents(state.id, state.journal) do
-      {:ok, intents} ->
-        Enum.reduce(intents, state, &dispatch/2)
+    case Journal.pending_emissions(state.id, state.journal) do
+      {:ok, emissions} ->
+        Enum.reduce(emissions, state, &dispatch_emission/2)
 
       {:error, reason} ->
         Logger.warning(
           "[Broker.Strategy] #{state.id}: pending intents unreadable: " <>
+            inspect(reason, structs: false)
+        )
+
+        retry_later(state)
+    end
+  end
+
+  defp dispatch_emission(%{intent: intent, at: at}, state) do
+    case now(state.clock) do
+      {:ok, now} ->
+        if fresh?(at, now, MarketCalendar.day_start(now), state.max_age_ms),
+          do: dispatch(intent, state),
+          else: expire(intent, state)
+
+      {:error, reason} ->
+        Logger.warning("[Broker.Strategy] #{state.id}: clock unreadable: #{inspect(reason)}")
+        retry_later(state)
+    end
+  end
+
+  defp now(clock) do
+    case clock.() do
+      %DateTime{utc_offset: 0, std_offset: 0} = now -> {:ok, now}
+      other -> {:error, {:invalid_clock, other}}
+    end
+  rescue
+    error -> {:error, {:clock_exception, Exception.message(error)}}
+  catch
+    :exit, reason -> {:error, {:clock_exit, reason}}
+  end
+
+  defp fresh?(at, now, day_start, max_age_ms) when is_binary(at) do
+    case DateTime.from_iso8601(at) do
+      {:ok, emitted_at, _offset} ->
+        DateTime.compare(emitted_at, day_start) != :lt and
+          DateTime.compare(emitted_at, now) != :gt and
+          DateTime.diff(now, emitted_at, :microsecond) <= max_age_ms * 1_000
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp fresh?(_at, _now, _day_start, _max_age_ms), do: false
+
+  defp expire(intent, state) do
+    case Journal.dispatched(intent.id, "expired", state.journal) do
+      :ok ->
+        state
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Broker.Strategy] #{state.id}: expiry of #{intent.id} not journaled: " <>
             inspect(reason, structs: false)
         )
 
