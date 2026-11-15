@@ -203,12 +203,16 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   P&L and market session are read through the executor's own session
   (`Raxol.Broker.Policy.ContextBuilder`, `get_equity_quotes`,
   `get_equity_positions`, `get_portfolio`). A read that fails leaves its
-  fields empty, and every rule that needs one denies. Holidays are not
-  modelled in the market session.
+  fields empty, and every rule that needs one denies; positions are read
+  page by page, and a listing that fails, cannot be read or is longer than
+  its page limit leaves them empty too. Holidays are not modelled in the
+  market session.
 * **Drawdown breaker.** A pre-review DENY by `:drawdown_breaker` disarms
   the broker, journals a `halt` record and pauses every strategy runner
-  (`Raxol.Broker.Halt.pause/2`). Only a fresh `mix raxol.broker.arm`
-  resumes them.
+  (`Raxol.Broker.Halt.pause/2`). The pause is the journal's
+  (`Raxol.Broker.Journal.pauses/1`): a runner restarted, or a strategy
+  added, while it holds starts paused, and a paused runner sends no
+  pending intent. Only a fresh `mix raxol.broker.arm` ends it.
 * **Review is mandatory.** `Raxol.Broker.Executor.Place` is the only module
   that names an order tool, and it refuses without a `ReviewReceipt` for
   the same intent and group (an HMAC over the whole intent), verified under

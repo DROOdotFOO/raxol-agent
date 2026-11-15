@@ -6,9 +6,12 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
 
     * `quotes`: `get_equity_quotes` for the intent's symbol, its last trade
       price.
-    * `positions`: `get_equity_positions` for the account, each position's
-      `market_value`, or its quantity times the last price when the answer
-      carries no value and the symbol was quoted.
+    * `positions`: every page of `get_equity_positions` for the account,
+      each position's `market_value`, or its quantity times the last price
+      when the answer carries no value and the symbol was quoted. `nil`
+      when the listing fails, is unreadable or runs past its page limit, and
+      when the intent's own symbol is held but cannot be valued: a holding
+      read as zero would let a concentrated buy through.
     * `portfolio_value` and `start_of_day_value`: `get_portfolio` for the
       account; the first present of `equity`, `total_value`,
       `portfolio_value` and of `adjusted_equity_previous_close`,
@@ -42,7 +45,7 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
   @spec build(Intent.t(), Context.t(), env()) :: Context.t()
   def build(%Intent{} = intent, %Context{} = context, env) do
     quotes = quotes(intent, env)
-    positions = positions(env, quotes)
+    positions = positions(intent, env, quotes)
     {value, start} = portfolio(env)
 
     %{
@@ -65,17 +68,36 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
     end
   end
 
-  defp positions(env, quotes) do
-    case read(env, "get_equity_positions", %{"account_number" => env.account}) do
-      {:ok, body} ->
-        body
-        |> Response.list(["positions", "results"])
-        |> Enum.flat_map(&position_value(&1, quotes))
-        |> Map.new()
+  defp positions(intent, env, quotes) do
+    args = %{"account_number" => env.account}
 
-      {:error, _reason} ->
-        %{}
+    with {:ok, listed} <-
+           Read.listing(
+             env.port,
+             env.catalog,
+             "get_equity_positions",
+             args,
+             ["positions", "results"],
+             env.timeout
+           ),
+         {:ok, values} <- position_values(listed, intent.symbol, quotes) do
+      Map.new(values)
+    else
+      {:error, _reason} -> nil
     end
+  end
+
+  # A position of the intent's own symbol that cannot be valued voids the
+  # map; one of another symbol is left out (the weight rule reads only the
+  # intent's symbol).
+  defp position_values(listed, symbol, quotes) do
+    Enum.reduce_while(listed, {:ok, []}, fn position, {:ok, acc} ->
+      case {position_value(position, quotes), position} do
+        {{:ok, value}, _position} -> {:cont, {:ok, [value | acc]}}
+        {:error, %{"symbol" => ^symbol}} -> {:halt, {:error, :unvalued}}
+        {:error, _other} -> {:cont, {:ok, acc}}
+      end
+    end)
   end
 
   defp position_value(%{"symbol" => symbol} = position, quotes) when is_binary(symbol) do
@@ -83,10 +105,10 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
       Response.decimal(position["market_value"]) ||
         times(Response.decimal(position["quantity"]), Map.get(quotes, symbol))
 
-    if value, do: [{symbol, value}], else: []
+    if value, do: {:ok, {symbol, value}}, else: :error
   end
 
-  defp position_value(_position, _quotes), do: []
+  defp position_value(_position, _quotes), do: :error
 
   defp times(%Decimal{} = qty, %Decimal{} = price), do: Decimal.mult(qty, price)
   defp times(_qty, _price), do: nil

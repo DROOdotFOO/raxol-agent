@@ -90,6 +90,17 @@ defmodule Raxol.Broker.Executor.ContextTest do
       assert {:deny, _gid, {:max_position_weight, {:missing_context, :portfolio_value}}} =
                Executor.run(executor, limit("unreadable"), %Context{})
     end
+
+    test "an unreadable positions listing denies a rule that needs it", ctx do
+      fake = Fake.start(faults: [{"get_equity_positions", {:http, 503}, 10}])
+      policy = Broker.policy("1000", "5000", max_position_weight: d("0.3"))
+      executor = Broker.executor!(ctx.journal, fake, policy: policy)
+
+      assert {:deny, _gid, {:max_position_weight, {:missing_context, :positions}}} =
+               Executor.run(executor, limit("no-positions"), %Context{})
+
+      assert Fake.calls(fake, "place_") == []
+    end
   end
 
   describe "drawdown breaker" do
@@ -162,6 +173,65 @@ defmodule Raxol.Broker.Executor.ContextTest do
       _ = dip!(ctx.sup)
       assert Mode.current(ctx.journal) == :armed
       assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+    end
+
+    defp arm!(ctx) do
+      client = start_supervised!({Client, Fake.client_opts(ctx.fake)})
+
+      {:ok, _} =
+        Mode.arm(
+          journal: ctx.journal,
+          client: client,
+          policy_path: Broker.policy_file!(ctx.base),
+          confirm: fn _ -> "ARM" end,
+          strategies: ctx.sup
+        )
+    end
+
+    test "a runner restarted, or a strategy added, during the pause starts paused", ctx do
+      Fake.portfolio(ctx.fake, %{"equity" => "940", "adjusted_equity_previous_close" => "1000"})
+      [{runner, %{status: :paused}}] = dip!(ctx.sup)
+
+      ref = Process.monitor(runner)
+      Process.exit(runner, :kill)
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
+      :sys.get_state(:"#{ctx.sup}.Runners")
+      [{restarted, _}] = Strategy.Supervisor.running(ctx.sup)
+      :sys.get_state(restarted)
+
+      {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "AAPL", "usd" => "500"})
+      :ok = Strategy.Supervisor.add(spec, journal: ctx.journal, supervisor: ctx.sup)
+      Enum.each(Strategy.Supervisor.running(ctx.sup), fn {pid, _} -> :sys.get_state(pid) end)
+
+      assert [
+               {_, %{id: "dip_buy-AAPL", status: :paused, paused: [:drawdown_halt]}},
+               {^restarted, %{id: "dip_buy-F", status: :paused, paused: [:drawdown_halt]}}
+             ] = Strategy.Supervisor.running(ctx.sup)
+
+      assert Journal.pauses(ctx.journal) == {:ok, [:drawdown_halt]}
+    end
+
+    test "an intent pending during the pause is sent only after a fresh arm", ctx do
+      Fake.portfolio(ctx.fake, %{"equity" => "940", "adjusted_equity_previous_close" => "1000"})
+      [{runner, _}] = dip!(ctx.sup)
+
+      {:ok, intent} =
+        Intent.limit(:buy, "F", d("1"), d("9.50"), provenance: :strategy, id: "pending-in-pause")
+
+      :ok = Journal.emit(intent, "dip_buy-F", ctx.journal)
+      send(runner, :retry)
+      :sys.get_state(runner)
+      assert Fake.calls(ctx.fake, "place_") == []
+
+      assert {:ok, [%{id: "pending-in-pause"}]} =
+               Journal.pending_intents("dip_buy-F", ctx.journal)
+
+      Fake.portfolio(ctx.fake, %{"equity" => "1000", "adjusted_equity_previous_close" => "1000"})
+      arm!(ctx)
+      :sys.get_state(runner)
+
+      assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+      assert Journal.pauses(ctx.journal) == {:ok, []}
     end
   end
 end
