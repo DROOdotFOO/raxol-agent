@@ -8,9 +8,9 @@ defmodule Raxol.CLI.Updater.Manifest do
   or another tag.
 
   The default manifest is the `raxol` CLI release channel: `raxol-cli-v*`
-  tags on `DROOdotFOO/raxol`, one raw binary per platform plus `SHA256SUMS`
-  and the Sigstore bundle `raxol-cli-attestation.sigstore.json`, as
-  `.github/workflows/release-raxol-cli.yml` and
+  tags on `DROOdotFOO/raxol-agent`, one raw binary per platform plus
+  `SHA256SUMS` and the Sigstore bundle `raxol-cli-attestation.sigstore.json`,
+  as `.github/workflows/release-raxol-cli.yml` and
   `scripts/build_cli_release_manifest.mjs` publish them. The installed
   version is read from the `:raxol_cli` application.
 
@@ -53,7 +53,7 @@ defmodule Raxol.CLI.Updater.Manifest do
           download_base: String.t()
         }
 
-  defstruct repo: "DROOdotFOO/raxol",
+  defstruct repo: "DROOdotFOO/raxol-agent",
             tag_prefix: "raxol-cli-v",
             app: :raxol_cli,
             assets: %{

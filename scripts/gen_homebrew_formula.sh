@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # gen_homebrew_formula.sh -- emit the Homebrew formula for a published release.
 #
-#   scripts/gen_homebrew_formula.sh 0.2.6 > raxol.rb
+#   scripts/gen_homebrew_formula.sh VERSION > raxol.rb
 #
 # Writes to stdout. Copy the result into the tap repo
 # (DROOdotFOO/homebrew-tap, as Formula/raxol.rb) so users can:
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-REPO="DROOdotFOO/raxol"
+REPO="DROOdotFOO/raxol-agent"
 TAG_PREFIX="raxol-cli-v"
 
 version="${1:-}"

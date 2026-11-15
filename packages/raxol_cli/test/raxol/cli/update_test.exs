@@ -14,7 +14,9 @@ defmodule Raxol.CLI.UpdateTest do
   alias Raxol.CLI.Update
   alias Raxol.Test.UpdaterReleaseServer, as: Server
 
-  @repo "DROOdotFOO/raxol"
+  @repo "DROOdotFOO/raxol-agent"
+  # The repository whose release workflow signed the 0.2.10 fixture.
+  @attested_repo "DROOdotFOO/raxol"
   @platform "darwin-arm64"
   @asset "raxol_cli_macos"
   @old "old raxol binary\n"
@@ -84,15 +86,16 @@ defmodule Raxol.CLI.UpdateTest do
     assert File.read!(ctx.exe) == @old
   end
 
-  # The default channel (provenance required) serving the real 0.2.10
-  # attestation, or none, beside a binary it does not cover.
+  # The default channel's provenance policy (required), for the repository
+  # that signed the real 0.2.10 attestation, serving it or none beside a
+  # binary it does not cover.
   defp serve_attested(assets) do
-    Server.start(Server.release_routes(@repo, "raxol-cli-v0.2.10", assets))
+    Server.start(Server.release_routes(@attested_repo, "raxol-cli-v0.2.10", assets))
   end
 
   defp attested(base, ctx) do
     runtime(base, ctx,
-      manifest: [api_base: base, download_base: base],
+      manifest: [api_base: base, download_base: base, repo: @attested_repo],
       current_version: "0.2.8"
     )
   end

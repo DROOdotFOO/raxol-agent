@@ -2,7 +2,8 @@ defmodule RaxolEarn.MixProject do
   use Mix.Project
 
   @version "0.2.1"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "raxol_earn-v#{@version}"
 
   def project do
     [
@@ -132,8 +133,7 @@ defmodule RaxolEarn.MixProject do
       links: %{
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/raxol_earn",
-        "Changelog" =>
-          "https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_earn/CHANGELOG.md",
+        "Changelog" => "#{@source_url}/blob/main/packages/raxol_earn/CHANGELOG.md",
         "Website" => "https://raxol.io"
       },
       maintainers: ["Raxol Team"]
@@ -147,7 +147,10 @@ defmodule RaxolEarn.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      source_ref: "raxol_earn-v#{@version}",
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_earn in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_earn/%{path}#L%{line}",
       extras: ["README.md", "CHANGELOG.md"]
     ]
   end

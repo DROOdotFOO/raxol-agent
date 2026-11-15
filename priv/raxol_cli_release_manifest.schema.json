@@ -18,9 +18,9 @@
     "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
     "tag": {"type": "string", "pattern": "^raxol-cli-v[0-9]+\\.[0-9]+\\.[0-9]+$"},
     "published_at": {"type": "string", "format": "date-time"},
-    "repository": {"const": "DROOdotFOO/raxol"},
+    "repository": {"const": "DROOdotFOO/raxol-agent"},
     "signer_workflow": {
-      "const": "DROOdotFOO/raxol/.github/workflows/release-raxol-cli.yml"
+      "const": "DROOdotFOO/raxol-agent/.github/workflows/release-raxol-cli.yml"
     },
     "assets": {
       "type": "object",

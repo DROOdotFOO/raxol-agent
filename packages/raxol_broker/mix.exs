@@ -2,7 +2,8 @@ defmodule RaxolBroker.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "raxol_broker-v#{@version}"
 
   def project do
     [
@@ -96,8 +97,7 @@ defmodule RaxolBroker.MixProject do
       links: %{
         "GitHub" => @source_url,
         "Docs" => "https://hexdocs.pm/raxol_broker",
-        "Changelog" =>
-          "https://github.com/DROOdotFOO/raxol/blob/master/packages/raxol_broker/CHANGELOG.md",
+        "Changelog" => "#{@source_url}/blob/main/packages/raxol_broker/CHANGELOG.md",
         "Website" => "https://raxol.io"
       },
       maintainers: ["Raxol Team"]
@@ -108,7 +108,10 @@ defmodule RaxolBroker.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      source_ref: "raxol_broker-v#{@version}",
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_broker in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_broker/%{path}#L%{line}",
       extras: ["README.md", "CHANGELOG.md", "LICENSE.md"]
     ]
   end

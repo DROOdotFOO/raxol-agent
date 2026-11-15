@@ -43,10 +43,10 @@ defmodule Raxol.ReleaseManifestTest do
     assert decoded["assets"]["linux-x64"] == %{
              "name" => "raxol_cli_linux",
              "url" =>
-               "https://github.com/DROOdotFOO/raxol/releases/download/raxol-cli-v0.3.0/raxol_cli_linux",
+               "https://github.com/DROOdotFOO/raxol-agent/releases/download/raxol-cli-v0.3.0/raxol_cli_linux",
              "sha256" => String.duplicate("2", 64),
              "attestation_url" =>
-               "https://github.com/DROOdotFOO/raxol/releases/download/raxol-cli-v0.3.0/raxol-cli-attestation.sigstore.json"
+               "https://github.com/DROOdotFOO/raxol-agent/releases/download/raxol-cli-v0.3.0/raxol-cli-attestation.sigstore.json"
            }
   end
 

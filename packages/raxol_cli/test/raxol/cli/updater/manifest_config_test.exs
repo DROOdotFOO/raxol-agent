@@ -24,6 +24,6 @@ defmodule Raxol.CLI.Updater.ManifestConfigTest do
     Application.delete_env(:raxol_cli, :updater_manifest)
     Application.put_env(:raxol, :updater_manifest, repo: "acme/widget")
 
-    assert {:ok, %Manifest{repo: "DROOdotFOO/raxol"}} = Manifest.load()
+    assert {:ok, %Manifest{repo: "DROOdotFOO/raxol-agent"}} = Manifest.load()
   end
 end

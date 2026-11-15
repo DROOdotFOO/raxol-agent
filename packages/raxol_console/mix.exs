@@ -2,7 +2,8 @@ defmodule RaxolConsole.MixProject do
   use Mix.Project
 
   @version "0.1.1"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "v#{@version}"
 
   def project do
     [
@@ -155,7 +156,10 @@ defmodule RaxolConsole.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      source_ref: "v#{@version}",
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_console in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_console/%{path}#L%{line}",
       extras: ["README.md"]
     ]
   end

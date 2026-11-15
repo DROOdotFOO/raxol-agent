@@ -16,7 +16,9 @@ defmodule Raxol.CLI.UpdaterTest do
   alias Raxol.CLI.Updater.{Archive, Manifest}
   alias Raxol.Test.UpdaterReleaseServer, as: Server
 
-  @repo "DROOdotFOO/raxol"
+  @repo "DROOdotFOO/raxol-agent"
+  # The repository whose release workflow signed the 0.2.10 fixture.
+  @attested_repo "DROOdotFOO/raxol"
   @platform "linux-x64"
   @asset "raxol_cli_linux"
   @old "old binary"
@@ -66,28 +68,31 @@ defmodule Raxol.CLI.UpdaterTest do
     )
   end
 
-  # The default channel's own provenance policy, on the loopback server.
+  # The default channel's provenance policy, for the repository that signed
+  # the fixture, on the loopback server.
   defp attested_opts(base, ctx, extra) do
     base
     |> opts(ctx, extra)
-    |> Keyword.update!(:manifest, &Keyword.delete(&1, :provenance))
+    |> Keyword.update!(:manifest, fn manifest ->
+      manifest |> Keyword.delete(:provenance) |> Keyword.put(:repo, @attested_repo)
+    end)
   end
 
   defp download_path(tag, name),
     do: "/#{@repo}/releases/download/#{tag}/#{name}"
 
   describe "manifest pinning" do
-    test "the default channel builds every URL from the raxol-cli releases of DROOdotFOO/raxol" do
+    test "the default channel builds every URL from the raxol-cli releases of DROOdotFOO/raxol-agent" do
       {:ok, manifest} = Manifest.load()
       {:ok, tag} = Manifest.tag(manifest, "v0.2.10")
 
       assert tag == "raxol-cli-v0.2.10"
 
       assert Manifest.release_url(manifest, tag) ==
-               "https://api.github.com/repos/DROOdotFOO/raxol/releases/tags/raxol-cli-v0.2.10"
+               "https://api.github.com/repos/DROOdotFOO/raxol-agent/releases/tags/raxol-cli-v0.2.10"
 
       assert Manifest.asset_url(manifest, tag, @asset) ==
-               "https://github.com/DROOdotFOO/raxol/releases/download/raxol-cli-v0.2.10/raxol_cli_linux"
+               "https://github.com/DROOdotFOO/raxol-agent/releases/download/raxol-cli-v0.2.10/raxol_cli_linux"
     end
 
     test "a version, repo, or base URL that could redirect a download is refused" do
@@ -359,7 +364,7 @@ defmodule Raxol.CLI.UpdaterTest do
   # The real raxol-cli-v0.2.10 attestation serves beside binaries it does not
   # cover: every Sigstore check passes except the subject digest.
   defp serve_attested(assets) do
-    Server.start(Server.release_routes(@repo, @attested_tag, assets))
+    Server.start(Server.release_routes(@attested_repo, @attested_tag, assets))
   end
 
   describe "provenance" do
@@ -392,7 +397,7 @@ defmodule Raxol.CLI.UpdaterTest do
                  attested_opts(base, ctx, current_version: "0.2.8")
                )
 
-      asset_path = download_path(@attested_tag, @asset)
+      asset_path = "/#{@attested_repo}/releases/download/#{@attested_tag}/#{@asset}"
       refute_received {:release_request, ^asset_path}
       assert File.read!(ctx.exe) == @old
     end

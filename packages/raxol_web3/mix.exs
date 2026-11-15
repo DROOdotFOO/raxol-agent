@@ -2,7 +2,8 @@ defmodule RaxolWeb3.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
+  @source_ref "v#{@version}"
 
   def project do
     [
@@ -106,7 +107,10 @@ defmodule RaxolWeb3.MixProject do
     [
       main: "readme",
       source_url: @source_url,
-      source_ref: "v#{@version}",
+      source_ref: @source_ref,
+      # The package lives under packages/raxol_web3 in its repository.
+      source_url_pattern:
+        "#{@source_url}/blob/#{@source_ref}/packages/raxol_web3/%{path}#L%{line}",
       extras: ["README.md"]
     ]
   end
