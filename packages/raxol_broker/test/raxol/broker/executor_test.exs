@@ -124,6 +124,8 @@ defmodule Raxol.Broker.ExecutorTest do
   # its context are left out.
   defp sent(server), do: Enum.reject(Fake.calls(server), &match?({"get_" <> _, _}, &1))
 
+  defp resolves(path), do: for(%{"type" => "resolve"} = r <- records(path), do: r)
+
   defp group(path, group_id), do: Enum.filter(records(path), &(&1["group_id"] == group_id))
   defp types(path, group_id), do: Enum.map(group(path, group_id), & &1["type"])
 
@@ -667,7 +669,7 @@ defmodule Raxol.Broker.ExecutorTest do
       assert Journal.claim(ctx.journal) == {:error, :not_an_executor}
     end
 
-    test "a crash after placing is crash_outcome_unknown, counted, and never re-placed", ctx do
+    test "a crash after placing is crash_outcome_unknown and counted until reconciled", ctx do
       executor = start_executor!(ctx)
       path = ctx.path
 
@@ -685,10 +687,18 @@ defmodule Raxol.Broker.ExecutorTest do
       assert List.last(group(ctx.path, gid))["reason"] == "crash_outcome_unknown"
       assert Journal.today_notional(@day, ctx.journal) == {:ok, d("250")}
 
+      # The place never reached the broker: the restarted executor's first
+      # reconcile finds no order with its ref_id, releases the cap and frees
+      # the intent, which places once, with the same ref_id.
       Fake.on_call(ctx.server, "place_equity_order", fn _args -> :answer end)
-      executor = start_executor!(ctx)
-      assert Executor.run(executor, intent, context()) == {:ok, :duplicate}
-      assert Fake.calls(ctx.server, "place_") == ["place_equity_order"]
+      executor = start_executor!(ctx, reconcile_min_age_ms: 0)
+      assert {:ok, []} = Executor.reconcile(executor)
+      assert Journal.today_notional(@day, ctx.journal) == {:ok, d("0")}
+      assert [%{"resolution" => "absent", "group_id" => ^gid}] = resolves(ctx.path)
+
+      assert {:ok, %{status: :placed}} = Executor.run(executor, intent, context())
+      assert [_, %{"ref_id" => ref}] = for({"place_" <> _, a} <- Fake.calls(ctx.server), do: a)
+      assert ref == Place.ref_id("crash-placing")
     end
 
     test "a place call that times out is journaled :unknown and stays counted", ctx do

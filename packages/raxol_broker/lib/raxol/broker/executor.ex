@@ -156,6 +156,30 @@ defmodule Raxol.Broker.Executor do
   same schedule. A port that is down never restarts the executor, so an
   unreachable endpoint cannot exhaust its supervisor's restart budget.
 
+  ## Reconciliation
+
+  Counted groups whose outcome is open (`Raxol.Broker.Journal.unresolved/1`)
+  are checked against Robinhood once the port first connects and every
+  `:reconcile_ms` after:
+
+    * an order journaled `:unknown`, or closed `crash_outcome_unknown`, is
+      looked up by the `ref_id` its place sent in every page of
+      `get_equity_orders` (agent-initiated, since its day). Found, it is
+      resolved `placed` and keeps counting. It is resolved `absent` (it
+      stops counting and its intent may be sent again; Robinhood
+      deduplicates on `ref_id` in any case) only when every page was read,
+      its `placing` is at least `:reconcile_min_age_ms` old (default
+      120_000, so an order still on its way is not taken for a lost one),
+      and its review did not ask for the owner's approval: an order made
+      from an approved proposal carries the approval id, not the `ref_id`,
+      so for those absence proves nothing and the group keeps counting;
+    * a `:pending_approval` proposal is read back with `get_trade_approvals`
+      (`approval_ids`, from its place response, 100 per call). `approved`
+      keeps counting; `declined` or `expired` releases the cap and the
+      intent.
+
+  Each resolution is a `resolve` record in the journal.
+
   ## Mode
 
   No order tool is sent unless the latest mode record in the journal is
@@ -220,6 +244,11 @@ defmodule Raxol.Broker.Executor do
       `{:invalid_timeout, key, value}`.
     * `:reconnect_ms` - the first port reconnect delay, same range
       (default 1 s, doubling to 60 s).
+    * `:reconcile_ms` - how often unresolved orders and proposals are
+      reconciled after the first, same range (default 300_000); see
+      "Reconciliation".
+    * `:reconcile_min_age_ms` - how old a `placing` must be before its order
+      may be resolved `absent`, a non-negative integer (default 120_000).
     * `:shutdown` - the child spec's shutdown bound in milliseconds, a
       positive integer (default `place_timeout + 5_000`).
     * `:strategies` - the `Raxol.Broker.Strategy.Supervisor` the drawdown
@@ -246,13 +275,15 @@ defmodule Raxol.Broker.Executor do
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
   alias Raxol.Agent.Auth.Credential
   alias Raxol.Broker.{CredentialStore, Halt, Intent, Journal, MarketCalendar, Mode, Plain, Policy}
-  alias Raxol.Broker.{PolicyFile, Session}
+  alias Raxol.Broker.{PolicyFile, Response, Session}
   alias Raxol.Broker.Journal.Codec
   alias Raxol.Broker.Policy.{Context, ContextBuilder}
   alias Raxol.Broker.Tools.Catalog
 
   @default_timeout 30_000
   @default_reconnect_ms 1_000
+  @default_reconcile_ms 300_000
+  @default_reconcile_min_age_ms 120_000
   @max_backoff 60_000
   @clock_timeout 5_000
   # `receive after` and `Process.send_after/3` refuse anything above
@@ -341,6 +372,15 @@ defmodule Raxol.Broker.Executor do
   @spec halt_orders(GenServer.server(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def halt_orders(server, bound) when is_integer(bound) and bound > 0,
     do: GenServer.call(server, {:halt_orders, bound}, :infinity)
+
+  @doc """
+  Reconcile now (see "Reconciliation"), each read bounded by `bound`
+  milliseconds: `{:ok, [%{group_id, intent_id, resolution}]}` for the
+  groups it resolved, or `{:error, reason}`.
+  """
+  @spec reconcile(GenServer.server(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def reconcile(server, bound \\ @default_timeout) when is_integer(bound) and bound > 0,
+    do: GenServer.call(server, {:reconcile, bound}, :infinity)
 
   @doc """
   Wait until the port session is ready: `:ok`, or `{:error, :port_not_ready}`
@@ -439,9 +479,24 @@ defmodule Raxol.Broker.Executor do
   defp fetch_timeouts(opts) do
     with {:ok, review_timeout} <- fetch_timeout(opts, :review_timeout),
          {:ok, place_timeout} <- fetch_timeout(opts, :place_timeout),
-         {:ok, reconnect_ms} <- fetch_timeout(opts, :reconnect_ms, @default_reconnect_ms) do
+         {:ok, reconnect_ms} <- fetch_timeout(opts, :reconnect_ms, @default_reconnect_ms),
+         {:ok, reconcile_ms} <- fetch_timeout(opts, :reconcile_ms, @default_reconcile_ms),
+         {:ok, min_age} <- fetch_min_age(opts) do
       {:ok,
-       %{review_timeout: review_timeout, place_timeout: place_timeout, reconnect_ms: reconnect_ms}}
+       %{
+         review_timeout: review_timeout,
+         place_timeout: place_timeout,
+         reconnect_ms: reconnect_ms,
+         reconcile_ms: reconcile_ms,
+         reconcile_min_age_ms: min_age
+       }}
+    end
+  end
+
+  defp fetch_min_age(opts) do
+    case Keyword.get(opts, :reconcile_min_age_ms, @default_reconcile_min_age_ms) do
+      ms when is_integer(ms) and ms >= 0 and ms <= @max_timeout -> {:ok, ms}
+      other -> {:error, {:invalid_timeout, :reconcile_min_age_ms, other}}
     end
   end
 
@@ -520,7 +575,10 @@ defmodule Raxol.Broker.Executor do
       port_waiters: %{},
       parked: %{},
       busy: nil,
-      queue: :queue.new()
+      queue: :queue.new(),
+      reconcile_ms: config.reconcile_ms,
+      reconcile_min_age_ms: config.reconcile_min_age_ms,
+      reconciled: false
     }
   end
 
@@ -708,6 +766,19 @@ defmodule Raxol.Broker.Executor do
   def handle_info({:ask_timeout, group_id}, state),
     do: {:noreply, ask_timed_out(state, group_id)}
 
+  # The first reconcile follows the first connect; each one schedules the
+  # next.
+  def handle_info(:reconcile, %{port_status: :ready} = state) do
+    _ = reconcile_now(state, state.review_timeout)
+    Process.send_after(self(), :reconcile, state.reconcile_ms)
+    {:noreply, state}
+  end
+
+  def handle_info(:reconcile, state) do
+    Process.send_after(self(), :reconcile, state.reconcile_ms)
+    {:noreply, state}
+  end
+
   # A `:drain` left over from an earlier turn can arrive while a review is
   # in flight; `review_done/2` sends a fresh one when it finishes.
   def handle_info(:drain, %{busy: nil} = state), do: {:noreply, drain(state)}
@@ -780,12 +851,15 @@ defmodule Raxol.Broker.Executor do
       GenServer.reply(from, :ok)
     end)
 
+    unless state.reconciled, do: send(self(), :reconcile)
+
     %{
       state
       | port_status: :ready,
         catalog: catalog,
         backoff: state.reconnect_ms,
-        port_waiters: %{}
+        port_waiters: %{},
+        reconciled: true
     }
   end
 
@@ -938,6 +1012,9 @@ defmodule Raxol.Broker.Executor do
     do: finish_parked(state, token, {:close, reason})
 
   defp dispatch({:halt_orders, bound}, _from, state), do: halt_orders_now(state, bound)
+
+  defp dispatch({:reconcile, bound}, _from, state),
+    do: {:reply, reconcile_now(state, bound), state}
 
   defp dispatch(_request, _from, state), do: {:reply, {:error, :unknown_request}, state}
 
@@ -1258,6 +1335,149 @@ defmodule Raxol.Broker.Executor do
       end
 
     {:reply, reply, state}
+  end
+
+  # -- Reconciliation -------------------------------------------------------------
+
+  @approvals_per_call 100
+
+  defp reconcile_now(state, bound) do
+    with :ok <- port_up(state),
+         {:ok, entries} <- safe(fn -> Journal.unresolved(state.journal) end) do
+      {unknown, pending} = Enum.split_with(entries, &(&1["status"] == "unknown"))
+      resolved = resolve_unknown(state, unknown, bound) ++ resolve_pending(state, pending, bound)
+
+      for {entry, resolution, detail} <- resolved do
+        with {:error, reason} <-
+               Journal.resolve(entry["group_id"], resolution, detail, state.journal) do
+          Logger.warning(
+            "[Broker.Executor] resolution of #{entry["group_id"]} not journaled: " <>
+              inspect(reason, structs: false)
+          )
+        end
+      end
+
+      {:ok,
+       Enum.map(resolved, fn {entry, resolution, _detail} ->
+         %{group_id: entry["group_id"], intent_id: entry["intent_id"], resolution: resolution}
+       end)}
+    end
+  end
+
+  # Matched on the `ref_id` the place sent, across every page. Absence is
+  # concluded only from a complete listing, for a `placing` old enough that
+  # the order cannot still be on its way, and never for a group whose
+  # review asked for the owner's approval (see "Reconciliation").
+  defp resolve_unknown(_state, [], _bound), do: []
+
+  defp resolve_unknown(state, [first | _] = entries, bound) do
+    args = %{
+      "account_number" => state.account,
+      "agent_initiated" => true,
+      "created_at_gte" => String.slice(first["at"], 0, 10)
+    }
+
+    case Read.listing(
+           state.port,
+           state.catalog,
+           "get_equity_orders",
+           args,
+           ["orders", "results"],
+           bound
+         ) do
+      {:ok, orders} ->
+        by_ref = orders |> Enum.filter(&is_map/1) |> Map.new(&{order_ref(&1), &1})
+        now = now(state.clock)
+
+        Enum.flat_map(entries, fn entry ->
+          case Map.fetch(by_ref, Place.ref_id(entry["intent_id"])) do
+            {:ok, order} -> [{entry, "placed", order_detail(order)}]
+            :error -> if absent?(state, entry, now), do: [{entry, "absent", %{}}], else: []
+          end
+        end)
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Broker.Executor] reconcile: orders unreadable or incomplete: " <>
+            inspect(reason, structs: false)
+        )
+
+        []
+    end
+  end
+
+  defp absent?(_state, %{"approval_required" => true}, _now), do: false
+  defp absent?(_state, _entry, {:error, _reason}), do: false
+
+  defp absent?(state, %{"at" => at}, {:ok, now}) do
+    case DateTime.from_iso8601(at) do
+      {:ok, placed_at, _offset} ->
+        DateTime.diff(now, placed_at, :millisecond) >= state.reconcile_min_age_ms
+
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  defp order_ref(order), do: order["ref_id"] || get_in(order, ["args", "ref_id"])
+
+  defp order_detail(order),
+    do: %{"order_id" => order["order_id"] || order["id"], "state" => order["state"]}
+
+  # Proposals are read back by the approval ids their place responses
+  # carried; one still pending stays unresolved.
+  defp resolve_pending(state, entries, bound) do
+    entries
+    |> Enum.filter(&is_binary(&1["approval_id"]))
+    |> Enum.chunk_every(@approvals_per_call)
+    |> Enum.flat_map(&resolve_pending_chunk(state, &1, bound))
+  end
+
+  defp resolve_pending_chunk(state, entries, bound) do
+    ids = Enum.map(entries, & &1["approval_id"])
+    args = %{"account_number" => state.account, "approval_ids" => ids}
+
+    case Read.call(state.port, state.catalog, "get_trade_approvals", args, bound) do
+      {:ok, body} ->
+        approvals =
+          body
+          |> Response.list(["approvals", "results"])
+          |> Enum.filter(&is_map/1)
+          |> Map.new(&{&1["approval_id"] || &1["id"], &1})
+
+        Enum.flat_map(entries, &approval_resolution(&1, approvals[&1["approval_id"]]))
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Broker.Executor] reconcile: approvals unreadable: #{inspect(reason, structs: false)}"
+        )
+
+        []
+    end
+  end
+
+  defp approval_resolution(_entry, nil), do: []
+
+  defp approval_resolution(entry, approval) do
+    detail = %{
+      "approval_id" => entry["approval_id"],
+      "state" => approval["state"] || approval["status"],
+      "order_id" => approval["order_id"]
+    }
+
+    case detail["state"] do
+      state when state in ["approved", "auto_approved", "auto-approved"] ->
+        [{entry, "approved", detail}]
+
+      "declined" ->
+        [{entry, "declined", detail}]
+
+      "expired" ->
+        [{entry, "expired", detail}]
+
+      _pending ->
+        []
+    end
   end
 
   # -- Halt -----------------------------------------------------------------------

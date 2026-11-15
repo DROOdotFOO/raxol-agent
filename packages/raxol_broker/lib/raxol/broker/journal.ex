@@ -162,6 +162,10 @@ defmodule Raxol.Broker.Journal do
       record: `Raxol.Broker.Executor.StructureTest` fails if any other
       module references `record_armed/2`. Disarming is open to anyone.
     * `halt`: strategies paused or stopped and why (`Raxol.Broker.Halt`).
+    * `resolve`: how an order whose outcome was unknown, or a proposal
+      pending the owner's approval, turned out (`resolve/4`). An order the
+      broker never received, or a proposal declined or expired, stops
+      counting and frees its intent id.
   """
 
   use GenServer
@@ -171,11 +175,13 @@ defmodule Raxol.Broker.Journal do
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.OperatorFile
   alias Raxol.Broker.{Intent, Policy}
+  alias Raxol.Broker.Executor.Review
   alias Raxol.Broker.Journal.{Codec, Groups}
   alias Raxol.Broker.Policy.Context
 
   @recent 20
-  @event_types ~w(emit dispatch strategy mode halt)
+  @event_types ~w(emit dispatch strategy mode halt resolve)
+  @releasing ~w(absent declined expired)
   # Halt reasons that pause the strategy runners, and the pause they set;
   # and the reasons that end one, written only by `record_resume/2`.
   @pauses %{"drawdown_halt" => :drawdown_halt, "dead_man_pause" => :dead_man}
@@ -616,6 +622,46 @@ defmodule Raxol.Broker.Journal do
     end
   end
 
+  @doc """
+  Counted groups whose outcome is still open: an order journaled `:unknown`
+  (or closed `crash_outcome_unknown`) and a `:pending_approval` proposal.
+  Each is `%{"group_id", "intent_id", "status", "at", "approval_id",
+  "approval_required"}`, oldest first; `"at"` is the `placing` time,
+  `"approval_id"` is read from the order response when it carries one, and
+  `"approval_required"` says the review asked for the owner's approval (the
+  order Robinhood makes from an approved proposal carries the approval id,
+  not the `ref_id` sent).
+  """
+  @spec unresolved(server()) :: {:ok, [map()]} | {:error, term()}
+  def unresolved(server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        entries =
+          server
+          |> :ets.match_object({{:unresolved, :_}, :_})
+          |> Enum.map(&elem(&1, 1))
+          |> Enum.sort_by(& &1["at"])
+
+        {:ok, entries}
+      end)
+    end
+  end
+
+  @doc """
+  Record how an unresolved group turned out: `"placed"` or `"approved"` (an
+  order exists and keeps counting), or `"absent"`, `"declined"` or
+  `"expired"` (none does: the group stops counting and its intent id is
+  free again). `detail` is journaled with it. Only the journal's claimant
+  (the executor) may write one: `{:error, {:not_claimant, group_id}}` for
+  any other caller, `{:error, :unclaimed}` when nothing holds the claim.
+  """
+  @spec resolve(group_id(), String.t(), map(), server()) :: :ok | {:error, term()}
+  def resolve(group_id, resolution, detail, server \\ __MODULE__)
+      when resolution in ~w(placed approved absent declined expired) and is_map(detail) do
+    fields = %{"group_id" => group_id, "resolution" => resolution, "detail" => detail}
+    GenServer.call(server, {:resolve, Codec.term(fields)}, :infinity)
+  end
+
   # -- Server -------------------------------------------------------------------
 
   @impl GenServer
@@ -699,6 +745,21 @@ defmodule Raxol.Broker.Journal do
 
       {:error, reason} ->
         refuse(state, reason)
+    end
+  end
+
+  # A resolution can release the cap and free an intent id, so it is a
+  # claimant's write, like a group record.
+  def handle_call({:resolve, %{"group_id" => id} = fields}, {caller, _tag}, state) do
+    record =
+      Map.merge(fields, %{"kind" => "broker", "type" => "resolve", "at" => iso(state.clock.())})
+
+    with :ok <- claimant(state, caller, id),
+         {:ok, _offsets} <- write(state, [record]) do
+      index_event(state.table, record)
+      {:reply, :ok, state}
+    else
+      {:error, reason} -> refuse(state, reason)
     end
   end
 
@@ -803,6 +864,7 @@ defmodule Raxol.Broker.Journal do
       finished?: false,
       seq: seq,
       reviewed?: false,
+      approval_required?: false,
       post_action: nil,
       approved?: false
     }
@@ -852,7 +914,8 @@ defmodule Raxol.Broker.Journal do
 
   defp entry_record({:review, response}, id, group, state) when is_map(response) do
     record = record(state, "review", id, %{"response" => Codec.term(response)})
-    {:ok, record, %{group | reviewed?: true}}
+    approval? = Review.customer_approval_required?(response)
+    {:ok, record, %{group | reviewed?: true, approval_required?: approval?}}
   end
 
   defp entry_record({:approval, decision, by}, id, group, state)
@@ -941,6 +1004,15 @@ defmodule Raxol.Broker.Journal do
         :ets.delete_object(state.table, {{:intent_placing, group.intent.id}, id})
         uncount(state, id, group.placing)
 
+      %{"type" => "order", "status" => status} = order, state
+      when status in ["unknown", "pending_approval"] ->
+        unresolved(state.table, id, group, status, order["response"])
+        state
+
+      %{"type" => "close", "outcome" => "unknown"}, state ->
+        unresolved(state.table, id, group, "unknown", nil)
+        state
+
       _record, state ->
         state
     end)
@@ -956,6 +1028,53 @@ defmodule Raxol.Broker.Journal do
         set_status(state, {:error, {:unindexable_group, id, :at}})
     end
   end
+
+  # An order whose outcome is not known (or a proposal the owner has yet to
+  # answer) until reconciliation resolves it; see `unresolved/1`. Cancels
+  # and declines record no notional and are not tracked.
+  defp unresolved(table, id, group, status, response) do
+    unresolved(
+      table,
+      id,
+      group.intent.id,
+      group.placing,
+      status,
+      response,
+      group.approval_required?
+    )
+  end
+
+  defp unresolved(_table, _id, _intent_id, %{"notional" => nil}, _status, _response, _approval?),
+    do: true
+
+  defp unresolved(table, id, intent_id, placing, status, response, approval?) do
+    entry = %{
+      "group_id" => id,
+      "intent_id" => intent_id,
+      "status" => status,
+      "at" => placing["at"],
+      "approval_id" => approval_id(response),
+      "approval_required" => approval?
+    }
+
+    :ets.insert(table, {{:unresolved, id}, entry})
+  end
+
+  defp approval_id(%{"content" => content}) when is_list(content) do
+    Enum.find_value(content, fn
+      %{"type" => "text", "text" => text} when is_binary(text) ->
+        case Jason.decode(text) do
+          {:ok, %{"approval_id" => id}} when is_binary(id) -> id
+          {:ok, %{"data" => %{"approval_id" => id}}} when is_binary(id) -> id
+          _ -> nil
+        end
+
+      _block ->
+        nil
+    end)
+  end
+
+  defp approval_id(_response), do: nil
 
   defp fetch_open(state, id) do
     case Map.fetch(state.open, id) do
@@ -1008,6 +1127,28 @@ defmodule Raxol.Broker.Journal do
          :ok <- index_groups(state.table, Enum.filter(groups, &Groups.counts?/1)),
          :ok <- index_intents(state.table, groups),
          :ok <- index_fills(state.table, fills) do
+      Enum.each(groups, fn group ->
+        case {group.placing, unresolved_status(group)} do
+          {%{} = placing, status} when is_binary(status) ->
+            response = group.order && group.order["response"]
+            approval? = approval_required?(group)
+
+            unresolved(
+              state.table,
+              group.id,
+              group.intent["id"],
+              placing,
+              status,
+              response,
+              approval?
+            )
+
+          _settled_or_never_placed ->
+            true
+        end
+      end)
+
+      # Resolve events follow, so they settle the entries just made.
       Enum.each(records, &index_event(state.table, &1))
 
       for group <- Enum.take(groups, -@recent),
@@ -1019,6 +1160,26 @@ defmodule Raxol.Broker.Journal do
       {:error, {:writer_stalled, _ms} = reason} -> {:stop, reason}
       {:error, reason} -> {:ok, set_status(state, damage_or(state, reason))}
     end
+  end
+
+  # A group still `in_flight` here is closed as `crash_outcome_unknown` by
+  # this recovery.
+  defp unresolved_status(group) do
+    case Groups.outcome(group) do
+      :pending_approval -> "pending_approval"
+      outcome when outcome in [:unknown, :in_flight] -> "unknown"
+      _settled -> nil
+    end
+  end
+
+  defp approval_required?(group) do
+    Enum.any?(group.records, fn
+      %{"type" => "review", "response" => response} when is_map(response) ->
+        Review.customer_approval_required?(response)
+
+      _record ->
+        false
+    end)
   end
 
   # The last @recent finished groups, for `recent/2`, keyed by a monotonic
@@ -1103,6 +1264,22 @@ defmodule Raxol.Broker.Journal do
       {:error, {:ok, pause}} -> :ets.delete(table, {:pause, pause})
       {:error, :error} -> true
     end
+  end
+
+  # A resolution that says no order exists stops the group counting and
+  # frees its intent, as a `:failed` order response would.
+  defp index_event(table, %{"kind" => "broker", "type" => "resolve"} = record) do
+    with %{"group_id" => id, "resolution" => resolution} <- record,
+         [{_key, entry}] <- :ets.lookup(table, {:unresolved, id}) do
+      :ets.delete(table, {:unresolved, id})
+
+      if resolution in @releasing do
+        with {:ok, us} <- parse_us(entry["at"]), do: :ets.delete(table, {:order, us, id})
+        :ets.delete_object(table, {{:intent_placing, entry["intent_id"]}, id})
+      end
+    end
+
+    true
   end
 
   defp index_event(_table, _record), do: true
