@@ -338,6 +338,41 @@ lock first: Robinhood rotates the refresh token, so one connection takes
 over a credential the other already rotated rather than spending a token
 that is no longer valid.
 
+## Approvals and dashboard
+
+An ASK parks its group in the executor. The executor also owns the
+timeout: when the policy's `ask_timeout` (five minutes by default) passes
+with the group still parked, it records a post-review DENY with rule id
+`ask_timeout`, whether or not anything is showing the ASK.
+
+`Raxol.Broker.Dashboard` is one TEA app for every surface. It shows the
+mode, the agentic account with its buying power and positions, the
+strategies, each parked ASK with its rules, prompts and the minutes left
+before it is denied, and the last journal decisions. `j`/`k` pick an ASK,
+`a` approves it, `d` declines it, `r` re-reads the account, `q` quits. The
+focus is the ASK itself: if it is answered elsewhere or times out, nothing
+is answered until `j`/`k` picks again.
+
+Only an operator may answer, and the operator is what the approval's `by`
+records. The terminal's operator is `terminal:<OS user>`. An SSH session's
+comes from the server's `:tenant_opts` for the authenticated user. LiveView
+and headless sessions are read-only: `Raxol.LiveView.TEALive` passes no
+per-user options, so nothing ties a browser to a person.
+
+```elixir
+Raxol.run(Raxol.Broker.Dashboard)                                    # terminal, in the broker's VM
+use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard      # LiveView, read-only
+Raxol.SSH.serve(Raxol.Broker.Dashboard,
+  port: 2222,
+  authorized_keys_dir: dir,
+  tenant_opts: fn user -> {:ok, [dashboard: [operator: "ssh:" <> user]]} end
+)
+```
+
+The dashboard reads the processes registered under their default names;
+`config :raxol_broker, Raxol.Broker.Dashboard, executor: ..., journal: ...`
+names others.
+
 ## Strategies
 
 A strategy (`Raxol.Broker.Strategy`) is a pure state machine: `init/1`

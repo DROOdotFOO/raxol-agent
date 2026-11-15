@@ -173,6 +173,7 @@ defmodule Raxol.Broker.Journal do
   alias Raxol.Broker.Journal.{Codec, Groups}
   alias Raxol.Broker.Policy.Context
 
+  @recent 20
   @event_types ~w(emit dispatch strategy mode)
   @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
   @phases [:pre_review, :post_review]
@@ -552,6 +553,27 @@ defmodule Raxol.Broker.Journal do
     end
   end
 
+  @doc """
+  The last `count` finished decision groups, newest first: `%{"group_id",
+  "at", "intent", "outcome"}` with the intent and outcome as one-line text.
+  At most 20 are kept.
+  """
+  @spec recent(server(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def recent(server \\ __MODULE__, count \\ 10) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        decisions =
+          server
+          |> :ets.match_object({{:decision, :_}, :_})
+          |> Enum.sort_by(&elem(&1, 0), :desc)
+          |> Enum.take(count)
+          |> Enum.map(&elem(&1, 1))
+
+        {:ok, decisions}
+      end)
+    end
+  end
+
   # -- Server -------------------------------------------------------------------
 
   @impl GenServer
@@ -859,6 +881,9 @@ defmodule Raxol.Broker.Journal do
 
     state = %{state | open: open}
 
+    if group.finished?,
+      do: remember(state.table, id, Codec.encode_intent(group.intent), List.last(records))
+
     Enum.reduce(records, state, fn
       %{"type" => "placing"} = placing, state ->
         :ets.insert(state.table, {{:intent_placing, group.intent.id}, id})
@@ -940,12 +965,61 @@ defmodule Raxol.Broker.Journal do
          :ok <- index_intents(state.table, groups),
          :ok <- index_fills(state.table, fills) do
       Enum.each(records, &index_event(state.table, &1))
+
+      for group <- Enum.take(groups, -@recent),
+          Groups.outcome(group) not in [:open, :in_flight],
+          do: remember(state.table, group.id, group.intent, List.last(group.records))
+
       {:ok, set_status(state, :ok)}
     else
       {:error, {:writer_stalled, _ms} = reason} -> {:stop, reason}
       {:error, reason} -> {:ok, set_status(state, damage_or(state, reason))}
     end
   end
+
+  # The last @recent finished groups, for `recent/2`, keyed by a monotonic
+  # sequence number. The terminal record says how each ended.
+  defp remember(table, id, intent, last) do
+    decision = %{
+      "group_id" => id,
+      "at" => last["at"],
+      "intent" => intent_text(intent),
+      "outcome" => outcome_text(last)
+    }
+
+    :ets.insert(table, {{:decision, seq()}, decision})
+
+    table
+    |> :ets.match({{:decision, :"$1"}, :_})
+    |> Enum.map(&hd/1)
+    |> Enum.sort(:desc)
+    |> Enum.drop(@recent)
+    |> Enum.each(&:ets.delete(table, {:decision, &1}))
+  end
+
+  defp intent_text(%{} = intent) do
+    [
+      intent["kind"],
+      intent["side"],
+      intent["symbol"],
+      intent["qty"],
+      intent["limit"],
+      intent["notional"]
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" ")
+  end
+
+  defp intent_text(_intent), do: "?"
+
+  defp outcome_text(%{"type" => "order", "status" => status}), do: status
+
+  defp outcome_text(%{"type" => "close", "outcome" => outcome, "reason" => reason}),
+    do: "#{outcome} #{reason}"
+
+  defp outcome_text(%{"type" => "approval", "by" => by}), do: "declined by #{by}"
+  defp outcome_text(%{"type" => "verdict", "result" => %{"rule" => rule}}), do: "deny #{rule}"
+  defp outcome_text(_record), do: "finished"
 
   # Events are indexed in journal order, so a later record wins. Each entry
   # carries a monotonic sequence number for ordered listings.

@@ -95,8 +95,13 @@ defmodule Raxol.Broker.Executor do
   journal, journals the approval and runs the policy again: a DENY now (the
   cap moved while it was parked) ends the group; an ASK (the questions the
   human just answered) or ALLOW goes on to `placing`. `decline/3` and
-  `close/3` end the group. Routing an ASK to a person and denying on
-  timeout are #1180's.
+  `close/3` end the group. `Raxol.Broker.Dashboard` shows parked groups to
+  a person in the terminal, LiveView or SSH.
+
+  The timeout is this process's, not a view's: parking starts a timer of the
+  policy's `ask_timeout` (five minutes by default), and a group still parked
+  when it fires gets a post-review DENY with rule id `:ask_timeout`, so an
+  ASK nobody answers is denied whether or not a dashboard is open.
 
   `approve/3` and `decline/3` need a non-empty `by`, `close/3` a non-nil
   atom reason; anything else raises `FunctionClauseError` in the caller and
@@ -569,7 +574,12 @@ defmodule Raxol.Broker.Executor do
       state.parked
       |> Enum.sort_by(fn {_id, group} -> group.seq end)
       |> Enum.map(fn {id, group} ->
-        %{group_id: id, intent: group.intent, prompts: group.prompts}
+        %{
+          group_id: id,
+          intent: group.intent,
+          prompts: group.prompts,
+          expires_at: group.expires_at
+        }
       end)
 
     {:reply, list, state}
@@ -658,6 +668,9 @@ defmodule Raxol.Broker.Executor do
 
   def handle_info(:refresh_due, state),
     do: {:noreply, start_refresh(%{state | refresh_timer: nil})}
+
+  def handle_info({:ask_timeout, group_id}, state),
+    do: {:noreply, ask_timed_out(state, group_id)}
 
   # A `:drain` left over from an earlier turn can arrive while a review is
   # in flight; `review_done/2` sends a fresh one when it finishes.
@@ -1050,18 +1063,40 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
+  # The timeout timer is this process's: an ASK nobody answers is denied
+  # whether or not anything shows it.
   defp park(state, %{group_id: group_id} = pending, receipt, prompts) do
+    timeout = Keyword.fetch!(state.policy, :ask_timeout)
+    Process.send_after(self(), {:ask_timeout, group_id}, timeout)
+
     group = %{
       intent: pending.intent,
       context: pending.context,
       receipt: receipt,
       prompts: prompts,
       customer_approval_required: pending.customer_approval_required,
+      expires_at: DateTime.add(DateTime.utc_now(), timeout, :millisecond),
       seq: System.unique_integer([:monotonic])
     }
 
     parked = Map.put(state.parked, group_id, group)
     {:reply, {:ask, group_id, prompts}, %{state | parked: parked}}
+  end
+
+  # A timer for a group answered meanwhile finds nothing parked.
+  defp ask_timed_out(state, group_id) do
+    case Map.pop(state.parked, group_id) do
+      {nil, _parked} ->
+        state
+
+      {_group, parked} ->
+        verdict = {:deny, {:ask_timeout, %{ms: Keyword.fetch!(state.policy, :ask_timeout)}}}
+
+        with {:error, _reason} <- append(state, group_id, {:verdict, :post_review, verdict}),
+             do: close_group(state, group_id, :ask_timeout)
+
+        %{state | parked: parked}
+    end
   end
 
   # Everything before the approval is journaled leaves the group parked.

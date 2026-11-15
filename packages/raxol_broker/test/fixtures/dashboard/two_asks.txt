@@ -1,0 +1,14 @@
+Raxol Broker  mode: ARMED
+account: not connected
+
+strategies:
+  none
+
+pending approvals (a approve, d deny, j/k move), read-only:
+  ask-one  limit buy AAPL 2 @ 125  denied in 5m
+    review_warning: Order review returned 1 warning(s).
+> ask-two  limit buy AAPL 3 @ 125  denied in 5m
+    review_warning: Order review returned 1 warning(s).
+
+recent decisions:
+  none
