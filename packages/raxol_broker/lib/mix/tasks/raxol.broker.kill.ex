@@ -40,5 +40,9 @@ defmodule Mix.Tasks.Raxol.Broker.Kill do
   end
 
   defp listed({:ok, ids}), do: Integer.to_string(length(ids))
+
+  defp listed({:error, {:incomplete, ids, reasons}}),
+    do: "#{length(ids)}, INCOMPLETE (#{inspect(reasons)}); check the app for the rest"
+
   defp listed({:error, reason}), do: "unreadable (#{inspect(reason)})"
 end

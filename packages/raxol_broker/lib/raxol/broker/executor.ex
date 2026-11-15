@@ -246,7 +246,7 @@ defmodule Raxol.Broker.Executor do
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
   alias Raxol.Agent.Auth.Credential
   alias Raxol.Broker.{CredentialStore, Halt, Intent, Journal, MarketCalendar, Mode, Plain, Policy}
-  alias Raxol.Broker.{PolicyFile, Response, Session}
+  alias Raxol.Broker.{PolicyFile, Session}
   alias Raxol.Broker.Journal.Codec
   alias Raxol.Broker.Policy.{Context, ContextBuilder}
   alias Raxol.Broker.Tools.Catalog
@@ -322,16 +322,21 @@ defmodule Raxol.Broker.Executor do
 
   @doc """
   The kill switch's order step: list the account's open agent-initiated
-  equity orders (`get_equity_orders` with `agent_initiated: true`) and its
-  pending trade approvals (`get_trade_approvals`), then cancel every order
-  and decline every approval through `Raxol.Broker.Executor.Place`, all at
-  once, each call bounded by `bound` milliseconds. Every cancel and decline
-  is its own journaled group (intent ids `cancel-<order id>` and
-  `decline-<approval id>`), and runs whatever the mode.
+  equity orders (`get_equity_orders` with `agent_initiated: true`, once
+  per open state, every page) and its pending trade approvals
+  (`get_trade_approvals`, every page), then cancel every order and decline
+  every approval through `Raxol.Broker.Executor.Place`, all at once, each
+  call bounded by `bound` milliseconds. Every cancel and decline is its own
+  journaled group, under an intent id unique to this kill
+  (`cancel-<order id>-<kill id>`), so a later kill sends again a cancel an
+  earlier one could not confirm. Cancels and declines are built with
+  `:human` provenance and run whatever the mode.
 
   `{:ok, %{orders: listed, approvals: listed, results: results}}`, where a
-  listing is `{:ok, ids}` or `{:error, reason}` and `results` are
-  `%{kind, id, group_id, outcome}`; or `{:error, :port_not_ready}`.
+  listing is `{:ok, ids}`, or `{:error, {:incomplete, ids, reasons}}` when
+  some listing failed (the ids that were read are still cancelled), and
+  `results` are `%{kind, id, group_id, outcome}`; or `{:error,
+  :port_not_ready}`.
   """
   @spec halt_orders(GenServer.server(), pos_integer()) :: {:ok, map()} | {:error, term()}
   def halt_orders(server, bound) when is_integer(bound) and bound > 0,
@@ -1257,17 +1262,41 @@ defmodule Raxol.Broker.Executor do
 
   # -- Halt -----------------------------------------------------------------------
 
+  # Robinhood lists open and closed orders together, newest first, a fixed
+  # number per page: one listing per open state, every page, keeps closed
+  # orders from pushing open ones off the first page. The states are read in
+  # lifecycle order, so an order that moves on between two listings is read
+  # by the later one.
+  @open_states ["new", "unconfirmed", "queued", "confirmed", "partially_filled"]
+  @closed_states ["filled", "cancelled", "canceled", "rejected", "failed", "expired", "voided"]
+
   # Open orders and pending approvals are listed through the read stage;
   # every cancel and decline gets its own group (no review tool, ALLOW by
   # policy), then `Place.run_many/3` sends them all at once under `bound`.
   defp halt_orders_now(state, bound) do
     with :ok <- port_up(state) do
-      orders = list_ids(state, "get_equity_orders", %{"agent_initiated" => true}, bound)
-      approvals = list_ids(state, "get_trade_approvals", %{}, bound)
+      kill = Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false)
+      account = %{"account_number" => state.account}
+
+      orders =
+        listings(state, bound, ["orders", "results"], "order_id", fn ->
+          for s <- @open_states,
+              do:
+                {"get_equity_orders",
+                 Map.merge(account, %{"agent_initiated" => true, "state" => s})}
+        end)
+
+      approvals =
+        listings(state, bound, ["approvals", "results"], "approval_id", fn ->
+          [{"get_trade_approvals", account}]
+        end)
 
       intents =
-        halt_intents(orders, &Intent.cancel(&1, provenance: :human, id: "cancel-" <> &1)) ++
-          halt_intents(approvals, &Intent.decline(&1, provenance: :human, id: "decline-" <> &1))
+        halt_intents(orders, &Intent.cancel(&1, provenance: :human, id: "cancel-#{&1}-#{kill}")) ++
+          halt_intents(
+            approvals,
+            &Intent.decline(&1, provenance: :human, id: "decline-#{&1}-#{kill}")
+          )
 
       {ready, refused} =
         intents
@@ -1289,24 +1318,34 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  @closed_states ["filled", "cancelled", "canceled", "rejected", "failed", "expired"]
+  defp listings(state, bound, keys, id_key, calls) do
+    {ids, errors} =
+      Enum.reduce(calls.(), {[], []}, fn {tool, args}, {ids, errors} ->
+        case Read.listing(state.port, state.catalog, tool, args, keys, bound) do
+          {:ok, items} -> {ids ++ open_ids(items, id_key), errors}
+          {:error, reason} -> {ids, [{tool, args["state"], reason} | errors]}
+        end
+      end)
 
-  defp list_ids(state, tool, args, bound) do
-    args = Map.put(args, "account_number", state.account)
-
-    with {:ok, body} <- Read.call(state.port, state.catalog, tool, args, bound) do
-      ids =
-        body
-        |> Response.list(["orders", "approvals", "results"])
-        |> Enum.reject(&(&1["state"] in @closed_states))
-        |> Enum.map(&(&1["order_id"] || &1["approval_id"] || &1["id"]))
-        |> Enum.filter(&(is_binary(&1) and &1 != ""))
-
-      {:ok, ids}
-    end
+    ids = Enum.uniq(ids)
+    if errors == [], do: {:ok, ids}, else: {:error, {:incomplete, ids, Enum.reverse(errors)}}
   end
 
-  defp halt_intents({:ok, ids}, build) do
+  defp open_ids(items, id_key) do
+    items
+    |> Enum.filter(&is_map/1)
+    |> Enum.reject(&(&1["state"] in @closed_states))
+    |> Enum.map(&(&1[id_key] || &1["id"]))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+  end
+
+  defp halt_intents(listed, build) do
+    ids =
+      case listed do
+        {:ok, ids} -> ids
+        {:error, {:incomplete, ids, _reasons}} -> ids
+      end
+
     Enum.flat_map(ids, fn id ->
       case build.(id) do
         {:ok, intent} -> [intent]
@@ -1314,8 +1353,6 @@ defmodule Raxol.Broker.Executor do
       end
     end)
   end
-
-  defp halt_intents({:error, _reason}, _build), do: []
 
   defp open_unreviewed(state, intent) do
     with {:ok, nil} <- placed_before(state, intent),

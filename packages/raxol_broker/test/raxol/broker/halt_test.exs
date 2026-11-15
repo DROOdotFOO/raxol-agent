@@ -106,7 +106,46 @@ defmodule Raxol.Broker.HaltTest do
               Broker.records(ctx.path),
             do: i
 
-      assert intent["id"] == "decline-" <> intent["order_id"]
+      assert "decline-" <> rest = intent["id"]
+      assert String.starts_with?(rest, intent["order_id"] <> "-")
+    end
+
+    test "a second kill sends again a cancel the first could not confirm" do
+      ctx = broker!()
+      :placed = place!(ctx, "resend")
+      [%{"order_id" => order_id}] = Fake.orders(ctx.fake)
+      Fake.on_call(ctx.fake, "cancel_equity_order", fn _args -> :hang end)
+
+      assert [%{outcome: "unknown :timeout"}] = kill!(ctx, 200).results
+      Fake.on_call(ctx.fake, "cancel_equity_order", fn _args -> :answer end)
+
+      assert [%{id: ^order_id, outcome: "placed"}] = kill!(ctx).results
+      assert [%{"state" => "cancelled"}] = Fake.orders(ctx.fake)
+    end
+
+    test "every page of every open state is cancelled" do
+      ctx = broker!(page_size: 1)
+      for id <- ~w(p1 p2 p3), do: :placed = place!(ctx, id)
+
+      summary = kill!(ctx)
+
+      assert {:ok, [_, _, _]} = summary.orders
+      assert Enum.all?(Fake.orders(ctx.fake), &(&1["state"] == "cancelled"))
+
+      states =
+        for {"get_equity_orders", %{"state" => s}} <- Fake.calls(ctx.fake), uniq: true, do: s
+
+      assert states == ~w(new unconfirmed queued confirmed partially_filled)
+    end
+
+    test "a listing that fails is reported incomplete and the rest is still cancelled" do
+      ctx = broker!(faults: [{"get_trade_approvals", {:http, 503}, 10}])
+      :placed = place!(ctx, "partial")
+
+      summary = kill!(ctx)
+
+      assert {:error, {:incomplete, [], [{"get_trade_approvals", nil, _}]}} = summary.approvals
+      assert [%{kind: :cancel, outcome: "placed"}] = summary.results
     end
   end
 
@@ -134,8 +173,10 @@ defmodule Raxol.Broker.HaltTest do
       Heartbeat.status(heartbeat)
     end
 
-    defp runner_status(sup),
-      do: sup |> Strategy.Supervisor.running() |> Enum.map(&elem(&1, 1).status)
+    defp runner_status(sup) do
+      Enum.each(Strategy.Supervisor.running(sup), fn {pid, _} -> :sys.get_state(pid) end)
+      sup |> Strategy.Supervisor.running() |> Enum.map(&elem(&1, 1).status)
+    end
 
     test "silence past the timeout pauses strategies; a beat resumes them; both journaled", ctx do
       Agent.update(ctx.time, &(&1 + 999))
@@ -160,6 +201,43 @@ defmodule Raxol.Broker.HaltTest do
       Agent.update(ctx.time, &(&1 + 900))
       assert %{paused: false} = check!(ctx.heartbeat)
       assert runner_status(ctx.sup) == [:running]
+    end
+
+    test "the pause outlives a runner restart and a heartbeat restart", ctx do
+      Agent.update(ctx.time, &(&1 + 1_000))
+      assert %{paused: true} = check!(ctx.heartbeat)
+      assert Journal.pauses(ctx.journal) == {:ok, [:dead_man]}
+
+      [{runner, _}] = Strategy.Supervisor.running(ctx.sup)
+      ref = Process.monitor(runner)
+      Process.exit(runner, :kill)
+      assert_receive {:DOWN, ^ref, :process, _, :killed}
+      :sys.get_state(:"#{ctx.sup}.Runners")
+      assert runner_status(ctx.sup) == [:paused]
+
+      {clock, _time} = Broker.clock(0)
+
+      restarted =
+        start_supervised!(
+          {Heartbeat,
+           name: :"heartbeat_#{System.unique_integer([:positive])}",
+           timeout: 1_000,
+           journal: ctx.journal,
+           strategies: ctx.sup,
+           clock: clock,
+           schedule: fn _ms -> :ok end},
+          id: :restarted
+        )
+
+      assert %{paused: true} = Heartbeat.status(restarted)
+      :ok = Heartbeat.beat(restarted, "test")
+      assert runner_status(ctx.sup) == [:running]
+      assert Journal.pauses(ctx.journal) == {:ok, []}
+    end
+
+    test "only the heartbeat's resume ends a dead-man pause", ctx do
+      assert {:error, {:resume_reason, "dead_man_resume"}} =
+               Journal.record_halt(%{"reason" => "dead_man_resume"}, ctx.journal)
     end
   end
 end

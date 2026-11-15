@@ -401,26 +401,31 @@ mix raxol.broker.kill   # in the broker's VM
 mix raxol.broker.beat
 ```
 
-`Raxol.Broker.Halt.kill/1` (the task, or `K` on the dashboard) disarms,
-stops every strategy runner, lists the account's open agent-initiated
-equity orders (`get_equity_orders`, `agent_initiated: true`) and its
-pending trade approvals (`get_trade_approvals`), then cancels each order
-and declines each approval through the executor, all in parallel, each
-call bounded (10 s by default), and journals a `halt` record naming the
-trigger and how each one ended. A cancel past the bound is journaled
-`unknown` with `:timeout` and reported; nothing is retried.
-`decline_trade_approval` is on the catalog's write allowlist and is
-reachable only through `Raxol.Broker.Executor.Place`. The baseline
-kill-to-all-cancelled latency against the Fake is in
-`bench/kill_latency.md`.
+`Raxol.Broker.Halt.kill/1` (the task, or `K` then `y` on an operator's
+dashboard) disarms, stops every strategy runner, lists the account's open
+agent-initiated equity orders (`get_equity_orders`, `agent_initiated:
+true`, one listing per open state in lifecycle order, every page) and its
+pending trade approvals (`get_trade_approvals`, every page), then cancels
+each order and declines each approval through the executor, all in
+parallel, each call bounded (10 s by default), and journals a `halt`
+record naming the trigger and how each one ended. A cancel past the bound
+is journaled `unknown` with `:timeout` and reported; nothing is retried,
+but every kill uses its own intent ids, so running it again sends that
+cancel again. A listing that fails is reported as incomplete, and the
+orders that were read are still cancelled. `decline_trade_approval` is on
+the catalog's write allowlist and is reachable only through
+`Raxol.Broker.Executor.Place`. The baseline kill-to-all-cancelled latency
+against the Fake is in `bench/kill_latency.md`.
 
 `Raxol.Broker.Heartbeat` is the dead-man switch: with no beat within the
 policy's `dead_man_timeout` (24 hours by default, `:off` to disable) it
-pauses every strategy, cancelling nothing, and journals `dead_man_pause`;
-the next beat resumes them and journals `dead_man_resume`. An open
-dashboard beats every second; `mix raxol.broker.inspect` and
-`mix raxol.broker.beat` beat once. Start it with the `:heartbeat` option
-of `Raxol.Broker.Supervisor`.
+journals `dead_man_pause` and pauses every strategy, cancelling nothing;
+the next beat journals `dead_man_resume` and resumes them. The pause is
+the journal's, so it holds across a runner or heartbeat restart, and only
+the heartbeat may write the resume. An operator's open dashboard beats
+every second (a read-only one does not); `mix raxol.broker.inspect` and
+`mix raxol.broker.beat` beat once. Start it with the `:heartbeat` option of
+`Raxol.Broker.Supervisor`.
 
 ## Strategies
 

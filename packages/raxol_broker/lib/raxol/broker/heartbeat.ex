@@ -5,10 +5,13 @@ defmodule Raxol.Broker.Heartbeat do
   dashboard beats on every refresh, `mix raxol.broker.inspect` and
   `mix raxol.broker.beat` beat once.
 
-  When a check finds no beat within the timeout, every strategy runner is
-  paused (`{:pause, :dead_man}`; nothing is cancelled and the mode is left
-  as it is) and a `halt` record with reason `dead_man_pause` is journaled.
-  The next beat resumes them and journals `dead_man_resume`.
+  When a check finds no beat within the timeout, a `halt` record with
+  reason `dead_man_pause` is journaled and every strategy runner is paused
+  (`:dead_man`; nothing is cancelled and the mode is left as it is). The
+  pause is the journal's, so a runner restarted or added meanwhile starts
+  paused, and so is this process after a restart. The next beat journals
+  `dead_man_resume` (only this module may: `Journal.record_resume/2`) and
+  resumes the runners.
 
   Checks run every `:check_ms` (default the timeout, at most a minute).
 
@@ -56,7 +59,7 @@ defmodule Raxol.Broker.Heartbeat do
       schedule: Keyword.get(opts, :schedule, fn ms -> Process.send_after(me, :check, ms) end),
       check_ms: Keyword.get(opts, :check_ms, check_ms(timeout)),
       last: clock.(),
-      paused: false
+      paused: dead_man_paused?(Keyword.get(opts, :journal, Journal))
     }
 
     if timeout != :off, do: state.schedule.(state.check_ms)
@@ -66,11 +69,22 @@ defmodule Raxol.Broker.Heartbeat do
   defp check_ms(:off), do: @max_check
   defp check_ms(timeout), do: min(timeout, @max_check)
 
+  # A pause that outlived a restart is still in the journal; the next beat
+  # ends it.
+  defp dead_man_paused?(journal) do
+    case Journal.pauses(journal) do
+      {:ok, pauses} -> :dead_man in pauses
+      {:error, _reason} -> false
+    end
+  end
+
   @impl GenServer
   def handle_call({:beat, source}, _from, state) do
     if state.paused do
+      _ =
+        Journal.record_resume(%{"reason" => "dead_man_resume", "source" => source}, state.journal)
+
       Strategy.Supervisor.resume_all(:dead_man, supervisor: state.strategies)
-      journal(state, %{"reason" => "dead_man_resume", "source" => source})
     end
 
     {:reply, :ok, %{state | last: state.clock.(), paused: false}}
@@ -94,8 +108,8 @@ defmodule Raxol.Broker.Heartbeat do
     state.schedule.(state.check_ms)
 
     if silent >= state.timeout and not state.paused do
-      Strategy.Supervisor.pause_all(:dead_man, supervisor: state.strategies)
       journal(state, %{"reason" => "dead_man_pause", "silent_ms" => silent})
+      Strategy.Supervisor.pause_all(:dead_man, supervisor: state.strategies)
       {:noreply, %{state | paused: true}}
     else
       {:noreply, state}

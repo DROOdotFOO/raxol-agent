@@ -176,8 +176,10 @@ defmodule Raxol.Broker.Journal do
 
   @recent 20
   @event_types ~w(emit dispatch strategy mode halt)
-  # Halt reasons that pause the strategy runners, and the pause they set.
-  @pauses %{"drawdown_halt" => :drawdown_halt}
+  # Halt reasons that pause the strategy runners, and the pause they set;
+  # and the reasons that end one, written only by `record_resume/2`.
+  @pauses %{"drawdown_halt" => :drawdown_halt, "dead_man_pause" => :dead_man}
+  @resumes %{"dead_man_resume" => :dead_man}
   @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
@@ -539,10 +541,27 @@ defmodule Raxol.Broker.Journal do
   def record_disarmed(fields, server \\ __MODULE__) when is_map(fields),
     do: event("mode", Map.put(fields, "mode", "disarmed"), server)
 
-  @doc "Record a halt (see `Raxol.Broker.Halt`): `fields` hold its `\"reason\"`."
+  @doc """
+  Record a halt (see `Raxol.Broker.Halt`): `fields` hold its `\"reason\"`. A
+  reason that ends a pause is refused (`{:error, {:resume_reason, reason}}`):
+  only `record_resume/2` writes those.
+  """
   @spec record_halt(map(), server()) :: :ok | {:error, term()}
-  def record_halt(%{"reason" => reason} = fields, server \\ __MODULE__) when is_binary(reason),
-    do: event("halt", fields, server)
+  def record_halt(%{"reason" => reason} = fields, server \\ __MODULE__) when is_binary(reason) do
+    if Map.has_key?(@resumes, reason),
+      do: {:error, {:resume_reason, reason}},
+      else: event("halt", fields, server)
+  end
+
+  @doc """
+  Record the end of a pause (`#{inspect(Map.keys(@resumes))}`). Only
+  `Raxol.Broker.Heartbeat` calls this: `Raxol.Broker.Executor.StructureTest`
+  fails if any other module references it.
+  """
+  @spec record_resume(map(), server()) :: :ok | {:error, term()}
+  def record_resume(%{"reason" => reason} = fields, server \\ __MODULE__)
+      when is_map_key(@resumes, reason),
+      do: event("halt", fields, server)
 
   @doc """
   The latest mode record: `{:ok, :armed | :disarmed, record}`, or
@@ -1079,9 +1098,10 @@ defmodule Raxol.Broker.Journal do
   end
 
   defp index_event(table, %{"kind" => "broker", "type" => "halt", "reason" => reason}) do
-    case Map.fetch(@pauses, reason) do
-      {:ok, pause} -> :ets.insert(table, {{:pause, pause}, reason})
-      :error -> true
+    case {Map.fetch(@pauses, reason), Map.fetch(@resumes, reason)} do
+      {{:ok, pause}, _resume} -> :ets.insert(table, {{:pause, pause}, reason})
+      {:error, {:ok, pause}} -> :ets.delete(table, {:pause, pause})
+      {:error, :error} -> true
     end
   end
 

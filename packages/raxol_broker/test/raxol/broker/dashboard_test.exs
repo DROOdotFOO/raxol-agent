@@ -147,6 +147,24 @@ defmodule Raxol.Broker.DashboardTest do
     assert [%{intent: %{id: "ask-second"}}] = Executor.parked(ctx.executor)
   end
 
+  test "K kills only for an operator and only after y", ctx do
+    _ = ask!(ctx, "ask-kill")
+
+    assert operator_model(nil) |> press(["K", "y"]) |> Map.fetch!(:status) =~ "read-only"
+    assert Raxol.Broker.Mode.current(ctx.journal) == :armed
+
+    model = operator_model() |> press(["K", "x"])
+    assert model.status == "kill cancelled; nothing sent"
+    assert Raxol.Broker.Mode.current(ctx.journal) == :armed
+
+    model = press(model, ["K", "y"])
+    assert model.status =~ "killed:"
+    assert Raxol.Broker.Mode.current(ctx.journal) == :disarmed
+
+    halt = ctx.path |> Broker.records() |> Enum.filter(&(&1["type"] == "halt")) |> List.last()
+    assert %{"reason" => "kill", "trigger" => "ssh:alice"} = halt
+  end
+
   test "an SSH surface with no operator, and LiveView, are read-only" do
     assert operator_model(nil).operator == nil
 
