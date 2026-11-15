@@ -38,7 +38,35 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
 
   defp runners(sup), do: :"#{sup}.Runners"
 
+  defp arm!(ctx), do: :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
+
+  test "a fresh install journals intents as dry run and the Fake sees no place until armed",
+       ctx do
+    quote!(ctx.runner, "10.00")
+    quote!(ctx.runner, "9.80")
+    quote!(ctx.runner, "9.50")
+    quote!(ctx.runner, "9.30")
+    sync(ctx.runner)
+
+    assert Fake.calls(ctx.fake, "place_") == []
+    assert Fake.calls(ctx.fake, "review_") == []
+    records = Broker.records(ctx.path)
+    assert [_ | _] = intents = for(%{"type" => "intent"} = r <- records, do: r["mode"])
+    assert Enum.all?(intents, &(&1 == "dry_run"))
+
+    assert Enum.all?(
+             for(%{"type" => "dispatch"} = r <- records, do: r["outcome"]),
+             &(&1 == "not_armed")
+           )
+
+    arm!(ctx)
+    quote!(ctx.runner, "8.00")
+    sync(ctx.runner)
+    assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+  end
+
   test "an emitted intent is journaled before the executor opens its group", ctx do
+    arm!(ctx)
     quote!(ctx.runner, "10.00")
     quote!(ctx.runner, "9.80")
     sync(ctx.runner)
@@ -58,6 +86,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
   test "a runner killed after emitting and before the executor answers places exactly once",
        ctx do
     test = self()
+    arm!(ctx)
 
     Fake.on_call(ctx.fake, "review_equity_order", fn _args ->
       send(test, {:reviewing, self()})
@@ -116,6 +145,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
 
   test "stop terminates a runner blocked in the executor", ctx do
     test = self()
+    arm!(ctx)
 
     Fake.on_call(ctx.fake, "review_equity_order", fn _args ->
       send(test, :reviewing)

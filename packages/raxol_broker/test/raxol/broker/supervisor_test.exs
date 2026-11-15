@@ -52,6 +52,7 @@ defmodule Raxol.Broker.SupervisorTest do
       )
 
     assert :ok = Executor.await_port(executor)
+    :ok = Journal.record_armed(%{"by" => "test"}, journal)
 
     {:ok, intent} =
       Intent.limit(:buy, "AAPL", Decimal.new("2"), Decimal.new("125"),

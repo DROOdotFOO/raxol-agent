@@ -128,8 +128,8 @@ defmodule Raxol.Broker.Executor do
   ## Port
 
   The port is a `Raxol.Broker.Executor.Port.MCP` session built from
-  `:session`. `init/1` only checks the spec (`Port.MCP.prepare/2`, so a
-  live spec still fails start); the client starts after `init/1`, linked
+  `:session`. `init/1` only checks the spec (`Port.MCP.prepare/2`, so in
+  `:dry_run` a live spec fails start); the client starts after `init/1`, linked
   to this process, and a task waits for it to be ready, so the executor
   answers while it connects. Until it is ready, `run/3` and `approve/3`
   return `{:error, :port_not_ready}` before opening or journaling
@@ -144,12 +144,39 @@ defmodule Raxol.Broker.Executor do
 
   ## Mode
 
-  Only `mode: :dry_run` (the default) runs. `Raxol.Broker.Executor.Port.MCP`
-  refuses to connect a live session in dry-run (`{:error,
-  :live_port_in_dry_run}`): a dry-run `:session` must carry `sandbox: true`
-  and a URL that is not on `robinhood.com`. The intent record carries
-  `"mode": "dry_run"`. `mode: :armed` is `{:error, :not_armed}` until
-  arming exists (#1179).
+  No order tool is sent unless the latest mode record in the journal is
+  `armed` (`Raxol.Broker.Mode`, written by `mix raxol.broker.arm`). The
+  record is read when an intent arrives and again just before `placing`:
+
+    * disarmed when the intent arrives: the group opens with `"mode":
+      "dry_run"`, the pre-review policy runs (a DENY ends it as usual), and
+      the group is closed as `not_armed` with no review; `run/3` returns
+      `{:error, :not_armed}`;
+    * armed when it arrives: the group opens with `"mode": "armed"`;
+    * disarmed by the time it would place (a parked ASK approved after a
+      disarm, a review in flight): the group is closed as `not_armed`
+      before `placing` and `{:error, :not_armed}` returned.
+
+  Cancels are gated like any other intent, and the policy allows a cancel
+  only with `:human` provenance, so neither a strategy nor model output can
+  cancel the owner's orders.
+
+  The `:mode` option decides which sessions the port may reach.
+  `:dry_run` (the default) refuses a live session before connecting
+  (`{:error, :live_port_in_dry_run}`): its `:session` must carry `sandbox:
+  true` and a URL that is not on `robinhood.com`. `:live` admits any
+  session, Robinhood's included.
+
+  ## Live session
+
+  With `:credential`, the session is `Raxol.Broker.Session.spec/2` over the
+  credential in `Raxol.Broker.CredentialStore` (read at start, in a task;
+  `{:no_credential, reason}` stops the start when there is none) and the
+  `:session` keys, Robinhood's URL unless `:session` names another. The
+  token is refreshed `refresh_skew` seconds (default 300) before it
+  expires, and on a 401 at connect, through `Raxol.Broker.Session.refresh/3`
+  in a task; the port then reconnects with the new bearer, after any review
+  in flight. A failed refresh is logged and retried after a minute.
 
   ## Options
 
@@ -164,7 +191,9 @@ defmodule Raxol.Broker.Executor do
       `{:via, module, name}` or `{:global, name}`, is
       `{:invalid_journal, value}`: resolving it would run caller code in
       this process.
-    * `:mode` - `:dry_run` (default) or `:armed`.
+    * `:mode` - `:dry_run` (default) or `:live`; see "Mode".
+    * `:credential` - `[store: store_opts, auth: auth_opts, refresh_skew:
+      seconds]` for a live session; see "Live session".
     * `:clock` - zero-arity function returning the UTC `DateTime` used for
       the counters (default `DateTime.utc_now/0`). It runs in a short-lived
       task, never in this process, with a 5 s budget. Its result is rebuilt
@@ -191,8 +220,7 @@ defmodule Raxol.Broker.Executor do
 
   `today_notional` counts a rolling 24 hours back from the clock's now,
   which counts at least as much as any calendar day would. No caller input
-  moves the window; a calendar the executor owns (New York trading day) is
-  #1185's.
+  moves the window.
   """
 
   use GenServer
@@ -201,7 +229,8 @@ defmodule Raxol.Broker.Executor do
 
   alias Raxol.Broker.Executor.{Place, Port, Review, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
-  alias Raxol.Broker.{Intent, Journal, Plain, Policy, PolicyFile}
+  alias Raxol.Agent.Auth.Credential
+  alias Raxol.Broker.{CredentialStore, Intent, Journal, Mode, Plain, Policy, PolicyFile, Session}
   alias Raxol.Broker.Policy.Context
   alias Raxol.Broker.Tools.Catalog
 
@@ -212,6 +241,9 @@ defmodule Raxol.Broker.Executor do
   # `receive after` and `Process.send_after/3` refuse anything above
   # 4_294_967_295 ms; the cap leaves headroom under that.
   @max_timeout 4_294_000_000
+  @default_skew 300
+  @refresh_retry_ms 60_000
+  @store_timeout 30_000
 
   @type placed :: %{
           required(:group_id) => String.t(),
@@ -346,17 +378,20 @@ defmodule Raxol.Broker.Executor do
     with {:ok, journal} <- fetch_journal(opts),
          {:ok, timeouts} <- fetch_timeouts(opts),
          {:ok, clock} <- fetch_clock(opts),
-         :ok <- check_mode(Keyword.get(opts, :mode, :dry_run)),
+         {:ok, mode} <- check_mode(Keyword.get(opts, :mode, :dry_run)),
          {:ok, account} <- fetch_account(opts),
          {:ok, policy} <- fetch_policy(opts),
-         {:ok, session} <- fetch_session(opts) do
+         {:ok, session} <- fetch_session(opts),
+         {:ok, credential} <- fetch_credential(opts) do
       {:ok,
        Map.merge(timeouts, %{
          journal: journal,
          clock: clock,
+         mode: mode,
          account: account,
          policy: policy,
-         session: session
+         session: session,
+         credential: credential
        })}
     end
   end
@@ -394,14 +429,17 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  # Pure: refuses a live spec before anything connects.
-  defp prepare_port(config),
-    do:
-      PortMCP.prepare(config.session,
-        mode: :dry_run,
-        call_timeout: max(config.review_timeout, config.place_timeout),
-        reconnect_ms: config.reconnect_ms
-      )
+  # Pure: refuses a live spec in dry run before anything connects.
+  defp prepare_port(config) do
+    PortMCP.prepare(session_spec(config.session, config.credential),
+      mode: config.mode,
+      call_timeout: max(config.review_timeout, config.place_timeout),
+      reconnect_ms: config.reconnect_ms
+    )
+  end
+
+  defp session_spec(session, nil), do: session
+  defp session_spec(session, %{credential: credential}), do: Session.spec(credential, session)
 
   # The claim lives in the journal's memory, so a journal restart drops it.
   # The executor stops with the journal; its supervisor restarts it, and the
@@ -420,11 +458,17 @@ defmodule Raxol.Broker.Executor do
       journal: config.journal,
       journal_ref: journal_ref,
       clock: config.clock,
+      mode: config.mode,
       account: config.account,
       policy: config.policy,
       review_timeout: config.review_timeout,
       place_timeout: config.place_timeout,
       key: :crypto.strong_rand_bytes(32),
+      session: config.session,
+      credential: config.credential,
+      refresh: nil,
+      refresh_timer: nil,
+      restart_port: false,
       client_spec: client_spec,
       port: nil,
       port_status: :connecting,
@@ -439,8 +483,7 @@ defmodule Raxol.Broker.Executor do
     }
   end
 
-  defp check_mode(:dry_run), do: :ok
-  defp check_mode(:armed), do: {:error, :not_armed}
+  defp check_mode(mode) when mode in [:dry_run, :live], do: {:ok, mode}
   defp check_mode(other), do: {:error, {:invalid_mode, other}}
 
   defp fetch_account(opts) do
@@ -457,10 +500,52 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
+  # A live session's spec may be empty: `Raxol.Broker.Session.spec/2` fills
+  # in Robinhood's URL.
   defp fetch_session(opts) do
-    case Keyword.get(opts, :session) do
-      spec when is_list(spec) and spec != [] -> {:ok, spec}
+    case {Keyword.get(opts, :session), Keyword.has_key?(opts, :credential)} do
+      {spec, _live} when is_list(spec) and spec != [] -> {:ok, spec}
+      {nil, true} -> {:ok, []}
       _ -> {:error, :session_required}
+    end
+  end
+
+  # The store reads a key through a provider module the caller chose, so the
+  # read runs in a task, never in this process.
+  defp fetch_credential(opts) do
+    case Keyword.fetch(opts, :credential) do
+      :error ->
+        {:ok, nil}
+
+      {:ok, credential_opts} when is_list(credential_opts) ->
+        store = Keyword.get(credential_opts, :store, [])
+
+        case in_task(fn -> CredentialStore.fetch(store) end, @store_timeout) do
+          {:ok, %Credential{} = credential} ->
+            {:ok,
+             %{
+               credential: credential,
+               store: store,
+               auth: Keyword.get(credential_opts, :auth, []),
+               skew: Keyword.get(credential_opts, :refresh_skew, @default_skew)
+             }}
+
+          {:error, reason} ->
+            {:error, {:no_credential, reason}}
+        end
+
+      {:ok, other} ->
+        {:error, {:invalid_credential, other}}
+    end
+  end
+
+  defp in_task(fun, timeout) do
+    task = Task.async(fun)
+
+    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, {:crashed, reason}}
+      nil -> {:error, :timeout}
     end
   end
 
@@ -517,7 +602,7 @@ defmodule Raxol.Broker.Executor do
   end
 
   @impl GenServer
-  def handle_continue(:connect, state), do: {:noreply, connect(state)}
+  def handle_continue(:connect, state), do: {:noreply, state |> schedule_refresh() |> connect()}
 
   @impl GenServer
   def handle_info({ref, result}, %{busy: %{ref: ref}} = state) do
@@ -530,11 +615,19 @@ defmodule Raxol.Broker.Executor do
     {:noreply, connected(%{state | connect: nil}, result)}
   end
 
+  def handle_info({ref, result}, %{refresh: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, refreshed(%{state | refresh: nil}, result)}
+  end
+
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{busy: %{ref: ref}} = state),
     do: review_done(state, {:error, {:review_crashed, reason}})
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{connect: %Task{ref: ref}} = state),
     do: {:noreply, connected(%{state | connect: nil}, {:error, {:connect_crashed, reason}})}
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{refresh: %Task{ref: ref}} = state),
+    do: {:noreply, refreshed(%{state | refresh: nil}, {:error, {:refresh_crashed, reason}})}
 
   # Queued callers get an exit from their call; the linked review task dies
   # with this process; the groups left open are closed by the next executor.
@@ -562,6 +655,9 @@ defmodule Raxol.Broker.Executor do
   def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
 
   def handle_info(:reconnect, %{port: nil} = state), do: {:noreply, connect(state)}
+
+  def handle_info(:refresh_due, state),
+    do: {:noreply, start_refresh(%{state | refresh_timer: nil})}
 
   # A `:drain` left over from an earlier turn can arrive while a review is
   # in flight; `review_done/2` sends a fresh one when it finishes.
@@ -644,10 +740,26 @@ defmodule Raxol.Broker.Executor do
     }
   end
 
+  # A 401 at connect means the token is stale: refresh it, and reconnect
+  # once the refresh lands.
   defp connected(%{port: port} = state, {:error, reason}) do
     if port, do: Port.stop(port)
-    port_failed(%{state | port: nil}, {:connect_failed, reason})
+    state = %{state | port: nil}
+
+    if state.credential != nil and unauthorized?(reason) do
+      Logger.warning("[Broker.Executor] the session's token was refused at connect; refreshing")
+      start_refresh(%{state | port_status: {:down, :unauthorized}})
+    else
+      port_failed(state, {:connect_failed, reason})
+    end
   end
+
+  defp unauthorized?({:http, 401}), do: true
+
+  defp unauthorized?(reason) when is_tuple(reason),
+    do: reason |> Tuple.to_list() |> Enum.any?(&unauthorized?/1)
+
+  defp unauthorized?(_reason), do: false
 
   defp port_failed(state, reason) do
     Logger.warning(
@@ -667,9 +779,95 @@ defmodule Raxol.Broker.Executor do
   @impl GenServer
   def format_status(status) do
     Map.new(status, fn
-      {:state, %{} = state} -> {:state, %{state | key: :redacted}}
-      other -> other
+      # `client_spec` and `session` carry the bearer header of a live session.
+      {:state, %{} = state} ->
+        {:state,
+         %{
+           state
+           | key: :redacted,
+             credential: state.credential && :redacted,
+             client_spec: :redacted,
+             session: :redacted
+         }}
+
+      other ->
+        other
     end)
+  end
+
+  # -- Credential ---------------------------------------------------------------
+
+  defp schedule_refresh(
+         %{credential: %{credential: %Credential{expires_at: %DateTime{}}}} = state
+       ) do
+    %{credential: credential, skew: skew} = state.credential
+    if state.refresh_timer, do: Process.cancel_timer(state.refresh_timer)
+
+    delay =
+      credential.expires_at
+      |> DateTime.add(-skew, :second)
+      |> DateTime.diff(DateTime.utc_now(), :millisecond)
+      |> max(0)
+      |> min(@max_timeout)
+
+    %{state | refresh_timer: Process.send_after(self(), :refresh_due, delay)}
+  end
+
+  defp schedule_refresh(state), do: state
+
+  # The refresh grant and the store run in a task: the store's key provider
+  # and the auth options are caller code.
+  defp start_refresh(%{refresh: %Task{}} = state), do: state
+  defp start_refresh(%{credential: nil} = state), do: state
+
+  defp start_refresh(%{credential: held} = state) do
+    task = Task.async(fn -> Session.refresh(held.credential, held.store, held.auth) end)
+    %{state | refresh: task}
+  end
+
+  defp refreshed(state, {:ok, credential}), do: use_credential(state, credential)
+
+  defp refreshed(state, {:unpersisted, credential, reason}) do
+    Logger.error(
+      "[Broker.Executor] refreshed, but the rotated credential could not be stored " <>
+        "(#{inspect(reason, structs: false)}); it is used until this executor stops"
+    )
+
+    use_credential(state, credential)
+  end
+
+  defp refreshed(state, {:error, reason}) do
+    Logger.warning(
+      "[Broker.Executor] token refresh failed (#{inspect(reason, structs: false)}); " <>
+        "retrying in #{@refresh_retry_ms} ms"
+    )
+
+    %{state | refresh_timer: Process.send_after(self(), :refresh_due, @refresh_retry_ms)}
+  end
+
+  defp use_credential(state, credential) do
+    state = %{state | credential: %{state.credential | credential: credential}}
+
+    case prepare_port(state) do
+      {:ok, client_spec} ->
+        %{state | client_spec: client_spec} |> schedule_refresh() |> restart_port()
+
+      {:error, reason} ->
+        Logger.error(
+          "[Broker.Executor] refreshed session refused: #{inspect(reason, structs: false)}"
+        )
+
+        state
+    end
+  end
+
+  # A review in flight finishes on the old session first.
+  defp restart_port(%{busy: %{}} = state), do: %{state | restart_port: true}
+
+  defp restart_port(state) do
+    if state.connect, do: Task.shutdown(state.connect, :brutal_kill)
+    if state.port, do: Port.stop(state.port)
+    connect(%{state | port: nil, connect: nil, restart_port: false, port_status: :connecting})
   end
 
   # -- Dispatch -----------------------------------------------------------------
@@ -700,6 +898,7 @@ defmodule Raxol.Broker.Executor do
   defp review_done(%{busy: pending} = state, result) do
     {:reply, reply, state} = reviewed(%{state | busy: nil}, pending, result)
     GenServer.reply(pending.from, reply)
+    state = if state.restart_port, do: restart_port(state), else: state
     {:noreply, drain_later(state)}
   end
 
@@ -753,18 +952,23 @@ defmodule Raxol.Broker.Executor do
   # -- Pipeline -----------------------------------------------------------------
 
   defp run_intent(state, intent, context) do
+    armed? = armed?(state, intent)
+
     with :ok <- port_up(state),
          :ok <- not_parked(state, intent),
          {:ok, nil} <- placed_before(state, intent),
          {:ok, _tool} <- Review.tool(intent),
          {:ok, context} <- fill(state, %{context | review_warnings: []}),
-         {:ok, group_id} <- open(state, intent, context) do
-      pre_review(state, intent, context, group_id)
+         {:ok, group_id} <- open(state, intent, context, armed?) do
+      pre_review(state, intent, context, group_id, armed?)
     else
       {:ok, group_id} when is_binary(group_id) -> {:reply, {:ok, :duplicate}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
+
+  # Every intent, cancels included, needs the latest mode record to say armed.
+  defp armed?(state, _intent), do: Mode.current(state.journal) == :armed
 
   defp port_up(%{port_status: :ready}), do: :ok
   defp port_up(_state), do: {:error, :port_not_ready}
@@ -779,16 +983,27 @@ defmodule Raxol.Broker.Executor do
   defp placed_before(state, intent),
     do: safe(fn -> Journal.placing_for_intent(intent.id, state.journal) end)
 
-  defp open(state, intent, context),
-    do: safe(fn -> Journal.open_group(intent, context, state.journal, mode: :dry_run) end)
+  defp open(state, intent, context, armed?) do
+    mode = if armed? and Mode.current(state.journal) == :armed, do: :armed, else: :dry_run
+    safe(fn -> Journal.open_group(intent, context, state.journal, mode: mode) end)
+  end
 
-  defp pre_review(state, intent, context, group_id) do
+  defp pre_review(state, intent, context, group_id, armed?) do
     verdict = Policy.evaluate(intent, context)
 
     case {append(state, group_id, {:verdict, :pre_review, verdict}), verdict} do
-      {{:error, reason}, _verdict} -> {:reply, {:error, reason}, state}
-      {:ok, {:deny, reason}} -> {:reply, {:deny, group_id, reason}, state}
-      {:ok, _allow_or_ask} -> review(state, intent, context, group_id)
+      {{:error, reason}, _verdict} ->
+        {:reply, {:error, reason}, state}
+
+      {:ok, {:deny, reason}} ->
+        {:reply, {:deny, group_id, reason}, state}
+
+      {:ok, _allow_or_ask} when not armed? ->
+        _ = close_group(state, group_id, :not_armed)
+        {:reply, {:error, :not_armed}, state}
+
+      {:ok, _allow_or_ask} ->
+        review(state, intent, context, group_id)
     end
   end
 
@@ -910,6 +1125,7 @@ defmodule Raxol.Broker.Executor do
 
   # The port can go down between review and here (its EXIT handled before
   # the review result): close the group without `placing`, send nothing.
+  # So can the mode: a disarm while the group was parked or in review.
   defp place(%{port_status: status, port: port} = state, _intent, group_id, _receipt, _approval)
        when status != :ready or is_nil(port) do
     _ = close_group(state, group_id, :port_not_ready)
@@ -917,6 +1133,17 @@ defmodule Raxol.Broker.Executor do
   end
 
   defp place(state, intent, group_id, receipt, customer_approval_required) do
+    if armed?(state, intent),
+      do: send_order(state, intent, group_id, receipt, customer_approval_required),
+      else: not_armed(state, group_id)
+  end
+
+  defp not_armed(state, group_id) do
+    _ = close_group(state, group_id, :not_armed)
+    {:reply, {:error, :not_armed}, state}
+  end
+
+  defp send_order(state, intent, group_id, receipt, customer_approval_required) do
     env = %{
       port: state.port,
       catalog: state.catalog,

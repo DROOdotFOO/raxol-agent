@@ -144,9 +144,10 @@ defmodule Raxol.Broker.Journal do
 
   ## Events
 
-  Records outside any group, written by any process with `append_event/3`
-  (no claim needed) and refused, like every other write, on a damaged
-  journal:
+  Records outside any group, each written only through the function named
+  for it (there is no generic event writer, so no caller can forge a record
+  of a type it was not given), with no claim needed, and refused, like every
+  other write, on a damaged journal:
 
     * `emit`: a strategy runner's intent, written before the runner hands it
       to the executor (`emit/3`). It stays pending (`pending_intents/2`)
@@ -155,6 +156,11 @@ defmodule Raxol.Broker.Journal do
       whether it was already placed.
     * `strategy`: a strategy added or stopped (`put_strategy/2`,
       `drop_strategy/2`); `strategies/1` lists the ones still added.
+    * `mode`: `armed` (`record_armed/2`) or `disarmed` (`record_disarmed/2`).
+      `mode/1` reads the latest; with none the broker is disarmed. Only
+      `Raxol.Broker.Mode.arm/1`, after its checks, may write an `armed`
+      record: `Raxol.Broker.Executor.StructureTest` fails if any other
+      module references `record_armed/2`. Disarming is open to anyone.
   """
 
   use GenServer
@@ -167,7 +173,7 @@ defmodule Raxol.Broker.Journal do
   alias Raxol.Broker.Journal.{Codec, Groups}
   alias Raxol.Broker.Policy.Context
 
-  @event_types ~w(emit dispatch strategy)
+  @event_types ~w(emit dispatch strategy mode)
   @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
@@ -455,32 +461,22 @@ defmodule Raxol.Broker.Journal do
 
   # -- Events -------------------------------------------------------------------
 
-  @doc """
-  Write one event record (see "Events"): `type` is one of the event types
-  and `fields` a map, written through `Raxol.Broker.Journal.Codec.term/1`.
-  An unknown type is `{:error, {:invalid_event, type}}`.
-  """
-  @spec append_event(atom(), map(), server()) :: :ok | {:error, term()}
-  def append_event(type, fields, server \\ __MODULE__) when is_atom(type) and is_map(fields) do
-    name = Atom.to_string(type)
-
-    if name in @event_types,
-      do: GenServer.call(server, {:event, name, Codec.term(fields)}, :infinity),
-      else: {:error, {:invalid_event, type}}
-  end
+  # The only event writer. Each public writer below names its own type.
+  defp event(type, fields, server) when type in @event_types,
+    do: GenServer.call(server, {:event, type, Codec.term(fields)}, :infinity)
 
   @doc "Record that strategy `strategy_id` emitted `intent` (see \"Events\")."
   @spec emit(Intent.t(), String.t(), server()) :: :ok | {:error, term()}
   def emit(%Intent{} = intent, strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
     fields = %{"strategy_id" => strategy_id, "intent" => Codec.encode_intent(intent)}
-    append_event(:emit, fields, server)
+    event("emit", fields, server)
   end
 
   @doc "Record that the emitted intent `intent_id` reached the executor, and how it ended."
   @spec dispatched(String.t(), String.t(), server()) :: :ok | {:error, term()}
   def dispatched(intent_id, outcome, server \\ __MODULE__)
       when is_binary(intent_id) and is_binary(outcome),
-      do: append_event(:dispatch, %{"intent_id" => intent_id, "outcome" => outcome}, server)
+      do: event("dispatch", %{"intent_id" => intent_id, "outcome" => outcome}, server)
 
   @doc "Intents `strategy_id` emitted that no `dispatch` record names yet, oldest first."
   @spec pending_intents(String.t(), server()) :: {:ok, [Intent.t()]} | {:error, term()}
@@ -495,12 +491,12 @@ defmodule Raxol.Broker.Journal do
   @doc "Record a strategy as added: `spec` holds a string `\"id\"`."
   @spec put_strategy(map(), server()) :: :ok | {:error, term()}
   def put_strategy(%{"id" => id} = spec, server \\ __MODULE__) when is_binary(id),
-    do: append_event(:strategy, %{"action" => "add", "strategy_id" => id, "spec" => spec}, server)
+    do: event("strategy", %{"action" => "add", "strategy_id" => id, "spec" => spec}, server)
 
   @doc "Record the strategy `id` as stopped."
   @spec drop_strategy(String.t(), server()) :: :ok | {:error, term()}
   def drop_strategy(id, server \\ __MODULE__) when is_binary(id),
-    do: append_event(:strategy, %{"action" => "stop", "strategy_id" => id}, server)
+    do: event("strategy", %{"action" => "stop", "strategy_id" => id}, server)
 
   @doc "Specs of the strategies added and not stopped, in the order they were added."
   @spec strategies(server()) :: {:ok, [map()]} | {:error, term()}
@@ -523,6 +519,36 @@ defmodule Raxol.Broker.Journal do
     |> case do
       {:ok, values} -> {:ok, Enum.reverse(values)}
       error -> error
+    end
+  end
+
+  @doc """
+  Record the broker as armed, with `fields` (who, what was checked). Only
+  `Raxol.Broker.Mode.arm/1` calls this, after its checks; see "Events".
+  """
+  @spec record_armed(map(), server()) :: :ok | {:error, term()}
+  def record_armed(fields, server \\ __MODULE__) when is_map(fields),
+    do: event("mode", Map.put(fields, "mode", "armed"), server)
+
+  @doc "Record the broker as disarmed, with `fields` (who, why). Open to any caller."
+  @spec record_disarmed(map(), server()) :: :ok | {:error, term()}
+  def record_disarmed(fields, server \\ __MODULE__) when is_map(fields),
+    do: event("mode", Map.put(fields, "mode", "disarmed"), server)
+
+  @doc """
+  The latest mode record: `{:ok, :armed | :disarmed, record}`, or
+  `{:ok, :disarmed, nil}` when there is none.
+  """
+  @spec mode(server()) :: {:ok, :armed | :disarmed, map() | nil} | {:error, term()}
+  def mode(server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        case :ets.lookup(server, :mode) do
+          [{:mode, %{"mode" => "armed"} = record}] -> {:ok, :armed, record}
+          [{:mode, record}] -> {:ok, :disarmed, record}
+          [] -> {:ok, :disarmed, nil}
+        end
+      end)
     end
   end
 
@@ -946,6 +972,9 @@ defmodule Raxol.Broker.Journal do
       _malformed -> true
     end
   end
+
+  defp index_event(table, %{"kind" => "broker", "type" => "mode"} = record),
+    do: :ets.insert(table, {:mode, record})
 
   defp index_event(_table, _record), do: true
 

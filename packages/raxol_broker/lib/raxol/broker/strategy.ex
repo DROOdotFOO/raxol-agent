@@ -68,4 +68,10 @@ defmodule Raxol.Broker.Strategy do
   end
 
   def start(other), do: {:error, {:invalid_spec, other}}
+
+  @doc "The symbols a spec's strategy wants quotes for."
+  @spec symbols(spec()) :: {:ok, [String.t()]} | {:error, term()}
+  def symbols(spec) do
+    with {:ok, module, model} <- start(spec), do: {:ok, module.symbols(model)}
+  end
 end
