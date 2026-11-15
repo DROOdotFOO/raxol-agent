@@ -33,6 +33,9 @@ defmodule RaxolBroker.MixProject do
       raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", []),
       runtime_dep(:raxol_journal, "~> 2.8", "packages/raxol_journal"),
       runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp"),
+      # `Raxol.Broker.Dashboard` is a TEA app: the runtime, LiveView and SSH
+      # surfaces it mounts on.
+      runtime_dep(:raxol, "~> 2.8", "."),
       # Floor: below 3.1.2, `Decimal.round/3` allocates in proportion to
       # `places` (CVE-2026-97853).
       {:decimal, "~> 3.1 and >= 3.1.2"},
