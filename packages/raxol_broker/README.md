@@ -399,7 +399,9 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   token after any review in flight. A refresh Robinhood refuses disarms the
   broker (`reauth_required`): sign in again with `mix raxol.broker.connect`
   and the executor takes the new credential over, but orders wait for a
-  fresh `mix raxol.broker.arm`.
+  fresh `mix raxol.broker.arm`. Refused refreshes continue retrying, but
+  write no repeated `reauth_required` disarm while it is already the latest
+  mode record.
 
 Only equity orders (`review_equity_order`, `place_equity_order`) and equity
 cancels are mapped until the generated tool adapters land; options and

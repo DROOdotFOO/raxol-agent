@@ -107,6 +107,31 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
 
     assert {:ok, :disarmed, %{"reason" => "reauth_required"}} = Journal.mode(ctx.journal)
 
+    for _retry <- 1..2 do
+      send(executor, :refresh_due)
+
+      assert_receive {:trace, ^executor, :receive, {_ref, {:error, {:token_rejected, 400, _}}}},
+                     5_000
+
+      :sys.get_state(executor)
+    end
+
+    reauth_disarms = fn ->
+      for %{"type" => "mode", "reason" => "reauth_required"} = record <- Broker.records(ctx.path),
+          do: record
+    end
+
+    assert length(reauth_disarms.()) == 1
+
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
+    send(executor, :refresh_due)
+
+    assert_receive {:trace, ^executor, :receive, {_ref, {:error, {:token_rejected, 400, _}}}},
+                   5_000
+
+    :sys.get_state(executor)
+    assert length(reauth_disarms.()) == 2
+
     # Signing in again stores a new credential; the next refresh takes it over.
     signed_in = %Credential{
       provider: :robinhood,

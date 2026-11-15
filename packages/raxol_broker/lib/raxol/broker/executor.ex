@@ -1008,7 +1008,10 @@ defmodule Raxol.Broker.Executor do
           "(#{inspect(reason, structs: false)}); disarmed until a new sign-in and arm"
       )
 
-      _ = Mode.disarm("reauth_required", journal: state.journal, by: "executor")
+      case Journal.mode(state.journal) do
+        {:ok, :disarmed, %{"reason" => "reauth_required"}} -> :ok
+        _other -> Mode.disarm("reauth_required", journal: state.journal, by: "executor")
+      end
     else
       Logger.warning(
         "[Broker.Executor] token refresh failed (#{inspect(reason, structs: false)}); " <>
@@ -1212,7 +1215,13 @@ defmodule Raxol.Broker.Executor do
          {:ok, nil} <- placed_before(state, intent),
          {:ok, _tool} <- Review.tool(intent) do
       if armed?(state, intent) do
-        context_stage(state, :context, %{intent: intent}, %{context | review_warnings: []}, intent)
+        context_stage(
+          state,
+          :context,
+          %{intent: intent},
+          %{context | review_warnings: []},
+          intent
+        )
       else
         with {:ok, group_id} <- open(state, intent, %Context{policy: state.policy}, false) do
           not_armed(state, group_id)
@@ -1680,6 +1689,7 @@ defmodule Raxol.Broker.Executor do
   defp halt_orders_listed(state, bound, orders, approvals) do
     with :ok <- port_up(state) do
       kill = Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false)
+
       intents =
         halt_intents(orders, &Intent.cancel(&1, provenance: :human, id: "cancel-#{&1}-#{kill}")) ++
           halt_intents(
