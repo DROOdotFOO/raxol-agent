@@ -214,7 +214,10 @@ defmodule Raxol.Broker.Executor do
   token is refreshed `refresh_skew` seconds (default 300) before it
   expires, and on a 401 at connect, through `Raxol.Broker.Session.refresh/3`
   in a task; the port then reconnects with the new bearer, after any review
-  in flight. A failed refresh is logged and retried after a minute.
+  in flight. A failed refresh is logged and retried after a minute. One
+  Robinhood refuses (`invalid_grant`, or no refresh token) also disarms the
+  broker (reason `reauth_required`): signing in again stores a credential
+  the next retry takes over, and orders need a fresh arm.
 
   ## Options
 
@@ -971,14 +974,30 @@ defmodule Raxol.Broker.Executor do
     use_credential(state, credential)
   end
 
+  # Robinhood refusing the refresh token means the grant is gone: disarm,
+  # so signing in again needs a fresh arm. The refresh keeps retrying, and
+  # `Session.refresh/3` takes over the credential a new sign-in stores.
   defp refreshed(state, {:error, reason}) do
-    Logger.warning(
-      "[Broker.Executor] token refresh failed (#{inspect(reason, structs: false)}); " <>
-        "retrying in #{@refresh_retry_ms} ms"
-    )
+    if rejected?(reason) do
+      Logger.error(
+        "[Broker.Executor] Robinhood refused the refresh token " <>
+          "(#{inspect(reason, structs: false)}); disarmed until a new sign-in and arm"
+      )
+
+      _ = Mode.disarm("reauth_required", journal: state.journal, by: "executor")
+    else
+      Logger.warning(
+        "[Broker.Executor] token refresh failed (#{inspect(reason, structs: false)}); " <>
+          "retrying in #{@refresh_retry_ms} ms"
+      )
+    end
 
     %{state | refresh_timer: Process.send_after(self(), :refresh_due, @refresh_retry_ms)}
   end
+
+  defp rejected?({:token_rejected, status, _code}) when status in [400, 401], do: true
+  defp rejected?(:no_refresh_token), do: true
+  defp rejected?(_transient), do: false
 
   defp use_credential(state, credential) do
     state = %{state | credential: %{state.credential | credential: credential}}

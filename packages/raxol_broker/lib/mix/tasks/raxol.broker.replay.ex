@@ -2,7 +2,7 @@ defmodule Mix.Tasks.Raxol.Broker.Replay do
   @moduledoc """
   Prints the broker journal's decision trace for one day.
 
-      mix raxol.broker.replay --date 2026-10-02 [--journal PATH]
+      mix raxol.broker.replay --date 2026-10-02 [--journal PATH] [--unredacted]
 
   For every decision group opened that day (UTC), in journal order: the
   intent, the policy context, each rule's verdict for each policy pass, the
@@ -15,6 +15,9 @@ defmodule Mix.Tasks.Raxol.Broker.Replay do
   It is read without taking the writer lock, so this works while the broker
   runs. A journal whose hash chain does not verify is refused, with the
   offset of the first broken record.
+
+  Account numbers are printed as `[account]` so the output can be shared
+  (see `Raxol.Broker.Journal.Replay`); `--unredacted` prints them.
   """
 
   use Mix.Task
@@ -23,8 +26,8 @@ defmodule Mix.Tasks.Raxol.Broker.Replay do
   alias Raxol.Broker.Journal.Replay
 
   @shortdoc "Prints the broker decision trace for a day"
-  @switches [date: :string, journal: :string]
-  @usage "usage: mix raxol.broker.replay --date YYYY-MM-DD [--journal PATH]"
+  @switches [date: :string, journal: :string, unredacted: :boolean]
+  @usage "usage: mix raxol.broker.replay --date YYYY-MM-DD [--journal PATH] [--unredacted]"
 
   @impl Mix.Task
   def run(args) do
@@ -38,7 +41,7 @@ defmodule Mix.Tasks.Raxol.Broker.Replay do
         Mix.raise("no journal path: set --journal or $HOME")
 
     path
-    |> Replay.run(date)
+    |> Replay.run(date, redact: not Keyword.get(opts, :unredacted, false))
     |> print!(path)
   end
 

@@ -92,7 +92,8 @@ defmodule RaxolBroker.MixProject do
   end
 
   defp description do
-    "Fail-closed brokerage policy, encrypted Robinhood credentials and a read-only MCP session."
+    "Guarded Robinhood order execution for Raxol: fail-closed policy, mandatory review, " <>
+      "explicit arming, a hash-chained journal and a kill switch."
   end
 
   defp package do

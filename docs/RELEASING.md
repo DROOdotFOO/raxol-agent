@@ -145,3 +145,47 @@ git status --short      # must print nothing
   `mix compile` resolves `raxol_agent_client_protocol` 0.1.0 from Hex, and
   `mix run --no-start -e 'IO.inspect(Code.ensure_loaded?(Raxol.Agent.ClientProtocol.StdioAgent))'`
   prints `true`.
+
+# Tagging raxol_broker
+
+`raxol_broker` is released as a tagged commit, not on Hex: the tag pins the
+code and the tool capture (`packages/raxol_broker/priv/robinhood/tools_list.json`)
+it was tested against. The executor refuses any order or review tool whose
+schema differs from that capture, so a tag records exactly what may trade.
+
+## 1. Before tagging
+
+- The release pull request is merged; check out `origin/main` as in
+  "Check out the release commit" above.
+- The capture is current. With the operator's Robinhood sign-in, run
+  `mix raxol.broker.connect --account <account>` from `packages/raxol_broker`;
+  it must print `no drift from the capture`. Otherwise recapture with
+  `mix raxol.broker.capture_tools`, regenerate with
+  `mix raxol.broker.gen.tools`, review the diff and merge it first.
+- In `packages/raxol_broker/CHANGELOG.md`, replace `Unreleased` in the
+  version heading with the date, in the release pull request.
+
+## 2. The gate
+
+From `packages/raxol_broker`, with the toolchain above and `MIX_ENV=test`:
+
+```sh
+mix deps.get --check-locked
+mix compile --warnings-as-errors
+mix test --exclude skip_on_ci
+mix format --check-formatted
+```
+
+## 3. Tag
+
+With `<version>` the `@version` in `packages/raxol_broker/mix.exs` and
+`<captured>` the capture's `provenance.captured`:
+
+```sh
+git tag -a raxol_broker-v<version> -m "raxol_broker <version>, tool capture <captured>"
+test "$(git rev-parse HEAD)" = "$(git rev-parse 'raxol_broker-v<version>^{commit}')"
+git push origin raxol_broker-v<version>
+```
+
+The docs' source links (`source_ref` in `mix.exs`) point at this tag. No
+`mix hex.publish` runs for `raxol_broker`.

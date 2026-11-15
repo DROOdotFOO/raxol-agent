@@ -1,9 +1,12 @@
 # Raxol Broker
 
-Fail-closed brokerage policy parsing, initialization and order evaluation, a
-hash-chained decision journal, and a read-only Robinhood MCP session, for
-Raxol. The package is pre-alpha. This release does not include order
-execution, arming, or review.
+A guarded order path from Raxol to Robinhood's agent MCP server: written
+limits checked in code before and after Robinhood's own review, explicit
+arming, a hash-chained journal of every decision, strategy runners, ASK
+approvals in the terminal, LiveView and SSH, and kill and dead-man
+switches. Equity orders only. The package is pre-alpha and has not yet
+traded real money; a read-only session and the policy tooling work on
+their own.
 
 ## Policy
 
@@ -326,7 +329,10 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   admits Robinhood; with `credential: [store: ..., auth: ...]` the session
   carries the stored credential's bearer, is refreshed five minutes before
   the token expires and on a 401 at connect, and reconnects with the new
-  token after any review in flight.
+  token after any review in flight. A refresh Robinhood refuses disarms the
+  broker (`reauth_required`): sign in again with `mix raxol.broker.connect`
+  and the executor takes the new credential over, but orders wait for a
+  fresh `mix raxol.broker.arm`.
 
 Only equity orders (`review_equity_order`, `place_equity_order`) and equity
 cancels are mapped until the generated tool adapters land; options and
@@ -606,7 +612,7 @@ the chain exists so history cannot be edited. To recover:
 ### Replay
 
 ```sh
-mix raxol.broker.replay --date 2026-10-02 [--journal PATH]
+mix raxol.broker.replay --date 2026-10-02 [--journal PATH] [--unredacted]
 ```
 
 Prints every group opened that day (UTC) in journal order: intent, context,
@@ -615,7 +621,9 @@ and outcome. Rules before a denying rule show `pass` (they allowed or asked)
 and rules after it `not run`, because the policy stops at the first DENY.
 Control characters in recorded text are printed escaped, never raw. The task
 reads without taking the writer lock, so it works while the broker runs, and
-refuses a journal whose chain does not verify.
+refuses a journal whose chain does not verify. Account numbers, wherever
+they appear in recorded responses, print as `[account]` so a replay can be
+shared; `--unredacted` prints them.
 
 ## Fake server
 

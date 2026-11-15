@@ -79,6 +79,53 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
     assert {:ok, %{status: :placed}} = place!(executor, "live-b")
   end
 
+  test "a refused refresh disarms; a new sign-in reconnects, and orders wait for a fresh arm",
+       ctx do
+    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    auth = AuthServer.start(refresh_status: 400)
+    Fake.accept(ctx.fake, [ctx.refreshed["access_token"]])
+    Fake.inject(ctx.fake, [{"initialize", :hold}])
+
+    executor =
+      start_supervised!(
+        {Executor,
+         journal: ctx.journal,
+         session: Fake.session(ctx.fake),
+         account_number: "FAKE-0001",
+         policy: Broker.policy(),
+         mode: :live,
+         credential: [store: ctx.store, auth: [http_fn: AuthServer.http_fn(auth)]]}
+      )
+
+    :erlang.trace(executor, true, [:receive])
+    Fake.release(ctx.fake)
+
+    assert_receive {:trace, ^executor, :receive, {_ref, {:error, {:token_rejected, 400, _}}}},
+                   5_000
+
+    _ = :sys.get_state(executor)
+
+    assert {:ok, :disarmed, %{"reason" => "reauth_required"}} = Journal.mode(ctx.journal)
+
+    # Signing in again stores a new credential; the next refresh takes it over.
+    signed_in = %Credential{
+      provider: :robinhood,
+      client_id: "c",
+      access_token: "signed-in-again",
+      refresh_token: "r2",
+      expires_at: DateTime.add(DateTime.utc_now(), 3_600, :second)
+    }
+
+    :ok = CredentialStore.put(signed_in, ctx.store)
+    Fake.accept(ctx.fake, ["signed-in-again"])
+    send(executor, :refresh_due)
+    assert :ok = Executor.await_port(executor, 5_000)
+
+    assert place!(executor, "after-sign-in") == {:error, :not_armed}
+    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    assert {:ok, %{status: :placed}} = place!(executor, "after-arm")
+  end
+
   test "a refresh takes over a newer credential another session stored", ctx do
     {:ok, held} = CredentialStore.fetch(ctx.store)
 
