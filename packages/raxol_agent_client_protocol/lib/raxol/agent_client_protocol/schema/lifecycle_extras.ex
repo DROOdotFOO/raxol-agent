@@ -25,8 +25,7 @@ defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras do
   `priv/schema-oracle/v1/schema.json`'s `LogoutRequest` def carries no
   properties beyond the universal `_meta` envelope. The `logout` row in
   `Raxol.AgentClientProtocol.MethodTable` declares `params: nil` for exactly
-  this reason (see the MethodTable design doc's D1-6 fix and its own
-  `logout` example) — the Router decodes `nil` straight through and the
+  this reason — the Router decodes `nil` straight through and the
   generated callback drops to arity 1 (`ctx` only, no params argument), so
   there is no `from_json/1` call site that would ever receive a
   `LogoutRequest` struct. `LogoutResponse` IS ported below because
@@ -304,7 +303,7 @@ defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.CancelRequestNotifica
   (schema.json `CancelRequestNotification`); not a port of any upstream
   f1729 module (f1729 has no `$/cancel_request` support).
 
-  Per `MethodTable`'s D1-2 fix, this struct exists for `MethodTable.rows/0`
+  This struct exists for `MethodTable.rows/0`
   completeness and for whichever layer (`Connection`) pre-filters this wire
   method before `Router.decode/4` — `Router` itself never generates a
   decode clause for this `layer: :protocol` row.

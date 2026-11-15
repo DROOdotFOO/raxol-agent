@@ -13,8 +13,8 @@ defmodule Raxol.AgentClientProtocol.Handler.Codegen do
   # via the equivalent (and, per `MethodTable` invariant 4, provably
   # identical) `callback != nil` predicate: `layer in [:protocol,
   # :session_control]` rows (`$/cancel_request`, `session/cancel`) have no
-  # app callback and never reach a handler module (connection doc §6.0,
-  # IC-5) -- there is nothing for `Agent`/`Client` to generate for them.
+  # app callback and never reach a handler module -- there is nothing for
+  # `Agent`/`Client` to generate for them.
 
   alias Raxol.AgentClientProtocol.MethodTable
 
@@ -27,7 +27,7 @@ defmodule Raxol.AgentClientProtocol.Handler.Codegen do
   @doc """
   `{callback_atom, arity}` pairs for `side`, in table order -- the
   `defoverridable` list `__using__/1` needs. Arity 1 (ctx only) for
-  `params: nil` rows (D1-6: e.g. `logout`), arity 2 (`params, ctx`)
+  `params: nil` rows (e.g. `logout`), arity 2 (`params, ctx`)
   otherwise.
   """
   @spec callback_arities(:agent | :client) :: [{atom(), arity()}]
@@ -134,8 +134,7 @@ defmodule Raxol.AgentClientProtocol.Agent do
   serves `session/prompt` turns.
 
   This is a **thin ergonomic layer** over `Raxol.AgentClientProtocol.Connection`
-  (design doc `scratchpad/specs/acp-connection-design.md`) and
-  `Raxol.AgentClientProtocol.Session` (`scratchpad/specs/acp-supervision-design.md`):
+  and `Raxol.AgentClientProtocol.Session`:
   it only generates the callback surface and wires the supervision tree.
   Protocol correlation, cancellation, permission fan-out, and turn/streaming
   semantics live entirely in those two modules -- nothing here re-implements
@@ -146,22 +145,22 @@ defmodule Raxol.AgentClientProtocol.Agent do
   One `@callback` per `Raxol.AgentClientProtocol.MethodTable.rows_for_side(:agent)`
   row that carries an app-level callback (`layer: :app` -- everything except
   `session/cancel`, which is Connection-routed session control with no
-  handler callback at all, connection doc §6.0). Naming and arity are
+  handler callback at all). Naming and arity are
   generated straight from the table, not hand-maintained:
 
     * `params: nil` rows (currently only `logout`) get callback arity 1:
-      `callback(ctx)` (D1-6).
+      `callback(ctx)`.
     * every other row gets arity 2: `callback(params, ctx)` for requests,
       `callback(notification, ctx)` for notifications.
 
-  `ctx` is `Raxol.AgentClientProtocol.Connection.Ctx.t()` (IC-2): read-only
+  `ctx` is `Raxol.AgentClientProtocol.Connection.Ctx.t()`: read-only
   per dispatch, carries `conn` (the `Connection` pid, for
   `Connection.request/async_request/notify/reply/delegate_reply`),
   `handler_state` (produced once by `c:init/1`), `reply_ref`, `rx_seq`,
   `session_sup`, `task_sup`.
 
   A request callback returns `{:ok, result_struct}`, `{:error, %Error{}}`,
-  or `:deferred` (legal only after `Connection.delegate_reply/3` -- IC-4; a
+  or `:deferred` (legal only after `Connection.delegate_reply/3`; a
   `:deferred` return without a prior delegation is a contract breach the
   Connection turns into `-32603`). A notification callback's return value is
   always ignored (`Router.dispatch/4`).
@@ -204,9 +203,9 @@ defmodule Raxol.AgentClientProtocol.Agent do
 
       {:ok, sup} = Raxol.AgentClientProtocol.Agent.start_link(MyAgent, transport: {mod, handle})
 
-  ## Library-mode wiring (IC-8, supervision doc §1.2/§1.4)
+  ## Library-mode wiring
 
-  `start_link/2` and `child_spec/1` build exactly the pinned subtree:
+  `start_link/2` and `child_spec/1` build exactly this subtree:
 
       ConnectionSupervisor          Supervisor, :one_for_all,
       │                             auto_shutdown: :any_significant
@@ -215,18 +214,13 @@ defmodule Raxol.AgentClientProtocol.Agent do
       └── Connection                restart: :temporary, significant: true
 
   `Connection` resolves its `task_sup`/`session_sup` siblings via
-  `Supervisor.which_children/1` in `handle_continue/2` (never in `init/1` --
-  IC-8), so this layer does not need to name or pre-register them; it only
+  `Supervisor.which_children/1` in `handle_continue/2` (never in `init/1`),
+  so this layer does not need to name or pre-register them; it only
   needs to hand `Connection` the `ConnectionSupervisor`'s own pid as
   `parent_sup`, which the nested `ConnectionSupervisor.init/1` callback
   captures via `self()` (that callback body runs *in* the supervisor
   process, before any child starts -- the standard OTP way to hand a
   supervisor's own pid to a child it is about to start).
-
-  This module does not assume `Raxol.AgentClientProtocol`'s
-  `child_spec/1` (the doc's generic, role-parameterized §1.4 convenience,
-  not yet implemented) exists; when it lands it can delegate here (or vice
-  versa) without changing this layer's contract.
   """
 
   require Raxol.AgentClientProtocol.Handler.Codegen
@@ -241,7 +235,7 @@ defmodule Raxol.AgentClientProtocol.Agent do
   # MUST recompile when the table source changes. See `MethodTable.depend_on_source/0`.
   MethodTable.depend_on_source()
 
-  @typedoc "Per-dispatch context (IC-2). See `Raxol.AgentClientProtocol.Connection.Ctx`."
+  @typedoc "Per-dispatch context. See `Raxol.AgentClientProtocol.Connection.Ctx`."
   @type ctx :: Connection.Ctx.t()
 
   @doc """
@@ -249,7 +243,7 @@ defmodule Raxol.AgentClientProtocol.Agent do
   passed as `handler_arg:` to `start_link/2` / `child_spec/1`). Called once,
   at `Connection` boot; the result is threaded read-only through every
   dispatch as `ctx.handler_state` -- handlers run as concurrent `Task`s, so
-  it is never mutated after init (connection doc §4.5). Default: `{:ok,
+  it is never mutated after init. Default: `{:ok,
   handler_arg}`.
   """
   @callback init(handler_arg :: term()) ::
@@ -307,11 +301,11 @@ defmodule Raxol.AgentClientProtocol.Agent do
     end
   end
 
-  # -- Library-mode wiring (IC-8 / supervision doc §1.2, §1.4) --------------
+  # -- Library-mode wiring ---------------------------------------------------
 
   defmodule ConnectionSupervisor do
     @moduledoc false
-    # The IC-8 §1.2 subtree, agent role. Infrastructure children (#1
+    # The per-connection subtree, agent role. Infrastructure children (#1
     # Task.Supervisor, #2 Session.Supervisor) come straight from
     # `Session.Supervisor.child_specs/1` -- the sibling module that owns
     # that wiring convention (its own moduledoc pins the `:acp_task_supervisor`
@@ -386,7 +380,7 @@ defmodule Raxol.AgentClientProtocol.Agent do
       start: {ConnectionSupervisor, :start_link, [{handler, handler_arg, transport}, sup_opts]},
       type: :supervisor,
       # One-shot by design: the subtree `auto_shutdown`s on a significant
-      # child's exit and is never restarted in place (§1.1) — connection
+      # child's exit and is never restarted in place — connection
       # recovery is a fresh reattach against the durable journal, not a
       # supervisor restart. Embedders may override (`%{spec | restart: ...}`).
       restart: :temporary
@@ -398,7 +392,7 @@ defmodule Raxol.AgentClientProtocol.Agent do
 
   Returns the `ConnectionSupervisor`'s `Supervisor.on_start()` result --
   link to (or monitor) the returned pid to observe the whole subtree's
-  lifecycle. Per the supervision doc §1.1, a `Connection`/`Session` crash
+  lifecycle. A `Connection`/`Session` crash
   is never silently swallowed: it tears the subtree down
   (`auto_shutdown: :any_significant`), it does not restart in place.
 
@@ -420,7 +414,7 @@ defmodule Raxol.AgentClientProtocol.Agent do
   supported way to reach the pid `Connection.request/4`, `async_request/6`,
   and `notify/3` need, since `start_link/2`/`child_spec/1` deliberately
   return/register the `ConnectionSupervisor`, not the `Connection` child
-  itself (IC-8 §1.2: the supervisor is the stable handle across the
+  itself (the supervisor is the stable handle across the
   child's `:temporary` restart policy).
 
   Getting `sup`:

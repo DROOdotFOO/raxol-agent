@@ -27,7 +27,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Framer do
 
   ## Oversized frames
 
-  `:max_frame_bytes` (default `#{67_108_864}` = 64 MiB) bounds how much
+  `:max_frame_bytes` (default `#{16_777_216}` = 16 MiB) bounds how much
   unterminated data this module will buffer while waiting for the next
   `\\n`. A line whose length crosses that bound yields
   `{:error, {:frame_too_large, size}}` in the returned list, in the
@@ -49,7 +49,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Framer do
       # frames == ["{\\"b\\":2}"]
   """
 
-  @default_max_frame_bytes 67_108_864
+  @default_max_frame_bytes 16_777_216
 
   @enforce_keys [:max_frame_bytes]
   defstruct buffer: "", max_frame_bytes: @default_max_frame_bytes, skipping: false
@@ -73,7 +73,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Framer do
 
     * `:max_frame_bytes` — maximum bytes buffered for a single
       unterminated line before it is reported as oversized (see
-      moduledoc). Defaults to #{@default_max_frame_bytes} (64 MiB).
+      moduledoc). Defaults to #{@default_max_frame_bytes} (16 MiB).
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do

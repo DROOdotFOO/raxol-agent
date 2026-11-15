@@ -29,7 +29,7 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
 
   ## Adding an event
 
-  `test/telemetry_registry_test.exs` parses `lib/` for `[:raxol, ...]` event
+  The package's test suite parses `lib/` for `[:raxol, ...]` event
   literals and fails if any is missing from `events/0` (or if `events/0` claims
   an event no source file mentions). A new event therefore cannot land without
   someone classifying it here, and the one-line WHY comment on each row below is
@@ -61,7 +61,8 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
     # an obligation it already consumed.
     [:raxol, :acp, :dup_reply] => :invariant,
     # A peer reusing an id that is still in flight. Purely a peer's framing
-    # mistake; Inv-14 drives it deliberately.
+    # mistake; the duplicate in-flight id test in `test/connection_test.exs`
+    # drives it deliberately.
     [:raxol, :acp, :duplicate_inflight_id] => :peer,
     # A caller (the agent implementation using this library) tried to stream an
     # empty content chunk. User-side API misuse, rejected at the seam.
@@ -96,8 +97,8 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
     # failed to decode. Peer conformance.
     [:raxol, :acp, :unknown_notification] => :peer,
     # A turn completed normally for a non-empty prompt having posted zero
-    # `session/update` notifications (ADR-0030's delivery contract, cleanroom
-    # spec 3.3). Inside our own suite the turn runner IS us, so this can only
+    # `session/update` notifications (ADR-0030's delivery contract). Inside
+    # our own suite the turn runner IS us, so this can only
     # fire when our session/turn/delivery plumbing swallowed the stream -- the
     # exact bug that shipped undetected and the reason this registry exists.
     # A test that legitimately drives a no-update turn declares it with

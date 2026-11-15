@@ -227,13 +227,14 @@ PROBE_PROMPT=increment scripts/acp_probe.py \
 A `__NON_JSON_STDOUT__` entry in the transcript means something wrote non-JSON
 to the wire before a frame, which a strict NDJSON client would reject.
 
-### A source-build feature
+### Which builds have it
 
-`raxol_agent_client_protocol` is a path dependency of `raxol_agent`, so a Hex
-install of `raxol_agent` is compiled without
-`Raxol.Agent.ClientProtocol.StdioAgent` and has no ACP surface; adding the
-dependency downstream does not enable it. The packaged CLI (npm or the install
-script) is built from source and has it. `raxol doctor` reports which you have.
+`raxol_agent` 3.1.0 and later require `raxol_agent_client_protocol`, from Hex
+as from source, so every build of them compiles
+`Raxol.Agent.ClientProtocol.StdioAgent`. `raxol_agent` 3.0.0 from Hex was
+compiled without it and has no ACP surface; adding the dependency downstream
+does not enable it. The packaged CLI (npm or the install script) is built from
+source and has it. `raxol doctor` reports which you have.
 
 ## Durable resumable sessions
 

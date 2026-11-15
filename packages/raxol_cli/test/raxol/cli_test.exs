@@ -67,7 +67,7 @@ defmodule Raxol.CLITest do
     end
 
     # The packaged binary must not merely accept `acp` -- the surface behind it
-    # is compile-gated on the (unpublished) ACP package, so a build that ships
+    # is compile-gated on the ACP package, so a build that ships
     # the subcommand without the agent would fail only at runtime, on the wire.
     #
     # This also catches a stale _build: adding the ACP dep does not change

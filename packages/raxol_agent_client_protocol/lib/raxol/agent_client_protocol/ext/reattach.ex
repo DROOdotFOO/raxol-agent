@@ -1,37 +1,37 @@
 defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   @moduledoc """
-  The register-before-`h` attach seam (`acp-reattach-design.md` §4, the frozen
-  `harness-bus-protocol.md` §4 ported EXACTLY onto the ACP wire) — the
-  correctness core of the reattach extension.
+  The register-before-`h` attach seam — the correctness core of the reattach
+  extension.
 
   ## The seam (both wire entrances converge here)
 
-  `session/load` + rider (E1) and `_raxol/session.load` (E2) both parse the same
+  `session/load` + rider and `_raxol/session.load` both parse the same
   `_meta["raxol.io"]` rider and call `attach/1`. The algorithm, per attach:
 
-    1. **Authorize through the ONE funnel (CDI-1).** `attach/1` calls the
+    1. **Authorize through the ONE funnel.** `attach/1` calls the
        injected `:authorize` fun — whose default is
        `Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner.authorize/2`, the SOLE
-       fail-closed funnel. This design defines NO second `FailClosed`/try-catch
-       wrapper (the dual-ownership hole G5 closes). Any `{:denied, _}` — or any
-       non-`{:ok, %Grant{}}` — DENIES: `attach/1` returns the CDI-5 deny envelope
+       fail-closed funnel. There is NO second `FailClosed`/try-catch
+       wrapper. Any `{:denied, _}` — or any
+       non-`{:ok, %Grant{}}` — DENIES: `attach/1` returns the deny envelope
        (`-32000 "attach denied"`, NO `data`) and NOTHING is registered, no
-       history is read. The request error IS the bus `Closed{:denied}` — no
+       history is read. The request error IS the denial — no
        separate `_raxol/session.closed` frame.
-    2. On grant, start a fresh `Subscriber` (the "fresh Session in attach mode"),
+    2. On grant, start a fresh subscriber process (this module's GenServer),
        transfer the load-request reply obligation to it via
-       `Connection.delegate_reply/3` (IC-4), then run the NORMATIVE bus §4
+       `Connection.delegate_reply/3`, then run the attach
        algorithm INSIDE that process:
-         a. **REGISTER FIRST** — `Journal.subscribe` (== `Writer.subscribe`,
-            CDI-4); live records queue to the subscriber from now on.
+         a. **REGISTER FIRST** — `Journal.subscribe` (routed to
+            `Writer.subscribe`); live records queue to the subscriber from now
+            on.
          b. **snapshot `h` SECOND** — `journal.high_watermark`, decision-time,
             read from the STORE (never a cached counter). The gate is armed
             (`h` bound) BEFORE any `{:reattach_live, ...}` is processed
-            (gate-arm invariant `[G5:C1]`): steps a–e run with no intervening
+            (gate-arm invariant): steps a–e run with no intervening
             live receive.
          c. reject `from_offset > h + 1` (`-32602`, minting a gap is illegal);
-            else emit `history(max(from,1)..h)` as wire frames (§3.3), under the
-            §3.4 stock projection.
+            else emit `history(max(from,1)..h)` as wire frames, under the
+            stock projection (see Taint below).
          d. optional `_raxol/session.caught_up{h+1}` (offset-aware only).
          e. reply the `LoadSessionResponse` (`_meta.raxol.io.highWatermark = h`)
             — replay-before-respond (history frames and the reply leave the SAME
@@ -39,47 +39,42 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
          f. steady state — the PERMANENT, MONOTONE live gate: `offset <= h` ⇒
             drop (already in history), forever; `offset > h` ⇒ forward.
 
-  ## Taint — annotate, NEVER filter (§6)
+  ## Taint — annotate, NEVER filter
 
   Every delivered frame carries the record's taint (in `_meta["raxol.io"]` on
   `session/update` frames, first-class `taint` on `_raxol/session.record`). NO
   code path here drops/withholds/reroutes a record by taint — a taint filter
-  anywhere breaks `history ++ live == durable stream` (P-JS5). The only
-  projection is by KIND (§3.4), applied identically to history and live, and it
+  anywhere breaks `history ++ live == durable stream`. The only
+  projection is by KIND (a stock, non-offset-aware attacher receives only
+  `session_update` frames), applied identically to history and live, and it
   is orthogonal to taint. `grant.lens` is threaded opaquely and never
-  interpreted (reserved, v1).
+  interpreted (reserved).
 
-  ## Mid-attach expiry — force-close at `exp` (CDI-6 `[G5:S7]`)
+  ## Mid-attach expiry — force-close at `exp`
 
   When `grant.expires_at != nil`, the subscriber arms a timer that at
   `expires_at` emits `_raxol/session.closed{reason: "revoked"}` and detaches —
   bounding how long a held live tail may read. A reconnect just before `exp`
-  re-authorizes fresh: each attach is its own `Subscriber` with its own timer
+  re-authorizes fresh: each attach is its own subscriber process with its own timer
   targeting only itself, so the timer-vs-reconnect race is closed by process
   identity (the old subscriber's timer never touches the new one).
 
-  ## Deviations reported (NOT silently diverged from the frozen runtime)
+  ## Implementation notes
 
-    * **CDI-1 funnel injected, default bound to the real Runner.** The sibling
-      W19 cell is `Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner` (note the
-      `Ext.` namespace, not the design §8 `AttachPolicy.Runner`). `attach/1`
-      takes the funnel as `:authorize`; its default is
-      `Ext.AttachPolicy.Runner.authorize/2` — the SOLE fail-closed funnel. Any
-      non-`{:ok, %Grant{}}` result (incl. every `{:denied, _}`) denies. J9 here
-      drives BOTH the injected-contract path and the real `LocalNode` policy
-      through that Runner (deny on nil/absent transport; grant on `:process`).
-    * **The attach subscriber is a dedicated `Reattach.Subscriber` process, not
-      the turn `Session` in an "attach mode".** The design says "start a fresh
-      Session"; realizing the read-path as its own small process keeps the bus
-      §4 algorithm (register-first, decision-time `h`, permanent monotone gate)
-      provable in isolation and avoids surgery on the turn state machine. Same
-      frames, same ordering, same closure — a reported runtime shape deviation,
-      not a protocol one.
-    * **`ctx.transport` is passed in (CDI-2), not read from `Connection`.** The
-      Connection exposes no `transport/1` accessor today; the reattach handler
-      MUST source `transport` from Connection-side knowledge (never peer). The
-      seam takes it as a field; a `Connection.transport/1` accessor is the
-      missing piece for the default LocalNode policy to function.
+    * **The authorization funnel is injectable.** `attach/1` takes the funnel
+      as `:authorize`; its default is `Ext.AttachPolicy.Runner.authorize/2` —
+      the SOLE fail-closed funnel. Any non-`{:ok, %Grant{}}` result (incl.
+      every `{:denied, _}`) denies, and a grant returned by an injected funnel
+      is re-checked against the Grant contract.
+    * **The attach subscriber is a dedicated process, not the turn `Session`.**
+      Realizing the read path as its own small process keeps the attach
+      algorithm (register-first, decision-time `h`, permanent monotone gate)
+      provable in isolation and leaves the turn state machine untouched.
+    * **`ctx.transport` is passed in, not read from `Connection`.** The
+      Connection exposes no `transport/1` accessor; the reattach handler MUST
+      source `transport` from Connection-side knowledge (never the peer) and
+      pass it as a field. With no transport, the default `LocalNode` policy
+      denies.
     * **Keyring is validated per-attach, not at boot.** The `Token` policy's
       Ed25519 keyring is a pure per-`verify/4` parameter (no process state, no
       boot check), so a malformed/empty keyring surfaces as a per-attach deny,
@@ -92,25 +87,26 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   require Logger
 
   alias Raxol.AgentClientProtocol.Error
+  alias Raxol.AgentClientProtocol.Ext.AttachPolicy
   alias Raxol.AgentClientProtocol.Ext.Journal
   alias Raxol.AgentClientProtocol.Ext.Journal.Writer
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.LoadSessionResponse
 
   @vendor "raxol.io"
   @default_conn_mod Raxol.AgentClientProtocol.Connection
-  # CDI-1: the SOLE fail-closed funnel (W19's cell, now present in this package).
+  # The SOLE fail-closed funnel.
   @default_runner Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner
 
-  # v1 scope allow-list [G5:S4] — MUST match the Runner's. Re-asserted at the
+  # Scope allow-list — MUST match the Runner's. Re-asserted at the
   # injected seam so it cannot admit a wider scope than the real funnel does.
   @allowed_scopes [:attach]
 
   # OTP timer ceiling: `Process.send_after/3` raises above the historically-safe,
-  # version-independent max (~49.7 days). The CDI-6 arm clamps to it.
+  # version-independent max (~49.7 days). The expiry timer clamps to it.
   @timer_max_ms 4_294_967_295
 
   # ===========================================================================
-  # Rider parsing (§3.1) — one parser, both entrances.
+  # Rider parsing — one parser, both entrances.
   # ===========================================================================
 
   @typedoc "The parsed `_meta[\"raxol.io\"]` attach rider."
@@ -121,10 +117,10 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
         }
 
   @doc """
-  Parse the `_meta["raxol.io"]` rider map (§3.1). Total: a missing/garbled rider
+  Parse the `_meta["raxol.io"]` rider map. Total: a missing/garbled rider
   yields stock defaults (`from_offset: 0`, `history_policy: :from_offset`,
   `capability: nil`). A present-but-non-string `capability` is passed through
-  verbatim so the policy (V1 `is_binary`) denies it — garbling must never widen
+  verbatim so the policy's `is_binary` check denies it — garbling must never widen
   access, only narrow it.
   """
   @spec parse_rider(map() | nil) :: rider()
@@ -146,13 +142,15 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   defp parse_history_policy(_), do: :from_offset
 
   # ===========================================================================
-  # The attach seam (§4.1).
+  # The attach seam.
   # ===========================================================================
 
   @typedoc """
   Attach inputs. `:journal` is `{module, handle}` (the durable store, per-session
-  handle). `:authorize` is the CDI-1 funnel; when absent it binds to
-  `AttachPolicy.Runner.authorize(policy, ctx)`.
+  handle). `:authorize` is the authorization funnel; when absent it binds to
+  `AttachPolicy.Runner.authorize(policy, ctx)`, where `policy` is `:policy` or,
+  when that is absent, `AttachPolicy.default_policy/0` (the configured
+  `:attach_policy`, else `LocalNode`).
   """
   @type opts :: %{
           required(:conn) => pid(),
@@ -178,7 +176,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   @doc """
   Run the attach seam. Returns `:deferred` (the reply obligation was delegated
   to the fresh subscriber, which replies) on a granted attach, or
-  `{:error, %Error{}}` (the CDI-5 deny envelope) on a denied one — the caller
+  `{:error, %Error{}}` (the deny envelope) on a denied one — the caller
   (the `session/load` / `_raxol/session.load` handler) returns this value.
   """
   @spec attach(opts()) :: :deferred | {:error, Error.t()}
@@ -195,7 +193,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     end
   end
 
-  @doc "The CDI-5 deny envelope: `-32000 \"attach denied\"`, NO `data` (anti-oracle)."
+  @doc "The deny envelope: `-32000 \"attach denied\"`, NO `data` (anti-oracle)."
   @spec deny_envelope() :: Error.t()
   def deny_envelope, do: Error.new(-32_000, "attach denied")
 
@@ -208,12 +206,12 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
       surface: Map.get(opts, :surface, :unknown),
       capability: Map.get(opts, :capability),
       from_offset: Map.get(opts, :from_offset, 0),
-      # CDI-2: Connection-sourced, NEVER peer-asserted. Passed in by the handler.
+      # Connection-sourced, NEVER peer-asserted. Passed in by the handler.
       transport: Map.get(opts, :transport)
     }
   end
 
-  # CDI-1: the SOLE funnel. Default = AttachPolicy.Runner.authorize/2. Any
+  # The SOLE funnel. Default = AttachPolicy.Runner.authorize/2. Any
   # non-`{:ok, %Grant{}=grant}` result denies (fail-closed even against a
   # misbehaving injected fun). The Runner default already validates the Grant
   # contract; we RE-ASSERT it here so that an INJECTED `:authorize` seam (which
@@ -224,7 +222,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     fun =
       Map.get(opts, :authorize) ||
         fn c ->
-          policy = Map.get(opts, :policy)
+          policy = Map.get(opts, :policy) || AttachPolicy.default_policy()
           @default_runner.authorize(policy, c)
         end
 
@@ -241,10 +239,10 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
   # The Grant contract, re-asserted at the injected seam (mirrors the Runner's
   # `classify/2`). A grant may be a `%Grant{}` struct or a plain map (loose
-  # test/embed grants); either way it MUST carry a binary actor `"id"` [G5:S5]
-  # and an allow-listed scope [G5:S4]. `session_id` is enforced when the grant
+  # test/embed grants); either way it MUST carry a binary actor `"id"`
+  # and an allow-listed scope. `session_id` is enforced when the grant
   # asserts one — a real `%Grant{}` always does (its `@enforce_keys`), so a
-  # mismatch DENIES [G5:X1]; a loose grant that omits it keeps the pre-existing
+  # mismatch DENIES; a loose grant that omits it keeps the pre-existing
   # loose shape (the contract narrows what is admitted, never widens it).
   @spec valid_grant?(term(), map()) :: boolean()
   defp valid_grant?(grant, ctx) when is_map(grant) do
@@ -295,16 +293,16 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
     {:ok, sub} = start_subscriber(opts, sub_opts)
 
-    # IC-4: transfer the load-request reply obligation to the subscriber BEFORE
+    # Transfer the load-request reply obligation to the subscriber BEFORE
     # it replies (so its reply discharges a delegated ref, no double response).
     _ = conn_mod.delegate_reply(conn, reply_ref, sub)
 
     # Run the NORMATIVE algorithm synchronously (subscribe → h → history → reply);
     # any live record that arrives during it queues in the subscriber mailbox and
-    # is first evaluated against the gate afterward (gate-arm invariant [G5:C1]).
+    # is first evaluated against the gate afterward (the gate-arm invariant).
     # `:infinity`, NOT the default 5s call timeout: replaying a large durable
     # history can legitimately exceed 5s, and a timeout here would crash the load
-    # handler mid-attach. The subscriber owns its own bounded lifetime (the CDI-6
+    # handler mid-attach. The subscriber owns its own bounded lifetime (the
     # `expires_at` timer + the connection monitor), so no unbounded-wait hazard.
     :ok = GenServer.call(sub, :run, :infinity)
     :deferred
@@ -328,8 +326,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
         # Session `DynamicSupervisor` (`ctx.session_sup`), so it dies with the
         # connection subtree. A bare `start_link` here links the Subscriber to
         # the EPHEMERAL handler task, whose `:normal` exit never signals a plain
-        # link — the Subscriber would then leak past the connection forever
-        # (Wave-6 conformance finding 13).
+        # link — the Subscriber would then leak past the connection forever.
         DynamicSupervisor.start_child(sup, %{
           id: {__MODULE__, make_ref()},
           start: {__MODULE__, :start_link, [sub_opts]},
@@ -347,7 +344,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
   defp emit_denied(ctx, denied) do
     reason = denial_reason(denied)
-    # Total against a partially-injected ctx (finding 5b): the deny path can be
+    # Total against a partially-injected ctx: the deny path can be
     # reached before a full ctx is guaranteed populated (an injected `:ctx` may
     # omit keys), so read audit fields defensively — a missing key must NOT crash
     # the fail-closed path.
@@ -369,7 +366,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   end
 
   # ===========================================================================
-  # Subscriber — the "fresh Session in attach mode" (bus §4 algorithm + gate).
+  # Subscriber — the "fresh Session in attach mode" (attach algorithm + gate).
   # ===========================================================================
 
   @doc false
@@ -381,7 +378,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     dead = Keyword.get(sub_opts, :dead, %{})
     conn = Keyword.fetch!(sub_opts, :conn)
 
-    # Tie the subscriber's lifetime to its connection (finding 5a). On the
+    # Tie the subscriber's lifetime to its connection. On the
     # UNSUPERVISED fallback path the subscriber is bare-linked to the ephemeral
     # attach caller, whose `:normal` exit never signals a plain link — so without
     # this it would leak past a dead connection forever. Monitoring the conn
@@ -400,14 +397,14 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
       offset_aware?: Keyword.fetch!(sub_opts, :offset_aware?),
       grant: Keyword.fetch!(sub_opts, :grant),
       now: Keyword.get(sub_opts, :now),
-      # test-only ordering hook (bus §9 dead controls): an arity-0 fun run at
+      # test-only ordering hook (dead controls): an arity-0 fun run at
       # the structurally-load-bearing point between history and the live gate.
       between: Keyword.get(sub_opts, :__between__),
       # gate state, populated by :run:
       h: nil,
       forward_hi: 0,
       live: :pending,
-      # dead-injector knobs (untagged red controls, bus §9):
+      # dead-injector knobs (test-only dead controls):
       dead_register_after_history: Map.get(dead, :__dead_register_after_history__, false),
       dead_cached_counter: Map.get(dead, :__dead_cached_counter__, false)
     }
@@ -420,7 +417,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     run_attach(state)
   end
 
-  # -- The normative bus §4 algorithm ----------------------------------------
+  # -- The attach algorithm ---------------------------------------------------
 
   defp run_attach(state) do
     {mod, j} = state.journal
@@ -443,7 +440,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   end
 
   defp run_after_subscribe(state, live, mod, j, policy) do
-    # Decision-time h, read from the STORE (§1.3.2). The DEAD cached-counter
+    # Decision-time h, read from the STORE. The DEAD cached-counter
     # control reads a stale h (0) instead — mis-placing the boundary.
     h = if state.dead_cached_counter, do: 0, else: mod.high_watermark(j)
 
@@ -460,7 +457,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
         {:stop, :normal, :ok, %{state | live: :detached}}
 
       policy != :none and state.from_offset > h + 1 ->
-        # Minting a gap is illegal (J-gap): reject with the watermark (§3.1).
+        # Minting a gap is illegal: reject with the watermark.
         _ = unsubscribe(state, live)
 
         err =
@@ -504,7 +501,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   defp unsubscribe(state, _live),
     do: Journal.unsubscribe(state.session_id, self())
 
-  # Return one publish credit to this session's single-publisher Writer (§5). A
+  # Return one publish credit to this session's single-publisher Writer. A
   # fire-and-forget cast, routed through the Writer registry; a no-op if the Writer
   # is gone (no live frames can arrive then anyway) or if this subscriber was
   # already dropped. Journal exposes no `credit` facade, so route straight to the
@@ -563,7 +560,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
         %{live: :subscribed, h: h} = state
       )
       when is_integer(h) do
-    # Credit-based flow control (§5): the Writer decremented one publish credit to
+    # Credit-based flow control: the Writer decremented one publish credit to
     # send this frame. Draining it here frees that slot, so REPLENISH exactly one
     # credit per processed live frame — credit thereby tracks 'unforwarded backlog'
     # (the Writer→Subscriber queue depth), NOT 'total-ever-sent'. Without this, a
@@ -584,15 +581,15 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
   def handle_info({:reattach_live, _sid, _record}, state) do
     # Not subscribed / detached / pre-gate: ignore. (Pre-gate can't happen —
-    # :run completes before any live message is processed, [G5:C1].)
+    # :run completes before any live message is processed — the gate-arm invariant.)
     {:noreply, state}
   end
 
-  # Lagged (§5): the Writer exhausted this subscriber's credit and produced the
+  # Lagged: the Writer exhausted this subscriber's credit and produced the
   # `{:reattach_lagged, session_id, last_offset}` heal signal (its own conservative
   # `last_offset` is ignored — the subscriber's OWN last-forwarded offset goes on
-  # the wire, so `+1` heals dup-free, §4.2 corollary). Emit the TERMINAL Lagged,
-  # unsubscribe, and STOP: the heal is a client-driven fresh reattach (bus §7), so
+  # the wire, so `+1` heals dup-free). Emit the TERMINAL Lagged,
+  # unsubscribe, and STOP: the heal is a client-driven fresh reattach, so
   # nothing further may leave this process.
   def handle_info({:reattach_lagged, _sid, _last_offset}, state) do
     _ =
@@ -605,20 +602,20 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     {:stop, :normal, %{state | live: :detached}}
   end
 
-  # S3: the peer cancelled the load request (`$/cancel_request`). Because the
-  # Subscriber IS the adopter of the load reply (IC-4 `delegate_reply`), the
+  # The peer cancelled the load request (`$/cancel_request`). Because the
+  # Subscriber IS the adopter of the load reply (via `delegate_reply`), the
   # Connection routes the cancel here as `{:acp_reply_cancelled, reply_ref}`. The
   # peer abandoned the request, so the live tail MUST stop — otherwise a granted
   # attach keeps streaming history-tail + the PERMANENT live tail to a client that
   # no longer wants it. Unsubscribe from the Writer and terminate; emit NO frames
-  # (the id was abandoned — the Connection suppresses the reply already, I17
-  # parity). Stopping also disarms the CDI-6 expiry timer with the process.
+  # (the id was abandoned — the Connection already suppresses the reply).
+  # Stopping also disarms the expiry timer with the process.
   def handle_info({:acp_reply_cancelled, rref}, %{reply_ref: rref} = state) do
     _ = unsubscribe(state, state.live)
     {:stop, :normal, %{state | live: :detached}}
   end
 
-  # The connection died (finding 5a): the live tail has no client left, so
+  # The connection died: the live tail has no client left, so
   # unsubscribe and stop — this ties the UNSUPERVISED fallback subscriber's
   # lifetime to its connection (no leak past a dead conn).
   def handle_info(
@@ -629,7 +626,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     {:stop, :normal, %{state | live: :detached}}
   end
 
-  # CDI-6: mid-attach expiry — force-close the live tail at grant.expires_at.
+  # Mid-attach expiry — force-close the live tail at grant.expires_at.
   def handle_info(:force_close_expiry, state) do
     _ =
       state.conn_mod.notify(state.conn, "_raxol/session.closed", %{
@@ -643,13 +640,13 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  # -- CDI-6 timer arming -----------------------------------------------------
+  # -- Expiry timer arming ----------------------------------------------------
 
   defp maybe_arm_expiry(state) do
     case grant_field(state.grant, :expires_at) do
       exp when is_integer(exp) ->
         now = state.now || System.os_time(:second)
-        # CLAMP to the OTP timer ceiling (finding 2): `Process.send_after/3`
+        # CLAMP to the OTP timer ceiling: `Process.send_after/3`
         # raises above it, so a malformed far-future `exp` would otherwise crash
         # the subscriber right after it replied. Clamping force-closes early — a
         # >49.7-day held live tail is pathological and re-authorizes on reconnect.
@@ -662,7 +659,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     end
   end
 
-  # -- Record → wire frame mapping (§3.3) + stock projection (§3.4) -----------
+  # -- Record → wire frame mapping + stock projection -------------------------
   #
   # taint NEVER gates delivery: the only branch is by KIND (projection), applied
   # identically to history and live, orthogonal to taint (annotate-never-filter).
@@ -671,7 +668,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     case record.kind do
       "session_update" ->
         # Riders on core-protocol frames travel in _meta["raxol.io"] (we cannot
-        # add fields to frozen ACP shapes). The record payload IS the update.
+        # add fields to the core ACP shapes). The record payload IS the update.
         _ =
           state.conn_mod.notify(state.conn, "session/update", %{
             "sessionId" => state.session_id,
@@ -689,7 +686,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
       _other_kind ->
         # Every other kind → the generic first-class `_raxol/session.record`.
-        # §3.4 projection: a stock (non-offset-aware) attacher receives the
+        # Stock projection: a stock (non-offset-aware) attacher receives the
         # projection onto `session_update` kinds only — no `_raxol/*` frames.
         if state.offset_aware? do
           _ =
@@ -709,7 +706,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     end
   end
 
-  # grant may be a %Grant{} struct (W19) or a plain map (tests / other policies).
+  # grant may be a %Grant{} struct or a plain map (tests / other policies).
   # Struct is a map, so Map.get reads both; lens is threaded opaquely (unused).
   defp grant_field(grant, key) when is_map(grant), do: Map.get(grant, key)
   defp grant_field(_grant, _key), do: nil

@@ -5,10 +5,12 @@ AI agent framework for Elixir built on OTP. TEA-based agents with crash isolatio
 ## Install
 
 ```elixir
-{:raxol_agent, "~> 3.0"}
+{:raxol_agent, "~> 3.1"}
 ```
 
-3.0 requires `raxol`, `raxol_mcp` and `raxol_journal` 2.8. The session journal
+3.1 adds the ACP agent (`raxol acp`, `Raxol.Agent.ClientProtocol.StdioAgent`)
+to a Hex install by requiring `raxol_agent_client_protocol`. 3.0 and later
+require `raxol`, `raxol_mcp` and `raxol_journal` 2.8. The session journal
 (`Raxol.Agent.Journal`) ships in `raxol_journal`.
 
 ## Quick start

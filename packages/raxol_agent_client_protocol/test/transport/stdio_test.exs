@@ -215,6 +215,71 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioTest do
     end
   end
 
+  describe "limits" do
+    test "a line over :max_frame_bytes in self mode is refused and later frames still arrive" do
+      long = ~s({"pad":") <> String.duplicate("x", 200) <> ~s("})
+      {:ok, io} = StringIO.open(long <> "\n" <> ~s({"ok":1}\n))
+
+      {:ok, _transport} =
+        Stdio.start_self(owner: self(), input: io, output: io, max_frame_bytes: 64)
+
+      assert_receive {:acp_transport, _ref, {:decode_error, {:frame_too_large, size}, ""}}, 2_000
+      assert size > 64
+      assert_receive {:acp_transport, _ref, {:message, %{"ok" => 1}}}, 2_000
+    end
+
+    test "start_spawn passes :max_frame_bytes to the framer" do
+      script = ~s(printf '%s\\n' '{"pad":"#{String.duplicate("y", 100)}"}' '{"ok":2}')
+
+      {:ok, _transport} =
+        Stdio.start_spawn("sh", ["-c", script], owner: self(), max_frame_bytes: 32)
+
+      assert_receive {:acp_transport, _ref, {:decode_error, {:frame_too_large, _}, ""}}, 2_000
+      assert_receive {:acp_transport, _ref, {:message, %{"ok" => 2}}}, 2_000
+    end
+
+    test "the default frame cap is 16 MiB" do
+      assert Raxol.AgentClientProtocol.Transport.Framer.new().max_frame_bytes == 16_777_216
+    end
+
+    test "a frame nested deeper than :max_json_depth is refused before decoding" do
+      deep = ~s({"a":) <> String.duplicate("[", 9) <> String.duplicate("]", 9) <> "}"
+      at_limit = ~s({"a":) <> String.duplicate("[", 7) <> String.duplicate("]", 7) <> "}"
+      {:ok, io} = StringIO.open(deep <> "\n" <> at_limit <> "\n")
+
+      {:ok, _transport} =
+        Stdio.start_self(owner: self(), input: io, output: io, max_json_depth: 8)
+
+      assert_receive {:acp_transport, _ref, {:decode_error, {:too_deep, 8}, ^deep}}, 2_000
+      expected = Jason.decode!(at_limit)
+      assert_receive {:acp_transport, _ref, {:message, ^expected}}, 2_000
+    end
+
+    test "brackets and escaped quotes inside strings do not count toward the depth" do
+      line = Jason.encode!(%{"s" => String.duplicate("[{", 50) <> ~s(\\"[[[[)})
+      {:ok, io} = StringIO.open(line <> "\n")
+
+      {:ok, _transport} =
+        Stdio.start_self(owner: self(), input: io, output: io, max_json_depth: 2)
+
+      assert_receive {:acp_transport, _ref, {:message, %{"s" => _}}}, 2_000
+    end
+
+    test "the default depth limit refuses a 10,000-deep frame" do
+      deep = ~s({"a":) <> String.duplicate("[", 10_000) <> String.duplicate("]", 10_000) <> "}"
+      {:ok, io} = StringIO.open(deep <> "\n")
+      {:ok, _transport} = Stdio.start_self(owner: self(), input: io, output: io)
+
+      assert_receive {:acp_transport, _ref, {:decode_error, {:too_deep, 256}, _}}, 2_000
+    end
+
+    test "a bad limit raises in the caller" do
+      {:ok, io} = StringIO.open("")
+      assert_raise ArgumentError, fn -> Stdio.start_self(input: io, max_frame_bytes: 0) end
+      assert_raise ArgumentError, fn -> Stdio.start_self(input: io, max_json_depth: 0) end
+    end
+  end
+
   # Returns once the transport has taken everything its reader read: the
   # reader ends at end of input, and what it sent is ahead of the call
   # below in the transport's mailbox.

@@ -1,5 +1,5 @@
 # Drives the acpx (openclaw/acpx, MIT) v1 conformance corpus --
-# `test/conformance/cases/*.json`, copied verbatim, see NOTICE.md -- through
+# `test/conformance/cases/*.json`, copied verbatim, see cases/NOTICE.md -- through
 # `Raxol.AgentClientProtocol.Test.Conformance.CaseRunner`. See that module's
 # moduledoc for the step/check engine this ports, the fixture agent/client,
 # and the compliance notes found while porting.

@@ -5,8 +5,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   terminal requests, and receives `session/update` streaming notifications.
 
   This is a **thin ergonomic layer** over `Raxol.AgentClientProtocol.Connection`
-  (design doc `scratchpad/specs/acp-connection-design.md`) -- see
-  `Raxol.AgentClientProtocol.Agent`'s moduledoc for the shared rationale
+  -- see `Raxol.AgentClientProtocol.Agent`'s moduledoc for the shared rationale
   (identical wiring, mirrored side). Nothing here re-implements protocol
   correlation, cancellation, or the turn/permission state machine; those
   live in `Connection` and (agent-side) `Session`.
@@ -22,7 +21,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   has `params != nil`, so every generated callback is arity 2:
   `callback(params, ctx)` (request or notification alike).
 
-  `ctx` is `Raxol.AgentClientProtocol.Connection.Ctx.t()` (IC-2): read-only
+  `ctx` is `Raxol.AgentClientProtocol.Connection.Ctx.t()`: read-only
   per dispatch, carries `conn` (the `Connection` pid, for
   `Connection.request/async_request/notify/reply/delegate_reply`),
   `handler_state` (produced once by `c:init/1`), `reply_ref`, `rx_seq`,
@@ -32,7 +31,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   A request callback (`request_permission`, `write_text_file`,
   `read_text_file`, the four `terminal/*` methods) returns `{:ok,
   result_struct}`, `{:error, %Error{}}`, or `:deferred` (legal only after
-  `Connection.delegate_reply/3` -- IC-4). `session_update/2`'s return value
+  `Connection.delegate_reply/3`). `session_update/2`'s return value
   is always ignored (`Router.dispatch/4`) -- it is the streaming sink for
   `session/update` notifications during a prompt turn.
 
@@ -62,10 +61,11 @@ defmodule Raxol.AgentClientProtocol.Client do
 
       defmodule MyClient do
         use Raxol.AgentClientProtocol.Client
-        alias Raxol.AgentClientProtocol.Schema.ClientTypes.ReadTextFileResponse
+        alias Raxol.AgentClientProtocol.Client.FsSandbox
 
+        # `handler_arg:` is the project root the agent may read under.
         @impl true
-        def init(_arg), do: {:ok, %{}}
+        def init(root), do: {:ok, %{root: root}}
 
         @impl true
         def session_update(notification, _ctx) do
@@ -73,14 +73,16 @@ defmodule Raxol.AgentClientProtocol.Client do
         end
 
         @impl true
-        def read_text_file(req, _ctx) do
-          {:ok, ReadTextFileResponse.new(File.read!(req.path))}
-        end
+        def read_text_file(req, ctx), do: FsSandbox.read(ctx.handler_state.root, req)
 
         # ... only what you support.
       end
 
-      {:ok, sup} = Raxol.AgentClientProtocol.Client.start_link(MyClient, transport: {mod, handle})
+      {:ok, sup} =
+        Raxol.AgentClientProtocol.Client.start_link(MyClient,
+          transport: {mod, handle},
+          handler_arg: "/path/to/project"
+        )
 
   ## Session-consumer ergonomics: subscribe / prompt / prompt_stream
 
@@ -116,11 +118,10 @@ defmodule Raxol.AgentClientProtocol.Client do
   they arrive in wire order with NO reorder buffer, NO settle timer, and a
   synchronous, deterministic failure (`{:error, {:delivery_gap, _}}`) if
   the turn-end count and the delivered-update count ever disagree. This
-  is the actual fix for the drop/reorder bug the previous
-  `subscribe/3`-based implementation of these two functions had (a
-  separate handler task per notification vs. the Connection's own
-  terminal-result send -- two different senders, no cross-sender FIFO
-  guarantee).
+  is why these two functions do not consume `subscribe/3`: that path runs a
+  separate handler task per notification while the Connection sends the
+  terminal result itself -- two different senders, no cross-sender FIFO
+  guarantee.
 
   ## `fs_sandbox`: a working filesystem client with zero callbacks
 
@@ -130,14 +131,18 @@ defmodule Raxol.AgentClientProtocol.Client do
   joined under the root, `..`-normalized, and checked against the root
   using BOTH the lexical result and the fully symlink-resolved real path,
   so a `../` escape or a symlink planted inside the sandbox that points
-  outside it are both rejected with `-32602 invalid params` (never a
-  crash, never a silent escape). See `Raxol.AgentClientProtocol.Client.FsSandbox`.
+  outside it are both rejected with `-32602 invalid params`. The file is
+  then opened and the open handle checked to be the regular file that was
+  resolved, and a read is capped at 16 MiB (`fs_max_read_bytes:` sets
+  another cap). `Raxol.AgentClientProtocol.Client.FsSandbox` states what
+  this does and does not guarantee against a peer that changes the
+  sandbox tree while requests run.
   `terminal/*` handlers are deliberately NOT defaulted by any option here --
   they stay `method_not_found` unless you implement them yourself.
 
-  ## Library-mode wiring (IC-8, supervision doc §1.2/§1.4)
+  ## Library-mode wiring
 
-  `start_link/2` and `child_spec/1` build exactly the pinned subtree
+  `start_link/2` and `child_spec/1` build exactly this subtree
   (identical shape to the agent side, `role: :client`):
 
       ConnectionSupervisor          Supervisor, :one_for_all,
@@ -149,10 +154,9 @@ defmodule Raxol.AgentClientProtocol.Client do
   See `Raxol.AgentClientProtocol.Agent`'s moduledoc for why `parent_sup` is
   resolved via `self()` inside the nested supervisor's `init/1` rather than
   passed in from outside. A client connection gets its own
-  `Session.Supervisor`/`SessionRegistry` slot too -- unused unless/until the
-  client side ever hosts sessions (it does not today), kept only because
-  the subtree shape is uniform across roles (one less special case in
-  `Connection`).
+  `Session.Supervisor`/`SessionRegistry` slot too -- unused, since the client
+  side hosts no sessions, and kept only because the subtree shape is uniform
+  across roles (one less special case in `Connection`).
   """
 
   require Logger
@@ -170,7 +174,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   # MUST recompile when the table source changes. See `MethodTable.depend_on_source/0`.
   MethodTable.depend_on_source()
 
-  @typedoc "Per-dispatch context (IC-2). See `Raxol.AgentClientProtocol.Connection.Ctx`."
+  @typedoc "Per-dispatch context. See `Raxol.AgentClientProtocol.Connection.Ctx`."
   @type ctx :: Connection.Ctx.t()
 
   @doc """
@@ -208,15 +212,15 @@ defmodule Raxol.AgentClientProtocol.Client do
   end
 
   # ===========================================================================
-  # Session-update subscription (W17-client ergonomics) -- see moduledoc.
+  # Session-update subscription (client ergonomics) -- see moduledoc.
   #
   # A single `:bag` ETS table, created lazily and idempotently (race-safe:
   # `:ets.new/2` on an already-existing named table raises `ArgumentError`,
   # caught and treated as "someone else won the race"). Keyed by
   # `{conn_pid, session_id}` -> subscriber pid, exactly mirroring
-  # `SessionRegistry`'s `{conn_pid, session_id}` key shape (supervision doc
-  # §1.3) even though this table is a client-ergonomics convenience, not
-  # part of the protocol/supervision contract.
+  # `SessionRegistry`'s `{conn_pid, session_id}` key shape even though this
+  # table is a client-ergonomics convenience, not part of the
+  # protocol/supervision contract.
   # ===========================================================================
 
   @subs_table :raxol_acp_client_session_subscriptions
@@ -266,8 +270,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   # `send`). Deliberately never raises: a broadcast is best-effort delivery
   # to processes we don't control the lifetime of, and the request/
   # notification handler task calling this must never crash on its account
-  # (design docs' "handler crash never reaches the wire" spirit, applied
-  # here even though a notification crash is already log-only, IC/§4.4).
+  # (a handler crash never reaches the wire).
   @spec broadcast_update(pid(), String.t(), term()) :: :ok
   def broadcast_update(conn, session_id, update) do
     ensure_subs_table!()
@@ -301,23 +304,21 @@ defmodule Raxol.AgentClientProtocol.Client do
   decode), logs a warning and returns `{:raw, map}` instead of propagating
   the error. Never raises. Every variant the pinned v1.19.0 oracle defines
   is ported, `usage_update` included (`Schema.UsageUpdate`), so an
-  unrecognized discriminator now means a wire value from outside that
-  schema rather than a known gap -- see `SessionUpdate`'s moduledoc for the
-  variant list.
+  unrecognized discriminator means a wire value from outside that schema --
+  see `SessionUpdate`'s moduledoc for the variant list.
 
   **Not on the live wire-dispatch path.** `Connection`/`Router` decode
   `session/update` centrally, via `SessionNotification.from_json/1`
   (`method_table.ex`'s `session/update` row), and DROP the whole
   notification + telemetry (`[:raxol, :acp, :unknown_notification]`)
-  *before a handler ever runs* when that decode fails (connection design
-  §4.4) -- `c:session_update/2`, and therefore `subscribe/3`'s broadcast,
-  is only ever invoked with an already-successfully-decoded payload. This
+  *before a handler ever runs* when that decode fails -- `c:session_update/2`,
+  and therefore `subscribe/3`'s broadcast, is only ever invoked with an
+  already-successfully-decoded payload. This
   function exists for callers that decode a raw `"update"` wire map
   themselves (manual/offline processing, replay tooling, tests) and want
-  best-effort passthrough instead of Connection's silent drop. Making the
-  live pipeline itself tolerant would require a change to
-  `SessionNotification`/`Router` decode -- out of this module's scope;
-  flagged, not silently worked around.
+  best-effort passthrough instead of Connection's silent drop. The live
+  pipeline stays strict; tolerating undecodable variants there would require
+  a change to `SessionNotification`/`Router` decode.
   """
   @spec decode_update(map()) :: {:ok, SessionUpdate.t()} | {:raw, map()}
   def decode_update(raw) when is_map(raw) do
@@ -336,7 +337,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   # ===========================================================================
   # prompt/3, prompt_stream/4 -- session-consumer convenience over
-  # Connection.async_request/6 (IC-3), consuming the DIRECT turn-delivery
+  # Connection.async_request/6, consuming the DIRECT turn-delivery
   # channel (Raxol.AgentClientProtocol.Delivery's moduledoc), not the
   # multi-sender subscribe/3 broadcast. `Connection` opens a turn at
   # submit time and sends every `session/update` belonging to it, the
@@ -365,7 +366,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   No settle pass, no timer: the direct channel makes updates, the turn-end
   count, and the result all arrive from the Connection itself, so mailbox
-  order already equals wire order (transport-ordering design §4.4/§4.8).
+  order already equals wire order.
   """
   @spec prompt(pid(), struct(), pos_integer()) ::
           {:ok, {[update()], struct() | {:ext, map()}}} | {:error, term()}
@@ -451,7 +452,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   end
 
   # Failing the turn is the only lossless resolution of a gap, so it is the
-  # default: emit exactly one `:fail` telemetry event (D9) and return the
+  # default: emit exactly one `:fail` telemetry event and return the
   # error tuple. Never a silent partial list, and never a timer/retry, since
   # a hole in streamed content is corruption rather than late arrival.
   @spec fail_turn(atom(), map()) :: {:error, {atom(), map()}}
@@ -462,6 +463,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   defmacro __using__(opts) do
     fs_sandbox = Keyword.get(opts, :fs_sandbox)
+    fs_opts = Keyword.take(opts, [:fs_max_read_bytes])
 
     quote do
       @behaviour Raxol.AgentClientProtocol.Client
@@ -505,7 +507,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
       defoverridable session_update: 2
 
-      unquote(Raxol.AgentClientProtocol.Client.__fs_sandbox_block__(fs_sandbox))
+      unquote(Raxol.AgentClientProtocol.Client.__fs_sandbox_block__(fs_sandbox, fs_opts))
     end
   end
 
@@ -514,15 +516,31 @@ defmodule Raxol.AgentClientProtocol.Client do
   # quote -- kept as a plain function (not inlined in the macro body) so
   # the `nil` (no sandbox) case is a one-line no-op AST rather than a
   # branch duplicated inside the big quote block.
-  @spec __fs_sandbox_block__(String.t() | nil) :: Macro.t()
-  def __fs_sandbox_block__(nil), do: quote(do: :ok)
+  @spec __fs_sandbox_block__(String.t() | nil, keyword()) :: Macro.t()
+  def __fs_sandbox_block__(path, opts \\ [])
 
-  def __fs_sandbox_block__(path) when is_binary(path) do
+  def __fs_sandbox_block__(nil, _opts), do: quote(do: :ok)
+
+  def __fs_sandbox_block__(path, opts) when is_binary(path) do
+    read_opts =
+      case Keyword.fetch(opts, :fs_max_read_bytes) do
+        {:ok, max} when is_integer(max) and max > 0 ->
+          [max_read_bytes: max]
+
+        {:ok, other} ->
+          raise ArgumentError,
+                "fs_max_read_bytes must be a positive integer, got: #{inspect(other)}"
+
+        :error ->
+          []
+      end
+
     quote do
       alias Raxol.AgentClientProtocol.Client.FsSandbox
 
       @impl Raxol.AgentClientProtocol.Client
-      def read_text_file(req, _ctx), do: FsSandbox.read(unquote(path), req)
+      def read_text_file(req, _ctx),
+        do: FsSandbox.read(unquote(path), req, unquote(read_opts))
 
       @impl Raxol.AgentClientProtocol.Client
       def write_text_file(req, _ctx), do: FsSandbox.write(unquote(path), req)
@@ -531,11 +549,11 @@ defmodule Raxol.AgentClientProtocol.Client do
     end
   end
 
-  # -- Library-mode wiring (IC-8 / supervision doc §1.2, §1.4) --------------
+  # -- Library-mode wiring ---------------------------------------------------
 
   defmodule ConnectionSupervisor do
     @moduledoc false
-    # The IC-8 §1.2 subtree, client role. Infrastructure children come
+    # The per-connection subtree, client role. Infrastructure children come
     # straight from `Session.Supervisor.child_specs/1`, same as the agent
     # side -- see `Agent.ConnectionSupervisor` for the rationale (shared
     # verbatim; not duplicated here beyond what's needed to keep this
@@ -607,7 +625,7 @@ defmodule Raxol.AgentClientProtocol.Client do
       start: {ConnectionSupervisor, :start_link, [{handler, handler_arg, transport}, sup_opts]},
       type: :supervisor,
       # One-shot by design: the subtree `auto_shutdown`s on a significant
-      # child's exit and is never restarted in place (§1.1) — connection
+      # child's exit and is never restarted in place — connection
       # recovery is a fresh reattach against the durable journal, not a
       # supervisor restart. Embedders may override (`%{spec | restart: ...}`).
       restart: :temporary
@@ -639,9 +657,8 @@ defmodule Raxol.AgentClientProtocol.Client do
   supported way to reach the pid `Connection.request/4`, `async_request/6`,
   `notify/3`, and this module's own `subscribe/3`/`prompt/3`/`prompt_stream/4`
   need, since `start_link/2`/`child_spec/1` deliberately return/register the
-  `ConnectionSupervisor`, not the `Connection` child itself (IC-8 §1.2: the
-  supervisor is the stable handle across the child's `:temporary` restart
-  policy).
+  `ConnectionSupervisor`, not the `Connection` child itself (the supervisor is
+  the stable handle across the child's `:temporary` restart policy).
 
   Getting `sup`:
 
@@ -683,27 +700,69 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   directory -- backs `use Raxol.AgentClientProtocol.Client, fs_sandbox:
   path` (see that module's moduledoc for the option). Not a general-purpose
   path library: it exists solely to give a minimal client a working
-  filesystem story out of the box, safely.
+  filesystem story out of the box.
+
+  ## Path checks
 
   Every request path is joined under the sandbox root and lexically
   normalized (`..` resolved via `Path.expand/1`), checked against the root,
-  THEN fully symlink-resolved (a hand-rolled `realpath`, `real_path/1`) and
+  THEN fully symlink-resolved (`resolve/2`, a hand-rolled `realpath`) and
   checked against the root a second time -- so a `../` escape and a
   symlink planted inside the sandbox that points outside it are both
-  caught, not just the lexical case. Both failure modes return the same
-  `-32602 invalid params` `Error.t()`, safe to send straight to the peer
-  (the resolved absolute path is only ever placed in `data`, for local
-  debugging, never in `message`).
+  caught, not just the lexical case. Every refusal is a `-32602 invalid
+  params` `Error.t()`, safe to send straight to the peer: `data` carries a
+  `"reason"` and the path the peer sent, never the resolved absolute path.
 
-  This is an INTENTIONAL DUPLICATE of `Raxol.Core.Boundary.Path.confine/3`
-  (raxol_core), not a wrapper -- this package cannot depend on raxol_core.
-  The two are bound to the SAME shared conformance vectors
-  (`test/support/boundary_vectors/path_{reject,accept}_vectors.json`,
-  copied verbatim from raxol_core; see `test/client/fs_sandbox_vectors_test.exs`)
-  so a divergence between the two independent confinement implementations
-  is a red test here, not a silent fork (migration P5, confinement-seam-
-  proposal option b). `resolve/2` does not implement `Path.confine/3`'s
-  `ref_format` regex gate; vectors exercising it are skipped by that test.
+  ## Opening the file
+
+  A path that is checked and then opened leaves a window in which a peer
+  that can change the tree inside the root swaps the file for a symlink. So
+  the file is opened first and the open handle verified afterwards: the
+  device and inode of the handle (`:file.read_file_info/1` on it) must equal
+  those of the path re-resolved with `resolve/2` and read with
+  `File.lstat/1`, which does not follow a symlink at the leaf, and both
+  must be a regular file. A mismatch is refused as `"path_changed"`; a leaf
+  that is not a regular file (a directory, FIFO, device, or a symlink
+  swapped in for one) as `"not_a_regular_file"`.
+
+    * `read/3` checks the leaf with `File.lstat/1`, opens it read-only,
+      verifies the handle, and reads at most `:max_read_bytes` (default
+      16 MiB); a larger file is refused as `"file_too_large"`. `line` and
+      `limit` slice what was read.
+    * `write/2` creates missing parent directories one at a time, each
+      checked to be a directory and not a symlink, and re-resolves the path
+      afterwards. A new file is created with `O_EXCL`, which never follows
+      a symlink at the leaf; an existing file is opened without truncating
+      it. The handle is verified before it is truncated and written.
+
+  ## What is and is not guaranteed
+
+  Erlang's file API has no `openat` or `O_NOFOLLOW`, so checking a path and
+  opening it are separate system calls. With the verification above:
+
+    * Swapping the requested file itself (for a symlink, a FIFO, a device or
+      another file) while a request runs cannot make the request read or
+      write a file outside the root.
+    * A peer that can also rename the DIRECTORIES a requested path goes
+      through, and wins two races within one request (at the open and at
+      the verifying `lstat`), can still redirect that request. A path whose
+      only directory is the root itself is not exposed to this.
+    * There is no open mode that writes an existing file without `O_CREAT`,
+      so a leaf swapped for a dangling symlink at that instant, or a parent
+      directory swapped as above, can create an EMPTY file or directory
+      outside the root. Nothing is written into it: the handle check
+      refuses first.
+    * A leaf swapped for a FIFO between the `lstat` and the read-only open
+      blocks that one request until the FIFO has a writer.
+    * A hard link inside the root to a file outside it is that file; hard
+      links are not detected.
+    * On non-Unix file systems the inode is reported as zero, so the handle
+      check compares only the device and the file type.
+
+  `fs_sandbox` confines the paths the peer names. It is not a boundary
+  against a peer that can also change the sandbox tree by other means
+  while requests run: the checks above narrow those races but do not close
+  them.
   """
 
   alias Raxol.AgentClientProtocol.Error
@@ -714,19 +773,25 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   }
 
   @max_symlink_depth 40
+  @default_max_read_bytes 16 * 1024 * 1024
+  @read_chunk_bytes 1024 * 1024
 
-  @doc "Handle `fs/read_text_file` (`req` is a `ClientTypes.ReadTextFileRequest.t()`) confined to `sandbox_root`."
-  @spec read(String.t(), struct()) ::
+  @doc """
+  Handle `fs/read_text_file` (`req` is a `ClientTypes.ReadTextFileRequest.t()`)
+  confined to `sandbox_root`.
+
+  Options: `:max_read_bytes` (default 16 MiB), the largest file read; a
+  larger one is refused as `"file_too_large"`.
+  """
+  @spec read(String.t(), struct(), keyword()) ::
           {:ok, ReadTextFileResponse.t()} | {:error, Error.t()}
-  def read(sandbox_root, req) do
-    with {:ok, real} <- resolve(sandbox_root, req.path) do
-      case File.read(real) do
-        {:ok, content} ->
-          {:ok, ReadTextFileResponse.new(slice(content, req.line, req.limit))}
+  def read(sandbox_root, req, opts \\ []) do
+    max = Keyword.get(opts, :max_read_bytes, @default_max_read_bytes)
 
-        {:error, reason} ->
-          {:error, Error.with_data(Error.resource_not_found(req.path), inspect(reason))}
-      end
+    with {:ok, real} <- resolve(sandbox_root, req.path),
+         :ok <- regular_leaf(real, req.path),
+         {:ok, content} <- read_verified(sandbox_root, req.path, real, max) do
+      {:ok, ReadTextFileResponse.new(slice(content, req.line, req.limit))}
     end
   end
 
@@ -734,23 +799,183 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   @spec write(String.t(), struct()) ::
           {:ok, WriteTextFileResponse.t()} | {:error, Error.t()}
   def write(sandbox_root, req) do
-    with {:ok, real} <- resolve(sandbox_root, req.path),
-         :ok <- File.mkdir_p(Path.dirname(real)) do
-      case File.write(real, req.content) do
-        :ok ->
-          {:ok, WriteTextFileResponse.new()}
-
-        {:error, reason} ->
-          {:error, Error.with_data(Error.internal_error(), inspect(reason))}
+    result =
+      with {:ok, real} <- resolve(sandbox_root, req.path),
+           :ok <- make_parents(sandbox_root, req.path, real),
+           {:ok, fd} <- open_for_write(real, req.path) do
+        try do
+          write_verified(fd, sandbox_root, req, real)
+        after
+          :file.close(fd)
+        end
       end
-    else
-      {:error, %Error{}} = err ->
-        err
 
-      {:error, reason} ->
-        {:error, Error.with_data(Error.internal_error(), inspect(reason))}
+    case result do
+      {:error, %Error{}} = error -> error
+      {:error, reason} -> {:error, Error.with_data(Error.internal_error(), inspect(reason))}
+      ok -> ok
     end
   end
+
+  defp write_verified(fd, root, req, real) do
+    with :ok <- verify_handle(fd, root, req.path, real),
+         {:ok, 0} <- :file.position(fd, :bof),
+         :ok <- :file.truncate(fd),
+         :ok <- :file.write(fd, req.content) do
+      {:ok, WriteTextFileResponse.new()}
+    end
+  end
+
+  defp regular_leaf(real, path) do
+    case File.lstat(real) do
+      {:ok, %File.Stat{type: :regular}} ->
+        :ok
+
+      {:ok, %File.Stat{}} ->
+        {:error, invalid_params(:not_a_regular_file, path)}
+
+      {:error, reason} ->
+        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
+    end
+  end
+
+  defp read_verified(root, path, real, max) do
+    case :file.open(real, [:read, :binary, :raw]) do
+      {:ok, fd} ->
+        try do
+          with :ok <- verify_handle(fd, root, path, real) do
+            read_capped(fd, path, max)
+          end
+        after
+          :file.close(fd)
+        end
+
+      {:error, reason} ->
+        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
+    end
+  end
+
+  defp read_capped(fd, path, max), do: read_chunks(fd, path, max, [], 0)
+
+  defp read_chunks(fd, path, max, acc, size) do
+    case :file.read(fd, @read_chunk_bytes) do
+      {:ok, data} when size + byte_size(data) > max ->
+        {:error, file_too_large(path, max)}
+
+      {:ok, data} ->
+        read_chunks(fd, path, max, [acc | data], size + byte_size(data))
+
+      :eof ->
+        {:ok, IO.iodata_to_binary(acc)}
+
+      {:error, reason} ->
+        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
+    end
+  end
+
+  defp file_too_large(path, max) do
+    Error.with_data(Error.invalid_params(), %{
+      "reason" => "file_too_large",
+      "path" => path,
+      "max_read_bytes" => max
+    })
+  end
+
+  # Creates each missing directory between the real root and the leaf's
+  # parent with `mkdir` (which never follows a symlink at the name it
+  # creates), checks that each one is a directory and not a symlink, and then
+  # requires the path to resolve exactly as it did before.
+  defp make_parents(root, path, real) do
+    {:ok, root_real} = real_path(Path.expand(root))
+    parent = Path.dirname(real)
+
+    with :ok <- create_dirs(root_real, parent, path) do
+      case resolve(root, path) do
+        {:ok, ^real} -> :ok
+        {:ok, _moved} -> {:error, invalid_params(:path_changed, path)}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  # Nothing to create when the parent is the root, or when the leaf IS the
+  # root (its parent lies above it; the open then refuses the directory).
+  defp create_dirs(root_real, parent, path) do
+    if within?(root_real, parent) and parent != root_real do
+      parent
+      |> Path.relative_to(root_real)
+      |> Path.split()
+      |> create_each(root_real, path)
+    else
+      :ok
+    end
+  end
+
+  defp create_each([], _dir, _path), do: :ok
+
+  defp create_each([comp | rest], dir, path) do
+    dir = Path.join(dir, comp)
+
+    with :ok <- make_dir(dir, path) do
+      create_each(rest, dir, path)
+    end
+  end
+
+  defp make_dir(dir, path) do
+    with result when result in [:ok, {:error, :eexist}] <- :file.make_dir(dir) do
+      case File.lstat(dir) do
+        {:ok, %File.Stat{type: :directory}} -> :ok
+        {:ok, %File.Stat{}} -> {:error, invalid_params(:path_changed, path)}
+        {:error, _} = error -> error
+      end
+    end
+  end
+
+  # A missing leaf is created with O_EXCL, which fails on any existing name,
+  # a symlink included, so it never follows one. An existing leaf must be a
+  # regular file and is opened read-write, which does not truncate it.
+  defp open_for_write(real, path) do
+    case File.lstat(real) do
+      {:error, :enoent} ->
+        case :file.open(real, [:write, :exclusive, :binary, :raw]) do
+          {:error, :eexist} -> open_existing(real, path)
+          opened -> opened
+        end
+
+      {:ok, _stat} ->
+        open_existing(real, path)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp open_existing(real, path) do
+    case File.lstat(real) do
+      {:ok, %File.Stat{type: :regular}} -> :file.open(real, [:read, :write, :binary, :raw])
+      {:ok, %File.Stat{}} -> {:error, invalid_params(:not_a_regular_file, path)}
+      {:error, _} = error -> error
+    end
+  end
+
+  # The open handle must be a regular file and the same file (device and
+  # inode) as the path re-resolved now, with the leaf read by `lstat` so a
+  # symlink swapped in at the leaf is seen as a symlink.
+  defp verify_handle(fd, root, path, real) do
+    with {:ok, record} <- :file.read_file_info(fd),
+         %File.Stat{type: :regular} = opened <- File.Stat.from_record(record),
+         {:ok, ^real} <- resolve(root, path),
+         {:ok, %File.Stat{type: :regular} = named} <- File.lstat(real),
+         true <- same_file?(opened, named) do
+      :ok
+    else
+      %File.Stat{} -> {:error, invalid_params(:not_a_regular_file, path)}
+      {:error, %Error{}} = error -> error
+      _changed -> {:error, invalid_params(:path_changed, path)}
+    end
+  end
+
+  defp same_file?(a, b), do: a.major_device == b.major_device and a.inode == b.inode
 
   @doc """
   Resolve `requested_path` against `sandbox_root`, rejecting any result
@@ -791,13 +1016,12 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   # `base`. A symlink is followed against `base` -- its REAL parent -- so a
   # relative target (including `..`) resolves against where the link actually
   # lives, not its lexical spelling. Resolving a relative target against the
-  # lexical parent instead (the previous bug) let a link under a symlinked
+  # lexical parent instead would let a link under a symlinked
   # ANCESTOR escape the sandbox while still looking interior. `.`/`..` adjust
   # `base` directly; a component that is not a symlink -- or does not exist (the
   # write-leaf case) -- is accepted literally, so the deepest existing ancestor
   # still resolves. Only symlink hops count toward the depth cap, so deep
-  # symlink-free nesting is never mistaken for a cycle. Kept byte-identical to
-  # `Raxol.Core.Boundary.Path`'s `walk_real` (the shared confinement rules).
+  # symlink-free nesting is never mistaken for a cycle.
   defp real_path(path) do
     [root | rest] = Path.split(Path.expand(path))
     walk_real(root, rest, 0)
@@ -836,9 +1060,9 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
   # OS-dependent: a Windows absolute target splits as `["c:/", "tmp", ...]`,
   # keeping the drive as its own anchor, while the SAME string on Unix splits as
   # `["c:", "tmp", ...]` with no anchor at all. Matching only the POSIX `"/"`
-  # anchor therefore sent every Windows-absolute target down the relative branch,
-  # where it was spliced onto `base` and landed back INSIDE the root -- an escape
-  # the post-resolution re-check could not see, because nothing had left.
+  # anchor would send every Windows-absolute target down the relative branch,
+  # where it is spliced onto `base` and lands back INSIDE the root -- an escape
+  # the post-resolution re-check cannot see, because nothing has left.
   #
   # A drive anchor counts on EVERY host rather than only on Windows. Deciding it
   # per-host would mean the same link is contained on one platform and not on
@@ -872,10 +1096,10 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
        when letter in ?A..?Z or letter in ?a..?z,
        do: <<letter, ?:, ?/>>
 
-  # UNC, the same anchor bug one shape over. `:filename.split/1` on Windows gives
+  # UNC, the same anchor issue one shape over. `:filename.split/1` on Windows gives
   # a UNC path its own `"//"` component (both `"//host/share/x"` and the
   # `"\\\\host\\share\\x"` spelling land there), which is no drive letter -- so it
-  # took the very relative branch the drive case was fixed out of.
+  # would otherwise take the relative branch, exactly like an unanchored drive.
   #
   # The clause matches TWO IDENTICAL separators, mirroring the `Slash, Slash`
   # guard `:filename.win32_splitb/1` decides UNC by. That also covers the shape

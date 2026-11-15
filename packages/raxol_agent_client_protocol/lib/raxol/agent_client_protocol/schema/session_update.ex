@@ -48,12 +48,11 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdate do
   `ContentChunk.message_id` (optional, absent-safe on both decode and
   encode).
 
-  Also not ported here: the `ACP.SessionNotification` envelope
-  (`{"sessionId", "update", "_meta"}`) that wraps a `SessionUpdate` for the
-  wire, and the `AgentNotification` routing union that carries it as
-  `"session/update"` -- both live in upstream's `client_types.ex` and
-  belong to whichever coder ports that file (see the note on
-  `Raxol.AgentClientProtocol.Schema.AgentTypes`'s moduledoc).
+  The `{"sessionId", "update", "_meta"}` envelope that wraps a
+  `SessionUpdate` for the wire is
+  `Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification`.
+  There is no `AgentNotification` routing union: `"session/update"` is
+  routed by its `Raxol.AgentClientProtocol.MethodTable` row.
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """

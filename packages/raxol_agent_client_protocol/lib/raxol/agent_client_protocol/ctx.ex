@@ -7,13 +7,11 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   `Raxol.AgentClientProtocol.Connection.request/4` (the agent->client
   filesystem/terminal/permission requests) or
   `Raxol.AgentClientProtocol.Session.post_update/2` /
-  `Session.request_permission/2` (the Session-owned turn primitives) — see
-  IC-3 in both `scratchpad/specs/acp-connection-design.md` and
-  `acp-supervision-design.md` for the outbound API contract these wrap.
+  `Session.request_permission/2` (the Session-owned turn primitives).
 
   ## Why this isn't built on `Connection.Ctx`
 
-  `Raxol.AgentClientProtocol.Connection.Ctx` (IC-2) is the per-DISPATCH
+  `Raxol.AgentClientProtocol.Connection.Ctx` is the per-DISPATCH
   struct handed to the request/notification handler callback that answers
   `session/prompt` itself (it carries `conn`, `reply_ref`, `rx_seq`, etc.).
   It does **not** reach the turn task the handler spawns — `turn_runner` is
@@ -21,7 +19,7 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   arity-2 shape (`session.ex` moduledoc, "Turn runner seam"), and a
   subagent's task closure only ever receives what its parent closed over.
   There is deliberately **one** ctx concept in this package
-  (`Connection.Ctx`, IC-2); this module does not introduce a second,
+  (`Connection.Ctx`); this module does not introduce a second,
   competing one. Instead every function below takes the plain pid a turn
   task actually has in hand — the `Connection` pid (closed over from the
   original dispatch's `ctx.conn` when the app builds its `turn_runner` fun)
@@ -31,16 +29,16 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   ## What's here
 
     * `read_text_file/3,4`, `write_text_file/4,5` — `fs/read_text_file` /
-      `fs/write_text_file`, sent via `Connection.request/4` (plain
-      handler-task code per IC-3 — "Any process that must stay responsive
-      ... MUST use async_request; request/4 is for plain handler-task
-      code", and a turn task is exactly that, not the Session itself).
+      `fs/write_text_file`, sent via `Connection.request/4`. `request/4`
+      blocks its caller, so it is for plain handler-task code; a process that
+      must stay responsive uses `async_request/6` instead. A turn task is plain
+      handler-task code, not the Session itself.
     * `create_terminal/3,4`, `terminal_output/3,4`, `wait_for_terminal_exit/3,4`,
       `kill_terminal/3,4`, `release_terminal/3,4` — the five `terminal/*`
       methods, same `Connection.request/4` wrapper.
     * `request_permission/3,4` — builds a `RequestPermissionRequest` and
       delegates to `Session.request_permission/2`. **Fail-closed, always**:
-      per supervision design §5/I8, the ONLY way to get an allow back is a
+      the ONLY way to get an allow back is a
       literal `{:selected, %SelectedPermissionOutcome{}}` decoded from the
       client's reply; every other terminal (timeout, client error, decode
       failure, disconnect, a `session/cancel` racing the ask) resolves
@@ -50,14 +48,14 @@ defmodule Raxol.AgentClientProtocol.Ctx do
     * `post_update/2` — delegates to `Session.post_update/2` verbatim (same
       arity, same contract): forwards a `session/update` for the live turn,
       surfacing `{:error, :turn_over}` for a straggler post after drain
-      (§3.3) and, as of the streaming guards below, `{:error, :empty_chunk}`
+      and `{:error, :empty_chunk}`
       for an empty-text `agent_message_chunk`/`agent_thought_chunk` (never
       sent to the wire — see `session.ex`'s `empty_chunk?/1`).
 
   ## Timeouts
 
   `Connection.request/4`'s `timeout_ms` is `pos_integer()` — **not**
-  `:infinity` (only `async_request/6` accepts that, per IC-3). Every
+  `:infinity` (only `async_request/6` accepts that). Every
   function below takes a `:timeout` option (default `30_000`ms, except
   `wait_for_terminal_exit/3,4` which defaults to 30 minutes since waiting
   for a command to exit is expected to take a while); pass a larger
@@ -142,14 +140,14 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   Ask the client for permission to perform `tool_call` (`session/request_permission`),
   offering `options`. Delegates to `Session.request_permission/2` — `session`
   is the turn's own `Session` pid (the task's `session` argument), NOT the
-  Connection. **Fail-closed** (supervision design §5/I8): returns
+  Connection. **Fail-closed**: returns
   `{:ok, {:selected, %SelectedPermissionOutcome{}}}` ONLY on a decoded
   selected outcome; every other terminal — timeout, client error reply,
   undecodable reply, transport/connection death, or a `session/cancel`
   racing the ask — returns `{:ok, :cancelled}`. There is no third outcome
   and no exception path: deny is the zero value everywhere. The Session
   arms no timer of its own for this wait; `Connection.async_request/6`
-  (IC-3) is the single timeout authority, configured per-connection via
+  is the single timeout authority, configured per-connection via
   the Session's `:permission_timeout` (default 600s).
   """
   @spec request_permission(GenServer.server(), String.t(), ToolCallUpdate.t(), [
@@ -169,9 +167,9 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   @doc """
   Emit a `session/update` for the live turn — a verbatim pass-through to
   `Session.post_update/2` (same arity, same contract): forwards `notification`
-  via the Connection's `notify/3` on the Session's own FIFO lane (I3), returns
-  `{:error, :turn_over}` for a straggler post after the turn has drained
-  (§3.3), and `{:error, :empty_chunk}` for an empty-text `agent_message_chunk`/
+  via the Connection's `notify/3` on the Session's own FIFO lane, returns
+  `{:error, :turn_over}` for a straggler post after the turn has drained,
+  and `{:error, :empty_chunk}` for an empty-text `agent_message_chunk`/
   `agent_thought_chunk` — the streaming guard lives in `session.ex`
   (`empty_chunk?/1`); this wrapper adds no logic of its own, only the
   re-export so handler code has one module to `alias`.

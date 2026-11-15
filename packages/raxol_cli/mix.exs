@@ -191,14 +191,14 @@ defmodule RaxolCli.MixProject do
   # `raxol acp` serves a Raxol agent over the Agent Client Protocol, and
   # `Raxol.Agent.ClientProtocol.StdioAgent` is compile-gated on this package's
   # presence -- without it the packaged binary would ship the subcommand but not
-  # the surface behind it. raxol_agent declares the same path dep; this one
-  # documents what the CLI distributes. Both drop out under HEX_BUILD, since the
-  # package is unpublished and must never appear as a Hex requirement.
+  # the surface behind it. raxol_agent requires the same package; this edge
+  # documents what the CLI distributes. Same forms as raxol_agent: the Hex
+  # requirement under HEX_BUILD, the sibling directory otherwise.
   defp acp_dep do
     path = "../raxol_agent_client_protocol"
 
     if hex_package?() do
-      []
+      [{:raxol_agent_client_protocol, "~> 0.1.0"}]
     else
       [{:raxol_agent_client_protocol, path: path, override: true}]
     end

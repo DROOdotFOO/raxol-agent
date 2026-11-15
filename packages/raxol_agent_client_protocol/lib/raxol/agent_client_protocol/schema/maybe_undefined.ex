@@ -6,28 +6,17 @@ defmodule Raxol.AgentClientProtocol.Schema.MaybeUndefined do
   This is load-bearing for partial-update semantics where omitting a field
   means "don't change" and setting it to null means "clear".
 
-  > #### v1 status: encode-side only {: .info}
-  > As of v1 no `from_json`/decode path in this package *produces* the
-  > `:undefined` state -- every decoder collapses both an absent field and an
-  > explicit `null` to `nil` (there is no partial-update request type in the
-  > v1 schema that needs the distinction on the way IN). The three-state
-  > value is exercised only on ENCODE (the `:undefined` -> field-omitted
-  > path, via struct-local `to_json` helpers). The decode-side distinction
-  > arrives with the `Schema.Codec`-integrated `Maybe` design below; until
-  > then, treat "reads a `MaybeUndefined`" as reachable only for values this
-  > code itself constructed, never for wire-decoded input.
+  `Raxol.AgentClientProtocol.Schema.Unstable.SessionInfoUpdate` uses this
+  type: its decoder maps an absent key to `:undefined` and passes a present
+  value through `from_json/1` (`null` -> `nil`, anything else ->
+  `{:value, v}`); its encoder omits `:undefined` fields via the `{:skip}`
+  sentinel returned by `to_json/1`.
 
   ## JSON serialization
 
   - `:undefined` -> field is omitted from JSON output
   - `nil` -> `null`
   - `{:value, x}` -> the JSON encoding of `x`
-
-  > #### Interim module {: .warning}
-  > This is the faithful f1729 port (including its `{:skip}` encode sentinel,
-  > consumed only by struct-local `to_json` helpers). It is scheduled to be
-  > replaced by the `Schema.Codec`-integrated `Maybe` design
-  > (`acp-maybe-meta-design.md`) after the G1 design gate.
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """

@@ -5,23 +5,23 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
   the behaviour `@callback` and the `Router` dispatch clause, its
   param/result schema modules, its capability gate, and its layer.
 
-  This binds to `priv/schema-oracle/v1/meta.json` (pinned at
-  `schema-v1.19.0`), not to the f1729 reference implementation — f1729 has
+  The method set follows the pinned ACP JSON Schema `schema-v1.19.0`
+  (`meta.json`), not the f1729 reference implementation — f1729 has
   `session/fork`/`session/set_model` (not in the pinned oracle) and lacks
   `session/delete`/`session/close`/`logout`/`$/cancel_request` (which the
-  oracle has). See `scratchpad/specs/acp-methodtable-design.md` for the
-  full design, its G1 gate-review fix log (findings D1-1..D1-8), and the
-  G2 `session/cancel` delta (§6.0) implemented below.
+  oracle has). The table is literal data in this module: the oracle copy at
+  `priv/schema-oracle/v1/meta.json` is a dev/test file in the repository, not
+  shipped in the package and not read at compile time; the package's test
+  suite checks the table against it.
 
-  ## What lives here vs. what doesn't (this task's scope)
+  ## What lives here vs. what doesn't
 
   This module owns `rows/0`, `rows/1`, `rows_for_side/1`, `capability_for/1`,
-  the `:capability` column data (design doc §6, artifact #3), and the
-  compile-time table invariants (§1.1 of the design doc, incl. invariant 7
-  guarding the capability paths). The negotiated-caps PREDICATE
-  (`Capabilities.negotiated?/2`) and the `Connection`-side pre-filter for
-  `layer: :protocol`/`:session_control` rows (§4's D1-2 fix, §6.0's G2 delta)
-  are consumers of this table, not implemented here.
+  the `:capability` column data, and the compile-time table invariants below
+  (incl. invariant 7 guarding the capability paths). The negotiated-caps
+  PREDICATE (`Capabilities.negotiated?/2`) and the `Connection`-side
+  pre-filter for `layer: :protocol`/`:session_control` rows are consumers of
+  this table, not implemented here.
 
   ## Compile-time invariants (raise `CompileError` on violation)
 
@@ -32,17 +32,15 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
      `rows_for_side(:agent)` has no duplicates, ignoring `nil`; ditto
      `:client`) — the anti-name-drift invariant.
   4. `layer in [:protocol, :session_control]` if and only if
-     `callback == nil` (widened by the G2 `session/cancel` delta — see
-     `scratchpad/specs/acp-methodtable-design.md` §6.0).
+     `callback == nil`.
   5. `ext == nil` rows must not start with `"_"`; `ext == :raxol` rows must
      start with `"_raxol/"`; a `"$/"` wire prefix is only allowed on
      `layer: :protocol` rows.
 
-  Invariant 6 from the design doc (every `params`/`result` module
-  referenced must exist and export `from_json/1`) is checked in
-  `test/method_table_test.exs` rather than at compile time, per the design
-  doc's own rationale (avoiding compile-order knots between this module and
-  the `Schema.*` modules it references).
+  A sixth check (every `params`/`result` module referenced must exist and
+  export `from_json/1`) runs in the package's test suite rather than at
+  compile time, to avoid compile-order knots between this module and the
+  `Schema.*` modules it references.
   """
 
   alias Raxol.AgentClientProtocol.Ext.Schema, as: ExtSchema
@@ -57,14 +55,14 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
   @typedoc """
   `:app` — has an app-level `@callback` and `Router` dispatch clause.
   `:protocol` — protocol-level (`$/cancel_request`); `Connection` pre-filters
-  before `Router.decode/4` is ever called (design doc §4 D1-2 fix).
+  before `Router.decode/4` is ever called.
   `:session_control` — app-shaped wire method, but Connection-routed with NO
-  app callback (design doc §6.0 G2 delta; currently only `session/cancel`).
+  app callback (currently only `session/cancel`).
   """
   @type layer :: :app | :protocol | :session_control
 
   @typedoc """
-  How a row is capability-gated (design doc §6, artifact #3):
+  How a row is capability-gated:
 
     * `nil` — baseline method, always available (no capability gate).
     * `{:agent | :client, path}` — a field path into the *receiver's own*
@@ -78,31 +76,28 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
       note below.
     * `:never` — the oracle gates this method by a capability the ported
       Elixir capability structs cannot express, so it is unconditionally NOT
-      negotiated (fail closed, `-32601`) until the struct model is extended.
-      Not currently used by any row (the former `logout` row that used this —
-      see ORACLE-DIVERGENCE below — now resolves a real path).
+      negotiated (fail closed, `-32601`). No row currently uses it.
 
   ### ORACLE-DIVERGENCE (schema-oracle v1.19.0 vs. ported f1729 structs)
 
-  The pinned oracle's capability tree was originally RICHER than the Elixir
-  structs ported from the older f1729 snapshot; three leaves have since been
-  added to close the gap (parked review item 5 / W17-caps):
+  The pinned oracle's capability tree is richer than the Elixir structs
+  ported from the older f1729 snapshot; three oracle leaves that f1729 lacks
+  are ported so their methods gate on a real path:
 
-    * `sessionCapabilities.{delete,close}` — oracle has them; ported as
+    * `sessionCapabilities.{delete,close}` — ported as
       `Schema.AgentTypes.SessionDeleteCapabilities`/`SessionCloseCapabilities`
       onto the `SessionCapabilities` struct's `delete`/`close` fields.
-      `session/delete`/`session/close` now gate live on
+      `session/delete`/`session/close` gate on
       `{:agent, [:session_capabilities, :delete | :close]}`.
-    * `agentCapabilities.auth.logout` — oracle has it; ported as
+    * `agentCapabilities.auth.logout` — ported as
       `Schema.AgentTypes.AgentAuthCapabilities`/`LogoutCapabilities` onto the
-      `AgentCapabilities` struct's `auth` field. `logout` now gates live on
-      `{:agent, [:auth, :logout]}` instead of `:never`.
-    * JSON-key vs struct-field: the table historically carried oracle-ish
-      keys (`[:sessions, :list]`, `[:fs, :read_text_file]`, `[:logout]`)
-      that resolved against NEITHER the oracle JSON NOR the Elixir struct.
-      Fixed to real struct fields (`[:session_capabilities, :list]`,
-      `[:file_system, :read_text_file]`, …); invariant 7 now guards the
-      first segment against drift.
+      `AgentCapabilities` struct's `auth` field. `logout` gates on
+      `{:agent, [:auth, :logout]}`.
+    * JSON-key vs struct-field: paths name Elixir struct fields
+      (`[:session_capabilities, :list]`, `[:file_system, :read_text_file]`,
+      …), not oracle JSON keys (`[:sessions, :list]`, `[:fs, :read_text_file]`),
+      which resolve against neither the oracle JSON nor the struct;
+      invariant 7 guards the first segment against drift.
   """
   @type capability :: nil | :never | {:agent | :client, [atom()]}
 
@@ -122,9 +117,9 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
         }
 
   # Top-level struct fields of the two negotiated capability roots, as literal
-  # atoms (NOT introspected from the struct modules — invariant 6's rationale
-  # applies: reaching into `Schema.*` at compile time reintroduces the
-  # compile-order knot). Invariant 7 checks every gated path's FIRST segment
+  # atoms (NOT introspected from the struct modules: reaching into `Schema.*`
+  # at compile time reintroduces the compile-order knot that keeps the sixth
+  # check in tests). Invariant 7 checks every gated path's FIRST segment
   # against these; `test/capabilities_test.exs` asserts these literals still
   # match `Map.keys(struct(...)) -- [:_meta]`, catching drift.
   @agent_cap_fields [
@@ -217,9 +212,9 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
       ext: nil
     },
     %{
-      # G2 delta (design doc §6.0): session-control, Connection-routed, no
-      # app callback — same treatment as $/cancel_request, keyed by session
-      # id instead of request id. See invariant 4.
+      # Session-control, Connection-routed, no app callback — same treatment
+      # as $/cancel_request, keyed by session id instead of request id. See
+      # invariant 4.
       wire: "session/cancel",
       direction: :client_to_agent,
       kind: :notification,
@@ -249,8 +244,8 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
       params: LifecycleExtras.DeleteSessionRequest,
       result: LifecycleExtras.DeleteSessionResponse,
       # Gates on `session_capabilities.delete`
-      # (`Schema.AgentTypes.SessionDeleteCapabilities`) -- closed W17-caps
-      # gap, see the `capability` typedoc ORACLE-DIVERGENCE note.
+      # (`Schema.AgentTypes.SessionDeleteCapabilities`), see the `capability`
+      # typedoc ORACLE-DIVERGENCE note.
       capability: {:agent, [:session_capabilities, :delete]},
       layer: :app,
       ext: nil
@@ -274,14 +269,14 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
       params: LifecycleExtras.CloseSessionRequest,
       result: LifecycleExtras.CloseSessionResponse,
       # Gates on `session_capabilities.close`
-      # (`Schema.AgentTypes.SessionCloseCapabilities`) -- closed W17-caps
-      # gap, see the `capability` typedoc ORACLE-DIVERGENCE note.
+      # (`Schema.AgentTypes.SessionCloseCapabilities`), see the `capability`
+      # typedoc ORACLE-DIVERGENCE note.
       capability: {:agent, [:session_capabilities, :close]},
       layer: :app,
       ext: nil
     },
     %{
-      # D1-6: params: nil — logout's request body carries nothing besides
+      # params: nil — logout's request body carries nothing besides
       # the universal _meta envelope (schema.json LogoutRequest has no other
       # properties). decode passes nil straight through; the generated
       # callback drops to arity 1 (ctx only). See LifecycleExtras moduledoc
@@ -293,8 +288,8 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
       params: nil,
       result: LifecycleExtras.LogoutResponse,
       # Gates on `auth.logout` (`Schema.AgentTypes.AgentAuthCapabilities`/
-      # `LogoutCapabilities`) -- closed W17-caps gap, see the `capability`
-      # typedoc ORACLE-DIVERGENCE note.
+      # `LogoutCapabilities`), see the `capability` typedoc ORACLE-DIVERGENCE
+      # note.
       capability: {:agent, [:auth, :logout]},
       layer: :app,
       ext: nil
@@ -409,8 +404,8 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
 
   @protocol_rows [
     %{
-      # D1-2: Connection pre-filters this wire method before Router.decode/4
-      # is ever called; no Router clause is generated for it (see §4).
+      # Connection pre-filters this wire method before Router.decode/4 is
+      # ever called; no Router clause is generated for it.
       wire: "$/cancel_request",
       direction: :both,
       kind: :notification,
@@ -423,18 +418,18 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
     }
   ]
 
-  # -- Reattach extension rows (ext: :raxol, additive; acp-reattach-design.md
-  # §3.2's "two wire entrances, one attach seam" + the ONE generic
-  # `_raxol/session.record` frame for non-`session_update` kinds). All rows:
-  # `layer: :app`, `capability: nil` (Tier-1 gating is advertised via
+  # -- Reattach extension rows (ext: :raxol, additive: two wire entrances to
+  # one attach seam, plus the ONE generic `_raxol/session.record` frame for
+  # non-`session_update` kinds, plus live steering). All rows: `layer: :app`,
+  # `capability: nil` (support is advertised via
   # `initialize.result._meta["raxol.io"]`; an unimplemented optional callback
-  # answers -32601, identical to an unadvertised capability). W18b ships the
-  # two load-bearing rows; the other `_raxol/session.*` a2c notifications
-  # (caught_up/lagged/closed) and the c2a `_raxol/session.detach` are emitted
-  # as raw notifications today and become additive rows later (design §3.2).
+  # answers -32601, identical to an unadvertised capability). The other
+  # `_raxol/session.*` agent-to-client notifications (caught_up/lagged/closed)
+  # are sent as raw notifications by `Ext.Reattach` and are not table rows;
+  # neither is the client-to-agent `_raxol/session.detach`.
   #
   #   * `_raxol/session.load` reuses `LoadSessionRequest`/`LoadSessionResponse`
-  #     verbatim (identical shape; the rider rides `_meta` — §3.1).
+  #     verbatim (identical shape; the attach rider rides `_meta`).
   #   * `_raxol/session.record` carries `Ext.Schema.SessionRecordNotification`.
   @ext_rows [
     %{
@@ -570,7 +565,7 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
           "dollar-outside-protocol=#{inspect(Enum.map(bad_protocol_prefix, & &1.wire))}"
   end
 
-  # Invariant 7 (§6, artifact #3): every gated `{side, path}` capability must
+  # Invariant 7: every gated `{side, path}` capability must
   # RESOLVE against the negotiated caps struct shape. Checked at the enforceable
   # compile-time granularity — the FIRST path segment must be a real top-level
   # field of that side's capability struct (catching the `[:sessions, …]` /
@@ -608,8 +603,8 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
   surface — MUST call this in its module body. A plain `rows/0` call is only an
   EXPORTS dependency (recompile when `rows/0`'s API changes); a row-DATA edit does
   not change that signature, so without this an incremental build leaves the
-  generated code stale (the `_raxol/session.steer` #650 staleness class: a new row
-  present in the table but absent from `Router`/`Agent` until a `mix clean`).
+  generated code stale (a new row present in the table but absent from
+  `Router`/`Agent` until a `mix clean`).
   `@external_resource` forces the caller to recompile whenever this file changes.
   """
   defmacro depend_on_source do
@@ -631,7 +626,7 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
   @doc """
   Rows a given handling side must be able to decode/dispatch: `:agent` sees
   everything sent `:client_to_agent` plus `:both`; `:client` sees everything
-  sent `:agent_to_client` plus `:both` (design doc §2.1, D1-7 fix).
+  sent `:agent_to_client` plus `:both`.
   """
   @spec rows_for_side(:agent | :client) :: [row()]
   def rows_for_side(:agent), do: rows(:client_to_agent) ++ rows(:both)

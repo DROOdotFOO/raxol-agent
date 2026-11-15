@@ -14,8 +14,8 @@ defmodule Raxol.AgentClientProtocol.Transport do
       wiring. No JSON encode/decode: maps pass straight through. Byte-level
       codec correctness (encoding, framing, partial reads) is exercised by
       the stdio transport instead, not here.
-    * a future `Raxol.AgentClientProtocol.Transport.Stdio` — newline-
-      delimited JSON over stdin/stdout.
+    * `Raxol.AgentClientProtocol.Transport.Stdio` — newline-delimited JSON
+      over stdin/stdout.
 
   ## Ownership
 

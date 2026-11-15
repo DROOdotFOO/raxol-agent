@@ -186,7 +186,7 @@ defmodule Raxol.AgentClientProtocol.Transport.FramerTest do
       assert frames == [exact]
     end
 
-    test "a 5MB frame under the default 64MiB limit passes through untouched" do
+    test "a 5MB frame under the default 16MiB limit passes through untouched" do
       big = String.duplicate("a", 5 * 1024 * 1024)
       chunk = ~s({"data":") <> big <> ~s("}\n)
 

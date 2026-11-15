@@ -29,8 +29,8 @@ defmodule Raxol.AgentClientProtocol.Delivery do
       the terminal `{:acp_result, tag, outcome}`; `count` is the number of
       `:acp_turn_update` messages the owner should have received (ordinals
       `0..count-1`).
-    * `{:acp_result, tag, outcome}` — the existing terminal delivery
-      (`Connection.async_request/6`'s IC-3 contract), unchanged.
+    * `{:acp_result, tag, outcome}` — the terminal delivery
+      (`Connection.async_request/6`'s outcome).
 
   Because the Connection is the single sender of all three shapes, a
   consumer needs no settle timer and no reorder buffer on this path:
@@ -48,11 +48,11 @@ defmodule Raxol.AgentClientProtocol.Delivery do
   when the update is out-of-turn — no open prompt turn for the session on
   this connection); `ordinal` is the contiguous per-(session, namespace)
   stamp assigned at the demux point; `rx_seq` is the connection-wide
-  monotone frame stamp (kept for the unrelated cancel/prompt wire-order
-  latch, IC-5c — untouched by this design).
+  monotone frame stamp (used by the separate cancel/prompt wire-order
+  latch).
   """
 
-  @typedoc "Per-notification ordering key, receiver-assigned at the demux point (clause 1)."
+  @typedoc "Per-notification ordering key, receiver-assigned at the demux point."
   @type t :: %__MODULE__{
           turn: reference() | nil,
           ordinal: non_neg_integer(),
@@ -69,7 +69,7 @@ defmodule Raxol.AgentClientProtocol.Delivery do
   end
 
   @doc """
-  Emit the `[:raxol, :acp, :delivery]` telemetry event (clauses 2/9) when
+  Emit the `[:raxol, :acp, :delivery]` telemetry event when
   `:telemetry` is loaded; a silent no-op otherwise (this package does not
   depend on `:telemetry`, matching `Connection`'s own optional-telemetry
   guard). `metadata` should include `:decision` — one of

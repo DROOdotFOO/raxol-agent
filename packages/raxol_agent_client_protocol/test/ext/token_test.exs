@@ -433,6 +433,25 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
              Issuer.sign(Map.put(base, "exp", @now + 2_592_001), "k1", priv, archival: true)
   end
 
+  test "Issuer :max_ttl only lowers the cap", %{priv: priv} do
+    base = %{"sid" => @sid, "act" => %{"id" => "v@local"}, "iat" => @now}
+    ten_years = 315_360_000
+
+    assert {:error, :ttl_too_long} =
+             Issuer.sign(Map.put(base, "exp", @now + ten_years), "k1", priv, max_ttl: ten_years)
+
+    assert {:error, :ttl_too_long} =
+             Issuer.sign(Map.put(base, "exp", @now + ten_years), "k1", priv,
+               archival: true,
+               max_ttl: ten_years
+             )
+
+    assert {:error, :ttl_too_long} =
+             Issuer.sign(Map.put(base, "exp", @now + 61), "k1", priv, max_ttl: 60)
+
+    assert {:ok, _} = Issuer.sign(Map.put(base, "exp", @now + 60), "k1", priv, max_ttl: 60)
+  end
+
   test "an Issuer-minted token round-trips through verify", %{pub: pub, priv: priv} do
     keyring = %{"k1" => pub}
 

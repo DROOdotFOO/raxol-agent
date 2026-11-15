@@ -12,10 +12,12 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
       (`:self` mode) and are fed through
       `Raxol.AgentClientProtocol.Transport.Framer` (byte-splitting only:
       buffers partial data, yields complete NDJSON lines, tolerates
-      CRLF, bounds unterminated-line memory). Each complete line is then
+      CRLF, caps a frame's size). A complete line nested deeper than the
+      depth limit is refused without being parsed; any other line is then
       `Jason.decode/1`'d *tolerantly*: a line that isn't valid JSON, that
-      decodes to something other than a JSON object, or that the framer
-      itself rejected as oversized, is delivered to the owner as
+      decodes to something other than a JSON object, that is nested too
+      deeply, or that the framer itself rejected as oversized, is delivered
+      to the owner as
       `{:acp_transport, ref, {:decode_error, reason, raw_line}}` rather
       than crashing the transport or dropping the frame silently. A
       well-formed object is delivered as
@@ -34,6 +36,21 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
       either `"\n"` lands) is unrecoverable, unlike a length-framed
       protocol. Never write to the underlying port through any path other
       than this module.
+
+  ## Limits
+
+    * `:max_frame_bytes` (default 16 MiB): a frame longer than this is
+      refused as `{:decode_error, {:frame_too_large, size}, ""}` and the
+      framer resyncs at the next newline. Raise it if prompts carry large
+      base64 resources; lower it for a peer you do not trust. In `:spawn`
+      mode this also bounds the memory an unterminated line can take. In
+      `:self` mode it does not: the `user` device hands this module whole
+      lines only, so a line is held by the device until its newline (or
+      end of input) arrives, and only then measured.
+    * `:max_json_depth` (default 256): a frame whose arrays and objects
+      nest deeper than this is refused as
+      `{:decode_error, {:too_deep, max_json_depth}, raw_line}` before it is
+      decoded. The check scans the line once and skips string contents.
 
   ## stdout is protocol-pure
 
@@ -56,8 +73,14 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
       `-noshell` the `user` device already reads fd 0, so a second reader
       loses whatever arrived before it opened (a client's `initialize`).
       Only meaningful when this process's real stdio is dedicated to the
-      ACP wire protocol — e.g. a compiled release, or `mix run` with
-      stdio piped by the peer. Not for an interactive `iex` session. Both
+      ACP wire protocol and nothing else writes to stdout. Boot forms that
+      satisfy this, with stdio piped by the peer: a compiled release; `mix
+      run` of an already compiled project (compile first in a separate
+      step: Mix prints compile output on stdout); an `elixir` script that
+      sends `Mix.install/2`'s output to stderr and blocks until its
+      connection ends, as the package README's quickstart agent does. In
+      every form the default log handler must write to stderr (see
+      "stdout is protocol-pure"). Not for an interactive `iex` session. Both
       devices are switched to `encoding: :latin1`, which moves bytes
       unchanged: the wire is UTF-8 whatever the locale, and a byte that is
       not UTF-8 reaches the JSON decoder as it was sent. A `unicode` device
@@ -84,6 +107,8 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
   @behaviour Raxol.AgentClientProtocol.Transport
 
+  @default_max_json_depth 256
+
   @type t :: %__MODULE__{pid: pid()}
   defstruct [:pid]
 
@@ -96,6 +121,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
            output: IO.device() | nil,
            mode: mode(),
            framer: Framer.t(),
+           max_json_depth: pos_integer(),
            closed: boolean(),
            pending: [term()]
          }
@@ -114,12 +140,13 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
       `:user` for both). Each is sent `:io.setopts(device, encoding:
       :latin1)`; a device that has no options (`{:error, :enotsup}`) is
       used as it is.
+    * `:max_frame_bytes`, `:max_json_depth` — see "Limits".
   """
   @spec start_self(keyword()) :: {:ok, t()}
   def start_self(opts \\ []) do
     owner = Keyword.get(opts, :owner)
     devices = {Keyword.get(opts, :input, :user), Keyword.get(opts, :output, :user)}
-    {:ok, pid} = GenServer.start_link(__MODULE__, {:self, devices, owner})
+    {:ok, pid} = GenServer.start_link(__MODULE__, {:self, devices, owner, limits(opts)})
     {:ok, %__MODULE__{pid: pid}}
   end
 
@@ -134,12 +161,14 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     * `:cd` — working directory for the child process.
     * `:env` — list of `{name, value}` environment overrides, passed
       straight to `Port.open/2`'s `:env` option.
+    * `:max_frame_bytes`, `:max_json_depth` — see "Limits".
 
   The child inherits the node's WHOLE environment plus `:env`: this package
   does not scrub anything. An agent is third-party code, so a caller on a
-  node that holds secrets (a raxol node's `RAXOL_SLEUTH_API_KEY`, signing
-  keys, bearer tokens) must unset them itself, e.g. by passing
-  `env: Raxol.Core.ChildEnv.port_env(overrides)` from `raxol_core`.
+  node that holds secrets in its environment (API keys, signing keys,
+  bearer tokens) must unset them itself, e.g. with
+  `env: [{~c"MY_API_KEY", false}]` (`Port.open/2` unsets a variable whose
+  value is `false`).
 
   Returns `{:error, :executable_not_found}` if `cmd` cannot be resolved.
   """
@@ -153,7 +182,8 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
       path ->
         owner = Keyword.get(opts, :owner)
         spawn_opts = Keyword.take(opts, [:cd, :env])
-        {:ok, pid} = GenServer.start_link(__MODULE__, {:spawn, path, args, spawn_opts, owner})
+        init_arg = {:spawn, path, args, spawn_opts, owner, limits(opts)}
+        {:ok, pid} = GenServer.start_link(__MODULE__, init_arg)
         {:ok, %__MODULE__{pid: pid}}
     end
   end
@@ -194,31 +224,48 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
   @impl GenServer
   @spec init(
-          {:self, {IO.device(), IO.device()}, pid() | nil}
-          | {:spawn, String.t(), [String.t()], keyword(), pid() | nil}
+          {:self, {IO.device(), IO.device()}, pid() | nil, keyword()}
+          | {:spawn, String.t(), [String.t()], keyword(), pid() | nil, keyword()}
         ) :: {:ok, server_state()}
-  def init({:self, {input, output}, owner}) do
+  def init({:self, {input, output}, owner, limits}) do
     :ok = byte_transparent(input)
     :ok = byte_transparent(output)
     transport = self()
     reader = spawn_link(fn -> read_lines(input, transport) end)
-    {:ok, %{new_state(:self, owner) | reader: reader, output: output}}
+    {:ok, %{new_state(:self, owner, limits) | reader: reader, output: output}}
   end
 
-  def init({:spawn, path, args, spawn_opts, owner}) do
+  def init({:spawn, path, args, spawn_opts, owner, limits}) do
     port_opts = [:binary, :exit_status, args: args] ++ build_spawn_opts(spawn_opts)
     port = Port.open({:spawn_executable, String.to_charlist(path)}, port_opts)
-    {:ok, %{new_state(:spawn, owner) | port: port}}
+    {:ok, %{new_state(:spawn, owner, limits) | port: port}}
   end
 
-  defp new_state(mode, owner) do
+  # Validated in the caller's process, so a bad option raises there rather
+  # than crashing the transport's start.
+  @spec limits(keyword()) :: keyword()
+  defp limits(opts) do
+    framer_opts = Keyword.take(opts, [:max_frame_bytes])
+    # Framer.new/1 raises ArgumentError on a bad :max_frame_bytes.
+    _ = Framer.new(framer_opts)
+    depth = Keyword.get(opts, :max_json_depth, @default_max_json_depth)
+
+    if not (is_integer(depth) and depth > 0) do
+      raise ArgumentError, "max_json_depth must be a positive integer, got: #{inspect(depth)}"
+    end
+
+    [max_json_depth: depth] ++ framer_opts
+  end
+
+  defp new_state(mode, owner, limits) do
     %{
       owner: owner,
       port: nil,
       reader: nil,
       output: nil,
       mode: mode,
-      framer: Framer.new(),
+      framer: Framer.new(Keyword.take(limits, [:max_frame_bytes])),
+      max_json_depth: Keyword.fetch!(limits, :max_json_depth),
       closed: false,
       pending: []
     }
@@ -350,7 +397,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     {frames, framer} = Framer.push(state.framer, data)
 
     Enum.reduce(frames, %{state | framer: framer}, fn frame, acc ->
-      emit(acc, frame_payload(frame))
+      emit(acc, frame_payload(frame, acc.max_json_depth))
     end)
   end
 
@@ -360,17 +407,62 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   # deliberately does not retain them, see its moduledoc).
   # The `{:acp_transport, ...}` payload for one framer result, without
   # touching the owner: `emit/2` decides delivery vs buffering.
-  @spec frame_payload(Framer.frame_or_error()) ::
+  @spec frame_payload(Framer.frame_or_error(), pos_integer()) ::
           {:message, map()} | {:decode_error, term(), binary()}
-  defp frame_payload({:error, {:frame_too_large, _size} = reason}) do
+  defp frame_payload({:error, {:frame_too_large, _size} = reason}, _max_depth) do
     {:decode_error, reason, ""}
   end
 
-  defp frame_payload(line) when is_binary(line) do
-    case Jason.decode(line) do
-      {:ok, map} when is_map(map) -> {:message, map}
-      {:ok, other} -> {:decode_error, {:not_an_object, other}, line}
-      {:error, reason} -> {:decode_error, reason, line}
+  defp frame_payload(line, max_depth) when is_binary(line) do
+    if nested_deeper?(line, max_depth) do
+      {:decode_error, {:too_deep, max_depth}, line}
+    else
+      case Jason.decode(line) do
+        {:ok, map} when is_map(map) -> {:message, map}
+        {:ok, other} -> {:decode_error, {:not_an_object, other}, line}
+        {:error, reason} -> {:decode_error, reason, line}
+      end
+    end
+  end
+
+  # One pass over the line, jumping between the bytes that matter: outside a
+  # string `[`, `{`, `]`, `}` and `"`; inside one `"` and `\\` (an escape
+  # skips the byte after it). Malformed JSON is left to the decoder; this
+  # only answers whether some point nests deeper than `limit`.
+  @spec nested_deeper?(binary(), pos_integer()) :: boolean()
+  defp nested_deeper?(line, limit) do
+    patterns = %{
+      structural: :binary.compile_pattern(["[", "{", "]", "}", "\""]),
+      in_string: :binary.compile_pattern(["\"", "\\"])
+    }
+
+    scan_depth(line, 0, 0, limit, patterns)
+  end
+
+  defp scan_depth(line, pos, depth, limit, patterns) do
+    case :binary.match(line, patterns.structural, scope: {pos, byte_size(line) - pos}) do
+      :nomatch ->
+        false
+
+      {at, 1} ->
+        case :binary.at(line, at) do
+          ?" -> scan_string(line, at + 1, depth, limit, patterns)
+          open when open in [?[, ?{] and depth >= limit -> true
+          open when open in [?[, ?{] -> scan_depth(line, at + 1, depth + 1, limit, patterns)
+          _close -> scan_depth(line, at + 1, max(depth - 1, 0), limit, patterns)
+        end
+    end
+  end
+
+  defp scan_string(line, pos, depth, limit, patterns) do
+    case :binary.match(line, patterns.in_string, scope: {pos, byte_size(line) - pos}) do
+      :nomatch ->
+        false
+
+      {at, 1} ->
+        if :binary.at(line, at) == ?\\,
+          do: scan_string(line, min(at + 2, byte_size(line)), depth, limit, patterns),
+          else: scan_depth(line, at + 1, depth, limit, patterns)
     end
   end
 

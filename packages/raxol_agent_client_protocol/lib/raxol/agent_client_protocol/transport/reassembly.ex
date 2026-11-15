@@ -1,8 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Transport.Reassembly do
   @moduledoc """
   A pure, process-free reorder buffer for **unordered-carrier** transports
-  (design-stub — pairs with `Raxol.AgentClientProtocol.Transport.Envelope`
-  on the send side; no shipped transport uses this yet).
+  (pairs with `Raxol.AgentClientProtocol.Transport.Envelope` on the send
+  side; no shipped transport uses it).
 
   Shaped exactly like `Transport.Framer`: no process, no mailbox, no I/O —
   a caller (a transport's single reader) threads `t()` through successive

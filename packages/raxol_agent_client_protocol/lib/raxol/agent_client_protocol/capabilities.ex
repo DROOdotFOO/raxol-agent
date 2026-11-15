@@ -1,8 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Capabilities do
   @moduledoc """
-  The negotiated-capability PREDICATE (design doc §6, artifact #3 / connection
-  design deviation #3): given a `Connection`'s snapshotted capability tree,
-  decide whether a wire method is negotiated and therefore permitted.
+  The negotiated-capability PREDICATE: given a `Connection`'s snapshotted
+  capability tree, decide whether a wire method is negotiated and therefore
+  permitted.
 
   This is the security-relevant half of the capability gate. `MethodTable`
   owns the `:capability` column (which method is gated, by which struct-field
