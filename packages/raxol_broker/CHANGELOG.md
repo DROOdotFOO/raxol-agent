@@ -88,3 +88,4 @@
 - `mix raxol.broker.replay` prints account numbers as `[account]` by default, so a replay can be shared (`Journal.Replay.run/3` and `render/3` take `redact: true`; `--unredacted` prints them). Numbers are found as `account_number` and `rhs_account_number` values anywhere in a record and in the JSON text of recorded responses.
 - The README intro and the package description describe the order path instead of a read-only session. `docs/RELEASING.md` gains the tagging step for `raxol_broker` (a tagged commit with the tool capture pinned, no Hex publish).
 - The README quick start and the `kill` and `beat` task docs call broker tasks from `iex` with `Mix.Task.rerun/2`: `Mix.Task.run/2` runs a task once per VM, so a second arm, kill or beat through it did nothing.
+- Quick start step 6 explicitly requires Robinhood trade approvals on; an off setting refuses arming before confirmation and writes nothing.

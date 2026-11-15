@@ -65,6 +65,8 @@ loads. Run these from your project, in this order.
    and `trade approvals in the Robinhood app: on`, then type `ARM`; expect
    `armed`. `Mix.Task.rerun("raxol.broker.disarm")` or `K` then `y` on the
    dashboard stops it.
+   If trade approvals are off, arming refuses with `{:approvals_off, account}`
+   before confirmation and writes nothing; turn them on in the Robinhood app.
 
    Use `Mix.Task.rerun/2`, not `Mix.Task.run/2`, for every broker task in
    `iex`: `Mix.Task.run/2` runs a task once per VM and answers `:noop`
