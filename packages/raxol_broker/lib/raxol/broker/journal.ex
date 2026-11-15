@@ -139,8 +139,22 @@ defmodule Raxol.Broker.Journal do
   order, while an intent whose order definitely failed may be retried. The
   same index backs the duplicate-intent gate on `placing`.
 
-  Arming (#1179) must check `verify/1` first: it walks the chain on disk now,
+  Arming must check `verify/1` first: it walks the chain on disk now,
   where `status/1` reports what was found at start.
+
+  ## Events
+
+  Records outside any group, written by any process with `append_event/3`
+  (no claim needed) and refused, like every other write, on a damaged
+  journal:
+
+    * `emit`: a strategy runner's intent, written before the runner hands it
+      to the executor (`emit/3`). It stays pending (`pending_intents/2`)
+      until a `dispatch` record names its id (`dispatched/3`), so a runner
+      that restarts re-sends it and the executor's idempotency check decides
+      whether it was already placed.
+    * `strategy`: a strategy added or stopped (`put_strategy/2`,
+      `drop_strategy/2`); `strategies/1` lists the ones still added.
   """
 
   use GenServer
@@ -153,7 +167,8 @@ defmodule Raxol.Broker.Journal do
   alias Raxol.Broker.Journal.{Codec, Groups}
   alias Raxol.Broker.Policy.Context
 
-  @types ~w(intent context verdict review approval placing order close fill)
+  @event_types ~w(emit dispatch strategy)
+  @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
   @decisions [:approved, :declined]
@@ -438,6 +453,79 @@ defmodule Raxol.Broker.Journal do
   @spec verify(server()) :: :ok | {:broken, pos_integer()} | {:error, term()}
   def verify(server \\ __MODULE__), do: GenServer.call(server, :verify, :infinity)
 
+  # -- Events -------------------------------------------------------------------
+
+  @doc """
+  Write one event record (see "Events"): `type` is one of the event types
+  and `fields` a map, written through `Raxol.Broker.Journal.Codec.term/1`.
+  An unknown type is `{:error, {:invalid_event, type}}`.
+  """
+  @spec append_event(atom(), map(), server()) :: :ok | {:error, term()}
+  def append_event(type, fields, server \\ __MODULE__) when is_atom(type) and is_map(fields) do
+    name = Atom.to_string(type)
+
+    if name in @event_types,
+      do: GenServer.call(server, {:event, name, Codec.term(fields)}, :infinity),
+      else: {:error, {:invalid_event, type}}
+  end
+
+  @doc "Record that strategy `strategy_id` emitted `intent` (see \"Events\")."
+  @spec emit(Intent.t(), String.t(), server()) :: :ok | {:error, term()}
+  def emit(%Intent{} = intent, strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
+    fields = %{"strategy_id" => strategy_id, "intent" => Codec.encode_intent(intent)}
+    append_event(:emit, fields, server)
+  end
+
+  @doc "Record that the emitted intent `intent_id` reached the executor, and how it ended."
+  @spec dispatched(String.t(), String.t(), server()) :: :ok | {:error, term()}
+  def dispatched(intent_id, outcome, server \\ __MODULE__)
+      when is_binary(intent_id) and is_binary(outcome),
+      do: append_event(:dispatch, %{"intent_id" => intent_id, "outcome" => outcome}, server)
+
+  @doc "Intents `strategy_id` emitted that no `dispatch` record names yet, oldest first."
+  @spec pending_intents(String.t(), server()) :: {:ok, [Intent.t()]} | {:error, term()}
+  def pending_intents(strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
+    with :ok <- healthy(server),
+         {:ok, emitted} <-
+           select(fn -> {:ok, by_seq(server, {{:emit, :_}, :_, strategy_id, :_})} end) do
+      decode_all(emitted, fn {_key, _seq, _strategy, intent} -> Codec.decode_intent(intent) end)
+    end
+  end
+
+  @doc "Record a strategy as added: `spec` holds a string `\"id\"`."
+  @spec put_strategy(map(), server()) :: :ok | {:error, term()}
+  def put_strategy(%{"id" => id} = spec, server \\ __MODULE__) when is_binary(id),
+    do: append_event(:strategy, %{"action" => "add", "strategy_id" => id, "spec" => spec}, server)
+
+  @doc "Record the strategy `id` as stopped."
+  @spec drop_strategy(String.t(), server()) :: :ok | {:error, term()}
+  def drop_strategy(id, server \\ __MODULE__) when is_binary(id),
+    do: append_event(:strategy, %{"action" => "stop", "strategy_id" => id}, server)
+
+  @doc "Specs of the strategies added and not stopped, in the order they were added."
+  @spec strategies(server()) :: {:ok, [map()]} | {:error, term()}
+  def strategies(server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn -> {:ok, Enum.map(by_seq(server, {{:strategy, :_}, :_, :_}), &elem(&1, 2))} end)
+    end
+  end
+
+  defp by_seq(table, pattern),
+    do: table |> :ets.match_object(pattern) |> Enum.sort_by(&elem(&1, 1))
+
+  defp decode_all(items, decode) do
+    Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
+      case decode.(item) do
+        {:ok, value} -> {:cont, {:ok, [value | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
+  end
+
   # -- Server -------------------------------------------------------------------
 
   @impl GenServer
@@ -508,6 +596,19 @@ defmodule Raxol.Broker.Journal do
       {:reply, :ok, state}
     else
       {:error, reason} -> refuse(state, reason)
+    end
+  end
+
+  def handle_call({:event, type, fields}, _from, state) do
+    record = Map.merge(fields, %{"kind" => "broker", "type" => type, "at" => iso(state.clock.())})
+
+    case write(state, [record]) do
+      {:ok, _offsets} ->
+        index_event(state.table, record)
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        refuse(state, reason)
     end
   end
 
@@ -812,12 +913,43 @@ defmodule Raxol.Broker.Journal do
          :ok <- index_groups(state.table, Enum.filter(groups, &Groups.counts?/1)),
          :ok <- index_intents(state.table, groups),
          :ok <- index_fills(state.table, fills) do
+      Enum.each(records, &index_event(state.table, &1))
       {:ok, set_status(state, :ok)}
     else
       {:error, {:writer_stalled, _ms} = reason} -> {:stop, reason}
       {:error, reason} -> {:ok, set_status(state, damage_or(state, reason))}
     end
   end
+
+  # Events are indexed in journal order, so a later record wins. Each entry
+  # carries a monotonic sequence number for ordered listings.
+  defp index_event(table, %{"kind" => "broker", "type" => "emit"} = record) do
+    case record do
+      %{"intent" => %{"id" => id} = intent, "strategy_id" => strategy} when is_binary(id) ->
+        :ets.insert(table, {{:emit, id}, seq(), strategy, intent})
+
+      _malformed ->
+        true
+    end
+  end
+
+  defp index_event(table, %{"kind" => "broker", "type" => "dispatch", "intent_id" => id}),
+    do: :ets.delete(table, {:emit, id})
+
+  defp index_event(
+         table,
+         %{"kind" => "broker", "type" => "strategy", "strategy_id" => id} = record
+       ) do
+    case record do
+      %{"action" => "add", "spec" => spec} -> :ets.insert(table, {{:strategy, id}, seq(), spec})
+      %{"action" => "stop"} -> :ets.delete(table, {:strategy, id})
+      _malformed -> true
+    end
+  end
+
+  defp index_event(_table, _record), do: true
+
+  defp seq, do: System.unique_integer([:monotonic])
 
   defp crash_closes(state, groups) do
     for group <- groups, Groups.outcome(group) in [:open, :in_flight] do

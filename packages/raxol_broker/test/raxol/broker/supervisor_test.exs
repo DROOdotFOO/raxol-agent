@@ -200,6 +200,46 @@ defmodule Raxol.Broker.SupervisorTest do
     assert Fake.calls(server, "") == []
   end
 
+  test "a feed crash restarts the strategy supervisor, which restores its strategies",
+       %{path: path} do
+    alias Raxol.Broker.{Feed, Strategy}
+    alias Raxol.Broker.MCP.Client
+
+    id = System.unique_integer([:positive])
+    journal = :"broker_sup_journal_#{id}"
+    strategies = :"broker_sup_strategies_#{id}"
+    server = Fake.start(quotes: %{"F" => "9.80"})
+    {:ok, policy} = PolicyFile.new(Decimal.new("1000"), Decimal.new("5000"))
+
+    sup =
+      start_supervised!(
+        {Raxol.Broker.Supervisor,
+         name: :"broker_sup_#{id}",
+         journal: [name: journal, path: path],
+         executor: [
+           name: :"broker_sup_executor_#{id}",
+           session: Fake.session(server),
+           account_number: "ACC-1",
+           policy: policy
+         ],
+         client: Fake.client_opts(server, name: :"broker_sup_client_#{id}"),
+         feed: [name: :"broker_sup_feed_#{id}", bucket: [name: :"broker_sup_bucket_#{id}"]],
+         strategies: [name: strategies]}
+      )
+
+    {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "F", "usd" => "25"})
+    :ok = Strategy.Supervisor.add(spec, journal: journal, supervisor: strategies)
+    [{before, _}] = Strategy.Supervisor.running(strategies)
+
+    _feed = kill_and_restart(sup, Feed, child(sup, Feed))
+    restorer = child(Process.whereis(strategies), Strategy.Restorer)
+    :sys.get_state(restorer)
+
+    assert [{after_restart, %{id: "dip_buy-F"}}] = Strategy.Supervisor.running(strategies)
+    assert after_restart != before
+    assert is_pid(child(sup, Client))
+  end
+
   # Kills the `module` child, waits for it to go down, then reads the restarted
   # child. The supervisor restarts while handling the EXIT, so the call that
   # follows the :DOWN sees the new pid without polling.
