@@ -39,6 +39,9 @@ defmodule RaxolBroker.MixProject do
       # Floor: below 3.1.2, `Decimal.round/3` allocates in proportion to
       # `places` (CVE-2026-97853).
       {:decimal, "~> 3.1 and >= 3.1.2"},
+      # The daily cap resets at midnight America/New_York; Elixir ships no
+      # time zone database. Passed explicitly, never set as the VM default.
+      {:tz, "~> 0.28.4"},
       # The Robinhood MCP endpoint is remote: `Raxol.MCP.Client.Transport.Http`
       # compiles only with mint, and the OAuth discovery, registration and
       # token calls default to Req. Both are optional upstream.

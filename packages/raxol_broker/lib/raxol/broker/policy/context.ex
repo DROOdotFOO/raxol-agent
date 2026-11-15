@@ -10,7 +10,8 @@ defmodule Raxol.Broker.Policy.Context do
     * `portfolio_value` -- current total account value in USD.
     * `start_of_day_value` -- account value at the start of the exchange day.
     * `day_pnl` -- today's realized plus unrealized P&L in USD (losses negative).
-    * `positions` -- `%{symbol => market value in USD}`.
+    * `positions` -- `%{symbol => market value in USD}`, or `nil` when they
+      could not be read (rules that need them deny).
     * `quotes` -- `%{symbol => last price in USD}`, used to price market orders
       given in shares.
     * `today_notional` -- USD notional already ordered today, both sides.
@@ -28,7 +29,7 @@ defmodule Raxol.Broker.Policy.Context do
           portfolio_value: Decimal.t() | nil,
           start_of_day_value: Decimal.t() | nil,
           day_pnl: Decimal.t() | nil,
-          positions: %{optional(String.t()) => Decimal.t()},
+          positions: %{optional(String.t()) => Decimal.t()} | nil,
           quotes: %{optional(String.t()) => Decimal.t()},
           today_notional: Decimal.t() | nil,
           orders_last_minute: non_neg_integer() | nil,
@@ -66,8 +67,9 @@ defmodule Raxol.Broker.Policy.Context do
 
   Accepts any term and never raises or dispatches a protocol on it. Every
   field passes `Raxol.Broker.Plain`, then a shape check: `policy` is `nil` or
-  a list, the money fields are `nil` or decimals, `positions` and `quotes` are
-  plain maps of string to decimal, `orders_last_minute` is `nil` or a
+  a list, the money fields are `nil` or decimals, `positions` is `nil` or a
+  plain map of string to decimal, `quotes` is a plain map of string to
+  decimal, `orders_last_minute` is `nil` or a
   non-negative integer, `market_session` is `nil`, `:regular`, `:extended` or
   `:closed`, and `review_warnings` is a list. Errors never echo the value.
   """
@@ -95,6 +97,7 @@ defmodule Raxol.Broker.Policy.Context do
 
   defp shape?(:policy, value), do: is_nil(value) or is_list(value)
   defp shape?(field, value) when field in @decimal_fields, do: is_nil(value) or decimal?(value)
+  defp shape?(:positions, nil), do: true
   defp shape?(field, value) when field in [:positions, :quotes], do: price_map?(value)
   defp shape?(:orders_last_minute, nil), do: true
   defp shape?(:orders_last_minute, value), do: is_integer(value) and value >= 0

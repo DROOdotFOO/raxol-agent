@@ -14,27 +14,36 @@ defmodule Raxol.Broker.Executor do
 
   ## Context
 
-  The executor overwrites these `Raxol.Broker.Policy.Context` fields,
+  The executor fills every `Raxol.Broker.Policy.Context` field itself,
   whatever the caller passed:
 
     * `policy`, from the `:policy` start option.
     * `today_notional` and `orders_last_minute`, read from
-      `Raxol.Broker.Journal` at decision time.
+      `Raxol.Broker.Journal` at decision time. The day starts at midnight
+      America/New_York (`Raxol.Broker.MarketCalendar.day_start/1`).
+    * `quotes`, `positions`, `portfolio_value`, `start_of_day_value`,
+      `day_pnl` and `market_session`, read through its own session's read
+      tools by `Raxol.Broker.Policy.ContextBuilder` when an intent arrives
+      (cancels excepted: they need none). A read that fails leaves its
+      fields `nil`, and every rule that needs one denies.
     * `review_warnings`, from this executor's own review call (empty
       before it).
 
-  Every other field is trusted from the caller until #1185 sources it:
-  `quotes`, `positions`, `portfolio_value`, `start_of_day_value`,
-  `day_pnl` and `market_session`.
-
-  Trusted means its values, never its code: the intent and the context are
-  rebuilt from plain data with `Raxol.Broker.Intent.normalize/1` and
+  The caller's context is still rebuilt from plain data with
+  `Raxol.Broker.Intent.normalize/1` and
   `Raxol.Broker.Policy.Context.normalize/1` in the caller (`run/3`) and
   again in this process before anything else, by pattern matching only.
-  A struct, float, pid or function anywhere in them is `{:error,
+  A struct, float, pid or function anywhere in it is `{:error,
   {:invalid_intent, reason}}` or `{:error, {:invalid_context, reason}}`
   and nothing is journaled or sent: no protocol of caller data
   (Enumerable, Inspect, ...) ever runs in this process.
+
+  ## Drawdown breaker
+
+  A pre-review DENY by `:drawdown_breaker` (today's loss past the policy's
+  `drawdown_halt`) also halts the broker: `Raxol.Broker.Halt.pause/2`
+  disarms, journals a `halt` record and pauses every strategy runner. Only
+  a fresh arm resumes them.
 
   ## Guards
 
@@ -213,6 +222,8 @@ defmodule Raxol.Broker.Executor do
       (default 1 s, doubling to 60 s).
     * `:shutdown` - the child spec's shutdown bound in milliseconds, a
       positive integer (default `place_timeout + 5_000`).
+    * `:strategies` - the `Raxol.Broker.Strategy.Supervisor` the drawdown
+      breaker pauses (default that module).
     * `:name`.
 
   `child_spec/1` sets `shutdown` from `:shutdown`, else `place_timeout +
@@ -223,9 +234,8 @@ defmodule Raxol.Broker.Executor do
   executor; the group is then closed as `crash_outcome_unknown` on
   restart (counted, never re-placed), and recovery reports it as such.
 
-  `today_notional` counts a rolling 24 hours back from the clock's now,
-  which counts at least as much as any calendar day would. No caller input
-  moves the window.
+  `today_notional` counts from the New York midnight that began the
+  exchange day on the executor's clock. No caller input moves it.
   """
 
   use GenServer
@@ -235,8 +245,10 @@ defmodule Raxol.Broker.Executor do
   alias Raxol.Broker.Executor.{Place, Port, Review, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
   alias Raxol.Agent.Auth.Credential
-  alias Raxol.Broker.{CredentialStore, Intent, Journal, Mode, Plain, Policy, PolicyFile, Session}
-  alias Raxol.Broker.Policy.Context
+  alias Raxol.Broker.{CredentialStore, Halt, Intent, Journal, MarketCalendar, Mode, Plain, Policy}
+  alias Raxol.Broker.{PolicyFile, Session}
+  alias Raxol.Broker.Journal.Codec
+  alias Raxol.Broker.Policy.{Context, ContextBuilder}
   alias Raxol.Broker.Tools.Catalog
 
   @default_timeout 30_000
@@ -391,6 +403,7 @@ defmodule Raxol.Broker.Executor do
       {:ok,
        Map.merge(timeouts, %{
          journal: journal,
+         strategies: Keyword.get(opts, :strategies, Raxol.Broker.Strategy.Supervisor),
          clock: clock,
          mode: mode,
          account: account,
@@ -463,6 +476,7 @@ defmodule Raxol.Broker.Executor do
       journal: config.journal,
       journal_ref: journal_ref,
       clock: config.clock,
+      strategies: config.strategies,
       mode: config.mode,
       account: config.account,
       policy: config.policy,
@@ -971,7 +985,7 @@ defmodule Raxol.Broker.Executor do
          :ok <- not_parked(state, intent),
          {:ok, nil} <- placed_before(state, intent),
          {:ok, _tool} <- Review.tool(intent),
-         {:ok, context} <- fill(state, %{context | review_warnings: []}),
+         {:ok, context} <- fill(state, %{context | review_warnings: []}, intent),
          {:ok, group_id} <- open(state, intent, context, armed?) do
       pre_review(state, intent, context, group_id, armed?)
     else
@@ -1007,6 +1021,15 @@ defmodule Raxol.Broker.Executor do
     case {append(state, group_id, {:verdict, :pre_review, verdict}), verdict} do
       {{:error, reason}, _verdict} ->
         {:reply, {:error, reason}, state}
+
+      {:ok, {:deny, {:drawdown_breaker, detail} = reason}} ->
+        Halt.pause(:drawdown_halt,
+          journal: state.journal,
+          strategies: state.strategies,
+          detail: %{"group_id" => group_id, "detail" => Codec.term(detail)}
+        )
+
+        {:reply, {:deny, group_id, reason}, state}
 
       {:ok, {:deny, reason}} ->
         {:reply, {:deny, group_id, reason}, state}
@@ -1215,18 +1238,36 @@ defmodule Raxol.Broker.Executor do
 
   # -- Context and journal ------------------------------------------------------
 
-  # The window is a rolling 24 hours back from this executor's clock; no
-  # caller input moves it.
-  defp fill(state, %Context{} = context) do
+  # The day starts at the New York midnight before this executor's clock;
+  # no caller input moves it. With an intent, the fields the executor
+  # fetches are read first (a cancel needs none).
+  defp fill(state, %Context{} = context, intent \\ nil) do
     with {:ok, now} <- now(state.clock),
-         day_start = DateTime.add(now, -24, :hour),
+         day_start = MarketCalendar.day_start(now),
          {:ok, notional} <- safe(fn -> Journal.today_notional(day_start, state.journal) end),
          {:ok, count} <- safe(fn -> Journal.orders_last_minute(now, state.journal) end) do
+      context = fetched(state, context, intent, now)
+
       {:ok,
        %{context | policy: state.policy, today_notional: notional, orders_last_minute: count}}
     else
       {:error, reason} -> {:error, {:context, reason}}
     end
+  end
+
+  defp fetched(_state, context, nil, _now), do: context
+  defp fetched(_state, context, %Intent{kind: :cancel}, _now), do: context
+
+  defp fetched(state, context, intent, now) do
+    env = %{
+      port: state.port,
+      catalog: state.catalog,
+      account: state.account,
+      timeout: state.review_timeout,
+      now: now
+    }
+
+    ContextBuilder.build(intent, context, env)
   end
 
   # The clock is caller code, so it runs in a task: never in this process,

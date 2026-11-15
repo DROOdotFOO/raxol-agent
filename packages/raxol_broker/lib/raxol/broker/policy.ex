@@ -164,7 +164,7 @@ defmodule Raxol.Broker.Policy do
     invalid =
       Enum.find(@decimal_fields, &(not optional_decimal?(Map.fetch!(context, &1)))) ||
         cond do
-          not price_map?(context.positions) -> :positions
+          not (is_nil(context.positions) or price_map?(context.positions)) -> :positions
           not price_map?(context.quotes) -> :quotes
           not optional_count?(context.orders_last_minute) -> :orders_last_minute
           context.market_session not in [nil, :regular, :extended, :closed] -> :market_session
@@ -357,6 +357,9 @@ defmodule Raxol.Broker.Policy do
 
   defp max_position_weight(%{context: %Context{portfolio_value: nil}}),
     do: deny(:max_position_weight, missing(:portfolio_value))
+
+  defp max_position_weight(%{context: %Context{positions: nil}}),
+    do: deny(:max_position_weight, missing(:positions))
 
   defp max_position_weight(%{intent: intent, notional: {:ok, notional}} = input) do
     %{context: context, policy: %{max_position_weight: max}} = input

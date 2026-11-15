@@ -9,11 +9,60 @@ defmodule Raxol.Broker.Response do
 
   @doc "The body of a tool result, or `{:error, reason}`."
   @spec body({:ok, map()} | {:error, term()}) :: {:ok, map() | list()} | {:error, term()}
-  def body({:ok, %{is_error: false, content: content}}) when is_list(content) do
+  def body(result) do
+    with {:ok, decoded} <- decoded(result), do: {:ok, unwrap(decoded)}
+  end
+
+  @next_keys ["next", "next_cursor", "cursor"]
+
+  @doc """
+  One page of a cursored listing: `{:ok, items, next}`, with `items` the
+  list under the first of `keys` the body holds and `next` the cursor for
+  the following page (`nil` on the last). The cursor is read from the body
+  or from Robinhood's envelope around it, so unwrapping never hides one.
+  A body holding none of `keys` as a list is `{:error, :unreadable_listing}`:
+  a listing that cannot be read is never taken for an empty one.
+  """
+  @spec page({:ok, map()} | {:error, term()}, [String.t()]) ::
+          {:ok, list(), String.t() | nil} | {:error, term()}
+  def page(result, keys) do
+    with {:ok, decoded} <- decoded(result) do
+      body = unwrap(decoded)
+
+      case listed(body, keys) do
+        {:ok, items} -> {:ok, items, cursor(body) || cursor(decoded)}
+        :error -> {:error, :unreadable_listing}
+      end
+    end
+  end
+
+  defp listed(body, _keys) when is_list(body), do: {:ok, body}
+
+  defp listed(body, keys) when is_map(body) do
+    Enum.find_value(keys, :error, fn key ->
+      case Map.get(body, key) do
+        list when is_list(list) -> {:ok, list}
+        _ -> nil
+      end
+    end)
+  end
+
+  defp cursor(map) when is_map(map) do
+    Enum.find_value(@next_keys, fn key ->
+      case Map.get(map, key) do
+        next when is_binary(next) and next != "" -> next
+        _ -> nil
+      end
+    end)
+  end
+
+  defp cursor(_list), do: nil
+
+  defp decoded({:ok, %{is_error: false, content: content}}) when is_list(content) do
     Enum.find_value(content, {:error, :unreadable_response}, fn
       %{"type" => "text", "text" => text} when is_binary(text) ->
         case Jason.decode(text) do
-          {:ok, %{} = decoded} -> {:ok, unwrap(decoded)}
+          {:ok, %{} = decoded} -> {:ok, decoded}
           _ -> nil
         end
 
@@ -22,9 +71,9 @@ defmodule Raxol.Broker.Response do
     end)
   end
 
-  def body({:ok, %{is_error: true}}), do: {:error, :tool_error}
-  def body({:ok, _other}), do: {:error, :unreadable_response}
-  def body({:error, reason}), do: {:error, reason}
+  defp decoded({:ok, %{is_error: true}}), do: {:error, :tool_error}
+  defp decoded({:ok, _other}), do: {:error, :unreadable_response}
+  defp decoded({:error, reason}), do: {:error, reason}
 
   @doc """
   The list under the first of `keys` present in `body`, or `body` itself

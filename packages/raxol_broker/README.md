@@ -194,11 +194,25 @@ runs two place calls and the bound covers the place in progress.
 A person answers an ASK later with `approve(executor, token, "name")`,
 `decline(executor, token, "name")` or `close(executor, token, reason)`.
 
-* **Policy is the executor's.** The `:policy` start option (validated by
-  `PolicyFile.validate/1`) replaces the context's `policy`, and
-  `today_notional`, `orders_last_minute` and `review_warnings` are
-  replaced too. Quotes, positions, portfolio values and `market_session`
-  are still taken from the caller until #1185 sources them.
+* **The context is the executor's.** The `:policy` start option (validated
+  by `PolicyFile.validate/1`) replaces the context's `policy`;
+  `today_notional` and `orders_last_minute` come from the journal, with
+  the day starting at midnight America/New_York on both sides of a
+  daylight-saving change (`Raxol.Broker.MarketCalendar`, over the `tz`
+  database); quotes, positions, portfolio value, start-of-day value, day
+  P&L and market session are read through the executor's own session
+  (`Raxol.Broker.Policy.ContextBuilder`, `get_equity_quotes`,
+  `get_equity_positions`, `get_portfolio`). A read that fails leaves its
+  fields empty, and every rule that needs one denies; positions are read
+  page by page, and a listing that fails, cannot be read or is longer than
+  its page limit leaves them empty too. Holidays are not modelled in the
+  market session.
+* **Drawdown breaker.** A pre-review DENY by `:drawdown_breaker` disarms
+  the broker, journals a `halt` record and pauses every strategy runner
+  (`Raxol.Broker.Halt.pause/2`). The pause is the journal's
+  (`Raxol.Broker.Journal.pauses/1`): a runner restarted, or a strategy
+  added, while it holds starts paused, and a paused runner sends no
+  pending intent. Only a fresh `mix raxol.broker.arm` ends it.
 * **Review is mandatory.** `Raxol.Broker.Executor.Place` is the only module
   that names an order tool, and it refuses without a `ReviewReceipt` for
   the same intent and group (an HMAC over the whole intent), verified under

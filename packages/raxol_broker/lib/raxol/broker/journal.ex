@@ -161,6 +161,7 @@ defmodule Raxol.Broker.Journal do
       `Raxol.Broker.Mode.arm/1`, after its checks, may write an `armed`
       record: `Raxol.Broker.Executor.StructureTest` fails if any other
       module references `record_armed/2`. Disarming is open to anyone.
+    * `halt`: strategies paused or stopped and why (`Raxol.Broker.Halt`).
   """
 
   use GenServer
@@ -174,7 +175,9 @@ defmodule Raxol.Broker.Journal do
   alias Raxol.Broker.Policy.Context
 
   @recent 20
-  @event_types ~w(emit dispatch strategy mode)
+  @event_types ~w(emit dispatch strategy mode halt)
+  # Halt reasons that pause the strategy runners, and the pause they set.
+  @pauses %{"drawdown_halt" => :drawdown_halt}
   @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
@@ -536,6 +539,11 @@ defmodule Raxol.Broker.Journal do
   def record_disarmed(fields, server \\ __MODULE__) when is_map(fields),
     do: event("mode", Map.put(fields, "mode", "disarmed"), server)
 
+  @doc "Record a halt (see `Raxol.Broker.Halt`): `fields` hold its `\"reason\"`."
+  @spec record_halt(map(), server()) :: :ok | {:error, term()}
+  def record_halt(%{"reason" => reason} = fields, server \\ __MODULE__) when is_binary(reason),
+    do: event("halt", fields, server)
+
   @doc """
   The latest mode record: `{:ok, :armed | :disarmed, record}`, or
   `{:ok, :disarmed, nil}` when there is none.
@@ -549,6 +557,21 @@ defmodule Raxol.Broker.Journal do
           [{:mode, record}] -> {:ok, :disarmed, record}
           [] -> {:ok, :disarmed, nil}
         end
+      end)
+    end
+  end
+
+  @doc """
+  The reasons strategy runners are paused for now, sorted: a `halt` record
+  pauses (`#{inspect(Map.keys(@pauses))}`), an `armed` record ends the
+  drawdown pause. A runner reads them when it starts, so a runner restarted
+  or added during a pause starts paused.
+  """
+  @spec pauses(server()) :: {:ok, [atom()]} | {:error, term()}
+  def pauses(server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        {:ok, server |> :ets.match({{:pause, :"$1"}, :_}) |> Enum.map(&hd/1) |> Enum.sort()}
       end)
     end
   end
@@ -1047,8 +1070,18 @@ defmodule Raxol.Broker.Journal do
     end
   end
 
-  defp index_event(table, %{"kind" => "broker", "type" => "mode"} = record),
-    do: :ets.insert(table, {:mode, record})
+  # An armed record ends the drawdown pause: only a fresh arm resumes.
+  defp index_event(table, %{"kind" => "broker", "type" => "mode"} = record) do
+    if record["mode"] == "armed", do: :ets.delete(table, {:pause, :drawdown_halt})
+    :ets.insert(table, {:mode, record})
+  end
+
+  defp index_event(table, %{"kind" => "broker", "type" => "halt", "reason" => reason}) do
+    case Map.fetch(@pauses, reason) do
+      {:ok, pause} -> :ets.insert(table, {{:pause, pause}, reason})
+      :error -> true
+    end
+  end
 
   defp index_event(_table, _record), do: true
 

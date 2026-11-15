@@ -11,9 +11,10 @@ defmodule Raxol.Broker.Executor.StructureTest do
       may reference `Place.run`, `ReviewReceipt.issue`, `Journal.claim` and
       `Port.MCP.start`, whether as a remote call, a remote capture, or a
       literal `Module, :function` pair (an MFA handed to `spawn/3`,
-      `Task.async/3`, a child spec and the like). Only `Place` and `Review`
-      call `Port.call/4`; only `Port.MCP` and the read-only broker client
-      call `Raxol.MCP.Client.call_tool`.
+      `Task.async/3`, a child spec and the like). Only `Place`, `Review` and
+      `Read` (which permits `:read` tools only) call `Port.call/4`; only
+      `Port.MCP` and the read-only broker client call
+      `Raxol.MCP.Client.call_tool`.
     * Dynamic dispatch is banned, because a call graph cannot see through
       it: no `:erlang.apply/2,3` (`Kernel.apply/2,3` compiles to it), no
       `:erlang.make_fun/3` (`Function.capture/3` compiles to it), no remote
@@ -44,7 +45,7 @@ defmodule Raxol.Broker.Executor.StructureTest do
   """
   use ExUnit.Case, async: true
 
-  alias Raxol.Broker.Executor.{Place, Review, ReviewReceipt}
+  alias Raxol.Broker.Executor.{Place, Read, Review, ReviewReceipt}
   alias Raxol.Broker.Journal
 
   @executor Raxol.Broker.Executor
@@ -365,8 +366,9 @@ defmodule Raxol.Broker.Executor.StructureTest do
     assert callers(facts, &sink?/1) == [@executor]
   end
 
-  test "only Review and Place call Port.call/4", %{facts: facts} do
-    assert Enum.sort(callers(facts, &match?({@port, :call, 4}, &1))) == Enum.sort([Place, Review])
+  test "only Review, Place and Read call Port.call/4", %{facts: facts} do
+    assert Enum.sort(callers(facts, &match?({@port, :call, 4}, &1))) ==
+             Enum.sort([Place, Read, Review])
   end
 
   test "only Mode writes an armed record", %{facts: facts} do

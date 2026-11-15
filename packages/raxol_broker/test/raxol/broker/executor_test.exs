@@ -120,6 +120,10 @@ defmodule Raxol.Broker.ExecutorTest do
     records
   end
 
+  # Review, order and cancel calls; the reads the executor makes to build
+  # its context are left out.
+  defp sent(server), do: Enum.reject(Fake.calls(server), &match?({"get_" <> _, _}, &1))
+
   defp group(path, group_id), do: Enum.filter(records(path), &(&1["group_id"] == group_id))
   defp types(path, group_id), do: Enum.map(group(path, group_id), & &1["type"])
 
@@ -164,7 +168,7 @@ defmodule Raxol.Broker.ExecutorTest do
       assert intent_record["mode"] == "armed"
 
       assert [{"review_equity_order", review}, {"place_equity_order", place}] =
-               Fake.calls(ctx.server)
+               sent(ctx.server)
 
       refute Map.has_key?(review, "ref_id")
       assert place["ref_id"] == Place.ref_id("int-allow")
@@ -279,26 +283,63 @@ defmodule Raxol.Broker.ExecutorTest do
   end
 
   describe "day window" do
-    test "is a rolling 24 hours from the executor's clock, with no caller input", ctx do
-      refute function_exported?(Executor, :run, 4)
-      refute function_exported?(Executor, :approve, 4)
-
-      {:ok, now} = Agent.start_link(fn -> DateTime.add(@t0, -23, :hour) end)
+    # Two $250 orders against a $400 cap: the second is denied until the day
+    # turns at New York midnight.
+    defp day_window!(ctx, start) do
+      {:ok, now} = Agent.start_link(fn -> start end)
       clock = fn -> Agent.get(now, & &1) end
       restart_journal!(ctx, clock: clock)
       executor = start_executor!(ctx, policy: policy("1000", "400"), clock: clock)
+      {executor, fn at -> Agent.update(now, fn _ -> at end) end}
+    end
 
-      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("day-1"), context())
+    test "resets at New York midnight, not UTC midnight, before the spring DST change", ctx do
+      {executor, set} = day_window!(ctx, ~U[2026-03-07 23:30:00.000000Z])
+      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-1"), context())
 
-      # 23 hours later the first order still counts...
-      Agent.update(now, fn _ -> @t0 end)
+      # UTC has turned, New York (EST) has not.
+      set.(~U[2026-03-08 00:30:00.000000Z])
 
-      assert {:deny, _gid, {:daily_notional_cap, _}} =
-               Executor.run(executor, limit("day-2"), context())
+      assert {:deny, _, {:daily_notional_cap, _}} =
+               Executor.run(executor, limit("spring-2"), context())
 
-      # ...and 25 hours later it no longer does.
-      Agent.update(now, fn _ -> DateTime.add(@t0, 2, :hour) end)
-      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("day-3"), context())
+      # Midnight EST, the day DST starts at 02:00.
+      set.(~U[2026-03-08 05:00:00.000000Z])
+      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-3"), context())
+
+      # Same New York day after the change (EDT).
+      set.(~U[2026-03-09 03:59:00.000000Z])
+
+      assert {:deny, _, {:daily_notional_cap, _}} =
+               Executor.run(executor, limit("spring-4"), context())
+
+      # Midnight EDT.
+      set.(~U[2026-03-09 04:00:00.000000Z])
+      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-5"), context())
+    end
+
+    test "resets at New York midnight on both sides of the autumn DST change", ctx do
+      {executor, set} = day_window!(ctx, ~U[2026-10-31 23:30:00.000000Z])
+      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-1"), context())
+
+      set.(~U[2026-11-01 03:59:59.000000Z])
+
+      assert {:deny, _, {:daily_notional_cap, _}} =
+               Executor.run(executor, limit("fall-2"), context())
+
+      # Midnight EDT; DST ends at 02:00 that day.
+      set.(~U[2026-11-01 04:00:00.000000Z])
+      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-3"), context())
+
+      # Still Sunday in New York (EST) an hour past where EDT would have turned.
+      set.(~U[2026-11-02 04:30:00.000000Z])
+
+      assert {:deny, _, {:daily_notional_cap, _}} =
+               Executor.run(executor, limit("fall-4"), context())
+
+      # Midnight EST.
+      set.(~U[2026-11-02 05:00:00.000000Z])
+      assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-5"), context())
     end
   end
 
@@ -514,7 +555,7 @@ defmodule Raxol.Broker.ExecutorTest do
       assert {:error, {:journal_damaged, _}} =
                Executor.run(executor, limit("second"), context())
 
-      assert length(Fake.calls(ctx.server)) == 2
+      assert length(sent(ctx.server)) == 2
     end
 
     test "an order the journal cannot record is still :ok, with journaled: false", ctx do
@@ -870,7 +911,7 @@ defmodule Raxol.Broker.ExecutorTest do
 
       {:ok, cancel} = Intent.cancel("ord-1", provenance: :human, id: "live-cancel")
       assert Executor.run(executor, cancel, context()) == {:error, :not_armed}
-      assert Fake.calls(ctx.server) == []
+      assert sent(ctx.server) == []
     end
 
     test "an armed broker sends a human cancel and refuses a strategy's", ctx do
@@ -1153,7 +1194,7 @@ defmodule Raxol.Broker.ExecutorTest do
       assert_receive {:DOWN, ^ref, :process, ^executor, {:journal_down, {:writer_stalled, 50}}},
                      5_000
 
-      assert Fake.calls(ctx.server) == []
+      assert sent(ctx.server) == []
     end
   end
 
@@ -1322,7 +1363,7 @@ defmodule Raxol.Broker.ExecutorTest do
       assert {:error, {:tool_refused, "review_equity_order", :unknown}} =
                Executor.run(executor, limit("drifted-review"), context())
 
-      assert Fake.calls(fake) == []
+      assert sent(fake) == []
     end
 
     test "a served place tool the capture lacks is :unknown and logged at :error", ctx do

@@ -31,6 +31,9 @@ defmodule Raxol.Broker.MCP.Fake do
     * `:quotes` - `%{symbol => price}`; `get_equity_quotes` and every review
       quote it. A symbol not listed is omitted from the answer.
     * `:positions` - maps, answered by `get_equity_positions`.
+    * `:portfolio` - the map `get_portfolio` answers (default `%{"equity"
+      => "100000", "adjusted_equity_previous_close" => "100000"}`);
+      `portfolio/2` replaces it.
     * `:alerts` - fired alerts, answered by `get_alert_log`.
     * `:warnings` - the `"alerts"` every `review_*` returns (default `[]`).
     * `:reject` - symbols whose `place_*` answers `isError: true`.
@@ -103,6 +106,7 @@ defmodule Raxol.Broker.MCP.Fake do
   # A reserved `.test` host: nothing real answers it, so a spec that lost its
   # `:exchange` cannot reach a brokerage either.
   @url "https://fake.broker.test/mcp"
+  @portfolio %{"equity" => "100000", "adjusted_equity_previous_close" => "100000"}
 
   @recordings Path.expand("../../../../priv/robinhood", __DIR__)
 
@@ -120,6 +124,7 @@ defmodule Raxol.Broker.MCP.Fake do
     :positions,
     :alerts,
     :warnings,
+    :portfolio,
     :reject,
     :trade_approvals,
     :order_states,
@@ -152,6 +157,7 @@ defmodule Raxol.Broker.MCP.Fake do
 
     %{
       account: string!(Keyword.get(opts, :account, "FAKE-0001"), :account),
+      portfolio: portfolio!(Keyword.get(opts, :portfolio, @portfolio)),
       quotes: quotes!(Keyword.get(opts, :quotes, %{})),
       order_states: states!(Keyword.get(opts, :order_states, ["queued"])),
       trade_approvals: boolean!(Keyword.get(opts, :trade_approvals, false), :trade_approvals),
@@ -208,6 +214,10 @@ defmodule Raxol.Broker.MCP.Fake do
   @doc "Replace the warnings every `review_*` returns."
   @spec warnings(pid(), [String.t()]) :: :ok
   def warnings(fake, list) when is_list(list), do: Agent.update(fake, &%{&1 | warnings: list})
+
+  @doc "Replace the map `get_portfolio` answers."
+  @spec portfolio(pid(), map()) :: :ok
+  def portfolio(fake, map), do: Agent.update(fake, &%{&1 | portfolio: portfolio!(map)})
 
   @doc "Append faults (same forms as the scenario's `:faults`)."
   @spec inject(pid(), [tuple()]) :: :ok
@@ -521,6 +531,8 @@ defmodule Raxol.Broker.MCP.Fake do
 
   defp tool("get_alert_log", _args, state), do: ok(%{"alerts" => state.alerts}, state)
 
+  defp tool("get_portfolio", _args, state), do: ok(state.portfolio, state)
+
   defp tool("get_equity_orders", _args, state) do
     orders =
       Map.new(state.orders, fn {ref, order} -> {ref, advance(order, state.order_states)} end)
@@ -663,6 +675,11 @@ defmodule Raxol.Broker.MCP.Fake do
         ArgumentError,
         "a quote price must be a string, integer or Decimal, got #{inspect(price)}"
       )
+
+  defp portfolio!(map) when is_map(map), do: map
+
+  defp portfolio!(other),
+    do: raise(ArgumentError, "portfolio must be a map, got #{inspect(other)}")
 
   defp boolean!(value, _key) when is_boolean(value), do: value
 

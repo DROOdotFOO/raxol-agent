@@ -14,7 +14,7 @@ defmodule Raxol.Broker.Snapshot do
   `"buy SYM 2 @ 10.50"`.
   """
 
-  alias Raxol.Broker.{Feed, Intent, Journal, Mode, Policy, Response}
+  alias Raxol.Broker.{Feed, Intent, Journal, MarketCalendar, Mode, Policy, Response}
   alias Raxol.Broker.MCP.Client
   alias Raxol.Broker.Policy.Context
 
@@ -147,7 +147,8 @@ defmodule Raxol.Broker.Snapshot do
     %Context{
       policy: Keyword.fetch!(opts, :policy),
       quotes: quotes,
-      today_notional: counter(Journal.today_notional(DateTime.add(now, -24, :hour), journal)),
+      market_session: MarketCalendar.session(now),
+      today_notional: counter(Journal.today_notional(MarketCalendar.day_start(now), journal)),
       orders_last_minute: counter(Journal.orders_last_minute(now, journal))
     }
   end

@@ -21,10 +21,21 @@ defmodule Raxol.Broker.Strategy.Runner do
   The context sent with each intent carries the last quote price of every
   symbol the runner has seen.
 
+  ## Pauses
+
+  The pauses in force are the journal's (`Raxol.Broker.Journal.pauses/1`):
+  the runner reads them when it starts and before every retry, and is also
+  told of a pause or resume at once (`{:pause, reason}`, `{:resume,
+  reason}`). A runner restarted, or a strategy added, during a pause starts
+  paused. A paused runner ignores feed messages and sends no pending intent;
+  when the last pause ends it sends them. A journal whose pauses cannot be
+  read pauses the runner too (`:pauses_unreadable`) until a retry reads
+  them.
+
   The runner registers itself in the strategy supervisor's registry under
-  its strategy id, with `%{id, strategy, params, symbols, status}` as the
-  value, so it is found without being called. It subscribes to the feed
-  with a cast, so a feed busy polling never delays its start.
+  its strategy id, with `%{id, strategy, params, symbols, status, paused}`
+  as the value, so it is found without being called. It subscribes to the
+  feed with a cast, so a feed busy polling never delays its start.
 
   ## Options
 
@@ -57,7 +68,8 @@ defmodule Raxol.Broker.Strategy.Runner do
           strategy: spec["strategy"],
           params: spec["params"],
           symbols: module.symbols(model),
-          status: :running
+          status: :running,
+          paused: []
         }
 
         name = {:via, Registry, {Keyword.fetch!(config, :registry), id, info}}
@@ -77,8 +89,10 @@ defmodule Raxol.Broker.Strategy.Runner do
       model: model,
       journal: Keyword.get(config, :journal, Journal),
       executor: Keyword.get(config, :executor, Executor),
+      registry: Keyword.fetch!(config, :registry),
       retry_ms: Keyword.get(config, :retry_ms, @default_retry_ms),
       quotes: %{},
+      paused: [],
       retry: nil
     }
 
@@ -87,17 +101,60 @@ defmodule Raxol.Broker.Strategy.Runner do
   end
 
   @impl GenServer
-  def handle_continue(:recover, state), do: {:noreply, send_pending(state)}
+  def handle_continue(:recover, state),
+    do: {:noreply, state |> refresh_pauses() |> send_unless_paused()}
 
+  # A paused runner ignores feed messages: its strategy sees no quote and
+  # emits nothing until every reason it was paused for is resumed.
   @impl GenServer
+  def handle_info({:quote, _symbol, _quote}, %{paused: [_ | _]} = state),
+    do: {:noreply, state}
+
   def handle_info({:quote, symbol, %{last: price}} = message, state) do
     {model, intents} = state.module.update(message, state.model)
     state = %{state | model: model, quotes: Map.put(state.quotes, symbol, price)}
     {:noreply, Enum.reduce(intents, state, &emit/2)}
   end
 
-  def handle_info(:retry, state), do: {:noreply, send_pending(%{state | retry: nil})}
+  def handle_info({:pause, reason}, state),
+    do: {:noreply, paused(state, Enum.sort(Enum.uniq([reason | state.paused])))}
+
+  def handle_info({:resume, reason}, state),
+    do: {:noreply, state |> paused(List.delete(state.paused, reason)) |> send_unless_paused()}
+
+  def handle_info(:retry, state),
+    do: {:noreply, %{state | retry: nil} |> refresh_pauses() |> send_unless_paused()}
+
   def handle_info(_message, state), do: {:noreply, state}
+
+  # Adds the journal's pauses to the ones the runner was told of; only a
+  # `{:resume, reason}` ends one. A successful read clears
+  # `:pauses_unreadable`.
+  defp refresh_pauses(state) do
+    case Journal.pauses(state.journal) do
+      {:ok, reasons} ->
+        paused(state, Enum.uniq(reasons ++ List.delete(state.paused, :pauses_unreadable)))
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Broker.Strategy] #{state.id}: pauses unreadable, pausing: " <>
+            inspect(reason, structs: false)
+        )
+
+        state |> paused(Enum.uniq([:pauses_unreadable | state.paused])) |> retry_later()
+    end
+  end
+
+  defp send_unless_paused(%{paused: []} = state), do: send_pending(state)
+  defp send_unless_paused(state), do: state
+
+  # The registry value carries the pause, so it is read without a call.
+  defp paused(state, reasons) do
+    reasons = Enum.sort(reasons)
+    status = if reasons == [], do: :running, else: :paused
+    _ = Registry.update_value(state.registry, state.id, &%{&1 | status: status, paused: reasons})
+    %{state | paused: reasons}
+  end
 
   defp emit(intent, state) do
     case Journal.emit(intent, state.id, state.journal) do
