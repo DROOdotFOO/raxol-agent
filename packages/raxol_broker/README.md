@@ -44,7 +44,7 @@ The rendered file is:
   max_orders_per_minute: :unset,
   drawdown_halt: :unset,
   llm_ask_above: :unset,
-  ask_timeout: 30_000
+  ask_timeout: 300_000
 ]
 ```
 
@@ -62,7 +62,7 @@ The rendered file is:
 | `max_orders_per_minute` | `:unset`, or an integer from `1` to `10_000`. |
 | `drawdown_halt` | `:unset`, or a `Decimal` greater than zero and less than or equal to one: the share of the start-of-day value today's loss may reach. |
 | `llm_ask_above` | `:unset`, or a `Decimal` strictly greater than zero. |
-| `ask_timeout` | An integer number of milliseconds from `1` to `4_294_967_295`; the generated default is `30_000` (30 seconds). |
+| `ask_timeout` | An integer number of milliseconds from `1` to `4_294_967_295`; the generated default is `300_000` (five minutes). |
 
 `:unset` means that the corresponding optional threshold is not configured and
 its rule abstains, except `llm_ask_above`, where `:unset` asks for every
@@ -298,6 +298,54 @@ A person answers an ASK later with `approve(executor, token, "name")`,
 Only equity orders (`review_equity_order`, `place_equity_order`) and equity
 cancels are mapped until the generated tool adapters land; options and
 advanced orders are refused with `{:error, {:no_adapter, kind}}`.
+
+## Strategies
+
+A strategy (`Raxol.Broker.Strategy`) is a pure state machine: `init/1`
+takes its parameters, `update/2` takes a feed message and returns the
+intents to send, and `symbols/1` names the symbols it wants quotes for. It
+never calls a tool. `Raxol.Broker.Strategy.DipBuy` is the reference: when
+a symbol's last price falls `dip` (default 2%) below the highest price seen
+since its last buy, it emits one limit buy in whole shares, priced at that
+last price, for at most `usd` dollars.
+
+```sh
+mix raxol.broker.strategy add dip_buy --symbol F --usd 25 --dip 0.02
+mix raxol.broker.strategy list
+mix raxol.broker.strategy stop dip_buy-F
+```
+
+Each added strategy runs in a `Raxol.Broker.Strategy.Runner` under
+`Raxol.Broker.Strategy.Supervisor`. The runner journals every intent
+(`emit` record) before handing it to the executor and marks it once the
+executor answers (`dispatch` record). A runner that restarts re-sends each
+intent it emitted and never saw answered, with the same intent id, so the
+executor's idempotency check and the `ref_id` derived from that id keep it
+to one order.
+
+Adding and stopping are journaled, so the broker starts every added
+strategy when it starts. The task acts on the broker running in its own VM
+(`iex -S mix`) when there is one, and otherwise opens the journal itself;
+the journal's writer lock refuses it while the broker runs in another
+process.
+
+## Quote feed
+
+`Raxol.Broker.Feed` polls `get_equity_quotes` through the read-only session
+for its subscribers' symbols and sends each runner `{:quote, symbol,
+%{last: _, bid: _, ask: _}}`. Every poll takes a grant from the shared
+`Raxol.Broker.Feed.Bucket` (at most 10 in any 60 seconds by default); a
+`429` or `5xx` backs off with jittered doubling from 1 s up to 5 minutes.
+
+```elixir
+children = [
+  {Raxol.Broker.Supervisor,
+   executor: [policy: policy, account_number: account, session: session],
+   client: [],
+   feed: [interval: 15_000, bucket: [limit: 10, window: 60_000]],
+   strategies: []}
+]
+```
 
 ## Decision journal
 

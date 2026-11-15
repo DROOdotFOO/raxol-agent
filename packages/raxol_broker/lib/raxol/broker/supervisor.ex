@@ -13,6 +13,8 @@ defmodule Raxol.Broker.Supervisor do
   decisions starts after `Raxol.Broker.Journal` and restarts with it. The
   journal is first: a process that could place an order must never outlive it.
 
+      Journal, Executor, MCP.Client, Feed.Bucket, Feed, Strategy.Supervisor
+
   ## Options
 
     * `:name` - supervisor name, default `#{inspect(__MODULE__)}`
@@ -22,6 +24,15 @@ defmodule Raxol.Broker.Supervisor do
       `:journal` is always this supervisor's journal: passing a different one
       makes `start_link/1` return `{:error, {:journal_mismatch, given}}`. Its `:name`
       defaults to `Raxol.Broker.Executor`. Omit it to run the journal alone.
+    * `:client` - options for the read-only `Raxol.Broker.MCP.Client`
+      (`:name` defaults to that module). Omit it to start none.
+    * `:feed` - options for `Raxol.Broker.Feed` (`:name` defaults to that
+      module, `:client` to the client's name), plus `:bucket`, options for
+      the shared `Raxol.Broker.Feed.Bucket`. Omit it to start no feed.
+    * `:strategies` - options for `Raxol.Broker.Strategy.Supervisor`
+      (`:journal`, `:executor` and `:feed` default to this supervisor's).
+      When given, every strategy the journal holds as added is started once
+      the supervisor is up.
 
   ## Restart semantics
 
@@ -44,7 +55,9 @@ defmodule Raxol.Broker.Supervisor do
 
   use Supervisor
 
-  alias Raxol.Broker.{Executor, Journal}
+  alias Raxol.Broker.{Executor, Feed, Journal}
+  alias Raxol.Broker.MCP.Client
+  alias Raxol.Broker.Strategy
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []) do
@@ -60,17 +73,21 @@ defmodule Raxol.Broker.Supervisor do
 
     case executor_children(opts) do
       {:ok, executor} ->
-        Supervisor.init([{Journal, journal_opts} | executor], strategy: :rest_for_one)
+        children =
+          [{Journal, journal_opts} | executor] ++
+            client_children(opts) ++ feed_children(opts) ++ strategy_children(opts)
+
+        Supervisor.init(children, strategy: :rest_for_one)
 
       {:error, _reason} = error ->
         error
     end
   end
 
-  defp executor_children(opts) do
-    journal = opts |> Keyword.get(:journal, []) |> Keyword.get(:name, Journal)
-    executor_children(Keyword.fetch(opts, :executor), journal)
-  end
+  defp journal_name(opts), do: opts |> Keyword.get(:journal, []) |> Keyword.get(:name, Journal)
+
+  defp executor_children(opts),
+    do: executor_children(Keyword.fetch(opts, :executor), journal_name(opts))
 
   defp executor_children(:error, _journal), do: {:ok, []}
 
@@ -89,4 +106,60 @@ defmodule Raxol.Broker.Supervisor do
         {:ok, [{Executor, executor_opts}]}
     end
   end
+
+  defp client_children(opts) do
+    case Keyword.fetch(opts, :client) do
+      {:ok, client_opts} -> [{Client, Keyword.put_new(client_opts, :name, Client)}]
+      :error -> []
+    end
+  end
+
+  defp feed_children(opts) do
+    case Keyword.fetch(opts, :feed) do
+      {:ok, feed_opts} ->
+        {bucket_opts, feed_opts} = Keyword.pop(feed_opts, :bucket, [])
+        bucket = Keyword.get(bucket_opts, :name, Feed.Bucket)
+        client = opts |> Keyword.get(:client, []) |> Keyword.get(:name, Client)
+
+        feed_opts =
+          feed_opts
+          |> Keyword.put_new(:name, Feed)
+          |> Keyword.put_new(:client, client)
+          |> Keyword.put(:bucket, bucket)
+
+        [{Feed.Bucket, Keyword.put(bucket_opts, :name, bucket)}, {Feed, feed_opts}]
+
+      :error ->
+        []
+    end
+  end
+
+  defp strategy_children(opts) do
+    case Keyword.fetch(opts, :strategies) do
+      {:ok, strategy_opts} ->
+        executor = opts |> Keyword.get(:executor, []) |> Keyword.get(:name, Executor)
+        feed = if Keyword.has_key?(opts, :feed), do: feed_name(opts)
+
+        strategy_opts =
+          strategy_opts
+          |> Keyword.put(:journal, journal_name(opts))
+          |> Keyword.put_new(:executor, executor)
+          |> Keyword.put_new(:feed, feed)
+          |> Keyword.put_new(:name, Strategy.Supervisor)
+
+        restore = [supervisor: strategy_opts[:name], journal: journal_name(opts)]
+
+        [
+          {Strategy.Supervisor, strategy_opts},
+          Supervisor.child_spec({Task, fn -> Strategy.Supervisor.restore(restore) end},
+            id: :restore_strategies
+          )
+        ]
+
+      :error ->
+        []
+    end
+  end
+
+  defp feed_name(opts), do: opts |> Keyword.get(:feed, []) |> Keyword.get(:name, Feed)
 end
