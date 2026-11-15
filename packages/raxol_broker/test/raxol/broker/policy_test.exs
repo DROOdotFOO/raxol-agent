@@ -314,8 +314,8 @@ defmodule Raxol.Broker.PolicyTest do
     end
   end
 
-  test "cancels are allowed even when every rule would deny" do
-    {:ok, cancel} = Intent.cancel("order-1", provenance: {:untrusted, "email"})
+  test "a human cancel is allowed even when every rule would deny" do
+    {:ok, cancel} = Intent.cancel("order-1", provenance: :human)
 
     ctx =
       context(
@@ -326,5 +326,14 @@ defmodule Raxol.Broker.PolicyTest do
       )
 
     assert {:allow, ^cancel} = Policy.evaluate(cancel, ctx)
+  end
+
+  test "a cancel from a strategy, a model or an untrusted source is denied" do
+    for provenance <- [:strategy, :llm, {:untrusted, "email"}] do
+      {:ok, cancel} = Intent.cancel("order-1", provenance: provenance)
+
+      assert {:deny, {:cancel_provenance, ^provenance}} =
+               Policy.evaluate(cancel, context())
+    end
   end
 end

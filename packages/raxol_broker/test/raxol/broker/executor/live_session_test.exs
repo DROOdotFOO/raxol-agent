@@ -62,7 +62,7 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
 
   test "the session carries the stored credential's bearer", ctx do
     executor = executor!(ctx)
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
 
     assert {:ok, %{status: :placed}} = place!(executor, "live-a")
     assert AuthServer.refresh_count(ctx.auth) == 0
@@ -71,7 +71,7 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
   test "a token refused at connect is refreshed, stored, and the session reconnects", ctx do
     Fake.accept(ctx.fake, [ctx.refreshed["access_token"]])
     executor = executor!(ctx)
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
 
     assert AuthServer.refresh_count(ctx.auth) == 1
     assert {:ok, stored} = CredentialStore.fetch(ctx.store)

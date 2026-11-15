@@ -369,6 +369,10 @@ defmodule Raxol.Broker.Executor.StructureTest do
     assert Enum.sort(callers(facts, &match?({@port, :call, 4}, &1))) == Enum.sort([Place, Review])
   end
 
+  test "only Mode writes an armed record", %{facts: facts} do
+    assert callers(facts, &match?({Journal, :record_armed, _}, &1)) == [Raxol.Broker.Mode]
+  end
+
   test "nothing calls Port.MCP.call/4 directly; it is reached only through Port",
        %{facts: facts} do
     assert callers(facts, &match?({@port_mcp, :call, _}, &1)) == []

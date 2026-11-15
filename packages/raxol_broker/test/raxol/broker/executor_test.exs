@@ -48,7 +48,7 @@ defmodule Raxol.Broker.ExecutorTest do
     name = :"broker_exec_journal_#{System.unique_integer([:positive])}"
     journal_opts = [name: name, path: path, clock: fn -> @t0 end]
     start_journal!(journal_opts)
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, name)
+    :ok = Journal.record_armed(%{"by" => "test"}, name)
 
     {:ok, journal: name, journal_opts: journal_opts, path: path, server: Fake.start()}
   end
@@ -858,9 +858,9 @@ defmodule Raxol.Broker.ExecutorTest do
       :ok
     end
 
-    test "live mode starts; a disarmed broker sends no order, cancels still go through", ctx do
+    test "live mode starts; a disarmed broker sends no order and no cancel", ctx do
       executor = start_executor!(ctx, mode: :live)
-      :ok = Journal.put_mode(:disarmed, %{"by" => "test"}, ctx.journal)
+      :ok = Journal.record_disarmed(%{"by" => "test"}, ctx.journal)
 
       assert Executor.run(executor, limit("live-1"), context()) == {:error, :not_armed}
       [gid] = groups_for(ctx.path, "live-1")
@@ -869,9 +869,31 @@ defmodule Raxol.Broker.ExecutorTest do
       assert List.last(group(ctx.path, gid))["reason"] == "not_armed"
 
       {:ok, cancel} = Intent.cancel("ord-1", provenance: :human, id: "live-cancel")
-      assert {:ok, %{status: :failed}} = Executor.run(executor, cancel, context())
-      assert Fake.calls(ctx.server, "place_") == []
+      assert Executor.run(executor, cancel, context()) == {:error, :not_armed}
+      assert Fake.calls(ctx.server) == []
+    end
+
+    test "an armed broker sends a human cancel and refuses a strategy's", ctx do
+      executor = start_executor!(ctx, mode: :live)
+
+      {:ok, human} = Intent.cancel("ord-1", provenance: :human, id: "human-cancel")
+      assert {:ok, %{status: :failed}} = Executor.run(executor, human, context())
+
+      {:ok, strategy} = Intent.cancel("ord-2", provenance: :strategy, id: "strategy-cancel")
+
+      assert {:deny, _gid, {:cancel_provenance, :strategy}} =
+               Executor.run(executor, strategy, context())
+
       assert Fake.calls(ctx.server, "cancel_") == ["cancel_equity_order"]
+    end
+
+    test "the executor's status hides the session's bearer header", ctx do
+      bearer = "Bearer secret-#{System.unique_integer([:positive])}"
+      session = Fake.session(ctx.server) ++ [headers: [{"authorization", bearer}]]
+      executor = start_executor!(ctx, mode: :live, session: session)
+
+      status = inspect(:sys.get_status(executor), limit: :infinity, printable_limit: :infinity)
+      refute status =~ bearer
     end
 
     test "a disarm while a group is parked closes it as not_armed on approval", ctx do
@@ -879,7 +901,7 @@ defmodule Raxol.Broker.ExecutorTest do
       executor = start_executor!(ctx)
       assert {:ask, gid, _prompts} = Executor.run(executor, limit("park-disarm"), context())
 
-      :ok = Journal.put_mode(:disarmed, %{"by" => "test"}, ctx.journal)
+      :ok = Journal.record_disarmed(%{"by" => "test"}, ctx.journal)
       assert Executor.approve(executor, gid, "owner") == {:error, :not_armed}
       assert List.last(group(ctx.path, gid))["reason"] == "not_armed"
       assert Fake.calls(ctx.server, "place_") == []

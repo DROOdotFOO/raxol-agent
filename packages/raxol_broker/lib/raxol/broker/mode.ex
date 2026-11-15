@@ -56,7 +56,7 @@ defmodule Raxol.Broker.Mode do
   @spec disarm(String.t(), keyword()) :: :ok | {:error, term()}
   def disarm(reason, opts \\ []) when is_binary(reason) do
     fields = %{"reason" => reason, "by" => Keyword.get(opts, :by, "cli")}
-    Journal.put_mode(:disarmed, fields, Keyword.get(opts, :journal, Journal))
+    Journal.record_disarmed(fields, Keyword.get(opts, :journal, Journal))
   end
 
   @doc """
@@ -77,7 +77,7 @@ defmodule Raxol.Broker.Mode do
          {:ok, quotes} <- strategy_quotes(journal, client, policy),
          fields = record(policy, quotes, Keyword.get(opts, :by, "cli")),
          :ok <- confirmed(confirm.(summary(path, fields))),
-         :ok <- Journal.put_mode(:armed, fields, journal) do
+         :ok <- Journal.record_armed(fields, journal) do
       {:ok, fields}
     end
   end

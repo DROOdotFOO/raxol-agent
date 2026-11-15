@@ -38,7 +38,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
 
   defp runners(sup), do: :"#{sup}.Runners"
 
-  defp arm!(ctx), do: :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+  defp arm!(ctx), do: :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
 
   test "a fresh install journals intents as dry run and the Fake sees no place until armed",
        ctx do
@@ -145,6 +145,7 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
 
   test "stop terminates a runner blocked in the executor", ctx do
     test = self()
+    arm!(ctx)
 
     Fake.on_call(ctx.fake, "review_equity_order", fn _args ->
       send(test, :reviewing)

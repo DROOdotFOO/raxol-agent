@@ -49,7 +49,7 @@ defmodule Raxol.Broker.SnapshotTest do
   end
 
   test "the mode line follows the journal", ctx do
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     assert "mode: armed" in lines(ctx, nil)
   end
 

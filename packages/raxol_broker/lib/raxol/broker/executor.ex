@@ -157,8 +157,9 @@ defmodule Raxol.Broker.Executor do
       disarm, a review in flight): the group is closed as `not_armed`
       before `placing` and `{:error, :not_armed}` returned.
 
-  Cancels are exempt: they go through whatever the mode, so the kill switch
-  can cancel after disarming.
+  Cancels are gated like any other intent, and the policy allows a cancel
+  only with `:human` provenance, so neither a strategy nor model output can
+  cancel the owner's orders.
 
   The `:mode` option decides which sessions the port may reach.
   `:dry_run` (the default) refuses a live session before connecting
@@ -778,8 +779,16 @@ defmodule Raxol.Broker.Executor do
   @impl GenServer
   def format_status(status) do
     Map.new(status, fn
+      # `client_spec` and `session` carry the bearer header of a live session.
       {:state, %{} = state} ->
-        {:state, %{state | key: :redacted, credential: state.credential && :redacted}}
+        {:state,
+         %{
+           state
+           | key: :redacted,
+             credential: state.credential && :redacted,
+             client_spec: :redacted,
+             session: :redacted
+         }}
 
       other ->
         other
@@ -958,9 +967,7 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  # Cancels go through whatever the mode, so a kill can cancel after it
-  # disarms. Anything else needs the latest mode record to say armed.
-  defp armed?(_state, %Intent{kind: :cancel}), do: true
+  # Every intent, cancels included, needs the latest mode record to say armed.
   defp armed?(state, _intent), do: Mode.current(state.journal) == :armed
 
   defp port_up(%{port_status: :ready}), do: :ok
