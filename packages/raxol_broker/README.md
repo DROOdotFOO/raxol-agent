@@ -523,6 +523,17 @@ the catalog's write allowlist and is reachable only through
 `Raxol.Broker.Executor.Place`. The baseline kill-to-all-cancelled latency
 against the Fake is in `bench/kill_latency.md`.
 
+From another shell, `mix raxol.broker.kill --journal PATH` submits an empty,
+owner-checked 0600 `halt.request` in the private journal directory when the
+writer lock is held. Its presence blocks new orders and arming immediately.
+The broker's supervised `HaltRequest` polls every 100 ms, disarms, and runs
+the same kill path, including cancels and declines. No node cookie or RPC
+endpoint is exposed, and the file accepts no payload or trade operation.
+Submission is **not cancellation confirmation**: inspect the halt journal
+and the Robinhood app. If the executor is not ready, the marker stays until
+it connects; do not remove it to re-arm. Without a running broker, the task
+opens the journal and disarms only.
+
 `Raxol.Broker.Heartbeat` is the dead-man switch: with no beat within the
 policy's `dead_man_timeout` (24 hours by default, `:off` to disable) it
 journals `dead_man_pause` and pauses every strategy, cancelling nothing;

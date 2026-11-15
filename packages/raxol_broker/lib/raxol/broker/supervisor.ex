@@ -81,13 +81,27 @@ defmodule Raxol.Broker.Supervisor do
         children =
           [{Journal, journal_opts} | executor] ++
             client_children(opts) ++
-            feed_children(opts) ++ strategy_children(opts) ++ heartbeat_children(opts)
+            feed_children(opts) ++
+            strategy_children(opts) ++
+            heartbeat_children(opts) ++
+            halt_request_children(opts)
 
         Supervisor.init(children, strategy: :rest_for_one)
 
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp halt_request_children(opts) do
+    executor = opts |> Keyword.get(:executor, []) |> Keyword.get(:name, Executor)
+    strategies = opts |> Keyword.get(:strategies, []) |> Keyword.get(:name, Strategy.Supervisor)
+    path = opts |> Keyword.get(:journal, []) |> Journal.path()
+
+    [
+      {Raxol.Broker.HaltRequest,
+       path: path, journal: journal_name(opts), executor: executor, strategies: strategies}
+    ]
   end
 
   defp journal_name(opts), do: opts |> Keyword.get(:journal, []) |> Keyword.get(:name, Journal)

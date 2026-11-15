@@ -253,6 +253,7 @@ defmodule Raxol.Broker.Journal do
          path when is_binary(path) <- path(opts) || {:error, :no_journal_path},
          {:ok, handle} <- open_store(path) do
       table = :ets.new(name, [:named_table, :ordered_set, :protected, read_concurrency: true])
+      :ets.insert(table, {:halt_request_path, Raxol.Broker.HaltRequest.path(path)})
 
       state = %{
         handle: handle,
@@ -575,7 +576,8 @@ defmodule Raxol.Broker.Journal do
   """
   @spec mode(server()) :: {:ok, :armed | :disarmed, map() | nil} | {:error, term()}
   def mode(server \\ __MODULE__) do
-    with :ok <- healthy(server) do
+    with :ok <- healthy(server),
+         false <- halt_pending?(server) do
       select(fn ->
         case :ets.lookup(server, :mode) do
           [{:mode, %{"mode" => "armed"} = record}] -> {:ok, :armed, record}
@@ -583,6 +585,18 @@ defmodule Raxol.Broker.Journal do
           [] -> {:ok, :disarmed, nil}
         end
       end)
+    else
+      true -> {:error, :halt_requested}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Whether a cross-process halt marker exists; unreadable state blocks arming."
+  @spec halt_pending?(server()) :: boolean()
+  def halt_pending?(server \\ __MODULE__) do
+    case select(fn -> :ets.lookup(server, :halt_request_path) end) do
+      [{:halt_request_path, path}] -> Raxol.Broker.HaltRequest.pending?(path)
+      _unreadable -> true
     end
   end
 

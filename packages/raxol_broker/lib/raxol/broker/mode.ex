@@ -86,6 +86,7 @@ defmodule Raxol.Broker.Mode do
     with {:ok, policy} <- policy(path),
          :ok <- verified(journal),
          :ok <- connected(client),
+         false <- Journal.halt_pending?(journal),
          :ok <- AccountPin.check(read(client, "get_accounts", %{}), account),
          {:ok, approvals?} <- approval_setting(client, account),
          {:ok, quotes} <- strategy_quotes(journal, client, policy),
@@ -95,6 +96,9 @@ defmodule Raxol.Broker.Mode do
       supervisor = Keyword.get(opts, :strategies, Strategy.Supervisor)
       Strategy.Supervisor.resume_all(:drawdown_halt, supervisor: supervisor)
       {:ok, fields}
+    else
+      true -> {:error, :halt_requested}
+      {:error, _reason} = error -> error
     end
   end
 
