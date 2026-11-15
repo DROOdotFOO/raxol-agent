@@ -403,9 +403,13 @@ When the executor first connects, and every five minutes after
 
 | Open outcome | Read | Resolution |
 | --- | --- | --- |
-| `:unknown` or `crash_outcome_unknown` | `get_equity_orders` (agent-initiated, since its day), matched on the `ref_id` sent | `placed` keeps counting; `absent` (not in a complete listing) stops counting and frees the intent |
-| `:pending_approval` | `get_trade_approvals` with the `approval_ids` from the place response | `approved` keeps counting; `declined` or `expired` releases the cap and frees the intent; still pending stays open |
+| `:unknown` or `crash_outcome_unknown` | every page of `get_equity_orders` (agent-initiated, since its day), matched on the `ref_id` sent | `placed` keeps counting; `absent` stops counting and frees the intent, only when every page was read, the `placing` is at least two minutes old (`:reconcile_min_age_ms`), and the review did not ask for the owner's approval |
+| `:pending_approval` | `get_trade_approvals` with the `approval_ids` from the place response, 100 per call | `approved` keeps counting; `declined` or `expired` releases the cap and frees the intent; still pending stays open |
 
+An order made from an approved proposal carries the approval id, not the
+`ref_id` sent, so an unknown order whose review asked for approval is never
+taken for absent: it keeps counting toward the daily cap. Only the journal's
+claimant, the executor, may write a `resolve` record.
 `Raxol.Broker.Executor.reconcile/2` runs it on demand.
 
 ## Kill switch and dead-man switch

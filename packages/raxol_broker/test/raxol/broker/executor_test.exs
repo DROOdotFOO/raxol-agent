@@ -691,7 +691,7 @@ defmodule Raxol.Broker.ExecutorTest do
       # reconcile finds no order with its ref_id, releases the cap and frees
       # the intent, which places once, with the same ref_id.
       Fake.on_call(ctx.server, "place_equity_order", fn _args -> :answer end)
-      executor = start_executor!(ctx)
+      executor = start_executor!(ctx, reconcile_min_age_ms: 0)
       assert {:ok, []} = Executor.reconcile(executor)
       assert Journal.today_notional(@day, ctx.journal) == {:ok, d("0")}
       assert [%{"resolution" => "absent", "group_id" => ^gid}] = resolves(ctx.path)

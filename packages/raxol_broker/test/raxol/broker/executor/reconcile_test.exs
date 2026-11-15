@@ -51,15 +51,48 @@ defmodule Raxol.Broker.Executor.ReconcileTest do
     assert run(ctx, "late") == {:ok, :duplicate}
   end
 
-  test "an unknown order the broker never got is resolved absent and released" do
-    ctx = broker!(faults: [{"place_equity_order", {:http, 503}}])
+  test "an unknown order the broker never got is resolved absent once old enough" do
+    {:ok, clock} = Agent.start_link(fn -> Broker.t0() end)
+
+    ctx =
+      broker!([faults: [{"place_equity_order", {:http, 503}}]],
+        clock: fn -> Agent.get(clock, & &1) end
+      )
 
     assert {:ok, %{status: :unknown}} = run(ctx, "lost")
     assert Decimal.equal?(notional(ctx), d("250"))
 
+    # Still young: it may be on its way.
+    assert {:ok, []} = Executor.reconcile(ctx.executor)
+    assert Decimal.equal?(notional(ctx), d("250"))
+
+    Agent.update(clock, &DateTime.add(&1, 120, :second))
     assert {:ok, [%{resolution: "absent"}]} = Executor.reconcile(ctx.executor)
     assert Decimal.equal?(notional(ctx), d("0"))
     assert {:ok, %{status: :placed}} = run(ctx, "lost")
+  end
+
+  test "an unknown order whose review asked for approval is never taken for absent" do
+    ctx =
+      broker!([trade_approvals: true, faults: [{"place_equity_order", {:http, 503}}]],
+        reconcile_min_age_ms: 0
+      )
+
+    assert {:ok, %{status: :unknown}} = run(ctx, "proposal-lost")
+    assert {:ok, []} = Executor.reconcile(ctx.executor)
+    assert Decimal.equal?(notional(ctx), d("250"))
+
+    assert {:ok, [%{"approval_required" => true, "status" => "unknown"}]} =
+             Journal.unresolved(ctx.journal)
+  end
+
+  test "only the executor may resolve a group" do
+    ctx = broker!([faults: [{"place_equity_order", {:http, 503}}]], reconcile_min_age_ms: 0)
+    assert {:ok, %{status: :unknown}} = run(ctx, "forged")
+    {:ok, [%{"group_id" => gid}]} = Journal.unresolved(ctx.journal)
+
+    assert Journal.resolve(gid, "absent", %{}, ctx.journal) == {:error, {:not_claimant, gid}}
+    assert Decimal.equal?(notional(ctx), d("250"))
   end
 
   test "a declined or expired proposal releases the cap; an approved one keeps counting" do
@@ -97,7 +130,7 @@ defmodule Raxol.Broker.Executor.ReconcileTest do
   end
 
   test "resolutions survive a journal restart" do
-    ctx = broker!(faults: [{"place_equity_order", {:http, 503}}])
+    ctx = broker!([faults: [{"place_equity_order", {:http, 503}}]], reconcile_min_age_ms: 0)
     assert {:ok, %{status: :unknown}} = run(ctx, "lost")
     assert {:ok, [_]} = Executor.reconcile(ctx.executor)
 

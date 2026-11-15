@@ -163,14 +163,20 @@ defmodule Raxol.Broker.Executor do
   `:reconcile_ms` after:
 
     * an order journaled `:unknown`, or closed `crash_outcome_unknown`, is
-      looked up in `get_equity_orders` (agent-initiated, since its day) by
-      the `ref_id` its place sent. Found, it is resolved `placed` and keeps
-      counting; missing from a complete listing, `absent`: it stops counting
-      and its intent may be sent again (Robinhood deduplicates on `ref_id`
-      in any case);
+      looked up by the `ref_id` its place sent in every page of
+      `get_equity_orders` (agent-initiated, since its day). Found, it is
+      resolved `placed` and keeps counting. It is resolved `absent` (it
+      stops counting and its intent may be sent again; Robinhood
+      deduplicates on `ref_id` in any case) only when every page was read,
+      its `placing` is at least `:reconcile_min_age_ms` old (default
+      120_000, so an order still on its way is not taken for a lost one),
+      and its review did not ask for the owner's approval: an order made
+      from an approved proposal carries the approval id, not the `ref_id`,
+      so for those absence proves nothing and the group keeps counting;
     * a `:pending_approval` proposal is read back with `get_trade_approvals`
-      (`approval_ids`, from its place response). `approved` keeps counting;
-      `declined` or `expired` releases the cap and the intent.
+      (`approval_ids`, from its place response, 100 per call). `approved`
+      keeps counting; `declined` or `expired` releases the cap and the
+      intent.
 
   Each resolution is a `resolve` record in the journal.
 
@@ -241,6 +247,8 @@ defmodule Raxol.Broker.Executor do
     * `:reconcile_ms` - how often unresolved orders and proposals are
       reconciled after the first, same range (default 300_000); see
       "Reconciliation".
+    * `:reconcile_min_age_ms` - how old a `placing` must be before its order
+      may be resolved `absent`, a non-negative integer (default 120_000).
     * `:shutdown` - the child spec's shutdown bound in milliseconds, a
       positive integer (default `place_timeout + 5_000`).
     * `:strategies` - the `Raxol.Broker.Strategy.Supervisor` the drawdown
@@ -275,6 +283,7 @@ defmodule Raxol.Broker.Executor do
   @default_timeout 30_000
   @default_reconnect_ms 1_000
   @default_reconcile_ms 300_000
+  @default_reconcile_min_age_ms 120_000
   @max_backoff 60_000
   @clock_timeout 5_000
   # `receive after` and `Process.send_after/3` refuse anything above
@@ -471,14 +480,23 @@ defmodule Raxol.Broker.Executor do
     with {:ok, review_timeout} <- fetch_timeout(opts, :review_timeout),
          {:ok, place_timeout} <- fetch_timeout(opts, :place_timeout),
          {:ok, reconnect_ms} <- fetch_timeout(opts, :reconnect_ms, @default_reconnect_ms),
-         {:ok, reconcile_ms} <- fetch_timeout(opts, :reconcile_ms, @default_reconcile_ms) do
+         {:ok, reconcile_ms} <- fetch_timeout(opts, :reconcile_ms, @default_reconcile_ms),
+         {:ok, min_age} <- fetch_min_age(opts) do
       {:ok,
        %{
          review_timeout: review_timeout,
          place_timeout: place_timeout,
          reconnect_ms: reconnect_ms,
-         reconcile_ms: reconcile_ms
+         reconcile_ms: reconcile_ms,
+         reconcile_min_age_ms: min_age
        }}
+    end
+  end
+
+  defp fetch_min_age(opts) do
+    case Keyword.get(opts, :reconcile_min_age_ms, @default_reconcile_min_age_ms) do
+      ms when is_integer(ms) and ms >= 0 and ms <= @max_timeout -> {:ok, ms}
+      other -> {:error, {:invalid_timeout, :reconcile_min_age_ms, other}}
     end
   end
 
@@ -559,6 +577,7 @@ defmodule Raxol.Broker.Executor do
       busy: nil,
       queue: :queue.new(),
       reconcile_ms: config.reconcile_ms,
+      reconcile_min_age_ms: config.reconcile_min_age_ms,
       reconciled: false
     }
   end
@@ -1320,7 +1339,7 @@ defmodule Raxol.Broker.Executor do
 
   # -- Reconciliation -------------------------------------------------------------
 
-  @next_page ["next", "next_cursor", "cursor"]
+  @approvals_per_call 100
 
   defp reconcile_now(state, bound) do
     with :ok <- port_up(state),
@@ -1345,9 +1364,10 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  # Matched on the `ref_id` the place sent. An order missing from a listing
-  # that says it has more pages is left unresolved: absence is only
-  # concluded from a complete list.
+  # Matched on the `ref_id` the place sent, across every page. Absence is
+  # concluded only from a complete listing, for a `placing` old enough that
+  # the order cannot still be on its way, and never for a group whose
+  # review asked for the owner's approval (see "Reconciliation").
   defp resolve_unknown(_state, [], _bound), do: []
 
   defp resolve_unknown(state, [first | _] = entries, bound) do
@@ -1357,25 +1377,45 @@ defmodule Raxol.Broker.Executor do
       "created_at_gte" => String.slice(first["at"], 0, 10)
     }
 
-    case Read.call(state.port, state.catalog, "get_equity_orders", args, bound) do
-      {:ok, body} ->
-        complete? = not (is_map(body) and Enum.any?(@next_page, &(body[&1] not in [nil, ""])))
-        by_ref = body |> Response.list(["orders", "results"]) |> Map.new(&{order_ref(&1), &1})
+    case Read.listing(
+           state.port,
+           state.catalog,
+           "get_equity_orders",
+           args,
+           ["orders", "results"],
+           bound
+         ) do
+      {:ok, orders} ->
+        by_ref = orders |> Enum.filter(&is_map/1) |> Map.new(&{order_ref(&1), &1})
+        now = now(state.clock)
 
         Enum.flat_map(entries, fn entry ->
           case Map.fetch(by_ref, Place.ref_id(entry["intent_id"])) do
             {:ok, order} -> [{entry, "placed", order_detail(order)}]
-            :error when complete? -> [{entry, "absent", %{}}]
-            :error -> []
+            :error -> if absent?(state, entry, now), do: [{entry, "absent", %{}}], else: []
           end
         end)
 
       {:error, reason} ->
         Logger.warning(
-          "[Broker.Executor] reconcile: orders unreadable: #{inspect(reason, structs: false)}"
+          "[Broker.Executor] reconcile: orders unreadable or incomplete: " <>
+            inspect(reason, structs: false)
         )
 
         []
+    end
+  end
+
+  defp absent?(_state, %{"approval_required" => true}, _now), do: false
+  defp absent?(_state, _entry, {:error, _reason}), do: false
+
+  defp absent?(state, %{"at" => at}, {:ok, now}) do
+    case DateTime.from_iso8601(at) do
+      {:ok, placed_at, _offset} ->
+        DateTime.diff(now, placed_at, :millisecond) >= state.reconcile_min_age_ms
+
+      {:error, _reason} ->
+        false
     end
   end
 
@@ -1387,29 +1427,32 @@ defmodule Raxol.Broker.Executor do
   # Proposals are read back by the approval ids their place responses
   # carried; one still pending stays unresolved.
   defp resolve_pending(state, entries, bound) do
-    ids = for %{"approval_id" => id} <- entries, is_binary(id), do: id
+    entries
+    |> Enum.filter(&is_binary(&1["approval_id"]))
+    |> Enum.chunk_every(@approvals_per_call)
+    |> Enum.flat_map(&resolve_pending_chunk(state, &1, bound))
+  end
 
-    if ids == [] do
-      []
-    else
-      args = %{"account_number" => state.account, "approval_ids" => ids}
+  defp resolve_pending_chunk(state, entries, bound) do
+    ids = Enum.map(entries, & &1["approval_id"])
+    args = %{"account_number" => state.account, "approval_ids" => ids}
 
-      case Read.call(state.port, state.catalog, "get_trade_approvals", args, bound) do
-        {:ok, body} ->
-          approvals =
-            body
-            |> Response.list(["approvals", "results"])
-            |> Map.new(&{&1["approval_id"] || &1["id"], &1})
+    case Read.call(state.port, state.catalog, "get_trade_approvals", args, bound) do
+      {:ok, body} ->
+        approvals =
+          body
+          |> Response.list(["approvals", "results"])
+          |> Enum.filter(&is_map/1)
+          |> Map.new(&{&1["approval_id"] || &1["id"], &1})
 
-          Enum.flat_map(entries, &approval_resolution(&1, approvals[&1["approval_id"]]))
+        Enum.flat_map(entries, &approval_resolution(&1, approvals[&1["approval_id"]]))
 
-        {:error, reason} ->
-          Logger.warning(
-            "[Broker.Executor] reconcile: approvals unreadable: #{inspect(reason, structs: false)}"
-          )
+      {:error, reason} ->
+        Logger.warning(
+          "[Broker.Executor] reconcile: approvals unreadable: #{inspect(reason, structs: false)}"
+        )
 
-          []
-      end
+        []
     end
   end
 
