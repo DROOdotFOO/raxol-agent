@@ -28,10 +28,17 @@ end
   dispatch, fail-closed permission flow.
 - Pluggable transports: `stdio` (newline-delimited JSON-RPC, the stock ACP
   wire) and an in-process paired transport (test backbone / BEAM-local).
-- **Durable resumable sessions** (vendor extension, `_meta["raxol.io"]` +
-  `_raxol/*` methods): offset-based reattach/replay with a
-  register-before-high-watermark seam (no gap, no dup), plus offline-verifiable
-  capability tokens and taint annotation.
+  Stdio refuses a frame over 16 MiB or nested more than 256 deep, without
+  crashing; both limits are options (`Transport.Stdio`'s "Limits").
+- An opt-in filesystem for a client: `use Raxol.AgentClientProtocol.Client,
+  fs_sandbox: root` answers `fs/read_text_file` and `fs/write_text_file`
+  inside `root` only. It checks each path before use and the opened file
+  after, and caps a read at 16 MiB; `Client.FsSandbox` states what it does
+  not guarantee against a peer that changes the tree while requests run.
+- **Resumable sessions (in-memory journal)** (vendor extension,
+  `_meta["raxol.io"]` + `_raxol/*` methods): offset-based reattach/replay
+  with a register-before-high-watermark seam (no gap, no dup), plus
+  offline-verifiable capability tokens and taint annotation.
 
 ## What ACP is
 
@@ -64,7 +71,7 @@ Raxol.AgentClientProtocol
 ├── Session            # per-session turn state machine (agent role)
 ├── Agent / Client       # ergonomic `use`-able behaviours, generated from MethodTable
 ├── MethodTable / Router  # single source of truth for the wire vocabulary + generated dispatch
-└── Ext.*              # vendor extension: durable resumable sessions
+└── Ext.*              # vendor extension: resumable sessions (in-memory journal)
 ```
 
 - **`Schema.*`**: the ACP data model: content blocks, session types,
@@ -83,8 +90,8 @@ Raxol.AgentClientProtocol
   pipe, single-writer serialized) and `Transport.Paired` (an in-process
   pair of linked mailboxes, the test backbone, also usable for BEAM-local
   agent↔client wiring with no subprocess). `Transport.Framer` does the
-  byte-splitting (partial-buffer handling, CRLF tolerance, oversized-line
-  bounds) shared by stdio-shaped transports.
+  byte-splitting (partial-buffer handling, CRLF tolerance, a frame size
+  cap) shared by stdio-shaped transports.
 - **`Connection`**: the correlation + dispatch brain. One GenServer per
   peer link, either role (`:agent` or `:client`; the same module, `role`
   only selects which `MethodTable` direction is inbound). Never blocks on a
@@ -108,22 +115,40 @@ Raxol.AgentClientProtocol
   Adding or changing a method is a `MethodTable` row edit; the `Router`,
   `Agent`/`Client` callback surfaces, and capability gating all derive from
   it, so they cannot fall out of sync with each other.
-- **`Ext.*`**: the vendor extension namespace for durable resumable
-  sessions. See [The durable-sessions moat](#the-durable-sessions-moat) below.
+- **`Ext.*`**: the vendor extension namespace for resumable sessions. See
+  [Resumable sessions](#resumable-sessions-in-memory-journal) below.
 
 ## Quickstart: a minimal agent + client over stdio
 
-A toy agent that echoes the prompt back as a single `session/update`, wired
-to a client over the ACP stdio transport. This is the same shape a Zed-style
-editor host uses to launch and speak to a real coding agent subprocess.
+A toy agent that echoes the prompt back as a single `session/update`, and a
+client that launches it as a subprocess and drives one turn over the ACP
+stdio transport: the same shape an editor uses to launch and speak to a
+coding agent. Save both files in one directory and run
+`elixir my_client.exs`.
 
 ```elixir
-# my_agent.exs: runs as its own OS process, speaking on its own stdio.
-# Boot it directly with `elixir --no-halt my_agent.exs` (without --no-halt
-# the script's last expression returns, the VM halts, and the process this
-# file speaks FOR dies before the client ever gets a byte): see
-# `Raxol.AgentClientProtocol.Transport.Stdio`'s moduledoc "Modes" section
-# for exactly which boot forms are safe for `start_self/1`.
+# my_agent.exs: an ACP agent speaking on its own stdin/stdout. The client
+# below runs it as `elixir my_agent.exs`.
+
+# stdout carries only protocol frames, and a strict client rejects anything
+# else on it, so Mix.install's first-run output goes to stderr...
+leader = Process.group_leader()
+Process.group_leader(self(), Process.whereis(:standard_error))
+Mix.install([{:raxol_agent_client_protocol, "~> 0.1"}])
+Process.group_leader(self(), leader)
+
+# ...and so does every log line. The handler cannot change its device in
+# place, so it is removed and added back.
+{:ok, handler} = :logger.get_handler_config(:default)
+:ok = :logger.remove_handler(:default)
+
+:ok =
+  :logger.add_handler(
+    :default,
+    handler.module,
+    handler |> Map.drop([:id, :module]) |> Map.put(:config, %{type: :standard_error})
+  )
+
 defmodule MyAgent do
   use Raxol.AgentClientProtocol.Agent
 
@@ -139,8 +164,8 @@ defmodule MyAgent do
 
   @impl true
   def initialize(req, _ctx) do
-    # Echo back the client's requested protocol version negotiated by
-    # `Version.coerce/1`; a real agent may cap this to its own max.
+    # Echo back the client's requested protocol version; a real agent may
+    # cap this to its own max.
     {:ok, InitializeResponse.new(req.protocol_version)}
   end
 
@@ -161,86 +186,80 @@ defmodule MyAgent do
   end
 end
 
-# Boot: adopt this BEAM's own stdin/stdout as the wire. `transport:` takes a
-# `{module, handle}` pair (per `Raxol.AgentClientProtocol.Transport`), not
-# the bare handle `start_self/1` returns. `Agent.start_link/2` is the
-# "Standalone start" convenience: it returns the `ConnectionSupervisor`
-# pid directly (not wrapped in a supervisor of your own), which is what
-# `Agent.connection/1` needs if you ever want to reach this side's
-# Connection pid too.
-{:ok, handle} = Raxol.AgentClientProtocol.Transport.Stdio.start_self()
+alias Raxol.AgentClientProtocol.Transport.Stdio
 
-{:ok, _sup} =
-  Raxol.AgentClientProtocol.Agent.start_link(MyAgent,
-    transport: {Raxol.AgentClientProtocol.Transport.Stdio, handle}
-  )
+{:ok, handle} = Stdio.start_self()
+
+# `start_link/2` links the connection's supervisor to this script, and the
+# supervisor exits when the connection ends (the client closed the pipe).
+# Waiting for that keeps the agent up exactly as long as its client: the
+# script then returns and the VM halts. (`Process.sleep(:infinity)` would keep
+# an orphaned VM running after the client has gone.)
+Process.flag(:trap_exit, true)
+{:ok, sup} = Raxol.AgentClientProtocol.Agent.start_link(MyAgent, transport: {Stdio, handle})
+
+receive do
+  {:EXIT, ^sup, _reason} -> :ok
+end
 ```
 
 ```elixir
-# A client that spawns the agent above as a subprocess and drives one turn.
-# `use Client` alone only wires the protocol plumbing (this quickstart keeps
-# the GENERATED default `session_update/2`, which broadcasts to `subscribe/3`
-# subscribers; see `Client.prompt/3`'s "Precondition" doc: override
-# `session_update/2` yourself and `prompt/3` silently returns `[]` forever).
+# my_client.exs: runs my_agent.exs as a subprocess and drives one turn.
+Mix.install([{:raxol_agent_client_protocol, "~> 0.1"}])
+
 defmodule MyClient do
   use Raxol.AgentClientProtocol.Client
 end
 
-alias Raxol.AgentClientProtocol.Client
-alias Raxol.AgentClientProtocol.Connection
+alias Raxol.AgentClientProtocol.{Client, Connection}
 alias Raxol.AgentClientProtocol.Schema.AgentTypes.{InitializeRequest, NewSessionRequest}
 alias Raxol.AgentClientProtocol.Schema.AgentTypes.PromptRequest
 alias Raxol.AgentClientProtocol.Schema.ContentBlock
+alias Raxol.AgentClientProtocol.Transport.Stdio
 
-{:ok, handle} =
-  Raxol.AgentClientProtocol.Transport.Stdio.start_spawn("elixir", [
-    "--no-halt",
-    "my_agent.exs"
-  ])
+{:ok, handle} = Stdio.start_spawn("elixir", ["my_agent.exs"])
+{:ok, sup} = Client.start_link(MyClient, transport: {Stdio, handle})
 
-{:ok, sup} =
-  Client.start_link(MyClient, transport: {Raxol.AgentClientProtocol.Transport.Stdio, handle})
-
-# `sup` is the ConnectionSupervisor, not the Connection; every request
-# needs the Connection pid, so resolve it via the public accessor first
-# (the same one the package's own end-to-end test uses internally). This
-# only works because we booted via `start_link/2` above: wrapping
-# `child_spec/1` in a supervisor of your own (the "library-mode wiring"
-# pattern, see that section below) makes `sup` YOUR supervisor instead,
-# one level further out; resolve the `ConnectionSupervisor` child from
-# `Supervisor.which_children(your_sup)` first in that case, then call
-# `connection/1` on THAT pid.
+# `start_link/2` returns the connection's supervisor; requests need the
+# Connection itself.
 {:ok, conn} = Client.connection(sup)
 
 # The mandatory handshake: no other request is legal before `initialize`.
-{:ok, _init_response} =
-  Connection.request(conn, "initialize", InitializeRequest.new(1), 5_000)
+# The agent installs the package before it answers (from Mix.install's cache,
+# which this script has just filled), hence the generous timeout.
+{:ok, init} = Connection.request(conn, "initialize", InitializeRequest.new(1), 30_000)
+IO.inspect(init.protocol_version, label: "protocol version")
 
-{:ok, new_session_response} =
+{:ok, session} =
   Connection.request(conn, "session/new", NewSessionRequest.new(File.cwd!()), 5_000)
 
-session_id = new_session_response.session_id
-
-prompt = PromptRequest.new(session_id, [ContentBlock.from_string("hello, agent")])
-
-{:ok, {updates, _prompt_response}} = Client.prompt(conn, prompt)
+prompt = PromptRequest.new(session.session_id, [ContentBlock.from_string("hello, agent")])
+{:ok, {updates, response}} = Client.prompt(conn, prompt)
 
 for update <- updates, do: IO.inspect(update, label: "agent said")
+IO.inspect(response.stop_reason, label: "stop reason")
 ```
+
+It prints the protocol version (`1`), one `agent_message_chunk` whose text
+is `"echo: hello, agent"`, and the stop reason `:end_turn`. A release, or
+`mix run` with its stdio piped by the client, is an equally good way to run
+the agent: `Raxol.AgentClientProtocol.Transport.Stdio`'s "Modes" section
+lists the boot forms `start_self/1` supports.
 
 For BEAM-local wiring (no subprocess, e.g. tests or an in-process agent
 runtime) swap `Transport.Stdio` for
 `Raxol.AgentClientProtocol.Transport.Paired.create_pair/0`, which hands
 back two linked transport handles.
 
-## The durable-sessions moat
+## Resumable sessions (in-memory journal)
 
 Stock ACP session state is process-local: kill the agent, lose the turn
 history. `Ext.*` adds a vendor extension (`_meta["raxol.io"]` on the
 standard `session/load`/`session/update` methods, plus new `_raxol/*`
-methods) that makes a session **durable and reattachable across
-connections and processes** without changing the client's steady-state
-protocol experience:
+methods) that journals a session and makes it **reattachable across
+connections** without changing the client's steady-state protocol
+experience. The journal that ships is in memory (see below), so a session
+outlives its connections but not the node:
 
 - **Append-only journal, single publisher.** Every durable record for a
   session (turn boundaries, streamed updates, genesis) passes through
@@ -260,8 +279,8 @@ protocol experience:
   would leave a window where a live record between the read and the
   registration is silently lost.
 - **Ed25519 offline-verifiable capability tokens (`RXC1`).** An attach to a
-  **writerless** session (a tarred journal directory, no live authority,
-  no network, no issuer reachable) can be authorized from the token bytes
+  **writerless** session (a journal with no live Writer, no issuer
+  reachable) can be authorized from the token bytes
   and a shipped public key alone: `RXC1.<base64url claims>.<base64url sig>`,
   detached Ed25519 over the version-pinned prefix + claims, no `alg` field
   anywhere (the algorithm is the literal `RXC1` prefix, so a JWT-style
@@ -283,43 +302,57 @@ Today's journal store (`Ext.Journal.Mem`) is in-memory, durable across
 disk-backed store ships; see [Invariants a change must keep](#invariants-a-change-must-keep)
 for what one would have to satisfy.
 
-**The moat ships opt-in, not turnkey.** `Ext.*` (journal, `Reattach`,
-`AttachPolicy`) is a set of primitives your agent handler wires together,
+**Resumable sessions are opt-in.** `Ext.*` (journal, `Reattach`,
+`AttachPolicy`) is a set of primitives your agent handler wires together:
 `use Agent` alone gives you `method_not_found` on `session/load`'s
 `_meta["raxol.io"]` rider and on `_raxol/session.load`, because no default
 `Agent`/`Client` callback body can know your session-to-journal mapping or
-which `AttachPolicy` you want. Turning it on is the ~30 lines below in your
-own `new_session`/`raxol_load_session` callbacks, plus the three shared
-processes in `RaxolAgentClientProtocol.Application.children/0`
-started somewhere in your supervision tree.
+which `AttachPolicy` you want.
 
-### Enabling durable resumable sessions
+### Enabling resumable sessions
 
-Two things have to be true before an attach can succeed: (1) the shared
-`Ext.Journal.WriterRegistry`/`WriterSupervisor` and `Ext.AttachPolicy.TaskSupervisor`
-processes are running (splice `RaxolAgentClientProtocol.Application.children/0`
-into your own supervisor, or let the package's own `Application` auto-start
-them, see its moduledoc), and (2) your agent handler implements `new_session/2`
-to open a journal + start the durable `Session`, and `raxol_load_session/2` to
-route `_raxol/session.load` through `Reattach.attach/1`. Adapted from the
-end-to-end test's `RefAgent`
-([`test/integration/end_to_end_test.exs`](https://github.com/DROOdotFOO/raxol-agent/blob/main/packages/raxol_agent_client_protocol/test/integration/end_to_end_test.exs)),
-the real public-API sequence:
+The processes an attach needs (the journal `WriterRegistry` and
+`WriterSupervisor`, the `AttachPolicy` `TaskSupervisor`, the session
+`Registry`) are already running: the package's application starts them
+(two registries, two dynamic supervisors and one task supervisor; no files,
+ports or listeners) in every project that depends on it. Do not start
+`RaxolAgentClientProtocol.Application.children/0` yourself while it runs;
+`RaxolAgentClientProtocol.Application`'s moduledoc says how an embedder
+that wants them under its own supervisor keeps the application from
+starting.
+
+What remains is your agent handler: `new_session/2` starts a journaled
+`Session`, `prompt/2` hands each prompt to it as a turn, and
+`raxol_load_session/2` routes `_raxol/session.load` through
+`Reattach.attach/1`. This agent is modelled on the `RefAgent` the package's
+[end-to-end test](https://github.com/DROOdotFOO/raxol-agent/blob/main/packages/raxol_agent_client_protocol/test/integration/end_to_end_test.exs)
+drives:
 
 ```elixir
 defmodule MyDurableAgent do
   use Raxol.AgentClientProtocol.Agent
+
+  alias Raxol.AgentClientProtocol.Error
   alias Raxol.AgentClientProtocol.Ext.{Journal, Reattach}
   alias Raxol.AgentClientProtocol.Ext.AttachPolicy.LocalNode
   alias Raxol.AgentClientProtocol.Session
   alias Raxol.AgentClientProtocol.Session.Emitter.Journal, as: JournalEmitter
-  alias Raxol.AgentClientProtocol.Schema.AgentTypes.NewSessionResponse
+  alias Raxol.AgentClientProtocol.Schema.{ContentBlock, ContentChunk}
+  alias Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification
 
-  # handler_arg = %{session_id: sid, journal: {Mem, ref}}: open the journal
-  # (`Ext.Journal.Mem.open/1`) before starting the connection, pass it in via
-  # `handler_arg:`; `init/1` just threads it into `ctx.handler_state`.
+  alias Raxol.AgentClientProtocol.Schema.AgentTypes.{
+    InitializeResponse,
+    NewSessionResponse
+  }
+
+  # handler_arg: %{session_id: sid, journal: {Journal.Mem, handle}}. Open the
+  # journal with `Journal.Mem.open(sid)` in a process that outlives the
+  # connections that use it (the handle is an ETS table that process owns).
   @impl true
   def init(arg), do: {:ok, arg}
+
+  @impl true
+  def initialize(req, _ctx), do: {:ok, InitializeResponse.new(req.protocol_version)}
 
   @impl true
   def new_session(_req, ctx) do
@@ -331,12 +364,28 @@ defmodule MyDurableAgent do
         session_id: sid,
         conn: ctx.conn,
         task_sup: ctx.task_sup,
-        turn_runner: &my_turn_runner/2,
+        turn_runner: &echo_turn/2,
         emitter: JournalEmitter,
         journal: journal
       )
 
     {:ok, NewSessionResponse.new(sid)}
+  end
+
+  # A prompt is a turn of the session started above. The session journals
+  # the turn and its updates, and answers the prompt when the turn ends.
+  @impl true
+  def prompt(req, ctx) do
+    case Registry.lookup(Session.registry(), {ctx.conn, req.session_id}) do
+      [{session, _}] ->
+        case Session.begin_prompt(session, req, ctx.reply_ref, ctx.rx_seq) do
+          :ok -> :deferred
+          {:error, %Error{} = error} -> {:error, error}
+        end
+
+      [] ->
+        {:error, Error.new(-32_602, "unknown session")}
+    end
   end
 
   # `_raxol/session.load`: the one attach seam every reattach converges on.
@@ -356,52 +405,54 @@ defmodule MyDurableAgent do
       offset_aware?: true,
       surface: :process,
       transport: %{kind: :process, peer: nil},
+      # The attach subscriber lives under this connection's session
+      # supervisor and ends with the connection.
+      session_sup: ctx.session_sup,
       # LocalNode grants any in-BEAM :process attach; swap in
       # `Ext.AttachPolicy.Token` for signed RXC1 capability tokens instead.
       policy: LocalNode
     })
   end
+
+  # The turn runner: one update, then the end of the turn.
+  defp echo_turn(session, req) do
+    text = Enum.map_join(req.prompt, "", fn {:text, tc} -> tc.text; _ -> "" end)
+    chunk = ContentChunk.new(ContentBlock.from_string("echo: " <> text))
+
+    :ok =
+      Session.post_update(
+        session,
+        SessionNotification.new(req.session_id, {:agent_message_chunk, chunk})
+      )
+
+    {:stop, :end_turn}
+  end
 end
 ```
 
-Splice the three shared processes into your supervision tree once, at the
-app level, not per-connection, required for `Journal.ensure_writer/2` and
-`Reattach.attach/1` to work at all:
-
-```elixir
-children = RaxolAgentClientProtocol.Application.children() ++ [my_other_children]
-Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
-```
-
-Without a `start_subscriber:` override in the `attach/1` call above, the
-Reattach `Subscriber` links to the ephemeral dispatch task and is torn down
-when it exits, fine for a demo, but see `RefAgent`'s `start_subscriber:`
-(starts the subscriber under `ctx.session_sup` instead) if you need its
-lifetime tied to the connection rather than the single dispatch.
+A second connection to the same agent (same `handler_arg`) that sends
+`_raxol/session.load` with `_meta: %{"raxol.io" => %{"fromOffset" => 0}}`
+gets the journaled history replayed (`session_created`, `turn_started`, the
+update, `turn_completed`), then `_raxol/session.caught_up`, then live
+updates. Without `session_sup:` (or a `start_subscriber:` function) the
+attach subscriber is started unsupervised; it still ends when the
+connection goes down, but nothing supervises it.
 
 ## Provenance
 
-See [NOTICE.md](NOTICE.md) for the full attribution. Summary:
+See [NOTICE.md](NOTICE.md) for the attribution and licence text. Summary:
 
-- **Schema/serialization layer + wire-byte test fixtures**: ported
-  MIT→MIT from [`f1729/agent_client_protocol`](https://github.com/f1729/agent-client-protocol-elixir)
+- **Schema/serialization layer**: ported MIT→MIT from
+  [`f1729/agent_client_protocol`](https://github.com/f1729/agent-client-protocol-elixir)
   (Copyright (c) 2025 f1729), defects fixed, restructured under
   `Raxol.AgentClientProtocol.*`. Ported modules note this in their
   moduledoc.
-- **Conformance case corpus** (`test/conformance/cases/*.json`): ported
-  MIT→MIT from [`openclaw/acpx`](https://github.com/openclaw/acpx)
-  (Copyright (c) 2025 OpenClaw Team).
 - **OTP runtime** (Connection, Session, Transport, supervision, the `Ext.*`
-  extension) is a **clean-room implementation**. The official Apache-2.0
-  ACP SDKs (`agentclientprotocol/{rust,typescript,python,java,kotlin}-sdk`),
-  `lostbean/acpex`, and `xai-org/grok-build` were studied as *design
-  references only*: ideas, never code, and never a source of copied
-  license terms.
-- **`priv/schema-oracle/`**: the official ACP JSON Schema (Apache-2.0),
-  SHA256-pinned at `schema-v1.19.0`, used **only** as a dev/test validation
-  oracle. It never ships: excluded from the published Hex package via
-  `mix.exs`'s `:files` list. This is what keeps the *shipped* package
-  pure-MIT despite studying an Apache-2.0 spec.
+  extension) is written for this package. Its design was influenced by the
+  official ACP SDKs; no code was copied from them.
+- **The ACP JSON Schema** (Apache-2.0), SHA256-pinned at `schema-v1.19.0`,
+  is kept in the repository only as a validation oracle for the tests. It
+  is excluded from the Hex package (`mix.exs`'s `:files` list).
 
 This layered provenance is a deliberate license-discipline decision, not an
 accident. See [ADR-0041](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/adr/0041-agent-client-protocol-package.md)

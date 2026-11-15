@@ -73,8 +73,14 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
       `-noshell` the `user` device already reads fd 0, so a second reader
       loses whatever arrived before it opened (a client's `initialize`).
       Only meaningful when this process's real stdio is dedicated to the
-      ACP wire protocol — e.g. a compiled release, or `mix run` with
-      stdio piped by the peer. Not for an interactive `iex` session. Both
+      ACP wire protocol and nothing else writes to stdout. Boot forms that
+      satisfy this, with stdio piped by the peer: a compiled release; `mix
+      run` of an already compiled project (compile first in a separate
+      step: Mix prints compile output on stdout); an `elixir` script that
+      sends `Mix.install/2`'s output to stderr and blocks until its
+      connection ends, as the package README's quickstart agent does. In
+      every form the default log handler must write to stderr (see
+      "stdout is protocol-pure"). Not for an interactive `iex` session. Both
       devices are switched to `encoding: :latin1`, which moves bytes
       unchanged: the wire is UTF-8 whatever the locale, and a byte that is
       not UTF-8 reaches the JSON decoder as it was sent. A `unicode` device
