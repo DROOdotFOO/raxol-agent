@@ -24,7 +24,13 @@ defmodule Raxol.Broker.ModeTest do
       answer
     end
 
-    [journal: ctx.journal, client: ctx.client, policy_path: ctx.policy, confirm: confirm]
+    [
+      journal: ctx.journal,
+      client: ctx.client,
+      policy_path: ctx.policy,
+      account: "FAKE-0001",
+      confirm: confirm
+    ]
     |> Keyword.merge(extra)
     |> Mode.arm()
   end

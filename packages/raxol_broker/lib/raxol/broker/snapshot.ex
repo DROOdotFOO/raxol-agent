@@ -29,7 +29,7 @@ defmodule Raxol.Broker.Snapshot do
     accounts = accounts(client)
 
     Enum.concat([
-      account_lines(accounts),
+      account_lines(client, accounts),
       position_lines(client, accounts),
       ["mode: #{Mode.current(journal)}", "journal: #{status(journal)}"],
       sample_lines(opts[:sample], client, journal, opts)
@@ -77,20 +77,31 @@ defmodule Raxol.Broker.Snapshot do
     end
   end
 
-  defp account_lines({:ok, accounts}) do
+  # `get_accounts` does not carry reliable buying power (its own description
+  # says so); `get_portfolio` does, for the agentic account.
+  defp account_lines(client, {:ok, accounts}) do
     Enum.map(accounts, fn account ->
-      "account #{account["account_number"]}: agentic_allowed=#{account["agentic_allowed"] == true}" <>
-        buying_power(account)
+      agentic? = account["agentic_allowed"] == true
+      line = "account #{account["account_number"]}: agentic_allowed=#{agentic?}"
+
+      if agentic?,
+        do: line <> " buying_power=#{buying_power(client, account["account_number"])}",
+        else: line
     end)
   end
 
-  defp account_lines({:error, reason}),
+  defp account_lines(_client, {:error, reason}),
     do: ["accounts: unreadable (#{inspect(reason, structs: false)})"]
 
-  defp buying_power(%{"buying_power" => value}) when is_binary(value),
-    do: " buying_power=#{value}"
-
-  defp buying_power(_account), do: ""
+  @doc "The buying power `get_portfolio` reports for `account`, as text (`?` when unreadable)."
+  @spec buying_power(GenServer.server(), String.t()) :: String.t()
+  def buying_power(client, account) do
+    case read(client, "get_portfolio", %{"account_number" => account}) do
+      {:ok, %{"buying_power" => value}} when is_binary(value) -> value
+      {:ok, %{"buying_power" => %{"amount" => value}}} when is_binary(value) -> value
+      _unreadable -> "?"
+    end
+  end
 
   defp position_lines(client, {:ok, accounts}) do
     for %{"account_number" => number, "agentic_allowed" => true} <- accounts do

@@ -53,7 +53,7 @@ defmodule Raxol.Broker.Dashboard do
 
   use Raxol.Core.Runtime.Application
 
-  alias Raxol.Broker.{Executor, Halt, Heartbeat, Journal, Mode, Response}
+  alias Raxol.Broker.{Executor, Halt, Heartbeat, Journal, Mode, Response, Snapshot}
   alias Raxol.Broker.MCP.Client
   alias Raxol.Broker.Strategy
 
@@ -314,7 +314,7 @@ defmodule Raxol.Broker.Dashboard do
     %{model | account: if(is_list(lines), do: lines, else: ["account: not connected"])}
   end
 
-  defp account_lines(client, %{"account_number" => number} = account) do
+  defp account_lines(client, %{"account_number" => number}) do
     positions =
       case read(client, "get_equity_positions", %{"account_number" => number}) do
         {:ok, body} ->
@@ -327,10 +327,13 @@ defmodule Raxol.Broker.Dashboard do
       end
 
     [
-      "account #{number}  buying power #{account["buying_power"] || "?"}",
+      "account #{number}  buying power #{or_unknown(safe(fn -> Snapshot.buying_power(client, number) end))}",
       "positions: #{positions}"
     ]
   end
+
+  defp or_unknown(value) when is_binary(value), do: value
+  defp or_unknown(_unreadable), do: "?"
 
   defp read(client, tool, args),
     do: safe(fn -> Response.body(Client.call(client, tool, args)) end)

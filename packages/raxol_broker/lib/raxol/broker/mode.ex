@@ -20,10 +20,16 @@ defmodule Raxol.Broker.Mode do
     2. the journal's chain verifies on disk (`Raxol.Broker.Journal.verify/1`
        is `:ok`), so a journal edited by even one byte cannot be armed;
     3. the read-only client is connected (it lists its tools);
-    4. every added strategy's symbols quote at or below the policy's
+    4. `get_accounts` marks `:account` as the one agentic account
+       (`Raxol.Broker.AccountPin`);
+    5. `get_trade_approval_setting` for that account can be read: its
+       `human_must_approve_trades` is shown in the confirmation and
+       journaled with the `armed` record (only the owner can change it, in
+       the app);
+    6. every added strategy's symbols quote at or below the policy's
        `max_notional_per_order`, because limit orders are whole shares and
        a share above the cap could never be bought;
-    5. the person arming types `ARM` after reading what was checked.
+    7. the person arming types `ARM` after reading what was checked.
 
   `disarm/2` is unconditional: it writes a `disarmed` record whatever the
   state. Only a damaged journal refuses it, and a damaged journal refuses
@@ -31,7 +37,8 @@ defmodule Raxol.Broker.Mode do
 
   ## Options for `arm/1`
 
-  `:journal` (default `Raxol.Broker.Journal`), `:client` (the read-only
+  `:account` (required: the account the executor trades), `:journal`
+  (default `Raxol.Broker.Journal`), `:client` (the read-only
   `Raxol.Broker.MCP.Client`, default that module), `:policy_path` (default
   `broker.policy.exs`), `:confirm` (required: a one-arity function given the
   summary lines, returning what the person typed), `:by` (who armed,
@@ -42,7 +49,7 @@ defmodule Raxol.Broker.Mode do
   (`Raxol.Broker.Halt.pause/2`): only a fresh arm does.
   """
 
-  alias Raxol.Broker.{Feed, Journal, PolicyFile, Response, Strategy}
+  alias Raxol.Broker.{AccountPin, Feed, Journal, PolicyFile, Response, Strategy}
   alias Raxol.Broker.MCP.Client
 
   @confirmation "ARM"
@@ -73,13 +80,16 @@ defmodule Raxol.Broker.Mode do
     journal = Keyword.get(opts, :journal, Journal)
     client = Keyword.get(opts, :client, Client)
     path = Keyword.get(opts, :policy_path, PolicyFile.filename())
+    account = Keyword.fetch!(opts, :account)
     confirm = Keyword.fetch!(opts, :confirm)
 
     with {:ok, policy} <- policy(path),
          :ok <- verified(journal),
          :ok <- connected(client),
+         :ok <- AccountPin.check(read(client, "get_accounts", %{}), account),
+         {:ok, approvals?} <- approval_setting(client, account),
          {:ok, quotes} <- strategy_quotes(journal, client, policy),
-         fields = record(policy, quotes, Keyword.get(opts, :by, "cli")),
+         fields = record(policy, quotes, account, approvals?, Keyword.get(opts, :by, "cli")),
          :ok <- confirmed(confirm.(summary(path, fields))),
          :ok <- Journal.record_armed(fields, journal) do
       supervisor = Keyword.get(opts, :strategies, Strategy.Supervisor)
@@ -162,9 +172,25 @@ defmodule Raxol.Broker.Mode do
     :exit, reason -> {:error, {:quotes, {:down, reason}}}
   end
 
-  defp record(policy, quotes, by) do
+  defp approval_setting(client, account) do
+    case read(client, "get_trade_approval_setting", %{"account_number" => account}) do
+      {:ok, %{"human_must_approve_trades" => value}} when is_boolean(value) -> {:ok, value}
+      {:ok, _other} -> {:error, {:approval_setting, :unreadable}}
+      {:error, reason} -> {:error, {:approval_setting, reason}}
+    end
+  end
+
+  defp read(client, tool, args) do
+    Response.body(Client.call(client, tool, args))
+  catch
+    :exit, reason -> {:error, {:down, reason}}
+  end
+
+  defp record(policy, quotes, account, approvals?, by) do
     %{
       "by" => by,
+      "account_number" => account,
+      "human_must_approve_trades" => approvals?,
       "max_notional_per_order" => Decimal.to_string(policy[:max_notional_per_order]),
       "daily_notional_cap" => Decimal.to_string(policy[:daily_notional_cap]),
       "quotes" => Map.new(quotes, fn {symbol, last} -> {symbol, Decimal.to_string(last)} end)
@@ -173,12 +199,16 @@ defmodule Raxol.Broker.Mode do
 
   defp summary(path, fields) do
     quotes = Enum.map(Enum.sort(fields["quotes"]), fn {s, p} -> "  #{s} last #{p}" end)
+    approvals = if fields["human_must_approve_trades"], do: "on", else: "OFF"
 
     [
       "policy #{path}: max per order #{fields["max_notional_per_order"]}, " <>
         "daily cap #{fields["daily_notional_cap"]}",
       "journal verified",
       "client connected",
+      "account #{fields["account_number"]} is the agentic account",
+      "trade approvals in the Robinhood app: #{approvals} " <>
+        "(human_must_approve_trades: #{fields["human_must_approve_trades"]})",
       "strategy symbols:" | if(quotes == [], do: ["  none"], else: quotes)
     ] ++ ["Type #{@confirmation} to place real orders:"]
   end

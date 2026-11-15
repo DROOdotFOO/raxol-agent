@@ -160,6 +160,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
                  journal: ctx.journal,
                  client: client,
                  policy_path: Broker.policy_file!(ctx.base),
+                 account: "FAKE-0001",
                  confirm: fn _ -> "ARM" end,
                  strategies: ctx.sup
                )
@@ -183,6 +184,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
           journal: ctx.journal,
           client: client,
           policy_path: Broker.policy_file!(ctx.base),
+          account: "FAKE-0001",
           confirm: fn _ -> "ARM" end,
           strategies: ctx.sup
         )

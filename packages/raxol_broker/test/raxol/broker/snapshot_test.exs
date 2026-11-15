@@ -33,7 +33,7 @@ defmodule Raxol.Broker.SnapshotTest do
   test "prints accounts, positions, mode, journal and a sample verdict with no review or order",
        ctx do
     assert lines(ctx, "buy F 2 @ 9.80") == [
-             "account FAKE-0001: agentic_allowed=true",
+             "account FAKE-0001: agentic_allowed=true buying_power=1000",
              "positions FAKE-0001: F 3",
              "mode: disarmed",
              "journal: ok",
@@ -53,14 +53,39 @@ defmodule Raxol.Broker.SnapshotTest do
     assert "mode: armed" in lines(ctx, nil)
   end
 
-  test "connect reports no drift against the capture, and names a changed tool", ctx do
-    assert {:ok, ["connected: " <> _, "no drift from the capture"]} = Connect.report(ctx.client)
+  test "connect reports drift and the account pin", ctx do
+    assert {:ok, ["connected: " <> _, "agentic account: FAKE-0001", "no drift from the capture"]} =
+             Connect.report(ctx.client)
+
+    assert {:ok, [_, "account FAKE-0001 is the agentic account", _]} =
+             Connect.report(ctx.client, "FAKE-0001")
+
+    assert {:error, {:account_pin, {:not_the_agentic_account, "FAKE-0001"}}} =
+             Connect.report(ctx.client, "OTHER-1")
 
     [quotes] = for %{"name" => "get_equity_quotes"} = t <- Fake.tools(), do: t
     changed = put_in(quotes, ["inputSchema", "properties", "extra"], %{"type" => "string"})
     drifted = Fake.start(tools: [changed])
     client = start_supervised!({Client, Fake.client_opts(drifted)}, id: :drifted)
 
-    assert {:ok, [_, "changed: get_equity_quotes (read)"]} = Connect.report(client)
+    assert {:ok, [_, _, "changed: get_equity_quotes (read)"]} = Connect.report(client)
+  end
+
+  test "the executor's session never becomes ready for an account that is not the agentic one",
+       ctx do
+    fake = Fake.start(account: "OTHER-1")
+
+    {:ok, executor} =
+      Raxol.Broker.Executor.start_link(
+        journal: ctx.journal,
+        session: Fake.session(fake),
+        account_number: "FAKE-0001",
+        policy: Broker.policy(),
+        reconnect_ms: 60_000
+      )
+
+    assert Raxol.Broker.Executor.await_port(executor, 1_000) == {:error, :port_not_ready}
+    assert Fake.calls(fake) == [{"get_accounts", %{}}]
+    GenServer.stop(executor)
   end
 end

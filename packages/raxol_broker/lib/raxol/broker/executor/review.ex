@@ -14,19 +14,32 @@ defmodule Raxol.Broker.Executor.Review do
   ## Warnings, fail closed
 
   A response with `isError` set fails the review (no order). Each text
-  content block is decoded as JSON. A body is readable only through its
-  `"alerts"` and `"warnings"` keys, and each of those that is present must
-  hold a list; every entry of those lists is a warning. A `"quote"` alone
-  says nothing about warnings. Every entry of an `"errors"` list is a
-  warning too. Each of these counts as one warning,
+  content block is decoded as JSON. Robinhood answers `{"data": {...},
+  "guide": "..."}` and lists its pre-trade alerts (buying power, pattern day
+  trader, halts) in `data.order_checks`, an object that is `{}` when there
+  are none (recorded in `test/fixtures/robinhood/review_equity_order.json`).
+  So a body is read through `data.order_checks` when it has one:
+
+    * `{}` is no warning;
+    * every entry of a non-empty object is a warning, `"<name>: <message>"`
+      when the entry is a string or holds a string `"message"`, and
+      `"order check <name>"` for any other shape: an entry this stage does
+      not know is still a warning, never skipped;
+    * a list is one warning per element; anything else is unreadable.
+
+  A body without `data.order_checks` (the Fake answers in its own shape) is
+  read through its `"alerts"` and `"warnings"` keys, and each of those that
+  is present must hold a list; every entry of those lists is a warning. A
+  `"quote"` alone says nothing about warnings. Every entry of an `"errors"`
+  list is a warning too. Each of these counts as one warning,
   `"unreadable review response"`, so a response this stage cannot read asks
   a human instead of allowing:
 
     * empty content (this also covers a server that answers only in
       `structuredContent`, which the client does not expose);
     * a block that is not text or not a JSON object;
-    * a JSON object with neither `"alerts"` nor `"warnings"` (including one
-      with only a `"quote"`);
+    * a JSON object with none of `data.order_checks`, `"alerts"` or
+      `"warnings"` (including one with only a `"quote"`);
     * an `"alerts"`, `"warnings"` or `"errors"` key whose value is `null` or
       anything else that is not a list.
 
@@ -43,9 +56,8 @@ defmodule Raxol.Broker.Executor.Review do
   Anything else, an absent key included, is false, and
   `Raxol.Broker.Executor.Place` then reads a successful place as an order.
 
-  That recording also shows Robinhood's alerts are `data.order_checks`, an
-  object that is `{}` when there are none. This module does not read that
-  shape, so a real review is `"unreadable review response"` and asks.
+  A non-empty `order_checks` sample has not been recorded yet; the reader
+  follows the shape above and fails closed on anything else.
   """
 
   alias Raxol.Broker.Executor.Port
@@ -136,12 +148,31 @@ defmodule Raxol.Broker.Executor.Review do
   defp warnings(:unreadable), do: [@unreadable]
   defp warnings(body), do: body_warnings(body) ++ error_warnings(body)
 
+  defp body_warnings(%{"data" => %{"order_checks" => checks}}), do: order_checks(checks)
+
   defp body_warnings(body) do
     case Enum.filter(["alerts", "warnings"], &is_map_key(body, &1)) do
       [] -> [@unreadable]
       keys -> Enum.flat_map(keys, &listed(Map.fetch!(body, &1)))
     end
   end
+
+  # Every entry is a warning, read or not: an unknown check is never skipped.
+  defp order_checks(checks) when is_map(checks) do
+    checks
+    |> Enum.sort_by(&elem(&1, 0))
+    |> Enum.map(fn {name, check} -> order_check(name, check) end)
+  end
+
+  defp order_checks(checks) when is_list(checks), do: Enum.map(checks, &describe/1)
+  defp order_checks(_other), do: [@unreadable]
+
+  defp order_check(name, message) when is_binary(message), do: "#{name}: #{message}"
+
+  defp order_check(name, %{"message" => message}) when is_binary(message),
+    do: "#{name}: #{message}"
+
+  defp order_check(name, _check), do: "order check #{name}"
 
   defp error_warnings(%{"errors" => errors}), do: listed(errors)
   defp error_warnings(_body), do: []

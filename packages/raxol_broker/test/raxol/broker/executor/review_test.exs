@@ -152,13 +152,31 @@ defmodule Raxol.Broker.Executor.ReviewTest do
     end
 
     # Robinhood's own response, from an account with trade approvals on. The
-    # flag sits under "data". Its alerts are "order_checks", which this reader
-    # does not know, so the review asks a person.
+    # flag sits under "data", and its empty "order_checks" means no alerts.
     answer(ctx.server, recorded_result())
-    assert {:ok, response, [@unreadable]} = run.()
+    assert {:ok, response, []} = run.()
     assert Review.customer_approval_required?(response)
 
     refute Review.customer_approval_required?(%{"tool" => nil, "note" => "cancel"})
+  end
+
+  test "every order check is a warning, an unknown shape included", ctx do
+    run = fn -> Review.run(ctx.port, Catalog.static(), ctx.intent, "ACC-1", 5_000) end
+    envelope = fn checks -> %{"data" => %{"order_checks" => checks}, "guide" => "..."} end
+
+    for {checks, expected} <- [
+          {%{}, []},
+          {%{"buying_power" => %{"message" => "Not enough buying power"}},
+           ["buying_power: Not enough buying power"]},
+          {%{"pdt" => "Pattern day trader", "halt" => %{"severity" => "high"}},
+           ["order check halt", "pdt: Pattern day trader"]},
+          {["listed"], ["listed"]},
+          {nil, [@unreadable]},
+          {"text", [@unreadable]}
+        ] do
+      answer(ctx.server, %{"content" => [text(envelope.(checks))], "isError" => false})
+      assert {:ok, _response, ^expected} = run.(), inspect(checks)
+    end
   end
 
   test "equity?/1 covers the equity kinds and nothing else", ctx do

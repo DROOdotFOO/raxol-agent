@@ -2,12 +2,14 @@ defmodule Mix.Tasks.Raxol.Broker.Connect do
   @moduledoc """
   Signs in to Robinhood and checks the session.
 
-      mix raxol.broker.connect [--policy broker.policy.exs]
+      mix raxol.broker.connect [--account NUMBER] [--policy broker.policy.exs]
 
   Refuses to run unless the policy file loads, so limits exist before any
   credential is stored. Then it runs the browser sign-in
   (`Raxol.Broker.Login`), stores the credential encrypted, connects, and
-  reports how the served tools differ from the frozen capture.
+  reports how the served tools differ from the frozen capture. With
+  `--account` it fails unless Robinhood marks that account as the agentic
+  one; without, it names the agentic account.
   """
 
   use Mix.Task
@@ -15,7 +17,7 @@ defmodule Mix.Tasks.Raxol.Broker.Connect do
   alias Raxol.Broker.{CLI, Connect, Login, PolicyFile}
 
   @shortdoc "Signs in to Robinhood and reports tool drift"
-  @switches [policy: :string]
+  @switches [account: :string, policy: :string]
 
   @impl Mix.Task
   def run(args) do
@@ -33,7 +35,7 @@ defmodule Mix.Tasks.Raxol.Broker.Connect do
     end
 
     CLI.with_client(fn client ->
-      case Connect.report(client) do
+      case Connect.report(client, opts[:account]) do
         {:ok, lines} ->
           Enum.each(lines, &CLI.info/1)
 

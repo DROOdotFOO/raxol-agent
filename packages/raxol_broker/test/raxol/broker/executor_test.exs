@@ -19,7 +19,9 @@ defmodule Raxol.Broker.ExecutorTest do
   @moduletag :capture_log
   @t0 ~U[2026-10-02 14:30:00.000000Z]
   @day ~U[2026-10-02 00:00:00.000000Z]
-  @account "ACC-1"
+  # The account the Fake lists as the agentic one: the executor's session
+  # checks it on every connect.
+  @account "FAKE-0001"
 
   # Resolving a `{:via, __MODULE__, name}` would run this in the caller.
   defmodule EvilRegistry do
@@ -236,7 +238,7 @@ defmodule Raxol.Broker.ExecutorTest do
       assert Executor.run(executor, option, context()) == {:error, {:no_adapter, :option}}
       assert Executor.run(executor, advanced, context()) == {:error, {:no_adapter, :advanced}}
 
-      assert Fake.calls(ctx.server) == []
+      assert sent(ctx.server) == []
       assert Journal.open_groups(ctx.journal) == {:ok, []}
       assert groups_for(ctx.path, "no-adapter-option") == []
       assert groups_for(ctx.path, "no-adapter-advanced") == []
@@ -820,7 +822,7 @@ defmodule Raxol.Broker.ExecutorTest do
       end
 
       assert groups_for(ctx.path, "bad-clock") == []
-      assert Fake.calls(ctx.server) == []
+      assert sent(ctx.server) == []
     end
   end
 
@@ -1051,7 +1053,7 @@ defmodule Raxol.Broker.ExecutorTest do
 
       refute_received {:hostile, _callback}
       assert records(ctx.path) == before
-      assert Fake.calls(ctx.server) == []
+      assert sent(ctx.server) == []
       assert Process.alive?(executor)
       assert {:ok, %{status: :placed}} = Executor.run(executor, intent, context())
     end
@@ -1224,7 +1226,7 @@ defmodule Raxol.Broker.ExecutorTest do
       refute_received {:hostile, _callback}
       assert Process.alive?(executor)
       assert records(ctx.path) == before
-      assert Fake.calls(ctx.server) == []
+      assert sent(ctx.server) == []
     end
 
     test "a port client stopped with a struct reason runs no protocol and reconnects", ctx do
@@ -1261,7 +1263,7 @@ defmodule Raxol.Broker.ExecutorTest do
 
       assert Process.alive?(executor)
       assert groups_for(ctx.path, "odd-calendar") == []
-      assert Fake.calls(ctx.server) == []
+      assert sent(ctx.server) == []
     end
 
     test "a stale :drain during a review is ignored; the queued run completes", ctx do
