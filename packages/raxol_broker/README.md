@@ -293,10 +293,10 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   `customer_approval_required`, a successful place is
   `status: :pending_approval`, not `:placed`: Robinhood holds a proposal the
   account owner approves or declines in its app, and no order exists yet.
-  The group keeps counting toward the caps and its intent is a duplicate,
-  because the proposal can still become an order. Nothing resolves a
-  pending approval yet (`get_trade_approvals` is a read tool), and the order
-  placed after an approval carries the approval id, not the `ref_id` sent.
+  The group keeps counting toward the caps and its intent is a duplicate
+  until reconciliation reads the proposal back (see "Reconciliation"); the
+  order placed after an approval carries the approval id, not the `ref_id`
+  sent.
   A recorded response (`test/fixtures/robinhood/review_equity_order.json`)
   confirms the flag sits under `data`. The same recording shows Robinhood's
   alerts are `data.order_checks`, which `Review` does not read yet, so a
@@ -393,6 +393,20 @@ Raxol.SSH.serve(Raxol.Broker.Dashboard,
 The dashboard reads the processes registered under their default names;
 `config :raxol_broker, Raxol.Broker.Dashboard, executor: ..., journal: ...`
 names others.
+
+## Reconciliation
+
+When the executor first connects, and every five minutes after
+(`:reconcile_ms`), it checks every counted group whose outcome is open
+(`Raxol.Broker.Journal.unresolved/1`) against Robinhood and journals a
+`resolve` record for each it settles:
+
+| Open outcome | Read | Resolution |
+| --- | --- | --- |
+| `:unknown` or `crash_outcome_unknown` | `get_equity_orders` (agent-initiated, since its day), matched on the `ref_id` sent | `placed` keeps counting; `absent` (not in a complete listing) stops counting and frees the intent |
+| `:pending_approval` | `get_trade_approvals` with the `approval_ids` from the place response | `approved` keeps counting; `declined` or `expired` releases the cap and frees the intent; still pending stays open |
+
+`Raxol.Broker.Executor.reconcile/2` runs it on demand.
 
 ## Kill switch and dead-man switch
 
