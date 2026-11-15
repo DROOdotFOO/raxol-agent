@@ -8,6 +8,63 @@ switches. Equity orders only. The package is pre-alpha and has not yet
 traded real money; a read-only session and the policy tooling work on
 their own.
 
+## Quick start
+
+Limits come first: nothing stores a credential before the policy file
+loads. Run these from your project, in this order.
+
+1. Write the policy.
+
+   ```sh
+   mix raxol.broker.init --max-notional 25 --daily-cap 100
+   ```
+
+   Expect `Wrote broker.policy.exs` and the recommendation to turn on trade
+   approvals in the Robinhood app.
+
+2. Sign in and check the session.
+
+   ```sh
+   mix raxol.broker.connect
+   ```
+
+   The browser opens Robinhood's sign-in. Expect `signed in; credential
+   stored`, `connected: 87 tools served`, `agentic account: <number>` and
+   `no drift from the capture`.
+
+3. Look before trading.
+
+   ```sh
+   mix raxol.broker.inspect --sample "buy F 1 @ 12.25"
+   ```
+
+   Expect the accounts, buying power, positions, `mode: disarmed`,
+   `journal: ok` and the sample's verdict with `(no order placed)`.
+
+4. Add a strategy.
+
+   ```sh
+   mix raxol.broker.strategy add dip_buy --symbol F --usd 25
+   ```
+
+   Expect `added dip_buy-F (dip_buy symbol=F usd=25)`.
+
+5. Start the broker in `iex -S mix` (see "Quote feed" for the
+   `Raxol.Broker.Supervisor` children) and open the dashboard with
+   `Raxol.run(Raxol.Broker.Dashboard)`. Expect `mode: DISARMED` and the
+   strategy `running`; its intents are journaled as dry run and nothing is
+   sent.
+
+6. Arm, from the same `iex` session.
+
+   ```elixir
+   Mix.Task.run("raxol.broker.arm")
+   ```
+
+   Expect the checks, including `account <number> is the agentic account`
+   and `trade approvals in the Robinhood app: on`, then type `ARM`; expect
+   `armed`. `mix raxol.broker.disarm` or `K` on the dashboard stops it.
+
 ## Policy
 
 Initialize a policy with explicit monetary caps:
