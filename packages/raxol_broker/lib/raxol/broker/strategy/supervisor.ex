@@ -2,7 +2,7 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   @moduledoc """
   Runs one `Raxol.Broker.Strategy.Runner` per added strategy.
 
-  A `:rest_for_one` supervisor of three children:
+  A `:one_for_all` supervisor of three children:
 
     * a `Registry` of runners keyed by strategy id. A runner registers
       itself on start, so two runners for one id cannot exist, and every
@@ -10,9 +10,13 @@ defmodule Raxol.Broker.Strategy.Supervisor do
       calling a runner that may be busy in the executor;
     * a `DynamicSupervisor` of the runners;
     * `Raxol.Broker.Strategy.Restorer`, which starts every strategy the
-      journal holds as added (`restore/1`) whenever it starts. Because it is
-      a permanent child after the runners' supervisor, a crash that restarts
-      the runners (or this whole supervisor) restores them again.
+      journal holds as added (`restore/1`) whenever it starts.
+
+  `:one_for_all` because a crash of the runners' supervisor must also
+  replace the registry: the old runners leave it asynchronously, and a
+  restorer that read their entries before they left would skip restarting
+  them. A fresh registry is empty, so the restorer starts every added
+  strategy.
 
   Adding and stopping are journaled (`Raxol.Broker.Journal.put_strategy/2`,
   `drop_strategy/2`), so `mix raxol.broker.strategy` can add or stop one
@@ -53,7 +57,7 @@ defmodule Raxol.Broker.Strategy.Supervisor do
          name: runners(name), strategy: :one_for_one, extra_arguments: [runner_config]}
       ] ++ if(restore?, do: [{Restorer, supervisor: name, journal: journal}], else: [])
 
-    Supervisor.init(children, strategy: :rest_for_one)
+    Supervisor.init(children, strategy: :one_for_all)
   end
 
   @doc """
