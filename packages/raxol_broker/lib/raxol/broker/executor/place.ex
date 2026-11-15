@@ -1,9 +1,10 @@
 defmodule Raxol.Broker.Executor.Place do
   @moduledoc """
   The only module that names an order-writing tool (`place_equity_order`,
-  `cancel_equity_order`) or sends one. `Raxol.Broker.Executor.StructureTest`
-  checks this from compiled code: only `Raxol.Broker.Executor` calls `run/4`,
-  only this module and `Raxol.Broker.Executor.Review` call
+  `cancel_equity_order`, `decline_trade_approval`) or sends one.
+  `Raxol.Broker.Executor.StructureTest` checks this from compiled code: only
+  `Raxol.Broker.Executor` calls `run/4` and `run_many/3`, only this module,
+  `Raxol.Broker.Executor.Review` and `Raxol.Broker.Executor.Read` call
   `Raxol.Broker.Executor.Port.call/4`, and no module in the app uses dynamic
   dispatch.
 
@@ -16,7 +17,8 @@ defmodule Raxol.Broker.Executor.Place do
        executor process (which puts it there in `init/1`) can spend a
        receipt; in any other process the key is nil and the receipt is
        refused before anything is journaled or sent;
-    2. the intent has an order tool (equity orders and cancels), and that
+    2. the intent has an order tool (equity orders, cancels and trade
+       approval declines), and that
        tool is `:write` in the session's `Raxol.Broker.Tools.Catalog`
        classes (`env.catalog`), so a tool the capture lacks or one whose
        schema changed is refused with `{:error, {:tool_refused, tool, class}}`;
@@ -53,8 +55,8 @@ defmodule Raxol.Broker.Executor.Place do
       read by `Raxol.Broker.Executor.Review`). Robinhood then holds a
       proposal the owner approves or declines in the app; no order exists
       yet. It keeps counting toward the caps and its intent is not placed
-      again, because it can still become an order. A cancel is never
-      pending;
+      again, because it can still become an order. A cancel or a decline is
+      never pending;
     * `:failed`: a result with `isError`, a JSON-RPC error that says the
       request was never acted on (parse error, invalid request, unknown
       method, invalid params), or a client refusal made before anything was
@@ -110,6 +112,74 @@ defmodule Raxol.Broker.Executor.Place do
     end
   end
 
+  @doc """
+  Send many cancels and declines at once, each checked and journaled as
+  `run/4` does: `items` are `{receipt, intent, group_id}`. Every receipt and
+  tool is checked and every `placing` journaled first, in order; then the
+  calls go out concurrently, each bounded by `bound` milliseconds, and each
+  response is journaled. A call still running at the bound is
+  `{:unknown, %{"error" => ":timeout"}}`. Anything but a cancel or a
+  decline is `{:error, {:not_a_halt, kind}}` and is not sent.
+
+  Returns `[{group_id, outcome}]` in the order of `items`, the outcomes as
+  `run/4` gives them.
+  """
+  @spec run_many([{ReviewReceipt.t(), Intent.t(), String.t()}], env(), pos_integer()) ::
+          [{String.t(), outcome()}]
+  def run_many(items, env, bound) when is_list(items) and is_integer(bound) and bound > 0 do
+    key = Executor.receipt_key()
+    env = %{env | timeout: bound, customer_approval_required: false}
+
+    prepared =
+      Enum.map(items, fn {receipt, intent, group_id} ->
+        with :ok <- ReviewReceipt.verify(receipt, key, intent, group_id),
+             :ok <- halt_kind(intent),
+             {:ok, tool, args} <- permitted_call(intent, env),
+             :ok <- journal(group_id, {:placing}, env.journal) do
+          {group_id, {:send, tool, args, intent}}
+        else
+          {:error, reason} -> {group_id, {:error, reason}}
+        end
+      end)
+
+    sent =
+      prepared
+      |> Enum.filter(&match?({_group_id, {:send, _, _, _}}, &1))
+      |> Task.async_stream(
+        fn {_group_id, {:send, tool, args, intent}} -> send_order(tool, args, intent, env) end,
+        timeout: bound + 1_000,
+        on_timeout: :kill_task,
+        max_concurrency: max(length(items), 1)
+      )
+      |> Enum.zip(Enum.filter(prepared, &match?({_group_id, {:send, _, _, _}}, &1)))
+      |> Map.new(fn {result, {group_id, {:send, tool, _args, _intent}}} ->
+        {group_id, finish(group_id, sent_result(result, tool), env)}
+      end)
+
+    Enum.map(prepared, fn
+      {group_id, {:send, _, _, _}} -> {group_id, Map.fetch!(sent, group_id)}
+      {group_id, {:error, _} = refused} -> {group_id, refused}
+    end)
+  end
+
+  defp halt_kind(%Intent{kind: kind}) when kind in [:cancel, :decline], do: :ok
+  defp halt_kind(%Intent{kind: kind}), do: {:error, {:not_a_halt, kind}}
+
+  defp sent_result({:ok, classified}, _tool), do: classified
+
+  defp sent_result({:exit, :timeout}, tool),
+    do: {:unknown, %{"tool" => tool, "error" => ":timeout"}}
+
+  defp sent_result({:exit, reason}, tool),
+    do: {:unknown, %{"tool" => tool, "error" => text(reason)}}
+
+  defp finish(group_id, {status, response}, env) do
+    case journal(group_id, {:order, status, response}, env.journal) do
+      :ok -> {:ok, status, response}
+      {:error, reason} -> {:error, {:order_unjournaled, status, response, reason}}
+    end
+  end
+
   defp send_order(tool, args, intent, env) do
     env.port
     |> Port.call(tool, args, env.timeout)
@@ -119,8 +189,9 @@ defmodule Raxol.Broker.Executor.Place do
 
   # A place the review marked `customer_approval_required` reaches Robinhood
   # as a proposal for the owner, not as an order.
-  defp awaiting_owner({:placed, response}, %Intent{kind: kind}, true) when kind != :cancel,
-    do: {:pending_approval, response}
+  defp awaiting_owner({:placed, response}, %Intent{kind: kind}, true)
+       when kind not in [:cancel, :decline],
+       do: {:pending_approval, response}
 
   defp awaiting_owner(classified, _intent, required) when is_boolean(required), do: classified
 
@@ -133,6 +204,11 @@ defmodule Raxol.Broker.Executor.Place do
 
   defp call_for(%Intent{kind: :cancel} = intent, account),
     do: {:ok, "cancel_equity_order", Review.order_args(intent, account)}
+
+  defp call_for(%Intent{kind: :decline, order_id: approval_id}, account),
+    do:
+      {:ok, "decline_trade_approval",
+       %{"account_number" => account, "approval_id" => approval_id}}
 
   defp call_for(%Intent{kind: kind} = intent, account) do
     if Review.equity?(intent) do

@@ -882,9 +882,11 @@ defmodule Raxol.Broker.Journal do
 
   defp placing_allowed(id, _group, _state), do: {:error, {:not_reviewed, id}}
 
-  # The notional recorded on `placing`: a decimal string, or nil for a cancel,
-  # which never counts. Anything else that cannot be priced is not sent.
-  defp placing_notional(%Intent{kind: :cancel}, _context), do: {:ok, nil}
+  # The notional recorded on `placing`: a decimal string, or nil for a cancel
+  # or a decline, which never count. Anything else that cannot be priced is
+  # not sent.
+  defp placing_notional(%Intent{kind: kind}, _context) when kind in [:cancel, :decline],
+    do: {:ok, nil}
 
   defp placing_notional(intent, context) do
     case Policy.notional(intent, context) do

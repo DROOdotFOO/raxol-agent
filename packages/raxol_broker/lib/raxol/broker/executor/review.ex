@@ -56,9 +56,12 @@ defmodule Raxol.Broker.Executor.Review do
   @unreadable "unreadable review response"
   @approval "customer_approval_required"
 
-  @doc "The review tool for `intent`: a name, `:none` for a cancel, or `{:error, {:no_adapter, kind}}`."
+  @doc """
+  The review tool for `intent`: a name, `:none` for a cancel or a decline,
+  or `{:error, {:no_adapter, kind}}`.
+  """
   @spec tool(Intent.t()) :: {:ok, String.t() | :none} | {:error, {:no_adapter, atom()}}
-  def tool(%Intent{kind: :cancel}), do: {:ok, :none}
+  def tool(%Intent{kind: kind}) when kind in [:cancel, :decline], do: {:ok, :none}
 
   def tool(%Intent{kind: kind} = intent),
     do: if(equity?(intent), do: {:ok, "review_equity_order"}, else: {:error, {:no_adapter, kind}})
@@ -85,7 +88,7 @@ defmodule Raxol.Broker.Executor.Review do
   def run(port, catalog, %Intent{} = intent, account, timeout) do
     case tool(intent) do
       {:ok, :none} ->
-        {:ok, %{"tool" => nil, "note" => "cancel has no review tool"}, []}
+        {:ok, %{"tool" => nil, "note" => "#{intent.kind} has no review tool"}, []}
 
       {:ok, tool} ->
         with :ok <- Catalog.permit(catalog, tool, :review) do

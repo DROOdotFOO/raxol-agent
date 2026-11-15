@@ -27,10 +27,12 @@ defmodule Raxol.Broker.Policy do
   Caps are inclusive: an order exactly at a cap is allowed. Notional counts
   both buys and sells. Rules whose policy key is `:unset` abstain. A rule that
   needs a context field left `nil` denies with `{:missing_context, field}`.
-  A cancel with `:human` provenance is always allowed: it cannot add
-  exposure. Any other cancel is `{:deny, {:cancel_provenance, provenance}}`,
-  so a strategy or model output cannot cancel the owner's orders (a stop
-  placed by hand, for instance).
+  A cancel or a trade-approval decline with `:human` provenance is always
+  allowed: it cannot add exposure. Any other is `{:deny,
+  {:cancel_provenance, provenance}}`, so a strategy or model output cannot
+  cancel the owner's orders (a stop placed by hand, for instance) or
+  decline a proposal. The kill switch builds its cancels and declines as
+  `:human`.
 
   An invalid policy or a context field of the wrong type is a DENY before any
   rule runs, with rule id `:policy_file` or `:context`.
@@ -121,11 +123,13 @@ defmodule Raxol.Broker.Policy do
     end
   end
 
-  defp evaluate_plain(%Intent{kind: :cancel, provenance: :human} = intent, %Context{}),
-    do: {:allow, intent}
+  defp evaluate_plain(%Intent{kind: kind, provenance: :human} = intent, %Context{})
+       when kind in [:cancel, :decline],
+       do: {:allow, intent}
 
-  defp evaluate_plain(%Intent{kind: :cancel, provenance: provenance}, %Context{}),
-    do: {:deny, {:cancel_provenance, provenance}}
+  defp evaluate_plain(%Intent{kind: kind, provenance: provenance}, %Context{})
+       when kind in [:cancel, :decline],
+       do: {:deny, {:cancel_provenance, provenance}}
 
   defp evaluate_plain(%Intent{} = intent, %Context{} = context) do
     with {:ok, policy} <- validate_policy(context.policy),

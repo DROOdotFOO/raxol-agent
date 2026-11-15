@@ -2,7 +2,8 @@ defmodule Mix.Tasks.Raxol.Broker.Inspect do
   @moduledoc """
   Prints accounts, buying power, positions, the mode, the journal's status
   and the policy's verdict for a sample intent. Places nothing and calls no
-  review tool: every call goes through the read-only session.
+  review tool: every call goes through the read-only session. In the
+  broker's VM it also beats the dead-man switch.
 
       mix raxol.broker.inspect [--sample "buy F 100usd"] [--policy PATH] [--journal PATH]
 
@@ -12,7 +13,7 @@ defmodule Mix.Tasks.Raxol.Broker.Inspect do
 
   use Mix.Task
 
-  alias Raxol.Broker.{CLI, PolicyFile, Snapshot}
+  alias Raxol.Broker.{CLI, Heartbeat, PolicyFile, Snapshot}
 
   @shortdoc "Prints accounts, positions, mode and a sample verdict"
   @switches [sample: :string, policy: :string, journal: :string]
@@ -33,5 +34,7 @@ defmodule Mix.Tasks.Raxol.Broker.Inspect do
         |> Enum.each(&CLI.info/1)
       end)
     end)
+
+    if Process.whereis(Heartbeat), do: Heartbeat.beat("inspect")
   end
 end

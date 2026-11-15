@@ -34,6 +34,10 @@ defmodule Raxol.Broker.Supervisor do
       When given, every strategy the journal holds as added is started when
       the strategy supervisor starts, and again whenever an earlier child's
       crash restarts it.
+    * `:heartbeat` - options for `Raxol.Broker.Heartbeat` (the dead-man
+      switch); `:timeout` defaults to the executor policy's
+      `dead_man_timeout`, `:journal` and `:strategies` to this supervisor's.
+      Omit it to run without one.
 
   ## Restart semantics
 
@@ -56,7 +60,7 @@ defmodule Raxol.Broker.Supervisor do
 
   use Supervisor
 
-  alias Raxol.Broker.{Executor, Feed, Journal}
+  alias Raxol.Broker.{Executor, Feed, Heartbeat, Journal}
   alias Raxol.Broker.MCP.Client
   alias Raxol.Broker.Strategy
 
@@ -76,7 +80,8 @@ defmodule Raxol.Broker.Supervisor do
       {:ok, executor} ->
         children =
           [{Journal, journal_opts} | executor] ++
-            client_children(opts) ++ feed_children(opts) ++ strategy_children(opts)
+            client_children(opts) ++
+            feed_children(opts) ++ strategy_children(opts) ++ heartbeat_children(opts)
 
         Supervisor.init(children, strategy: :rest_for_one)
 
@@ -160,6 +165,28 @@ defmodule Raxol.Broker.Supervisor do
         # Strategy.Supervisor restores the added strategies itself, on every
         # start and restart.
         [{Strategy.Supervisor, strategy_opts}]
+
+      :error ->
+        []
+    end
+  end
+
+  defp heartbeat_children(opts) do
+    case Keyword.fetch(opts, :heartbeat) do
+      {:ok, heartbeat_opts} ->
+        policy = opts |> Keyword.get(:executor, []) |> Keyword.get(:policy, [])
+        timeout = Keyword.get(policy, :dead_man_timeout, :off)
+
+        strategies =
+          opts |> Keyword.get(:strategies, []) |> Keyword.get(:name, Strategy.Supervisor)
+
+        heartbeat_opts =
+          heartbeat_opts
+          |> Keyword.put_new(:timeout, timeout)
+          |> Keyword.put(:journal, journal_name(opts))
+          |> Keyword.put_new(:strategies, strategies)
+
+        [{Heartbeat, heartbeat_opts}]
 
       :error ->
         []

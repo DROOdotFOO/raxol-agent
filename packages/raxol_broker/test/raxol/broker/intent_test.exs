@@ -70,7 +70,8 @@ defmodule Raxol.Broker.IntentTest do
             Intent.stop_market(:sell, "AAPL", d("1"), d("180"), p),
             Intent.option(:buy, "AAPL", d("500"), Keyword.put(p, :params, %{"legs" => [1, 2]})),
             Intent.advanced(:buy, "AAPL", d("500"), Keyword.put(p, :params, %{"kind" => "oco"})),
-            Intent.cancel("order-1", provenance: :human)
+            Intent.cancel("order-1", provenance: :human),
+            Intent.decline("apr-1", provenance: :human)
           ],
           do: intent
     end

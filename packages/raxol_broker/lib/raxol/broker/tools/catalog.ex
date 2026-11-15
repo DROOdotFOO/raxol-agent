@@ -9,8 +9,9 @@ defmodule Raxol.Broker.Tools.Catalog do
     * `:review` - `review_*_order` and `preview_*_order`.
     * `:write` - an explicit allowlist of shapes: `place_*_order`,
       `cancel_*_order`, `replace_*_order` (advanced-order placement is
-      `place_advanced_order`), and alert create/update
-      (`create_*alert*`, `update_*alert*`).
+      `place_advanced_order`), alert create/update (`create_*alert*`,
+      `update_*alert*`), and `decline_trade_approval`, which the kill switch
+      sends through `Raxol.Broker.Executor.Place`.
     * `:read` - annotated `readOnlyHint: true` and not write-shaped.
     * `:unknown` - everything else: a tool absent from the capture, a
       write-shaped tool outside the allowlist (`exercise_option`,
@@ -39,7 +40,8 @@ defmodule Raxol.Broker.Tools.Catalog do
   @review_shape ~r/\A(?:review|preview)_\w+_order\z/
   @write_allowlist [
     ~r/\A(?:place|cancel|replace)_\w+_order\z/,
-    ~r/\A(?:create|update)_\w*alert\w*\z/
+    ~r/\A(?:create|update)_\w*alert\w*\z/,
+    ~r/\Adecline_trade_approval\z/
   ]
   # Verbs that change state. A tool of this shape the allowlist does not name
   # is never `:read`, whatever its annotations say.

@@ -56,7 +56,8 @@ defmodule Raxol.Broker.PolicyFileTest do
               max_orders_per_minute: :unset,
               drawdown_halt: :unset,
               llm_ask_above: :unset,
-              ask_timeout: 300_000
+              ask_timeout: 300_000,
+              dead_man_timeout: 86_400_000
             ]} = PolicyFile.new(max_notional_per_order, daily_notional_cap)
   end
 
@@ -206,7 +207,8 @@ defmodule Raxol.Broker.PolicyFileTest do
       symbols_allow: "AAPL",
       symbols_deny: :unset,
       max_orders_per_minute: Decimal.new("5"),
-      drawdown_halt: 0
+      drawdown_halt: 0,
+      dead_man_timeout: 0
     ]
 
     for {key, value} <- invalid_values do
@@ -452,7 +454,8 @@ defmodule Raxol.Broker.PolicyFileTest do
       max_orders_per_minute: ":unset",
       drawdown_halt: ":unset",
       llm_ask_above: ":unset",
-      ask_timeout: "30_000"
+      ask_timeout: "30_000",
+      dead_man_timeout: ":off"
     ]
   end
 

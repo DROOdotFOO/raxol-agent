@@ -8,15 +8,17 @@ defmodule Raxol.Broker.Dashboard do
   `:ask_timeout`), and the last journal decisions.
 
   Keys: `j`/`k` move the focus between ASKs, `a` approves the focused ASK,
-  `d` declines it, `r` re-reads the account, `q` quits. The focus is the
-  ASK's group id, not its place in the list: when the focused ASK is
-  answered elsewhere or times out, the focus is cleared and nothing is
-  answered until `j` or `k` picks one again.
+  `d` declines it, `K` and then `y` pull the kill switch
+  (`Raxol.Broker.Halt.kill/1`; any other key cancels it), `r` re-reads the
+  account, `q` quits. The focus is the ASK's group id, not its place in the
+  list: when the focused ASK is answered elsewhere or times out, the focus
+  is cleared and nothing is answered until `j` or `k` picks one again.
 
   ## Operator
 
-  Only an operator may answer. The operator comes from the surface, never
-  from application config, and is journaled as the approval's `by`:
+  Only an operator may answer or kill. The operator comes from the surface,
+  never from application config, and is journaled as the approval's `by`
+  and the kill's trigger:
 
     * terminal: `"terminal:<OS user>"` (the console of the broker's VM);
     * SSH: what the server's `:tenant_opts` function gives for the
@@ -24,11 +26,12 @@ defmodule Raxol.Broker.Dashboard do
       `tenant_opts: fn user -> {:ok, [dashboard: [operator: "ssh:" <> user]]} end`;
     * LiveView and headless: read-only. `Raxol.LiveView.TEALive` passes no
       per-user options to the app, so a browser session cannot be tied to a
-      person here; `a` and `d` answer "read-only" and send nothing.
+      person here; `a`, `d` and `K` answer "read-only" and send nothing.
 
   The view keeps no timer of its own: the executor denies an unanswered ASK
   whether or not a dashboard is open. The view re-reads the executor and the
-  journal once a second.
+  journal once a second, and each refresh beats the dead-man switch
+  (`Raxol.Broker.Heartbeat`), so an open dashboard keeps strategies running.
 
   ## Mounting
 
@@ -45,12 +48,12 @@ defmodule Raxol.Broker.Dashboard do
   It runs in the VM the broker runs in. It reads the processes registered
   under their default names; `config :raxol_broker, Raxol.Broker.Dashboard`
   (or a `:dashboard` keyword in the surface's options) names others:
-  `:executor`, `:journal`, `:strategies`, `:client`.
+  `:executor`, `:journal`, `:strategies`, `:client`, `:heartbeat`.
   """
 
   use Raxol.Core.Runtime.Application
 
-  alias Raxol.Broker.{Executor, Journal, Mode, Response}
+  alias Raxol.Broker.{Executor, Halt, Heartbeat, Journal, Mode, Response}
   alias Raxol.Broker.MCP.Client
   alias Raxol.Broker.Strategy
 
@@ -69,6 +72,8 @@ defmodule Raxol.Broker.Dashboard do
       strategies: Keyword.get(config, :strategies, Strategy.Supervisor),
       client: Keyword.get(config, :client, Client),
       operator: operator(environment, dashboard(options)),
+      heartbeat: Keyword.get(config, :heartbeat, Heartbeat),
+      confirming_kill: false,
       asks: [],
       focus: nil,
       mode: :disarmed,
@@ -100,14 +105,22 @@ defmodule Raxol.Broker.Dashboard do
   end
 
   @impl true
+  def update(:tick, model), do: {model |> beat() |> refresh(), []}
+
+  def update(key_match("y"), %{confirming_kill: true} = model),
+    do: {model |> kill() |> refresh(), []}
+
+  def update(%Raxol.Core.Events.Event{type: :key}, %{confirming_kill: true} = model),
+    do: {%{model | confirming_kill: false, status: "kill cancelled; nothing sent"}, []}
+
   def update(message, model) do
     case message do
-      :tick -> {refresh(model), []}
       key_match("j") -> {move(model, 1), []}
       key_match("k") -> {move(model, -1), []}
       key_match("a") -> {model |> answer(:approve) |> refresh(), []}
       key_match("d") -> {model |> answer(:decline) |> refresh(), []}
       key_match("r") -> {model |> refresh() |> read_account(), []}
+      key_match("K") -> {confirm_kill(model), []}
       key_match("q") -> {model, [Directive.stop()]}
       _other -> {model, []}
     end
@@ -226,6 +239,48 @@ defmodule Raxol.Broker.Dashboard do
   defp describe({:deny, _group_id, {rule, _detail}}), do: "denied by #{rule}"
   defp describe({:ask, _group_id, _prompts}), do: "asked again"
   defp describe({:error, reason}), do: "error #{inspect(reason, structs: false)}"
+
+  # Only an operator's dashboard keeps the dead-man switch from firing.
+  defp beat(%{operator: nil} = model), do: model
+
+  defp beat(model) do
+    _ =
+      safe(fn ->
+        if GenServer.whereis(model.heartbeat),
+          do: Heartbeat.beat(model.heartbeat, model.operator)
+      end)
+
+    model
+  end
+
+  defp confirm_kill(%{operator: nil} = model),
+    do: %{model | status: "read-only: this surface has no operator; nothing sent"}
+
+  defp confirm_kill(model) do
+    %{
+      model
+      | confirming_kill: true,
+        status:
+          "kill: disarm, stop strategies, cancel open orders? y to confirm, any key to cancel"
+    }
+  end
+
+  defp kill(model) do
+    opts = [
+      executor: model.executor,
+      journal: model.journal,
+      strategies: model.strategies,
+      trigger: model.operator
+    ]
+
+    status =
+      case safe(fn -> Halt.kill(opts) end) do
+        {:ok, summary} -> "killed: #{length(summary.results)} cancel(s) and decline(s) sent"
+        {:error, reason} -> "kill failed: #{inspect(reason, structs: false)}"
+      end
+
+    %{model | confirming_kill: false, status: status}
+  end
 
   defp refresh(model) do
     asks = safe(fn -> Executor.parked(model.executor, @call_timeout) end)

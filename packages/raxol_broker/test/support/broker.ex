@@ -109,7 +109,8 @@ defmodule Raxol.Broker.Test.Broker do
       max_orders_per_minute: :unset,
       drawdown_halt: :unset,
       llm_ask_above: :unset,
-      ask_timeout: 300_000
+      ask_timeout: 300_000,
+      dead_man_timeout: 86_400_000
     ]
     """)
 
