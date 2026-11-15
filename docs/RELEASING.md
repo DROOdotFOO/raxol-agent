@@ -6,7 +6,7 @@ order, because Hex refuses a requirement on a version it does not have:
 1. `raxol_agent_client_protocol` (tag `raxol_agent_client_protocol-v<version>`),
    which requires no other package of this repository;
 2. `raxol_agent` (tag `raxol_agent-v<version>`), which requires
-   `raxol_agent_client_protocol ~> 0.1`;
+   `raxol_agent_client_protocol ~> 0.1.0`;
 3. `raxol_payments` (tag `raxol_payments-v<version>`), which requires
    `raxol_agent ~> 3.0`.
 
@@ -45,7 +45,7 @@ export MIX_ARCHIVES="$MIX_HOME/archives"
 unset MIX_ENV RAXOL_PATH
 which mix               # the mise path
 mix hex.info            # Hex 2.7.0 or later
-mix hex.user whoami     # the account that owns both packages
+mix hex.user whoami     # the account that owns raxol_agent and raxol_payments; it becomes the owner of raxol_agent_client_protocol on first publish
 ```
 
 ## 3. Publish the protocol package
@@ -88,7 +88,7 @@ HEX_BUILD=1 mix hex.publish --dry-run
 ```
 
 Read the dependency list it prints: every requirement must already be on Hex,
-optional ones included, and `raxol_agent_client_protocol ~> 0.1` must be
+optional ones included, and `raxol_agent_client_protocol ~> 0.1.0` must be
 there and not optional. Then:
 
 ```sh
@@ -128,9 +128,13 @@ git status --short      # must print nothing
 - A published version is wrong: `HEX_BUILD=1 mix hex.publish --revert <version>`
   works within 24 hours of a new package's first publish
   (`raxol_agent_client_protocol` 0.1.0) and within one hour of a new version of
-  an existing package (`mix help hex.publish`). Revert in the reverse order of
-  publishing: reverting `raxol_agent_client_protocol` 0.1.0 after `raxol_agent`
-  3.1.0 is out breaks `raxol_agent`, so revert the agent first.
+  an existing package (`raxol_agent` 3.1.0) (`mix help hex.publish`, Hex 2.7.0).
+  Revert in the reverse order of publishing: reverting
+  `raxol_agent_client_protocol` 0.1.0 after `raxol_agent` 3.1.0 is out breaks
+  `raxol_agent`, so revert the agent first. Once the agent's hour has passed it
+  can no longer be reverted, so do not revert `raxol_agent_client_protocol`
+  0.1.0 either (that would leave `raxol_agent` 3.1.0 unresolvable): publish a
+  fixed 0.1.1 instead.
 
 ## After publishing
 

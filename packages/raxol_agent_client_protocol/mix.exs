@@ -67,8 +67,8 @@ defmodule RaxolAgentClientProtocol.MixProject do
     """
     Elixir/OTP implementation of ACP (Agent Client Protocol) — the JSON-RPC 2.0
     protocol between code editors and AI coding agents (agentclientprotocol.com).
-    Bidirectional agent/client roles, pluggable transports (stdio, in-process),
-    supervised session processes, and durable resumable sessions.
+    Bidirectional agent/client roles, stdio and in-process transports,
+    supervised session processes, and resumable sessions (in-memory journal).
     """
   end
 

@@ -19,8 +19,8 @@ defmodule Raxol.AgentClientProtocol do
       role (`:agent` or `:client`), bidirectional request correlation,
       supervised per-session processes.
     * Vendor extensions ride `_meta["raxol.io"]` and `_raxol/*` methods:
-      durable resumable sessions (offset-based reattach/replay), capability
-      tokens, and taint annotation.
+      resumable sessions over an in-memory journal (offset-based
+      reattach/replay), capability tokens, and taint annotation.
 
   Protocol version: integer `1` (the stable ACP v1 surface).
   """
