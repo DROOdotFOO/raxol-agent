@@ -2,7 +2,7 @@ defmodule RaxolCli.MixProject do
   use Mix.Project
 
   @version "0.2.10"
-  @source_url "https://github.com/DROOdotFOO/raxol"
+  @source_url "https://github.com/DROOdotFOO/raxol-agent"
 
   def project do
     [

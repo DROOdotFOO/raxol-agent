@@ -80,7 +80,7 @@ for path in "$out"/raxol_cli_*; do
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DROOdotFOO/raxol.git",
+    "url": "git+https://github.com/DROOdotFOO/raxol-agent.git",
     "directory": "packages/raxol_cli/npm"
   }
 }

@@ -2,9 +2,9 @@
 
 import {readFile, writeFile} from "node:fs/promises";
 
-const repository = "DROOdotFOO/raxol";
+const repository = "DROOdotFOO/raxol-agent";
 const signerWorkflow =
-  "DROOdotFOO/raxol/.github/workflows/release-raxol-cli.yml";
+  "DROOdotFOO/raxol-agent/.github/workflows/release-raxol-cli.yml";
 const assets = {
   "darwin-arm64": "raxol_cli_macos",
   "linux-x64": "raxol_cli_linux",

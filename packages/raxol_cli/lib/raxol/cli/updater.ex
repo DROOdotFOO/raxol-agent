@@ -5,8 +5,9 @@ defmodule Raxol.CLI.Updater do
   Version checks and verified self-update for a Burrito-packaged binary.
 
   Where updates come from is a `Raxol.CLI.Updater.Manifest`: by default the
-  `raxol` CLI release channel (`raxol-cli-v*` releases on `DROOdotFOO/raxol`),
-  or whatever an application sets in `config :raxol_cli, :updater_manifest`.
+  `raxol` CLI release channel (`raxol-cli-v*` releases on
+  `DROOdotFOO/raxol-agent`), or whatever an application sets in
+  `config :raxol_cli, :updater_manifest`.
   Every download is checked against the release's `SHA256SUMS` and, unless
   the manifest sets `provenance: :off`, against the release's Sigstore
   attestation (`Raxol.CLI.Updater.Provenance`: signed by the manifest's
