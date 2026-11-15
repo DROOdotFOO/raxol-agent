@@ -87,8 +87,17 @@ defmodule Raxol.Broker.Supervisor do
 
   defp journal_name(opts), do: opts |> Keyword.get(:journal, []) |> Keyword.get(:name, Journal)
 
-  defp executor_children(opts),
-    do: executor_children(Keyword.fetch(opts, :executor), journal_name(opts))
+  defp executor_children(opts) do
+    strategies = opts |> Keyword.get(:strategies, []) |> Keyword.get(:name, Strategy.Supervisor)
+
+    case executor_children(Keyword.fetch(opts, :executor), journal_name(opts)) do
+      {:ok, [{Executor, executor_opts}]} ->
+        {:ok, [{Executor, Keyword.put_new(executor_opts, :strategies, strategies)}]}
+
+      other ->
+        other
+    end
+  end
 
   defp executor_children(:error, _journal), do: {:ok, []}
 

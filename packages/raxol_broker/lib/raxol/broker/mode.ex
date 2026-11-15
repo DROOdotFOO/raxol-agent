@@ -35,7 +35,11 @@ defmodule Raxol.Broker.Mode do
   `Raxol.Broker.MCP.Client`, default that module), `:policy_path` (default
   `broker.policy.exs`), `:confirm` (required: a one-arity function given the
   summary lines, returning what the person typed), `:by` (who armed,
-  default `"cli"`).
+  default `"cli"`), `:strategies` (the strategy supervisor, default
+  `Raxol.Broker.Strategy.Supervisor`).
+
+  A successful arm resumes every runner the drawdown breaker paused
+  (`Raxol.Broker.Halt.pause/2`): only a fresh arm does.
   """
 
   alias Raxol.Broker.{Feed, Journal, PolicyFile, Response, Strategy}
@@ -78,6 +82,8 @@ defmodule Raxol.Broker.Mode do
          fields = record(policy, quotes, Keyword.get(opts, :by, "cli")),
          :ok <- confirmed(confirm.(summary(path, fields))),
          :ok <- Journal.record_armed(fields, journal) do
+      supervisor = Keyword.get(opts, :strategies, Strategy.Supervisor)
+      Strategy.Supervisor.resume_all(:drawdown_halt, supervisor: supervisor)
       {:ok, fields}
     end
   end

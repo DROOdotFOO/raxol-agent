@@ -161,6 +161,7 @@ defmodule Raxol.Broker.Journal do
       `Raxol.Broker.Mode.arm/1`, after its checks, may write an `armed`
       record: `Raxol.Broker.Executor.StructureTest` fails if any other
       module references `record_armed/2`. Disarming is open to anyone.
+    * `halt`: strategies paused or stopped and why (`Raxol.Broker.Halt`).
   """
 
   use GenServer
@@ -174,7 +175,7 @@ defmodule Raxol.Broker.Journal do
   alias Raxol.Broker.Policy.Context
 
   @recent 20
-  @event_types ~w(emit dispatch strategy mode)
+  @event_types ~w(emit dispatch strategy mode halt)
   @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
@@ -535,6 +536,11 @@ defmodule Raxol.Broker.Journal do
   @spec record_disarmed(map(), server()) :: :ok | {:error, term()}
   def record_disarmed(fields, server \\ __MODULE__) when is_map(fields),
     do: event("mode", Map.put(fields, "mode", "disarmed"), server)
+
+  @doc "Record a halt (see `Raxol.Broker.Halt`): `fields` hold its `\"reason\"`."
+  @spec record_halt(map(), server()) :: :ok | {:error, term()}
+  def record_halt(%{"reason" => reason} = fields, server \\ __MODULE__) when is_binary(reason),
+    do: event("halt", fields, server)
 
   @doc """
   The latest mode record: `{:ok, :armed | :disarmed, record}`, or

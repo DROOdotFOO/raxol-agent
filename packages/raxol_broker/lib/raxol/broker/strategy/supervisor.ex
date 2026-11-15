@@ -106,7 +106,7 @@ defmodule Raxol.Broker.Strategy.Supervisor do
        Enum.map(specs, fn spec ->
          case Map.fetch(running, spec["id"]) do
            {:ok, info} ->
-             Map.drop(info, [:symbols])
+             Map.drop(info, [:symbols, :paused])
 
            :error ->
              %{
@@ -147,6 +147,22 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   def stop_all(opts \\ []) do
     sup = supervisor(opts)
     Enum.each(running(sup), fn {pid, _info} -> terminate(sup, pid) end)
+  end
+
+  @doc """
+  Pause every runner for `reason`: it ignores feed messages until every
+  reason it was paused for is resumed. Sent, not called, so a runner busy
+  in the executor cannot block the caller.
+  """
+  @spec pause_all(atom(), keyword()) :: :ok
+  def pause_all(reason, opts \\ []) when is_atom(reason) do
+    Enum.each(running(supervisor(opts)), fn {pid, _info} -> send(pid, {:pause, reason}) end)
+  end
+
+  @doc "Resume every runner paused for `reason`."
+  @spec resume_all(atom(), keyword()) :: :ok
+  def resume_all(reason, opts \\ []) when is_atom(reason) do
+    Enum.each(running(supervisor(opts)), fn {pid, _info} -> send(pid, {:resume, reason}) end)
   end
 
   @doc """
