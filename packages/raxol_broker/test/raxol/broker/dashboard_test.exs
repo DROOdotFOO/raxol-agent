@@ -6,7 +6,7 @@ defmodule Raxol.Broker.DashboardTest do
   """
   use ExUnit.Case, async: false
 
-  alias Raxol.Broker.{Executor, Intent, Journal}
+  alias Raxol.Broker.{Dashboard, Executor, Heartbeat, Intent, Journal}
   alias Raxol.Broker.MCP.Fake
   alias Raxol.Broker.Policy.Context
   alias Raxol.Broker.Test.Broker
@@ -84,19 +84,74 @@ defmodule Raxol.Broker.DashboardTest do
 
   defp press(model, keys) do
     Enum.reduce(keys, model, fn k, model ->
-      {model, _commands} = Raxol.Broker.Dashboard.update(key(k), model)
-      model
+      model |> step(key(k)) |> settle()
     end)
   end
 
-  defp tick(model), do: model |> then(&Raxol.Broker.Dashboard.update(:tick, &1)) |> elem(0)
+  defp tick(model), do: model |> step(:tick) |> settle()
+
+  defp step(model, message) do
+    {model, effects} = Dashboard.update(message, model)
+    execute(effects)
+    model
+  end
+
+  defp execute(effects) do
+    Enum.each(effects, fn effect ->
+      Raxol.Core.Runtime.Directive.Executor.execute(effect, %{pid: self(), runtime_pid: self()})
+    end)
+  end
+
+  defp settle(%{in_flight: pending} = model) when map_size(pending) == 0, do: model
+
+  defp settle(model) do
+    receive do
+      {:command_result, {:broker_dashboard, _operation, _ref, _result}} = message ->
+        model |> step(message) |> settle()
+    after
+      5_000 -> flunk("dashboard operations did not settle: #{inspect(Map.keys(model.in_flight))}")
+    end
+  end
+
+  defp finish_operation(model, operation) do
+    if Map.has_key?(model.in_flight, operation) do
+      receive do
+        {:command_result, {:broker_dashboard, _operation, _ref, _result}} = message ->
+          model |> step(message) |> finish_operation(operation)
+      after
+        5_000 -> flunk("dashboard operation did not finish: #{operation}")
+      end
+    else
+      model
+    end
+  end
+
+  defp tick_dashboard!(id) do
+    session = :sys.get_state(Raxol.Headless).sessions[id]
+    state = GenServer.call(session.lifecycle_pid, :get_full_state)
+    dispatcher = state.dispatcher_pid
+    :erlang.trace(dispatcher, true, [:receive])
+    {:ok, before} = Raxol.Headless.get_model(id)
+    :ok = Raxol.Headless.send_message(id, :tick)
+    operations = [:executor, :journal, :strategies] ++ if(before.account_loaded, do: [], else: [:account])
+
+    for operation <- operations do
+      assert_receive {:trace, ^dispatcher, :receive,
+                      {:command_result, {:broker_dashboard, ^operation, _ref, _result}}},
+                     5_000
+    end
+
+    {:ok, _model} = Raxol.Headless.get_model(id)
+    :erlang.trace(dispatcher, false, [:receive])
+    :ok
+  end
 
   test "headless shows an ASK within one frame, read-only: a sends nothing", ctx do
     dash = dashboard!()
     assert screen(dash) =~ "pending approvals (a approve, d deny, j/k move), read-only:\n  none"
 
     _ = ask!(ctx, "ask-approve")
-    :ok = Raxol.Headless.send_message(dash, :tick)
+    :ok = tick_dashboard!(dash)
     assert screen(dash) =~ "  ask-approve  limit buy AAPL 2 @ 125  denied in 5m"
     assert screen(dash) =~ "review_warning: Order review returned 1 warning(s)."
 
@@ -176,7 +231,7 @@ defmodule Raxol.Broker.DashboardTest do
     dash = dashboard!()
     _ = ask!(ctx, "ask-one")
     _ = ask!(ctx, "ask-two", "3")
-    :ok = Raxol.Headless.send_message(dash, :tick)
+    :ok = tick_dashboard!(dash)
     :ok = Raxol.Headless.send_key(dash, "j")
     :ok = Raxol.Headless.send_key(dash, "j")
 
@@ -210,5 +265,171 @@ defmodule Raxol.Broker.DashboardTest do
 
     assert {:ok, [%{"outcome" => "deny ask_timeout"} | _]} = Journal.recent(ctx.journal)
     assert Fake.calls(ctx.fake, "place_") == []
+  end
+
+  defp heartbeat!(ctx) do
+    name = :"dashboard_heartbeat_#{System.unique_integer([:positive])}"
+    {clock, agent} = Broker.clock(0)
+
+    pid =
+      start_supervised!(
+        {Heartbeat,
+         name: name,
+         timeout: :off,
+         journal: ctx.journal,
+         strategies: :no_strategies_here,
+         clock: clock}
+      )
+
+    {pid, agent}
+  end
+
+  test "a held review keeps approval pending without freezing input, refresh or heartbeat", ctx do
+    _group = ask!(ctx, "approve-behind-review")
+    {heartbeat, clock} = heartbeat!(ctx)
+    model = %{operator_model() | heartbeat: heartbeat} |> tick() |> press(["j"])
+    parent = self()
+
+    Fake.on_call(ctx.fake, "review_equity_order", fn _args ->
+      send(parent, {:held_dashboard_review, self()})
+      receive do: (:release_review -> :answer)
+    end)
+
+    {:ok, intent} =
+      Intent.limit(:buy, "AAPL", Decimal.new("1"), Decimal.new("125"),
+        provenance: :strategy,
+        id: "held-review"
+      )
+
+    task =
+      Task.async(fn ->
+        Executor.run(ctx.executor, intent, %Context{quotes: %{"AAPL" => Decimal.new("125")}})
+      end)
+
+    assert_receive {:held_dashboard_review, review}, 5_000
+    model = step(model, key("a"))
+    assert model.status == "approve approve-behind-review: pending; outcome not yet known"
+    assert Map.has_key?(model.in_flight, :answer)
+    assert {^model, []} = Dashboard.update(key("a"), model)
+    assert {^model, []} = Dashboard.update(key("d"), model)
+    assert {^model, [%Raxol.Core.Runtime.Directive.Stop{}]} = Dashboard.update(key("q"), model)
+
+    Agent.update(clock, fn _ -> 10 end)
+    model = model |> step(:tick) |> finish_operation(:heartbeat)
+    assert Heartbeat.status(heartbeat).silent_ms == 0
+    assert model.status =~ "pending; outcome not yet known"
+    assert Dashboard.lines(model) |> Enum.any?(&String.contains?(&1, "approve-behind-review"))
+    assert Fake.calls(ctx.fake, "place_") == []
+
+    send(review, :release_review)
+    assert {:ask, _group_id, _prompts} = Task.await(task, 5_000)
+    model = settle(model)
+    assert model.status == "approve approve-behind-review: placed"
+    assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+
+    assert [%{"by" => "ssh:alice"}] =
+             for %{"type" => "approval"} = record <- Broker.records(ctx.path), do: record
+  end
+
+  test "a frozen executor cannot block ticks and only one refresh or approval is in flight", ctx do
+    _group = ask!(ctx, "frozen-executor")
+    {heartbeat, clock} = heartbeat!(ctx)
+    model = %{operator_model() | heartbeat: heartbeat} |> tick() |> press(["j"])
+    :ok = :sys.suspend(ctx.executor)
+    on_exit(fn -> if Process.alive?(ctx.executor), do: :sys.resume(ctx.executor) end)
+
+    model = model |> step(key("a")) |> step(:tick) |> finish_operation(:heartbeat)
+    answer = model.in_flight.answer
+    refresh = model.in_flight.executor
+    assert model.status =~ "pending"
+
+    for key <- ["a", "d", "r"] do
+      {next, effects} = Dashboard.update(key(key), model)
+      assert next.in_flight.answer == answer
+      assert next.in_flight.executor == refresh
+      assert length(effects) == map_size(next.in_flight) - map_size(model.in_flight)
+    end
+
+    Agent.update(clock, fn _ -> 20 end)
+    model = model |> step(:tick) |> finish_operation(:heartbeat)
+    assert Heartbeat.status(heartbeat).silent_ms == 0
+    assert model.in_flight.answer == answer
+    assert model.in_flight.executor == refresh
+    assert {_, []} = Dashboard.update(key("j"), model)
+    assert Fake.calls(ctx.fake, "place_") == []
+
+    :ok = :sys.resume(ctx.executor)
+    model = settle(model)
+    assert model.status == "approve frozen-executor: placed"
+    assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+  end
+
+  test "a frozen heartbeat cannot block view refresh or duplicate heartbeats", ctx do
+    _group = ask!(ctx, "heartbeat-held")
+    {heartbeat, _clock} = heartbeat!(ctx)
+    :ok = :sys.suspend(heartbeat)
+    on_exit(fn -> if Process.alive?(heartbeat), do: :sys.resume(heartbeat) end)
+
+    model =
+      %{operator_model() | heartbeat: heartbeat}
+      |> step(:tick)
+      |> finish_operation(:executor)
+
+    assert [%{intent: %{id: "heartbeat-held"}}] = model.asks
+    ref = model.in_flight.heartbeat
+    {next, effects} = Dashboard.update(:tick, model)
+    assert next.in_flight.heartbeat == ref
+    assert length(effects) == map_size(next.in_flight) - map_size(model.in_flight)
+    assert {_, []} = Dashboard.update(key("j"), model)
+
+    :ok = :sys.resume(heartbeat)
+    _model = settle(model)
+  end
+
+  test "a kill waiting on a frozen journal stays tracked without blocking the dashboard", ctx do
+    model = operator_model()
+    :ok = :sys.suspend(ctx.journal)
+    on_exit(fn -> if Process.whereis(ctx.journal), do: :sys.resume(ctx.journal) end)
+
+    model = model |> step(key("K")) |> step(key("y"))
+    assert model.status == "kill pending; outcome not yet known"
+    ref = model.in_flight.kill
+    {next, []} = Dashboard.update(key("a"), model)
+    assert next.in_flight.kill == ref
+    assert {_, [%Raxol.Core.Runtime.Directive.Stop{}]} = Dashboard.update(key("q"), model)
+
+    :ok = :sys.resume(ctx.journal)
+    model = settle(model)
+    assert model.status =~ "killed:"
+    assert Raxol.Broker.Mode.current(ctx.journal) == :disarmed
+  end
+
+  test "a frozen account client leaves refresh, heartbeat and input responsive", ctx do
+    client =
+      start_supervised!(
+        {Raxol.Broker.MCP.Client, Fake.client_opts(ctx.fake)}
+      )
+
+    assert {:ok, [_ | _]} = Raxol.Broker.MCP.Client.list_tools(client)
+    {heartbeat, _clock} = heartbeat!(ctx)
+    :ok = :sys.suspend(client)
+    on_exit(fn -> if Process.alive?(client), do: :sys.resume(client) end)
+
+    model =
+      %{operator_model() | client: client, heartbeat: heartbeat}
+      |> step(:tick)
+      |> finish_operation(:heartbeat)
+      |> finish_operation(:executor)
+
+    account = model.in_flight.account
+    assert model.mode == :armed or Map.has_key?(model.in_flight, :journal)
+    assert {_, []} = Dashboard.update(key("j"), model)
+    {next, _effects} = Dashboard.update(key("r"), model)
+    assert next.in_flight.account == account
+    assert Heartbeat.status(heartbeat).silent_ms == 0
+
+    :ok = :sys.resume(client)
+    model = settle(model)
+    assert Enum.any?(model.account, &String.starts_with?(&1, "account FAKE-0001"))
   end
 end

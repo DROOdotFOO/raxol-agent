@@ -465,6 +465,12 @@ before it is denied, and the last journal decisions. `j`/`k` pick an ASK,
 answered elsewhere or times out, nothing is answered until `j`/`k` picks
 again.
 
+Refreshes, account reads, heartbeats, approvals, declines and kills run
+independently off the TEA process, with one outstanding task per operation.
+Slow approvals and kills remain visibly pending until their actual outcome
+returns; frozen dependencies do not block input or independent heartbeats.
+Initial account and snapshot loading starts on the first one-second tick.
+
 Only an operator may answer or kill, and the operator is what the
 approval's `by` and the kill's trigger record. The terminal's operator is
 `terminal:<OS user>`. An SSH session's comes from the server's
