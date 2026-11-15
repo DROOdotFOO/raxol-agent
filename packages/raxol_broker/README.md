@@ -277,8 +277,14 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   `get_equity_positions`, `get_portfolio`). A read that fails leaves its
   fields empty, and every rule that needs one denies; positions are read
   page by page, and a listing that fails, cannot be read or is longer than
-  its page limit leaves them empty too. Holidays are not modelled in the
-  market session.
+  its page limit leaves them empty too. Full-day NYSE holidays for 2026
+  and 2027 and weekends are closed for the entire New York calendar day
+  ([NYSE calendar](https://www.nyse.com/trade/hours-calendars)).
+  New equity orders are denied on those days regardless of
+  `after_hours_market`, preventing holiday-held proposals from using a new
+  day's cap. Weekday overnight limit behavior is unchanged; human cancels
+  and declines remain available. Half days and later years' holidays
+  are not modelled.
 * **Drawdown breaker.** A pre-review or approval-time DENY by `:drawdown_breaker` disarms
   the broker, journals a `halt` record and pauses every strategy runner
   (`Raxol.Broker.Halt.pause/2`). The pause is the journal's

@@ -16,8 +16,10 @@ defmodule Raxol.Broker.Policy.Context do
       given in shares.
     * `today_notional` -- USD notional already ordered today, both sides.
     * `orders_last_minute` -- orders placed in the trailing 60 seconds.
-    * `market_session` -- `:regular`, `:extended`, or `:closed`. Holidays and
-      half days make this a data question, so the context builder answers it.
+    * `market_session` -- `:regular`, `:extended`, or `:closed`.
+    * `trading_day` -- whether the executor's New York date is a trading day;
+      `false` denies new orders even when after-hours market orders are enabled.
+      `nil` preserves pre-calendar contexts and journal replay behavior.
     * `review_warnings` -- warnings returned by the order's `review_*` call;
       empty before review.
   """
@@ -34,6 +36,7 @@ defmodule Raxol.Broker.Policy.Context do
           today_notional: Decimal.t() | nil,
           orders_last_minute: non_neg_integer() | nil,
           market_session: :regular | :extended | :closed | nil,
+          trading_day: boolean() | nil,
           review_warnings: [term()]
         }
 
@@ -46,6 +49,7 @@ defmodule Raxol.Broker.Policy.Context do
             today_notional: nil,
             orders_last_minute: nil,
             market_session: nil,
+            trading_day: nil,
             review_warnings: []
 
   @fields [
@@ -58,6 +62,7 @@ defmodule Raxol.Broker.Policy.Context do
     :today_notional,
     :orders_last_minute,
     :market_session,
+    :trading_day,
     :review_warnings
   ]
   @decimal_fields [:portfolio_value, :start_of_day_value, :day_pnl, :today_notional]
@@ -71,7 +76,8 @@ defmodule Raxol.Broker.Policy.Context do
   plain map of string to decimal, `quotes` is a plain map of string to
   decimal, `orders_last_minute` is `nil` or a
   non-negative integer, `market_session` is `nil`, `:regular`, `:extended` or
-  `:closed`, and `review_warnings` is a list. Errors never echo the value.
+  `:closed`, `trading_day` is `nil` or a boolean, and `review_warnings` is a
+  list. Errors never echo the value.
   """
   @spec normalize(term()) ::
           {:ok, t()}
@@ -102,6 +108,7 @@ defmodule Raxol.Broker.Policy.Context do
   defp shape?(:orders_last_minute, nil), do: true
   defp shape?(:orders_last_minute, value), do: is_integer(value) and value >= 0
   defp shape?(:market_session, value), do: value in [nil, :regular, :extended, :closed]
+  defp shape?(:trading_day, value), do: value in [nil, true, false]
   defp shape?(:review_warnings, value), do: is_list(value)
 
   defp decimal?(%{__struct__: Decimal}), do: true

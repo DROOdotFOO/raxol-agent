@@ -119,6 +119,7 @@ defmodule Raxol.Broker.Journal.Codec do
       "quotes" => price_map(context.quotes),
       "orders_last_minute" => term(context.orders_last_minute),
       "market_session" => atom_or_nil(context.market_session),
+      "trading_day" => context.trading_day,
       "review_warnings" => term(context.review_warnings)
     })
   end
@@ -138,6 +139,7 @@ defmodule Raxol.Broker.Journal.Codec do
       positions: &decode_price_map(&1, :positions),
       quotes: &decode_price_map(&1, :quotes),
       market_session: &session/1,
+      trading_day: &decode_trading_day/1,
       orders_last_minute: &decode_count/1,
       review_warnings: &json_list/1
     ]
@@ -162,6 +164,9 @@ defmodule Raxol.Broker.Journal.Codec do
   defp decode_count(nil), do: {:ok, nil}
   defp decode_count(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp decode_count(_value), do: {:error, {:bad_context, :orders_last_minute}}
+
+  defp decode_trading_day(value) when value in [nil, true, false], do: {:ok, value}
+  defp decode_trading_day(_value), do: {:error, {:bad_context, :trading_day}}
 
   defp session(value) do
     case optional_one_of(value, @sessions, :market_session) do

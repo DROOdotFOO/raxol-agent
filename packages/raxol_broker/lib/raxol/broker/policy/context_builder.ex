@@ -2,7 +2,7 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
   @moduledoc """
   The context fields the executor fetches itself instead of trusting its
   caller: `quotes`, `positions`, `portfolio_value`, `start_of_day_value`,
-  `day_pnl` and `market_session`.
+  `day_pnl`, `market_session` and `trading_day`.
 
     * `quotes`: `get_equity_quotes` for the intent's symbol, its last trade
       price.
@@ -20,6 +20,8 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
       unrealized together.
     * `market_session`: `Raxol.Broker.MarketCalendar.session/1` at the executor's
       clock.
+    * `trading_day`: `Raxol.Broker.MarketCalendar.trading_day?/1` at the same
+      clock, distinct from an overnight closed session on a trading date.
 
   A read that fails leaves its fields `nil`, so every rule that needs one
   denies with `{:missing_context, field}`: an unreadable portfolio never
@@ -55,7 +57,8 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
         portfolio_value: value,
         start_of_day_value: start,
         day_pnl: value && start && Decimal.sub(value, start),
-        market_session: MarketCalendar.session(env.now)
+        market_session: MarketCalendar.session(env.now),
+        trading_day: MarketCalendar.trading_day?(env.now)
     }
   end
 

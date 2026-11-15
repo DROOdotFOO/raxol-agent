@@ -2,6 +2,7 @@
 
 ## 0.1.0 - Unreleased
 
+- Model all published 2026–2027 full-day NYSE holidays, including observed dates ([NYSE calendar](https://www.nyse.com/trade/hours-calendars)). Deny new orders on closed New York calendar days regardless of after-hours permission; preserve weekday overnight limits, legacy context replay and human cancels/declines.
 - Isolate every dashboard dependency call in independent, bounded-in-flight TEA effects. Preserve operator authorization and approval focus, track unresolved action outcomes as pending, and keep heartbeat and input responsive when another dependency freezes.
 - Expire stale pending strategy emissions using persisted journal timestamps, New York day boundaries, and a validated configurable maximum age (five minutes by default). Expired and future-dated emissions are dispatched as `"expired"` without reaching the executor; existing pending-intent query callers remain compatible.
 - A refused credential refresh records `reauth_required` only when the latest mode record is not already that disarm. Refresh retries and new-sign-in takeover continue; a later arm is disarmed again if refresh is still refused.
