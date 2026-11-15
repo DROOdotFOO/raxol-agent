@@ -89,10 +89,11 @@ defmodule Raxol.Broker.Executor.PortMCPTest do
       assert Fake.exchanges(server) == 0
     end
 
-    test "armed is refused until arming exists" do
-      server = Fake.start()
-      assert PortMCP.start(Fake.session(server), mode: :armed) == {:error, :not_armed}
-      assert Fake.exchanges(server) == 0
+    test "live mode admits a Robinhood session; the executor decides on orders" do
+      spec = [url: "https://agent.robinhood.com/mcp/trading", era: :legacy]
+      assert {:ok, client_spec} = PortMCP.prepare(spec, mode: :live)
+      assert client_spec[:url] == "https://agent.robinhood.com/mcp/trading"
+      assert PortMCP.prepare(spec ++ [url: "x"], mode: :live) == {:error, :duplicate_spec_keys}
     end
 
     test "a missing or unknown mode is refused" do

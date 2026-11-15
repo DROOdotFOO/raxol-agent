@@ -290,14 +290,53 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   not record comes back with `journaled: false`. While the port is not
   connected the executor stays up and refuses with
   `{:error, :port_not_ready}` until it reconnects.
-* **Dry run only for now.** Only `mode: :dry_run` runs. The session must
-  be marked `sandbox: true` and its URL must not be on `robinhood.com`,
-  otherwise it is refused as live before connecting. `mode: :armed` is
-  `{:error, :not_armed}` until `mix raxol.broker.arm` exists.
+* **Armed or disarmed.** No order tool is sent unless the journal's latest
+  mode record is `armed` (see "Arming"). Disarmed, an intent is journaled
+  with `mode: dry_run`, its pre-review verdict is recorded and the group is
+  closed `not_armed` with no review; `run/3` returns `{:error, :not_armed}`.
+  The record is read again before `placing`, so a disarm also stops a parked
+  or in-review group. Cancels always go through.
+* **Sessions.** `mode: :dry_run` (the default) refuses a session that is not
+  marked `sandbox: true` or whose URL is on `robinhood.com`. `mode: :live`
+  admits Robinhood; with `credential: [store: ..., auth: ...]` the session
+  carries the stored credential's bearer, is refreshed five minutes before
+  the token expires and on a 401 at connect, and reconnects with the new
+  token after any review in flight.
 
 Only equity orders (`review_equity_order`, `place_equity_order`) and equity
 cancels are mapped until the generated tool adapters land; options and
 advanced orders are refused with `{:error, {:no_adapter, kind}}`.
+
+## Arming
+
+```sh
+mix raxol.broker.connect       # policy file first, then browser sign-in and drift report
+mix raxol.broker.inspect --sample "buy F 1 @ 12.25"
+mix raxol.broker.arm           # checks, then type ARM
+mix raxol.broker.disarm
+```
+
+`connect` refuses to run unless `broker.policy.exs` loads, so limits exist
+before a credential is stored. It signs in, stores the credential
+encrypted, and reports which served tools were added, changed or are
+missing against the frozen capture.
+
+`inspect` prints the accounts and their buying power, positions, the mode,
+the journal's status and the pre-review policy verdict for a sample intent,
+through the read-only session only: no review and no order.
+
+`arm` writes an `armed` mode record (`Raxol.Broker.Mode.arm/1`) only when
+the policy file loads, the journal's hash chain verifies on disk (a
+one-byte edit blocks arming), the read-only session is connected, every
+added strategy's symbols quote at or below `max_notional_per_order` (limit
+orders are whole shares), and you type `ARM` after reading what was
+checked. `disarm` writes a `disarmed` record unconditionally.
+
+Both connections, the executor's and the read-only one, refresh through
+`Raxol.Broker.Session.refresh/3`, which re-reads the store under a VM-wide
+lock first: Robinhood rotates the refresh token, so one connection takes
+over a credential the other already rotated rather than spending a token
+that is no longer valid.
 
 ## Strategies
 

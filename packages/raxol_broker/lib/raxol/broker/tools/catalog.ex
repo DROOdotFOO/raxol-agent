@@ -132,6 +132,33 @@ defmodule Raxol.Broker.Tools.Catalog do
     Map.new(live, fn {name, tool} -> {name, live_class(name, tool)} end)
   end
 
+  @doc """
+  How a live `tools/list` differs from the capture, without logging:
+  `%{added: names, changed: names, missing: names}`, each sorted. `changed`
+  is a captured tool whose `inputSchema` or `annotations` differ.
+  """
+  @spec drift([map()]) :: %{added: [String.t()], changed: [String.t()], missing: [String.t()]}
+  def drift(live) when is_list(live) do
+    live = Map.new(live, &{name_of(&1), &1})
+
+    %{
+      added: live |> Map.keys() |> Enum.reject(&Map.has_key?(@by_name, &1)) |> Enum.sort(),
+      changed:
+        live
+        |> Enum.filter(fn {name, tool} -> changed?(name, tool) end)
+        |> Enum.map(&elem(&1, 0))
+        |> Enum.sort(),
+      missing: @by_name |> Map.keys() |> Enum.reject(&Map.has_key?(live, &1)) |> Enum.sort()
+    }
+  end
+
+  defp changed?(name, tool) do
+    case Map.fetch(@by_name, name) do
+      {:ok, captured} -> not same?(captured, tool)
+      :error -> false
+    end
+  end
+
   defp live_class(name, tool) do
     case Map.fetch(@by_name, name) do
       :error ->

@@ -84,4 +84,36 @@ defmodule Raxol.Broker.Test.Broker do
     {:ok, agent} = Agent.start_link(fn -> start end)
     {fn -> Agent.get(agent, & &1) end, agent}
   end
+
+  @doc """
+  Write a trusted `broker.policy.exs` in a fresh 0700 directory under
+  `base`, with `max_notional_per_order` set to `per_order`. Returns its path.
+  """
+  def policy_file!(base, per_order \\ "1000") do
+    dir = Path.join(base, "policy-#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    File.chmod!(dir, 0o700)
+    path = Path.join(dir, "broker.policy.exs")
+
+    File.write!(path, """
+    [
+      max_notional_per_order: Decimal.new("#{per_order}"),
+      daily_notional_cap: Decimal.new("5000"),
+      max_position_weight: :unset,
+      order_types: [:limit],
+      options: false,
+      advanced_orders: false,
+      after_hours_market: false,
+      symbols_allow: :unset,
+      symbols_deny: [],
+      max_orders_per_minute: :unset,
+      drawdown_halt: :unset,
+      llm_ask_above: :unset,
+      ask_timeout: 300_000
+    ]
+    """)
+
+    File.chmod!(path, 0o600)
+    path
+  end
 end

@@ -156,6 +156,7 @@ defmodule Raxol.Broker.Strategy.Runner do
 
   defp outcome({:ok, :duplicate}), do: "duplicate"
   defp outcome({:ok, %{status: status}}), do: Atom.to_string(status)
+  defp outcome({:error, :not_armed}), do: "not_armed"
   defp outcome({:ask, _group_id, _prompts}), do: "ask"
   defp outcome({:deny, _group_id, _reason}), do: "deny"
   defp outcome({:error, :port_not_ready}), do: :retry

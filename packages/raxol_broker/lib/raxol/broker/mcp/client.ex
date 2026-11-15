@@ -113,7 +113,7 @@ defmodule Raxol.Broker.MCP.Client do
   require Logger
 
   alias Raxol.Agent.Auth.Credential
-  alias Raxol.Agent.Auth.Robinhood
+  alias Raxol.Broker.Session
   alias Raxol.Broker.CredentialStore
   alias Raxol.Broker.Tools.Catalog
   alias Raxol.MCP.CircuitBreaker
@@ -121,7 +121,7 @@ defmodule Raxol.Broker.MCP.Client do
   alias Raxol.MCP.Client.Era
   alias Raxol.MCP.Client.Reservation
 
-  @default_url "https://agent.robinhood.com/mcp/trading"
+  @default_url Session.url()
   @default_skew 300
   @default_connect_timeout 30_000
   @default_call_timeout 60_000
@@ -853,18 +853,15 @@ defmodule Raxol.Broker.MCP.Client do
   # The persist happens inside the task, before the result reaches this
   # process: a rotated credential is never used before it is on disk. A
   # credential that refreshed but failed to persist is kept (the old refresh
-  # token is spent) and the next attempt only retries the write.
+  # token is spent) and the next attempt only retries the write. The refresh
+  # itself goes through `Raxol.Broker.Session.refresh/3`, which takes over a
+  # newer credential the executor's session already stored.
   defp refresh_work(%State{unpersisted: %Credential{} = pending, config: config}) do
     fn -> persist(pending, config.store) end
   end
 
   defp refresh_work(%State{credential: credential, config: config}) do
-    fn ->
-      case Robinhood.refresh(credential, config.auth) do
-        {:ok, rotated} -> persist(rotated, config.store)
-        {:error, reason} -> {:error, reason}
-      end
-    end
+    fn -> Session.refresh(credential, config.store, config.auth) end
   end
 
   defp persist(credential, store_opts) do

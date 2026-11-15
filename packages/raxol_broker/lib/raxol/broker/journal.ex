@@ -155,6 +155,8 @@ defmodule Raxol.Broker.Journal do
       whether it was already placed.
     * `strategy`: a strategy added or stopped (`put_strategy/2`,
       `drop_strategy/2`); `strategies/1` lists the ones still added.
+    * `mode`: `armed` or `disarmed` (`put_mode/3`). `mode/1` reads the
+      latest; with none the broker is disarmed.
   """
 
   use GenServer
@@ -167,7 +169,7 @@ defmodule Raxol.Broker.Journal do
   alias Raxol.Broker.Journal.{Codec, Groups}
   alias Raxol.Broker.Policy.Context
 
-  @event_types ~w(emit dispatch strategy)
+  @event_types ~w(emit dispatch strategy mode)
   @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
@@ -523,6 +525,31 @@ defmodule Raxol.Broker.Journal do
     |> case do
       {:ok, values} -> {:ok, Enum.reverse(values)}
       error -> error
+    end
+  end
+
+  @doc """
+  Record the broker as `:armed` or `:disarmed`, with `fields` (who, why,
+  what was checked). See `Raxol.Broker.Mode`.
+  """
+  @spec put_mode(:armed | :disarmed, map(), server()) :: :ok | {:error, term()}
+  def put_mode(mode, fields, server \\ __MODULE__) when mode in [:armed, :disarmed],
+    do: append_event(:mode, Map.put(fields, "mode", Atom.to_string(mode)), server)
+
+  @doc """
+  The latest mode record: `{:ok, :armed | :disarmed, record}`, or
+  `{:ok, :disarmed, nil}` when there is none.
+  """
+  @spec mode(server()) :: {:ok, :armed | :disarmed, map() | nil} | {:error, term()}
+  def mode(server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        case :ets.lookup(server, :mode) do
+          [{:mode, %{"mode" => "armed"} = record}] -> {:ok, :armed, record}
+          [{:mode, record}] -> {:ok, :disarmed, record}
+          [] -> {:ok, :disarmed, nil}
+        end
+      end)
     end
   end
 
@@ -946,6 +973,9 @@ defmodule Raxol.Broker.Journal do
       _malformed -> true
     end
   end
+
+  defp index_event(table, %{"kind" => "broker", "type" => "mode"} = record),
+    do: :ets.insert(table, {:mode, record})
 
   defp index_event(_table, _record), do: true
 

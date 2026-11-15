@@ -48,6 +48,7 @@ defmodule Raxol.Broker.ExecutorTest do
     name = :"broker_exec_journal_#{System.unique_integer([:positive])}"
     journal_opts = [name: name, path: path, clock: fn -> @t0 end]
     start_journal!(journal_opts)
+    :ok = Journal.put_mode(:armed, %{"by" => "test"}, name)
 
     {:ok, journal: name, journal_opts: journal_opts, path: path, server: Fake.start()}
   end
@@ -160,7 +161,7 @@ defmodule Raxol.Broker.ExecutorTest do
                ~w(intent context verdict review verdict placing order)
 
       [intent_record | _] = group(ctx.path, gid)
-      assert intent_record["mode"] == "dry_run"
+      assert intent_record["mode"] == "armed"
 
       assert [{"review_equity_order", review}, {"place_equity_order", place}] =
                Fake.calls(ctx.server)
@@ -857,8 +858,31 @@ defmodule Raxol.Broker.ExecutorTest do
       :ok
     end
 
-    test "armed mode is refused until arming exists", ctx do
-      assert Executor.start_link(executor_opts(ctx, mode: :armed)) == {:error, :not_armed}
+    test "live mode starts; a disarmed broker sends no order, cancels still go through", ctx do
+      executor = start_executor!(ctx, mode: :live)
+      :ok = Journal.put_mode(:disarmed, %{"by" => "test"}, ctx.journal)
+
+      assert Executor.run(executor, limit("live-1"), context()) == {:error, :not_armed}
+      [gid] = groups_for(ctx.path, "live-1")
+      assert types(ctx.path, gid) == ~w(intent context verdict close)
+      assert hd(group(ctx.path, gid))["mode"] == "dry_run"
+      assert List.last(group(ctx.path, gid))["reason"] == "not_armed"
+
+      {:ok, cancel} = Intent.cancel("ord-1", provenance: :human, id: "live-cancel")
+      assert {:ok, %{status: :failed}} = Executor.run(executor, cancel, context())
+      assert Fake.calls(ctx.server, "place_") == []
+      assert Fake.calls(ctx.server, "cancel_") == ["cancel_equity_order"]
+    end
+
+    test "a disarm while a group is parked closes it as not_armed on approval", ctx do
+      Fake.warnings(ctx.server, ["check"])
+      executor = start_executor!(ctx)
+      assert {:ask, gid, _prompts} = Executor.run(executor, limit("park-disarm"), context())
+
+      :ok = Journal.put_mode(:disarmed, %{"by" => "test"}, ctx.journal)
+      assert Executor.approve(executor, gid, "owner") == {:error, :not_armed}
+      assert List.last(group(ctx.path, gid))["reason"] == "not_armed"
+      assert Fake.calls(ctx.server, "place_") == []
     end
 
     test "a missing or invalid policy is refused", ctx do

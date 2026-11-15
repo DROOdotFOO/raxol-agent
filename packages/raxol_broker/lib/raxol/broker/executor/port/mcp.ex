@@ -24,8 +24,9 @@ defmodule Raxol.Broker.Executor.Port.MCP do
   (`spec |> Map.new() |> Map.to_list()`), decides liveness on that
   normalized list and hands that same list (less `:sandbox` and
   `:registry`) to `Raxol.MCP.Client.start_link/1`. In `:dry_run` a live spec
-  is refused before any connection; `:armed` is refused until arming exists
-  (#1179).
+  is refused before any connection. `:live` admits any spec that does not
+  repeat those keys (`{:error, :duplicate_spec_keys}`); whether an order may
+  go out is the executor's check of the journal's mode record.
   """
 
   @behaviour Raxol.Broker.Executor.Port
@@ -39,7 +40,7 @@ defmodule Raxol.Broker.Executor.Port.MCP do
 
   @doc """
   Start the session and wait until it is ready. Options: `:mode`
-  (`:dry_run` or `:armed`, required), `:call_timeout`, put into the client
+  (`:dry_run` or `:live`, required), `:call_timeout`, put into the client
   spec so the client's own timer matches the executor's, and
   `:reconnect_ms`, the client's first connect-retry delay.
   """
@@ -87,24 +88,34 @@ defmodule Raxol.Broker.Executor.Port.MCP do
   # connects.
   @spec prepare(keyword(), keyword()) :: {:ok, keyword()} | {:error, term()}
   def prepare(spec, opts) when is_list(spec) and is_list(opts) do
-    with :ok <- admit_mode(Keyword.get(opts, :mode)),
-         {:ok, normalized} <- normalize(spec),
-         :ok <- admit_spec(normalized) do
+    mode = Keyword.get(opts, :mode)
+
+    with :ok <- admit_mode(mode),
+         {:ok, normalized} <- normalize(spec, mode),
+         :ok <- admit_spec(normalized, mode) do
       {:ok, client_spec(normalized, opts)}
     end
   end
 
-  defp admit_mode(:dry_run), do: :ok
-  defp admit_mode(:armed), do: {:error, :not_armed}
+  defp admit_mode(mode) when mode in [:dry_run, :live], do: :ok
   defp admit_mode(mode), do: {:error, {:invalid_mode, mode}}
 
-  defp normalize(spec) do
-    if Keyword.keyword?(spec) and not duplicated?(spec),
-      do: {:ok, spec |> Map.new() |> Map.to_list()},
-      else: {:error, :live_port_in_dry_run}
+  defp normalize(spec, mode) do
+    cond do
+      Keyword.keyword?(spec) and not duplicated?(spec) ->
+        {:ok, spec |> Map.new() |> Map.to_list()}
+
+      mode == :live ->
+        {:error, :duplicate_spec_keys}
+
+      true ->
+        {:error, :live_port_in_dry_run}
+    end
   end
 
-  defp admit_spec(normalized),
+  defp admit_spec(_normalized, :live), do: :ok
+
+  defp admit_spec(normalized, :dry_run),
     do: if(live_spec?(normalized), do: {:error, :live_port_in_dry_run}, else: :ok)
 
   defp client_spec(spec, opts) do
