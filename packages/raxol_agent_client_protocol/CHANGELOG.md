@@ -13,5 +13,7 @@ client behaviours (`Raxol.AgentClientProtocol.Agent`, `Raxol.AgentClientProtocol
 over one supervised `Connection` per peer, the `Schema.*` wire types with total
 decoding, the JSON-RPC 2.0 envelope, stdio and in-process transports, per-session
 processes, and the `_raxol/*` vendor extension for resumable sessions (an
-in-memory journal, reattach with replay, and `RXC1` capability tokens). Requires
-`jason ~> 1.4`.
+in-memory journal, reattach with replay, and `RXC1` capability tokens). Its
+application starts two `Registry`s, two `DynamicSupervisor`s and one
+`Task.Supervisor` (no files, ports or listeners); a client can confine
+`fs/*` to a directory with `fs_sandbox:`. Requires `jason ~> 1.4`.

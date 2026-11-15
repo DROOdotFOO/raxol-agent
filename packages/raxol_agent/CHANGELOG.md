@@ -9,13 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`raxol_agent` requires `raxol_agent_client_protocol ~> 0.1`, so the ACP
+- **`raxol_agent` requires `raxol_agent_client_protocol ~> 0.1.0`, so the ACP
   agent is compiled from Hex.** `Raxol.Agent.ClientProtocol.StdioAgent`,
   `ClientProtocol.Turn` and `ClientProtocol.Permission` are now part of a Hex
   install, and `ClientProtocol.Serve.run/1` serves an editor instead of
-  returning 1 with "this build has no ACP support". Nothing else changes; the
-  `web3` and `fx` tools are still compiled only where `raxol_web3` is present,
-  which a Hex install does not have.
+  returning 1 with "this build has no ACP support". The `web3` and `fx` tools
+  are still compiled only where `raxol_web3` is present, which a Hex install
+  does not have.
+- **The `:raxol_agent_client_protocol` application now starts with
+  `raxol_agent`.** It starts two `Registry`s, two `DynamicSupervisor`s and one
+  `Task.Supervisor` under `RaxolAgentClientProtocol.Supervisor`; it opens no
+  files, ports or listeners. A project that already registers any of their
+  names fails to boot: `Raxol.AgentClientProtocol.SessionRegistry`,
+  `Raxol.AgentClientProtocol.Ext.Journal.WriterRegistry`,
+  `Raxol.AgentClientProtocol.Ext.Journal.WriterSupervisor`,
+  `Raxol.AgentClientProtocol.Ext.AttachPolicy.TaskSupervisor` and
+  `Raxol.AgentClientProtocol.ConnectionsSupervisor`.
+- **`mix acp.schema.verify` appears among the project's Mix tasks.** It
+  belongs to `raxol_agent_client_protocol` and refuses to run outside that
+  package's repository.
 
 ## [3.0.0] - 2026-11-14
 

@@ -33,22 +33,35 @@ defmodule RaxolAgentClientProtocol.Application do
   There is no `mix acp.serve` task and no `connect/3` function: standalone mode
   is this `DynamicSupervisor` plus the embedder's own `start_child/2` call.
 
-  ## Test opt-out
+  ## When it starts
 
-  The application module is declared in `mix.exs` (`mod:`), so it auto-starts
-  outside `:test`. Under `MIX_ENV=test` it starts an **empty tree** so the
-  package's own suite (which starts each named supervisor manually, per test,
-  with the SAME names) is never disturbed by a colliding auto-started one.
-  The env is captured at COMPILE time (`@auto_start`), so no `Mix` call happens
-  at runtime / in a release.
+  The application module is declared in `mix.exs` (`mod:`), so in a project
+  that depends on this package it starts before the project's own
+  application, with all five children: two `Registry`s, two
+  `DynamicSupervisor`s and one `Task.Supervisor`. None of them opens a file,
+  a port or a listener. Use them as they are: do not also start
+  `children/0` in your own supervisor while this application runs, or your
+  supervisor fails with `{:already_started, _}`.
 
-  ## Library mode (embedder does NOT want our Application)
+  Only this package's own `MIX_ENV=test` build starts an **empty tree**, so
+  its suite (which starts each named supervisor manually, per test, with the
+  SAME names) is never disturbed by a colliding auto-started one. The env is
+  captured at COMPILE time (`@auto_start`), and a dependency is compiled
+  with `MIX_ENV=prod` unless its `:env` option says otherwise, so a
+  consumer's tests get the full tree too. No `Mix` call happens at runtime
+  or in a release.
 
-  An embedder who assembles their own tree calls `children/0` and splices the
-  returned child specs into their own supervisor — the exact list this module
-  starts, so the module names the modules resolve against (`Runner`'s default
-  `Task.Supervisor`, `Writer.registry/0`, `Session.registry/0`) are satisfied
-  by the embedder's tree with zero further wiring.
+  ## Library mode (an embedder that keeps it from starting)
+
+  An embedder that wants these processes under its own supervisor lists the
+  package in `included_applications` in its `mix.exs` `application/0`: the
+  application is then loaded (and included in a release) but not started,
+  and the embedder splices `children/0` into its own tree. The child specs
+  are the exact list this module starts, so the names the modules resolve
+  against (`Runner`'s default `Task.Supervisor`, `Writer.registry/0`,
+  `Session.registry/0`) are satisfied with no further wiring. A project
+  that depends on `raxol_agent` cannot do this: `raxol_agent` lists this
+  package among the applications it starts.
   """
 
   use Application
@@ -76,8 +89,9 @@ defmodule RaxolAgentClientProtocol.Application do
   end
 
   @doc """
-  The package-level shared child specs. Library-mode embedders splice this into
-  their own tree instead of relying on the auto-started `Application`.
+  The package-level shared child specs, for an embedder that keeps this
+  application from starting (see "Library mode" above). Never start them
+  while the application runs.
 
   All ids are the module names each spec registers under, which is exactly what
   the consuming modules resolve against by default — so nothing else needs to
