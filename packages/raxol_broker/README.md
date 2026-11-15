@@ -331,11 +331,12 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   and `close/3` end the group. A bad approver name raises in the caller
   and leaves the group parked.
 * **Counters come from the journal.** Decisions are serialized, so two
-  callers cannot both pass the daily cap. The daily window is a rolling
-  24 hours back from the executor's clock, and no caller input moves it,
-  until #1185 adds a trading calendar the executor owns. Queued callers
-  are monitored, and a queued run whose caller has died is dropped, never
-  dispatched. Queued calls run in order; a new call never jumps ahead.
+  callers cannot both pass the daily cap, which resets at New York midnight.
+  Queued callers are monitored, and a queued run whose caller has died is
+  dropped, never dispatched. Ordinary requests keep arrival order.
+  Halt interrupts in-flight context, review and reconciliation reads before
+  queued work; discarded task results cannot resume the order pipeline,
+  even after rearming. Order writes stay bounded and journal-before-send.
 * **One executor per journal.** The executor claims the journal at start;
   only a process started as an executor can claim, a second one fails with
   `{:journal_claimed, pid}`, and the journal takes any group record
@@ -382,12 +383,12 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   not record comes back with `journaled: false`. While the port is not
   connected the executor stays up and refuses with
   `{:error, :port_not_ready}` until it reconnects.
-* **Armed or disarmed.** No order tool is sent unless the journal's latest
-  mode record is `armed` (see "Arming"). Disarmed, an intent is journaled
-  with `mode: dry_run`, its pre-review verdict is recorded and the group is
-  closed `not_armed` with no review; `run/3` returns `{:error, :not_armed}`.
-  The record is read again before `placing`, so a disarm also stops a parked
-  or in-review group. Cancels always go through.
+* **Armed or disarmed.** No ordinary order tool is sent unless the latest
+  mode record is `armed` (see "Arming"). Disarmed intents fetch no context:
+  a minimal `mode: dry_run` group closes `not_armed`, and `run/3` returns
+  `{:error, :not_armed}`. Mode is read again before `placing`, so disarming
+  also stops a parked or in-review group. Only the kill's human cancels
+  and declines bypass arming.
 * **Sessions.** `mode: :dry_run` (the default) refuses a session that is not
   marked `sandbox: true` or whose URL is on `robinhood.com`. `mode: :live`
   admits Robinhood; with `credential: [store: ..., auth: ...]` the session

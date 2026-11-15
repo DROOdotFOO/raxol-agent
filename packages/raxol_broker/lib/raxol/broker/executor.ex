@@ -124,15 +124,15 @@ defmodule Raxol.Broker.Executor do
 
   ## Concurrency
 
-  The review call runs in a task, so `parked/2` and `await_port/2` answer
-  while a review is in flight; other calls queue behind it in arrival
-  order. Each queued caller is monitored: one that dies is dropped from
-  the queue, never dispatched (a remote caller is judged by its monitor
-  alone). The place call runs in this process (the journal only accepts
-  `placing` from the claimant), so nothing answers until it returns or
-  `:place_timeout` passes. At most one queued request is dispatched per
-  callback; the next waits for a `:drain` message, so one callback never
-  runs two place calls and the shutdown bound covers the one in progress.
+  Context, review and reconciliation reads run in tasks, so the executor
+  keeps answering while they are in flight. Ordinary requests remain
+  serialized in arrival order; halt interrupts the active read stage and
+  runs before queued work. Interrupted results cannot resume the pipeline.
+  Each queued caller is monitored and dropped if it dies. Only this
+  process journals decisions and sends through Place. A place call remains
+  synchronous and bounded by `:place_timeout`. At most one queued request
+  is dispatched per callback, so the shutdown bound covers the one write
+  in progress.
 
   If the port goes down after the review but before the place (its EXIT
   handled first), the group is closed with `:port_not_ready`, no `placing`
@@ -187,9 +187,8 @@ defmodule Raxol.Broker.Executor do
   record is read when an intent arrives and again just before `placing`:
 
     * disarmed when the intent arrives: the group opens with `"mode":
-      "dry_run"`, the pre-review policy runs (a DENY ends it as usual), and
-      the group is closed as `not_armed` with no review; `run/3` returns
-      `{:error, :not_armed}`;
+      "dry_run"` and closes as `not_armed`, without fetching context or
+      reviewing; `run/3` returns `{:error, :not_armed}`;
     * armed when it arrives: the group opens with `"mode": "armed"`;
     * disarmed by the time it would place (a parked ASK approved after a
       disarm, a review in flight): the group is closed as `not_armed`
@@ -701,8 +700,27 @@ defmodule Raxol.Broker.Executor do
   def handle_call({:await_port, timeout}, _from, state),
     do: {:reply, {:error, {:invalid_timeout, :await_port, timeout}}, state}
 
-  # Nothing jumps the queue: a request that arrives while earlier ones wait
-  # for their `:drain` turn is queued behind them.
+  # Halt alone bypasses ordinary work. Read tasks never own the journal
+  # claim or a receipt key, and their refs are discarded before cancellation.
+  def handle_call(
+        {:halt_orders, _bound} = request,
+        {pid, _tag} = from,
+        %{busy: %{stage: :halt}} = state
+      ) do
+    entry = {request, from, Process.monitor(pid)}
+    {:noreply, %{state | queue: :queue.in_r(entry, state.queue)}}
+  end
+
+  def handle_call({:halt_orders, _bound} = request, from, state) do
+    state = interrupt_read(state)
+
+    case dispatch(request, from, state) do
+      {:reply, reply, state} -> {:reply, reply, drain_later(state)}
+      {:await, state} -> {:noreply, state}
+    end
+  end
+
+  # Ordinary requests keep arrival order, even while waiting for :drain.
   def handle_call(request, {pid, _tag} = from, state) do
     if state.busy == nil and :queue.is_empty(state.queue) do
       case dispatch(request, from, state) do
@@ -721,7 +739,7 @@ defmodule Raxol.Broker.Executor do
   @impl GenServer
   def handle_info({ref, result}, %{busy: %{ref: ref}} = state) do
     Process.demonitor(ref, [:flush])
-    review_done(state, result)
+    stage_done(state, result)
   end
 
   def handle_info({ref, result}, %{connect: %Task{ref: ref}} = state) do
@@ -734,8 +752,8 @@ defmodule Raxol.Broker.Executor do
     {:noreply, refreshed(%{state | refresh: nil}, result)}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{busy: %{ref: ref}} = state),
-    do: review_done(state, {:error, {:review_crashed, reason}})
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{busy: %{ref: ref} = pending} = state),
+    do: stage_done(state, stage_crashed(pending.stage, reason))
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{connect: %Task{ref: ref}} = state),
     do: {:noreply, connected(%{state | connect: nil}, {:error, {:connect_crashed, reason}})}
@@ -743,8 +761,8 @@ defmodule Raxol.Broker.Executor do
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{refresh: %Task{ref: ref}} = state),
     do: {:noreply, refreshed(%{state | refresh: nil}, {:error, {:refresh_crashed, reason}})}
 
-  # Queued callers get an exit from their call; the linked review task dies
-  # with this process; the groups left open are closed by the next executor.
+  # Queued callers get an exit from their call; linked read tasks die with
+  # this process; the next executor closes groups left open.
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{journal_ref: ref} = state) do
     Logger.warning("[Broker.Executor] journal went down: #{inspect(reason, structs: false)}")
     {:stop, {:journal_down, reason}, state}
@@ -776,21 +794,27 @@ defmodule Raxol.Broker.Executor do
   def handle_info({:ask_timeout, group_id}, state),
     do: {:noreply, ask_timed_out(state, group_id)}
 
-  # The first reconcile follows the first connect; each one schedules the
-  # next.
-  def handle_info(:reconcile, %{port_status: :ready} = state) do
-    _ = reconcile_now(state, state.review_timeout)
-    Process.send_after(self(), :reconcile, state.reconcile_ms)
-    {:noreply, state}
-  end
-
+  # Periodic reconciliation uses the same serialized read stage as a
+  # caller's request. A busy executor leaves it until the next interval.
   def handle_info(:reconcile, state) do
     Process.send_after(self(), :reconcile, state.reconcile_ms)
-    {:noreply, state}
+
+    if state.busy == nil and :queue.is_empty(state.queue) do
+      case dispatch({:reconcile, state.review_timeout}, nil, state) do
+        {:reply, reply, state} ->
+          reply_to(nil, reply)
+          {:noreply, state}
+
+        {:await, state} ->
+          {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
   end
 
-  # A `:drain` left over from an earlier turn can arrive while a review is
-  # in flight; `review_done/2` sends a fresh one when it finishes.
+  # A :drain left over from an earlier turn may arrive during a read stage;
+  # stage_done/2 sends a fresh one when it finishes.
   def handle_info(:drain, %{busy: nil} = state), do: {:noreply, drain(state)}
   def handle_info(:drain, state), do: {:noreply, state}
 
@@ -1033,8 +1057,8 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  defp dispatch({:approve, token, by}, _from, state),
-    do: approve_parked(state, token, by)
+  defp dispatch({:approve, token, by}, from, state),
+    do: awaiting(approve_parked(state, token, by), from)
 
   defp dispatch({:decline, token, by}, _from, state),
     do: finish_parked(state, token, {:approval, :declined, by})
@@ -1042,10 +1066,11 @@ defmodule Raxol.Broker.Executor do
   defp dispatch({:close, token, reason}, _from, state),
     do: finish_parked(state, token, {:close, reason})
 
-  defp dispatch({:halt_orders, bound}, _from, state), do: halt_orders_now(state, bound)
+  defp dispatch({:halt_orders, bound}, from, state),
+    do: awaiting(halt_orders_now(state, bound), from)
 
-  defp dispatch({:reconcile, bound}, _from, state),
-    do: {:reply, reconcile_now(state, bound), state}
+  defp dispatch({:reconcile, bound}, from, state),
+    do: awaiting(reconcile_now(state, bound), from)
 
   defp dispatch(_request, _from, state), do: {:reply, {:error, :unknown_request}, state}
 
@@ -1054,11 +1079,82 @@ defmodule Raxol.Broker.Executor do
 
   defp awaiting(done, _from), do: done
 
-  defp review_done(%{busy: pending} = state, result) do
-    {:reply, reply, state} = reviewed(%{state | busy: nil}, pending, result)
-    GenServer.reply(pending.from, reply)
-    state = if state.restart_port, do: restart_port(state), else: state
-    {:noreply, drain_later(state)}
+  defp stage_done(%{busy: pending} = state, result) do
+    case complete_stage(%{state | busy: nil}, pending, result) do
+      {:reply, reply, state} ->
+        reply_to(pending.from, reply)
+        state = if state.restart_port, do: restart_port(state), else: state
+        {:noreply, drain_later(state)}
+
+      {:await, next, state} ->
+        {:await, state} = awaiting({:await, next, state}, pending.from)
+        {:noreply, state}
+    end
+  end
+
+  defp complete_stage(state, %{stage: :review} = pending, result),
+    do: reviewed(state, pending, result)
+
+  defp complete_stage(state, %{stage: :context, intent: intent}, {:ok, context}) do
+    with :ok <- port_up(state),
+         {:ok, group_id} <- open(state, intent, context, true) do
+      pre_review(state, intent, context, group_id, armed?(state, intent))
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp complete_stage(state, %{stage: :approval_context} = pending, {:ok, context}),
+    do: approved(state, pending.group_id, pending.group, pending.by, context)
+
+  defp complete_stage(state, %{stage: :reconcile}, {:ok, resolved}),
+    do: {:reply, journal_resolutions(state, resolved), state}
+
+  defp complete_stage(state, %{stage: :halt, bound: bound}, {:ok, orders, approvals}),
+    do: halt_orders_listed(state, bound, orders, approvals)
+
+  defp complete_stage(state, _pending, {:error, reason}),
+    do: {:reply, {:error, reason}, state}
+
+  defp stage_crashed(:review, reason), do: {:error, {:review_crashed, reason}}
+  defp stage_crashed(stage, reason), do: {:error, {stage, {:crashed, reason}}}
+
+  defp reply_to(nil, {:error, reason}),
+    do: Logger.warning("[Broker.Executor] reconcile failed: #{inspect(reason, structs: false)}")
+
+  defp reply_to(nil, _reply), do: :ok
+  defp reply_to(from, reply), do: GenServer.reply(from, reply)
+
+  defp read_stage(state, stage, pending, fun) do
+    task = Task.async(fun)
+    {:await, Map.merge(pending, %{stage: stage, ref: task.ref, pid: task.pid}), state}
+  end
+
+  defp context_stage(state, stage, pending, context, intent) do
+    env = Map.take(state, [:clock, :journal, :policy, :port, :catalog, :account, :review_timeout])
+
+    read_stage(state, stage, pending, fn -> fill(env, context, intent) end)
+  end
+
+  defp interrupt_read(%{busy: nil} = state), do: state
+
+  defp interrupt_read(%{busy: pending} = state) do
+    Process.demonitor(pending.ref, [:flush])
+    Process.exit(pending.pid, :kill)
+
+    state =
+      case Map.fetch(pending, :group_id) do
+        {:ok, group_id} ->
+          _ = close_group(state, group_id, :not_armed)
+          %{state | parked: Map.delete(state.parked, group_id)}
+
+        :error ->
+          state
+      end
+
+    reason = if pending.stage == :reconcile, do: :halted, else: :not_armed
+    reply_to(pending.from, {:error, reason})
+    %{state | busy: nil}
   end
 
   defp drain(%{busy: nil} = state) do
@@ -1111,15 +1207,19 @@ defmodule Raxol.Broker.Executor do
   # -- Pipeline -----------------------------------------------------------------
 
   defp run_intent(state, intent, context) do
-    armed? = armed?(state, intent)
-
     with :ok <- port_up(state),
          :ok <- not_parked(state, intent),
          {:ok, nil} <- placed_before(state, intent),
-         {:ok, _tool} <- Review.tool(intent),
-         {:ok, context} <- fill(state, %{context | review_warnings: []}, intent),
-         {:ok, group_id} <- open(state, intent, context, armed?) do
-      pre_review(state, intent, context, group_id, armed?)
+         {:ok, _tool} <- Review.tool(intent) do
+      if armed?(state, intent) do
+        context_stage(state, :context, %{intent: intent}, %{context | review_warnings: []}, intent)
+      else
+        with {:ok, group_id} <- open(state, intent, %Context{policy: state.policy}, false) do
+          not_armed(state, group_id)
+        else
+          {:error, reason} -> {:reply, {:error, reason}, state}
+        end
+      end
     else
       {:ok, group_id} when is_binary(group_id) -> {:reply, {:ok, :duplicate}, state}
       {:error, reason} -> {:reply, {:error, reason}, state}
@@ -1178,7 +1278,7 @@ defmodule Raxol.Broker.Executor do
   defp review(state, intent, context, group_id) do
     %{port: port, catalog: catalog, account: account, review_timeout: timeout} = state
     task = Task.async(fn -> Review.run(port, catalog, intent, account, timeout) end)
-    pending = %{ref: task.ref, pid: task.pid, intent: intent, context: context}
+    pending = %{stage: :review, ref: task.ref, pid: task.pid, intent: intent, context: context}
     {:await, Map.put(pending, :group_id, group_id), state}
   end
 
@@ -1257,9 +1357,18 @@ defmodule Raxol.Broker.Executor do
   # Everything before the approval is journaled leaves the group parked.
   defp approve_parked(state, token, by) do
     with :ok <- port_up(state),
-         {:ok, group} <- fetch_parked(state, token),
-         {:ok, context} <- fill(state, group.context) do
-      approved(state, token, group, by, context)
+         {:ok, group} <- fetch_parked(state, token) do
+      if armed?(state, group.intent) do
+        context_stage(
+          state,
+          :approval_context,
+          %{group_id: token, group: group, by: by},
+          group.context,
+          nil
+        )
+      else
+        not_armed(%{state | parked: Map.delete(state.parked, token)}, token)
+      end
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
@@ -1375,24 +1484,32 @@ defmodule Raxol.Broker.Executor do
   defp reconcile_now(state, bound) do
     with :ok <- port_up(state),
          {:ok, entries} <- safe(fn -> Journal.unresolved(state.journal) end) do
-      {unknown, pending} = Enum.split_with(entries, &(&1["status"] == "unknown"))
-      resolved = resolve_unknown(state, unknown, bound) ++ resolve_pending(state, pending, bound)
+      env = Map.take(state, [:port, :catalog, :account, :clock, :reconcile_min_age_ms])
 
-      for {entry, resolution, detail} <- resolved do
-        with {:error, reason} <-
-               Journal.resolve(entry["group_id"], resolution, detail, state.journal) do
-          Logger.warning(
-            "[Broker.Executor] resolution of #{entry["group_id"]} not journaled: " <>
-              inspect(reason, structs: false)
-          )
-        end
-      end
-
-      {:ok,
-       Enum.map(resolved, fn {entry, resolution, _detail} ->
-         %{group_id: entry["group_id"], intent_id: entry["intent_id"], resolution: resolution}
-       end)}
+      read_stage(state, :reconcile, %{}, fn ->
+        {unknown, pending} = Enum.split_with(entries, &(&1["status"] == "unknown"))
+        {:ok, resolve_unknown(env, unknown, bound) ++ resolve_pending(env, pending, bound)}
+      end)
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
+  end
+
+  defp journal_resolutions(state, resolved) do
+    for {entry, resolution, detail} <- resolved do
+      with {:error, reason} <-
+             Journal.resolve(entry["group_id"], resolution, detail, state.journal) do
+        Logger.warning(
+          "[Broker.Executor] resolution of #{entry["group_id"]} not journaled: " <>
+            inspect(reason, structs: false)
+        )
+      end
+    end
+
+    {:ok,
+     Enum.map(resolved, fn {entry, resolution, _detail} ->
+       %{group_id: entry["group_id"], intent_id: entry["intent_id"], resolution: resolution}
+     end)}
   end
 
   # Matched on the `ref_id` the place sent, across every page. Absence is
@@ -1526,22 +1643,34 @@ defmodule Raxol.Broker.Executor do
   # policy), then `Place.run_many/3` sends them all at once under `bound`.
   defp halt_orders_now(state, bound) do
     with :ok <- port_up(state) do
+      env = Map.take(state, [:port, :catalog, :account])
+
+      read_stage(state, :halt, %{bound: bound}, fn ->
+        account = %{"account_number" => env.account}
+
+        orders =
+          listings(env, bound, ["orders", "results"], "order_id", fn ->
+            for s <- @open_states,
+                do:
+                  {"get_equity_orders",
+                   Map.merge(account, %{"agent_initiated" => true, "state" => s})}
+          end)
+
+        approvals =
+          listings(env, bound, ["approvals", "results"], "approval_id", fn ->
+            [{"get_trade_approvals", account}]
+          end)
+
+        {:ok, orders, approvals}
+      end)
+    else
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp halt_orders_listed(state, bound, orders, approvals) do
+    with :ok <- port_up(state) do
       kill = Base.url_encode64(:crypto.strong_rand_bytes(6), padding: false)
-      account = %{"account_number" => state.account}
-
-      orders =
-        listings(state, bound, ["orders", "results"], "order_id", fn ->
-          for s <- @open_states,
-              do:
-                {"get_equity_orders",
-                 Map.merge(account, %{"agent_initiated" => true, "state" => s})}
-        end)
-
-      approvals =
-        listings(state, bound, ["approvals", "results"], "approval_id", fn ->
-          [{"get_trade_approvals", account}]
-        end)
-
       intents =
         halt_intents(orders, &Intent.cancel(&1, provenance: :human, id: "cancel-#{&1}-#{kill}")) ++
           halt_intents(
@@ -1606,8 +1735,11 @@ defmodule Raxol.Broker.Executor do
   end
 
   defp open_unreviewed(state, intent) do
+    # Human cancels and declines bypass trading rules and need no fetched
+    # context, counters or caller clock, even when that clock is held.
+    context = %Context{policy: state.policy}
+
     with {:ok, nil} <- placed_before(state, intent),
-         {:ok, context} <- fill(state, %Context{}),
          {:ok, group_id} <- open(state, intent, context, true),
          verdict = Policy.evaluate(intent, context),
          :ok <- append(state, group_id, {:verdict, :pre_review, verdict}),
@@ -1641,7 +1773,7 @@ defmodule Raxol.Broker.Executor do
   # The day starts at the New York midnight before this executor's clock;
   # no caller input moves it. With an intent, the fields the executor
   # fetches are read first (a cancel needs none).
-  defp fill(state, %Context{} = context, intent \\ nil) do
+  defp fill(state, %Context{} = context, intent) do
     with {:ok, now} <- now(state.clock),
          day_start = MarketCalendar.day_start(now),
          {:ok, notional} <- safe(fn -> Journal.today_notional(day_start, state.journal) end),

@@ -914,16 +914,18 @@ defmodule Raxol.Broker.ExecutorTest do
     test "live mode starts; a disarmed broker sends no order and no cancel", ctx do
       executor = start_executor!(ctx, mode: :live)
       :ok = Journal.record_disarmed(%{"by" => "test"}, ctx.journal)
+      before_calls = Fake.calls(ctx.server)
 
       assert Executor.run(executor, limit("live-1"), context()) == {:error, :not_armed}
       [gid] = groups_for(ctx.path, "live-1")
-      assert types(ctx.path, gid) == ~w(intent context verdict close)
+      assert types(ctx.path, gid) == ~w(intent context close)
       assert hd(group(ctx.path, gid))["mode"] == "dry_run"
       assert List.last(group(ctx.path, gid))["reason"] == "not_armed"
 
       {:ok, cancel} = Intent.cancel("ord-1", provenance: :human, id: "live-cancel")
       assert Executor.run(executor, cancel, context()) == {:error, :not_armed}
       assert sent(ctx.server) == []
+      assert Fake.calls(ctx.server) == before_calls
     end
 
     test "an armed broker sends a human cancel and refuses a strategy's", ctx do

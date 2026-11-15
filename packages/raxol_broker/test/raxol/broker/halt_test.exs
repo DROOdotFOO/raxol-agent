@@ -14,11 +14,11 @@ defmodule Raxol.Broker.HaltTest do
 
   @moduletag :capture_log
 
-  defp broker!(fake_opts \\ []) do
+  defp broker!(fake_opts \\ [], executor_opts \\ []) do
     ctx = Broker.journal!()
     fake = Fake.start(Keyword.merge([quotes: %{"F" => "9.80", "AAPL" => "125"}], fake_opts))
     sup = :"strategies_#{System.unique_integer([:positive])}"
-    executor = Broker.executor!(ctx.journal, fake, strategies: sup)
+    executor = Broker.executor!(ctx.journal, fake, Keyword.put(executor_opts, :strategies, sup))
     start_supervised!({Strategy.Supervisor, name: sup, journal: ctx.journal, executor: executor})
     {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "F", "usd" => "25"})
     :ok = Strategy.Supervisor.add(spec, journal: ctx.journal, supervisor: sup)
@@ -46,6 +46,34 @@ defmodule Raxol.Broker.HaltTest do
   end
 
   defp types(path), do: path |> Broker.records() |> Enum.map(& &1["type"])
+
+  defp wait_queued(executor) do
+    if :queue.is_empty(:sys.get_state(executor).queue), do: wait_queued(executor)
+  end
+
+  defp hold_call(fake, tool, held?) do
+    test = self()
+
+    Fake.on_call(fake, tool, fn args ->
+      if held?.(args) do
+        send(test, {:held, self()})
+        receive do: (:release -> :answer)
+      else
+        :answer
+      end
+    end)
+  end
+
+  defp release_call(hook) do
+    ref = Process.monitor(hook)
+    send(hook, :release)
+    assert_receive {:DOWN, ^ref, :process, ^hook, _}, 5_000
+  end
+
+  defp intent(id) do
+    {:ok, intent} = Intent.limit(:buy, "AAPL", d("1"), d("125"), provenance: :human, id: id)
+    intent
+  end
 
   describe "kill/1" do
     test "three open orders: three cancels, no running strategy, disarmed, in journal order" do
@@ -89,6 +117,109 @@ defmodule Raxol.Broker.HaltTest do
 
       orders = for %{"type" => "order"} = r <- Broker.records(ctx.path), do: r
       assert Enum.count(orders, &(&1["response"]["error"] == ":timeout")) == 1
+    end
+
+    for tool <- ~w(review_equity_order get_equity_quotes get_equity_positions get_portfolio) do
+      @held_tool tool
+      test "kill interrupts a held #{tool} before queued work" do
+        ctx = broker!()
+        :placed = place!(ctx, "existing-before-hold")
+        [%{"order_id" => order_id}] = Fake.orders(ctx.fake)
+        hold_call(ctx.fake, @held_tool, fn _args -> true end)
+
+        run =
+          Task.async(fn ->
+            Executor.run(ctx.executor, intent("held-read"), %Context{})
+          end)
+
+        assert_receive {:held, hook}, 5_000
+        %{busy: %{pid: worker}} = :sys.get_state(ctx.executor)
+        worker_ref = Process.monitor(worker)
+        queued = Task.async(fn -> Executor.run(ctx.executor, intent("queued-read"), %Context{}) end)
+        wait_queued(ctx.executor)
+
+        {micros, summary} = :timer.tc(fn -> kill!(ctx, 300) end)
+
+        assert micros < 3_000_000
+        assert [%{id: ^order_id, outcome: "placed"}] = summary.results
+        assert [%{"state" => "cancelled"}] = Fake.orders(ctx.fake)
+        assert Task.await(run) == {:error, :not_armed}
+        assert Task.await(queued) == {:error, :not_armed}
+        assert_receive {:DOWN, ^worker_ref, :process, ^worker, :killed}, 5_000
+        assert Process.alive?(hook)
+
+        # A fresh arm cannot revive the interrupted context or review.
+        :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
+        release_call(hook)
+        assert :sys.get_state(ctx.executor).busy == nil
+        assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+        assert Journal.open_groups(ctx.journal) == {:ok, []}
+      end
+    end
+
+    test "kill interrupts reconciliation and cancels before its read is released" do
+      ctx =
+        broker!([faults: [{"place_equity_order", {:http, 503}}]], reconcile_min_age_ms: 0)
+
+      :unknown = place!(ctx, "unresolved-before-hold")
+      :placed = place!(ctx, "existing-before-reconcile")
+      [%{"order_id" => order_id}] = Fake.orders(ctx.fake)
+      hold_call(ctx.fake, "get_equity_orders", &is_nil(&1["state"]))
+
+      reconcile = Task.async(fn -> Executor.reconcile(ctx.executor) end)
+      assert_receive {:held, hook}, 5_000
+      %{busy: %{pid: worker, stage: :reconcile}} = :sys.get_state(ctx.executor)
+      worker_ref = Process.monitor(worker)
+      queued = Task.async(fn -> Executor.run(ctx.executor, intent("queued-reconcile"), %Context{}) end)
+      wait_queued(ctx.executor)
+
+      {micros, summary} = :timer.tc(fn -> kill!(ctx, 300) end)
+
+      assert micros < 3_000_000
+      assert [%{id: ^order_id, outcome: "placed"}] = summary.results
+      assert Task.await(reconcile) == {:error, :halted}
+      assert Task.await(queued) == {:error, :not_armed}
+      assert_receive {:DOWN, ^worker_ref, :process, ^worker, :killed}, 5_000
+      assert Process.alive?(hook)
+
+      release_call(hook)
+      assert :sys.get_state(ctx.executor).busy == nil
+      assert {:ok, [%{"intent_id" => "unresolved-before-hold"}]} = Journal.unresolved(ctx.journal)
+      assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
+    end
+
+    test "kill bypasses the held clock of an approval context refresh" do
+      test = self()
+      {:ok, gate} = Agent.start_link(fn -> false end)
+
+      clock = fn ->
+        if Agent.get(gate, & &1) do
+          send(test, {:clock_held, self()})
+          receive do: (:release -> Broker.t0())
+        else
+          Broker.t0()
+        end
+      end
+
+      ctx = broker!([], clock: clock)
+      :placed = place!(ctx, "existing-before-approval")
+      Fake.warnings(ctx.fake, ["halted"])
+      assert {:ask, group_id, _} = Executor.run(ctx.executor, intent("parked-clock"), %Context{})
+      Agent.update(gate, fn _ -> true end)
+
+      approve = Task.async(fn -> Executor.approve(ctx.executor, group_id, "owner") end)
+      assert_receive {:clock_held, clock_task}, 5_000
+      clock_ref = Process.monitor(clock_task)
+
+      {micros, summary} = :timer.tc(fn -> kill!(ctx, 300) end)
+
+      assert micros < 3_000_000
+      assert [%{kind: :cancel, outcome: "placed"}] = summary.results
+      assert Task.await(approve) == {:error, :not_armed}
+      assert_receive {:DOWN, ^clock_ref, :process, ^clock_task, _}, 5_000
+      assert Executor.parked(ctx.executor) == []
+      assert Journal.open_groups(ctx.journal) == {:ok, []}
+      assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
     end
 
     test "pending trade approvals are declined through the executor" do
