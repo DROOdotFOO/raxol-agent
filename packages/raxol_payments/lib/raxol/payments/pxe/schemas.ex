@@ -152,7 +152,9 @@ defmodule Raxol.Payments.Pxe.Schemas do
   end
 
   defmodule HealthStatus do
-    @moduledoc false
+    @moduledoc """
+    The bridge's health: `:ok`, `:starting` while it syncs, or `:error`.
+    """
     defstruct [:status, :version]
 
     @type t :: %__MODULE__{

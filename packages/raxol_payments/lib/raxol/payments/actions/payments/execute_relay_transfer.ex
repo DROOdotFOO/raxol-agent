@@ -64,13 +64,14 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   asked to send the deposit, the solver may already hold the funds. A
   transport error, timeout, 5xx or raise from execute after a signature, and a
   broadcaster error, raise, exit or throw (other than `{:error, {:not_sent,
-  reason}}`), leave the outcome unknown: the reservation stays, tagged with
-  the `transfer_id` so a refund seen by `PollRelayStatus` releases it, the
-  checkpoint stays so a re-run resumes the transfer, and the Action returns
-  `{:error, {:in_doubt, transfer_id}}` (a non-retryable `Failure`): poll the
-  transfer, do not retry the payment. A 4xx from execute, or a connection
-  that never opened, is a clean rejection: the reservation is released and
-  the checkpoint deleted, as for any failure before a signature or broadcast.
+  reason}}`), leave the outcome unknown. The Action then returns
+  `{:ok, %{transfer_id: id, status: "unknown", reconciling: true, ...}}`: the
+  reservation stays, tagged with the `transfer_id` so a refund seen by
+  `PollRelayStatus` releases it, and the checkpoint stays so a re-run returns
+  the same result instead of signing or sending again. Poll the transfer; do
+  not retry the payment. A 4xx from execute, or a connection that never
+  opened, is a clean rejection: the reservation is released and the checkpoint
+  deleted, as for any failure before a signature or broadcast.
   """
 
   @compile {:no_warn_undefined, Raxol.Agent.Action}
@@ -118,6 +119,11 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
         deposit_tx_hash: [type: :string],
         funding: [type: :string],
         status: [type: :string],
+        reconciling: [
+          type: :boolean,
+          description:
+            "True when the funding is in doubt: the signed pull or the deposit was sent but its outcome is unknown, so the transfer stays open. Poll the transfer status to resolve; do not re-execute."
+        ],
         to_amount: [type: :string],
         warnings: [type: :list]
       ]
@@ -174,19 +180,19 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     with {:ok, signature} <- maybe_sign_gasless(quote, request, context, amount),
          {:ok, status} <- execute(config, quote, signature, context, amount),
          {:ok, deposit_tx} <- maybe_broadcast(quote, request, signature, context, amount) do
-      summary = summary(quote, status, warnings, signature, deposit_tx)
-      # Dispatched: bind the reserved amount to the transfer id so a later refund
-      # (observed by PollRelayStatus) releases exactly this reservation.
-      SpendGate.tag_reservation(context, quote.transfer_id, amount)
-      Checkpoint.put(store, key, settled_record(summary))
-      {:ok, summary}
+      quote
+      |> summary(to_string(status.status), warnings, funding_mode(signature, deposit_tx))
+      |> Map.put(:deposit_tx_hash, deposit_tx)
+      |> dispatched(context, store, key, amount)
     else
-      # Sent but unconfirmed: keep the reservation, tagged so a refund observed
-      # by PollRelayStatus releases it, and keep the checkpoint so a re-run
-      # resumes this transfer instead of signing or sending again.
-      {:error, {:in_doubt, transfer_id}} = error ->
-        SpendGate.tag_reservation(context, transfer_id, amount)
-        error
+      # Sent but unconfirmed: reported like a dispatched transfer, with the same
+      # reservation tag and checkpoint, so polling resolves it and a re-run
+      # returns it instead of signing or sending again.
+      {:in_doubt, funding} ->
+        quote
+        |> summary("unknown", warnings, funding)
+        |> Map.put(:reconciling, true)
+        |> dispatched(context, store, key, amount)
 
       # The funding helpers already released the spend reservation; drop the
       # checkpoint too so a retry of the same payment starts clean.
@@ -194,6 +200,14 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
         Checkpoint.delete(store, key)
         error
     end
+  end
+
+  # Bind the reserved amount to the transfer id so a later refund (observed by
+  # PollRelayStatus) releases exactly this reservation.
+  defp dispatched(summary, context, store, key, amount) do
+    SpendGate.tag_reservation(context, summary.transfer_id, amount)
+    Checkpoint.put(store, key, settled_record(summary))
+    {:ok, summary}
   end
 
   # The transfer_id is random, so the key is the canonical payment, not the id;
@@ -413,7 +427,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
 
       {:error, reason} ->
         if is_binary(signature) and not clean_rejection?(reason) do
-          {:error, {:in_doubt, quote.transfer_id}}
+          {:in_doubt, "gasless"}
         else
           SpendGate.release(context, amount, %{protocol: :relay, reason: :execute_failed})
           {:error, {:execute_failed, reason}}
@@ -475,7 +489,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
         {:error, {:deposit_broadcast_failed, reason}}
 
       {:error, _reason} ->
-        {:error, {:in_doubt, quote.transfer_id}}
+        {:in_doubt, "broadcast"}
     end
   end
 
@@ -494,14 +508,15 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
     {:error, reason}
   end
 
-  defp summary(quote, status, warnings, signature, deposit_tx) do
+  defp summary(quote, status, warnings, funding) do
     %{
       transfer_id: quote.transfer_id,
       quote_id: quote.quote_id,
       deposit_address: quote.deposit_address,
-      deposit_tx_hash: deposit_tx,
-      funding: funding_mode(signature, deposit_tx),
-      status: to_string(status.status),
+      deposit_tx_hash: nil,
+      funding: funding,
+      status: status,
+      reconciling: false,
       to_amount: quote.to_amount,
       warnings: warnings
     }

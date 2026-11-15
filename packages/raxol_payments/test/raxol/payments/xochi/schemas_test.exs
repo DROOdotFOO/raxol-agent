@@ -685,6 +685,19 @@ defmodule Raxol.Payments.Xochi.SchemasTest do
       assert resp.ephemeral_pub_key == "0xeph"
       assert resp.view_tag == 7
     end
+
+    test "parses every served lifecycle status" do
+      for s <- ~w(pending pull_pending executing bridging settling source_finalized
+                  completed refund_pending refunded failed expired) do
+        resp = ExecuteResponse.from_json(%{"intent_id" => "i", "status" => s})
+        assert resp.status == String.to_existing_atom(s)
+      end
+    end
+
+    test "an unlisted status parses as unknown" do
+      assert ExecuteResponse.from_json(%{"intent_id" => "i", "status" => "bogus"}).status ==
+               :unknown
+    end
   end
 
   describe "IntentStatus.from_json/1" do
@@ -748,9 +761,25 @@ defmodule Raxol.Payments.Xochi.SchemasTest do
     end
 
     test "non-terminal statuses" do
-      for s <- ["pending", "executing", "bridging", "settling"] do
+      for s <- [
+            "pending",
+            "pull_pending",
+            "executing",
+            "bridging",
+            "settling",
+            "source_finalized",
+            "refund_pending"
+          ] do
         json = %{"intentId" => "i", "status" => s}
         status = IntentStatus.from_json(json)
+        assert status.status == String.to_existing_atom(s)
+        refute IntentStatus.terminal?(status), "expected #{s} to be non-terminal"
+      end
+    end
+
+    test "source_finalized and refund_pending stay non-terminal under a terminal flag" do
+      for s <- ["source_finalized", "refund_pending"] do
+        status = IntentStatus.from_json(%{"intent_id" => "i", "status" => s, "terminal" => true})
         refute IntentStatus.terminal?(status), "expected #{s} to be non-terminal"
       end
     end
