@@ -8,10 +8,23 @@ defmodule Raxol.Broker.Dashboard do
   `:ask_timeout`), and the last journal decisions.
 
   Keys: `j`/`k` move the focus between ASKs, `a` approves the focused ASK,
-  `d` declines it, `r` re-reads the account, `q` quits. An approval or a
-  decline goes to `Raxol.Broker.Executor.approve/3` or `decline/3`, which
-  journal it with `by` naming the surface: `dashboard:terminal`,
-  `dashboard:liveview`, `dashboard:ssh` or `dashboard:headless`.
+  `d` declines it, `r` re-reads the account, `q` quits. The focus is the
+  ASK's group id, not its place in the list: when the focused ASK is
+  answered elsewhere or times out, the focus is cleared and nothing is
+  answered until `j` or `k` picks one again.
+
+  ## Operator
+
+  Only an operator may answer. The operator comes from the surface, never
+  from application config, and is journaled as the approval's `by`:
+
+    * terminal: `"terminal:<OS user>"` (the console of the broker's VM);
+    * SSH: what the server's `:tenant_opts` function gives for the
+      authenticated user, e.g.
+      `tenant_opts: fn user -> {:ok, [dashboard: [operator: "ssh:" <> user]]} end`;
+    * LiveView and headless: read-only. `Raxol.LiveView.TEALive` passes no
+      per-user options to the app, so a browser session cannot be tied to a
+      person here; `a` and `d` answer "read-only" and send nothing.
 
   The view keeps no timer of its own: the executor denies an unanswered ASK
   whether or not a dashboard is open. The view re-reads the executor and the
@@ -22,8 +35,12 @@ defmodule Raxol.Broker.Dashboard do
   The app has no surface-specific code:
 
       Raxol.run(Raxol.Broker.Dashboard)                           # terminal
-      use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard  # LiveView
-      Raxol.SSH.serve(Raxol.Broker.Dashboard, port: 2222, authorized_keys_dir: dir)
+      use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard  # LiveView, read-only
+      Raxol.SSH.serve(Raxol.Broker.Dashboard,
+        port: 2222,
+        authorized_keys_dir: dir,
+        tenant_opts: fn user -> {:ok, [dashboard: [operator: "ssh:" <> user]]} end
+      )
 
   It runs in the VM the broker runs in. It reads the processes registered
   under their default names; `config :raxol_broker, Raxol.Broker.Dashboard`
@@ -44,15 +61,16 @@ defmodule Raxol.Broker.Dashboard do
   def init(context) do
     options = Map.get(context, :options, [])
     config = Keyword.merge(Application.get_env(:raxol_broker, __MODULE__, []), dashboard(options))
+    environment = if is_list(options), do: Keyword.get(options, :environment)
 
     %{
       executor: Keyword.get(config, :executor, Executor),
       journal: Keyword.get(config, :journal, Journal),
       strategies: Keyword.get(config, :strategies, Strategy.Supervisor),
       client: Keyword.get(config, :client, Client),
-      surface: surface(Keyword.get(options, :environment)),
+      operator: operator(environment, dashboard(options)),
       asks: [],
-      focus: 0,
+      focus: nil,
       mode: :disarmed,
       runners: [],
       decisions: [],
@@ -66,10 +84,20 @@ defmodule Raxol.Broker.Dashboard do
   defp dashboard(options) when is_list(options), do: Keyword.get(options, :dashboard, [])
   defp dashboard(_options), do: []
 
-  defp surface(:ssh), do: "ssh"
-  defp surface(:liveview), do: "liveview"
-  defp surface(:agent), do: "headless"
-  defp surface(_terminal), do: "terminal"
+  # Only the surface's own options name an operator; the terminal is the
+  # console of the broker's VM, so its user is the operator.
+  defp operator(environment, surface_options) when environment in [nil, :terminal] do
+    Keyword.get_lazy(surface_options, :operator, fn ->
+      "terminal:" <> (System.get_env("USER") || "unknown")
+    end)
+  end
+
+  defp operator(_environment, surface_options) do
+    case Keyword.get(surface_options, :operator) do
+      operator when is_binary(operator) and operator != "" -> operator
+      _none -> nil
+    end
+  end
 
   @impl true
   def update(message, model) do
@@ -103,7 +131,11 @@ defmodule Raxol.Broker.Dashboard do
       model.account,
       ["", "strategies:"],
       runner_lines(model.runners),
-      ["", "pending approvals (a approve, d deny, j/k move):"],
+      [
+        "",
+        "pending approvals (a approve, d deny, j/k move)" <>
+          if(model.operator, do: ":", else: ", read-only:")
+      ],
       ask_lines(model),
       ["", "recent decisions:"],
       decision_lines(model.decisions),
@@ -117,10 +149,8 @@ defmodule Raxol.Broker.Dashboard do
   defp ask_lines(%{asks: []}), do: ["  none"]
 
   defp ask_lines(%{asks: asks, focus: focus}) do
-    asks
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {ask, index} ->
-      marker = if index == focus, do: ">", else: " "
+    Enum.flat_map(asks, fn ask ->
+      marker = if ask.group_id == focus, do: ">", else: " "
 
       left =
         div(
@@ -154,24 +184,40 @@ defmodule Raxol.Broker.Dashboard do
     |> Enum.join(" ")
   end
 
-  defp move(%{asks: asks, focus: focus} = model, step),
-    do: %{model | focus: (focus + step) |> max(0) |> min(max(length(asks) - 1, 0))}
+  defp move(%{asks: []} = model, _step), do: model
 
-  defp answer(%{asks: []} = model, _decision), do: %{model | status: "no pending approval"}
+  defp move(%{asks: asks, focus: focus} = model, step) do
+    index =
+      case Enum.find_index(asks, &(&1.group_id == focus)) do
+        nil -> 0
+        current -> (current + step) |> max(0) |> min(length(asks) - 1)
+      end
+
+    %{model | focus: Enum.at(asks, index).group_id}
+  end
+
+  defp answer(%{operator: nil} = model, _decision),
+    do: %{model | status: "read-only: this surface has no operator; nothing sent"}
+
+  defp answer(%{focus: nil} = model, _decision),
+    do: %{model | status: "pick an approval with j/k first; nothing sent"}
 
   defp answer(model, decision) do
-    ask = Enum.at(model.asks, model.focus)
-    by = "dashboard:" <> model.surface
+    case Enum.find(model.asks, &(&1.group_id == model.focus)) do
+      nil ->
+        %{model | focus: nil, status: "the focused approval is gone; nothing sent"}
 
-    result =
-      safe(fn ->
-        case decision do
-          :approve -> Executor.approve(model.executor, ask.group_id, by)
-          :decline -> Executor.decline(model.executor, ask.group_id, by)
-        end
-      end)
+      ask ->
+        result =
+          safe(fn ->
+            case decision do
+              :approve -> Executor.approve(model.executor, ask.group_id, model.operator)
+              :decline -> Executor.decline(model.executor, ask.group_id, model.operator)
+            end
+          end)
 
-    %{model | status: "#{decision} #{ask.intent.id}: #{describe(result)}"}
+        %{model | status: "#{decision} #{ask.intent.id}: #{describe(result)}"}
+    end
   end
 
   defp describe({:ok, %{status: status}}), do: Atom.to_string(status)
@@ -194,7 +240,7 @@ defmodule Raxol.Broker.Dashboard do
     %{
       model
       | asks: asks,
-        focus: min(model.focus, max(length(asks) - 1, 0)),
+        focus: if(Enum.any?(asks, &(&1.group_id == model.focus)), do: model.focus),
         mode: Mode.current(model.journal),
         runners: Enum.map(Strategy.Supervisor.running(model.strategies), &elem(&1, 1)),
         decisions: decisions

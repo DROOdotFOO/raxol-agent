@@ -348,15 +348,25 @@ with the group still parked, it records a post-review DENY with rule id
 `Raxol.Broker.Dashboard` is one TEA app for every surface. It shows the
 mode, the agentic account with its buying power and positions, the
 strategies, each parked ASK with its rules, prompts and the minutes left
-before it is denied, and the last journal decisions. `j`/`k` move between
-ASKs, `a` approves, `d` declines, `r` re-reads the account, `q` quits. An
-answer is journaled with `by` naming the surface (`dashboard:terminal`,
-`dashboard:liveview`, `dashboard:ssh`).
+before it is denied, and the last journal decisions. `j`/`k` pick an ASK,
+`a` approves it, `d` declines it, `r` re-reads the account, `q` quits. The
+focus is the ASK itself: if it is answered elsewhere or times out, nothing
+is answered until `j`/`k` picks again.
+
+Only an operator may answer, and the operator is what the approval's `by`
+records. The terminal's operator is `terminal:<OS user>`. An SSH session's
+comes from the server's `:tenant_opts` for the authenticated user. LiveView
+and headless sessions are read-only: `Raxol.LiveView.TEALive` passes no
+per-user options, so nothing ties a browser to a person.
 
 ```elixir
 Raxol.run(Raxol.Broker.Dashboard)                                    # terminal, in the broker's VM
-use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard      # in a LiveView module
-Raxol.SSH.serve(Raxol.Broker.Dashboard, port: 2222, authorized_keys_dir: dir)
+use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard      # LiveView, read-only
+Raxol.SSH.serve(Raxol.Broker.Dashboard,
+  port: 2222,
+  authorized_keys_dir: dir,
+  tenant_opts: fn user -> {:ok, [dashboard: [operator: "ssh:" <> user]]} end
+)
 ```
 
 The dashboard reads the processes registered under their default names;

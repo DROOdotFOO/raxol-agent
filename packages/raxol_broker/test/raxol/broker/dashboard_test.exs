@@ -21,7 +21,7 @@ defmodule Raxol.Broker.DashboardTest do
 
   setup do
     ctx = Broker.journal!()
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     fake = Fake.start(warnings: ["Order exceeds 5% of buying power"])
     executor = Broker.executor!(ctx.journal, fake)
 
@@ -73,34 +73,85 @@ defmodule Raxol.Broker.DashboardTest do
     |> String.trim()
   end
 
-  test "an ASK shows within one frame of parking; a approves it into exactly one place", ctx do
-    dash = dashboard!()
-    assert screen(dash) =~ "pending approvals (a approve, d deny, j/k move):\n  none"
+  defp key(char), do: %Raxol.Core.Events.Event{type: :key, data: %{key: :char, char: char}}
 
-    group_id = ask!(ctx, "ask-approve")
+  # The TEA app as the SSH surface starts it for an authenticated user.
+  defp operator_model(operator \\ "ssh:alice") do
+    Raxol.Broker.Dashboard.init(%{
+      options: [environment: :ssh, dashboard: [operator: operator]]
+    })
+  end
+
+  defp press(model, keys) do
+    Enum.reduce(keys, model, fn k, model ->
+      {model, _commands} = Raxol.Broker.Dashboard.update(key(k), model)
+      model
+    end)
+  end
+
+  defp tick(model), do: model |> then(&Raxol.Broker.Dashboard.update(:tick, &1)) |> elem(0)
+
+  test "headless shows an ASK within one frame, read-only: a sends nothing", ctx do
+    dash = dashboard!()
+    assert screen(dash) =~ "pending approvals (a approve, d deny, j/k move), read-only:\n  none"
+
+    _ = ask!(ctx, "ask-approve")
     :ok = Raxol.Headless.send_message(dash, :tick)
-    assert screen(dash) =~ "> ask-approve  limit buy AAPL 2 @ 125  denied in 5m"
+    assert screen(dash) =~ "  ask-approve  limit buy AAPL 2 @ 125  denied in 5m"
     assert screen(dash) =~ "review_warning: Order review returned 1 warning(s)."
 
+    :ok = Raxol.Headless.send_key(dash, "j")
     :ok = Raxol.Headless.send_key(dash, "a")
+    assert screen(dash) =~ "read-only: this surface has no operator; nothing sent"
+    assert Fake.calls(ctx.fake, "place_") == []
+    assert [_] = Executor.parked(ctx.executor)
+  end
+
+  test "an operator approves the focused ASK into exactly one place, journaled by name", ctx do
+    group_id = ask!(ctx, "ask-approve")
+    model = operator_model() |> tick() |> press(["a"])
+    assert model.status == "pick an approval with j/k first; nothing sent"
+    assert Fake.calls(ctx.fake, "place_") == []
+
+    model = press(model, ["j", "a"])
+    assert model.status == "approve ask-approve: placed"
     assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
-    assert screen(dash) =~ "approve ask-approve: placed"
 
     approval = Enum.find(Broker.records(ctx.path), &(&1["type"] == "approval"))
 
-    assert %{"group_id" => ^group_id, "decision" => "approved", "by" => "dashboard:headless"} =
+    assert %{"group_id" => ^group_id, "decision" => "approved", "by" => "ssh:alice"} =
              approval
   end
 
-  test "d declines the focused ASK and nothing is placed", ctx do
-    dash = dashboard!()
+  test "an operator's d declines the focused ASK and nothing is placed", ctx do
     _ = ask!(ctx, "ask-decline")
-    :ok = Raxol.Headless.send_message(dash, :tick)
+    model = operator_model() |> tick() |> press(["j", "d"])
 
-    :ok = Raxol.Headless.send_key(dash, "d")
+    assert model.status == "decline ask-decline: declined"
     assert Fake.calls(ctx.fake, "place_") == []
     assert Executor.parked(ctx.executor) == []
-    assert screen(dash) =~ "decline ask-decline: declined"
+  end
+
+  test "a focused ASK answered elsewhere is not replaced by the next one", ctx do
+    first = ask!(ctx, "ask-first")
+    _ = ask!(ctx, "ask-second", "3")
+    model = operator_model() |> tick() |> press(["j"])
+    assert model.focus == first
+
+    :ok = Executor.decline(ctx.executor, first, "elsewhere")
+    model = model |> tick() |> press(["a"])
+
+    assert model.focus == nil
+    assert model.status == "pick an approval with j/k first; nothing sent"
+    assert Fake.calls(ctx.fake, "place_") == []
+    assert [%{intent: %{id: "ask-second"}}] = Executor.parked(ctx.executor)
+  end
+
+  test "an SSH surface with no operator, and LiveView, are read-only" do
+    assert operator_model(nil).operator == nil
+
+    assert Raxol.Broker.Dashboard.init(%{options: [environment: :liveview]}).operator == nil
+    assert "terminal:" <> _ = Raxol.Broker.Dashboard.init(%{options: []}).operator
   end
 
   test "renders two pending ASKs", ctx do
@@ -109,6 +160,7 @@ defmodule Raxol.Broker.DashboardTest do
     _ = ask!(ctx, "ask-two", "3")
     :ok = Raxol.Headless.send_message(dash, :tick)
     :ok = Raxol.Headless.send_key(dash, "j")
+    :ok = Raxol.Headless.send_key(dash, "j")
 
     assert screen(dash) == String.trim(File.read!(@snapshot))
   end
@@ -116,7 +168,7 @@ defmodule Raxol.Broker.DashboardTest do
   test "with no dashboard, an unanswered ASK is denied by the executor as :ask_timeout", ctx do
     ctx = Map.merge(ctx, Broker.journal!())
     policy = Broker.policy("1000", "5000", ask_timeout: 1)
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     executor = Broker.executor!(ctx.journal, ctx.fake, policy: policy)
     :erlang.trace(executor, true, [:receive])
 
