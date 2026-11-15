@@ -19,7 +19,7 @@ defmodule Mix.Tasks.Raxol.Broker.ArmTest do
     on_exit(fn -> Mix.shell(previous_shell) end)
 
     ctx = Broker.journal!(name: Journal)
-    fake = Fake.start(quotes: %{"F" => "9.80"})
+    fake = Fake.start(quotes: %{"F" => "9.80"}, trade_approvals: true)
     start_supervised!({Client, Fake.client_opts(fake, name: Client)})
     Map.put(ctx, :policy, Broker.policy_file!(ctx.base))
   end
@@ -40,11 +40,11 @@ defmodule Mix.Tasks.Raxol.Broker.ArmTest do
     printed = lines()
     assert "account FAKE-0001 is the agentic account" in printed
 
-    assert "trade approvals in the Robinhood app: OFF (human_must_approve_trades: false)" in printed
+    assert "trade approvals in the Robinhood app: on (human_must_approve_trades: true)" in printed
 
     assert "armed" in printed
     assert Mode.current(Journal) == :armed
-    assert {:ok, :armed, %{"human_must_approve_trades" => false}} = Journal.mode(Journal)
+    assert {:ok, :armed, %{"human_must_approve_trades" => true}} = Journal.mode(Journal)
 
     Disarm.run(["--reason", "test"])
     assert lines() == ["disarmed"]

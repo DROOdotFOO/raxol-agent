@@ -358,13 +358,15 @@ and no order.
 the policy file loads, the journal's hash chain verifies on disk (a
 one-byte edit blocks arming), the read-only session is connected, the
 account (`--account`, else the running executor's) is the agentic one, the
-account's trade-approval setting can be read, every added strategy's
+account's trade approvals are on (`human_must_approve_trades: true`), every added strategy's
 symbols quote at or below `max_notional_per_order` (limit orders are whole
 shares), and you type `ARM` after reading what was checked. The
 confirmation shows whether Robinhood's own trade approvals are on
 (`human_must_approve_trades`), and the `armed` record keeps it. Only the
 owner can change that setting, in the app. `disarm` writes a `disarmed`
 record unconditionally.
+An off setting refuses with `{:approvals_off, account}` before confirmation
+and writes nothing; an unreadable setting also refuses.
 
 Both connections, the executor's and the read-only one, refresh through
 `Raxol.Broker.Session.refresh/3`, which re-reads the store under a VM-wide

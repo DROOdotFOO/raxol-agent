@@ -22,10 +22,10 @@ defmodule Raxol.Broker.Mode do
     3. the read-only client is connected (it lists its tools);
     4. `get_accounts` marks `:account` as the one agentic account
        (`Raxol.Broker.AccountPin`);
-    5. `get_trade_approval_setting` for that account can be read: its
-       `human_must_approve_trades` is shown in the confirmation and
+    5. `get_trade_approval_setting` for that account reads
+       `human_must_approve_trades: true`, shown in the confirmation and
        journaled with the `armed` record (only the owner can change it, in
-       the app);
+       the app); `false` refuses with `{:approvals_off, account}`;
     6. every added strategy's symbols quote at or below the policy's
        `max_notional_per_order`, because limit orders are whole shares and
        a share above the cap could never be bought;
@@ -174,7 +174,8 @@ defmodule Raxol.Broker.Mode do
 
   defp approval_setting(client, account) do
     case read(client, "get_trade_approval_setting", %{"account_number" => account}) do
-      {:ok, %{"human_must_approve_trades" => value}} when is_boolean(value) -> {:ok, value}
+      {:ok, %{"human_must_approve_trades" => true}} -> {:ok, true}
+      {:ok, %{"human_must_approve_trades" => false}} -> {:error, {:approvals_off, account}}
       {:ok, _other} -> {:error, {:approval_setting, :unreadable}}
       {:error, reason} -> {:error, {:approval_setting, reason}}
     end

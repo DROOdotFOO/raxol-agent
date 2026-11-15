@@ -106,7 +106,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
   describe "drawdown breaker" do
     setup do
       ctx = Broker.journal!()
-      fake = Fake.start(quotes: %{"F" => "9.80"})
+      fake = Fake.start(quotes: %{"F" => "9.80"}, trade_approvals: true)
       policy = Broker.policy("1000", "5000", drawdown_halt: d("0.05"))
       sup = :"strategies_#{System.unique_integer([:positive])}"
       executor = Broker.executor!(ctx.journal, fake, policy: policy, strategies: sup)
