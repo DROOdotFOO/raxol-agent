@@ -22,7 +22,10 @@ defmodule Raxol.Payments.Relay.Schemas do
   def tron_chain?(_), do: false
 
   defmodule QuoteRequest do
-    @moduledoc false
+    @moduledoc """
+    A Relay quote request. `transfer_id` is minted by the client; amounts are
+    atomic-unit strings of the source token.
+    """
     @enforce_keys [
       :transfer_id,
       :from_chain_id,
@@ -116,7 +119,11 @@ defmodule Raxol.Payments.Relay.Schemas do
   end
 
   defmodule QuoteResponse do
-    @moduledoc false
+    @moduledoc """
+    A Relay quote: the `deposit_address` to fund, the delivered `to_amount`, and
+    `gasless` typed data when the solver offers a signed pull instead of a
+    deposit. `can_fill` is false when no solver can fill the transfer.
+    """
     @enforce_keys [:transfer_id, :quote_id]
     defstruct [
       :transfer_id,
@@ -173,7 +180,10 @@ defmodule Raxol.Payments.Relay.Schemas do
   end
 
   defmodule ExecuteRequest do
-    @moduledoc false
+    @moduledoc """
+    The request that starts execution of a quoted transfer, with the gasless
+    signature when there is one.
+    """
     @enforce_keys [:transfer_id, :quote_id]
     defstruct [:transfer_id, :quote_id, :signature, :nonce]
 
@@ -196,7 +206,10 @@ defmodule Raxol.Payments.Relay.Schemas do
   end
 
   defmodule StatusResponse do
-    @moduledoc false
+    @moduledoc """
+    A transfer's status. Terminal statuses are `:completed`, `:failed` and
+    `:refunded`; an unlisted status parses as `:unknown`.
+    """
     @enforce_keys [:transfer_id, :status]
     defstruct [
       :transfer_id,

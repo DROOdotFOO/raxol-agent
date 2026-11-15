@@ -5,6 +5,39 @@ All notable changes to `raxol_payments` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- The Xochi status parsers read every `IntentLifecycleStatus` of
+  `@xochi/spec` 0.14.0. `IntentStatus` and `Intent` add `:pull_pending`,
+  `:source_finalized` and `:refund_pending`; `ExecuteResponse` adds those and
+  `:bridging`, `:expired` and `:refunded`. They parsed as `:unknown`, so an
+  execute answering one was treated as in doubt. `:source_finalized` and
+  `:refund_pending` stay non-terminal even when the server flags them
+  terminal: `PollXochiStatus` keeps polling and keeps the reservation through
+  `refund_pending`, and releases it at `refunded`.
+
+### Changed
+
+- **Breaking.** `ExecuteRelayTransfer` reports a transfer whose funding is in
+  doubt as `{:ok, %{transfer_id: id, status: "unknown", reconciling: true,
+  ...}}`, as `ExecuteXochiIntent` does, instead of a `:stranded` `Failure`
+  with detail `{:in_doubt, transfer_id}`. The reservation stays tagged with
+  the transfer id and the checkpoint stays, so a re-run returns the same
+  result without signing or sending again. Every result carries
+  `reconciling`. `Failure.from({:in_doubt, transfer_id})` is removed.
+  Upgrade: match `reconciling: true` on the `:ok` result and poll the transfer
+  with `PollRelayStatus` instead of matching the error.
+
+### Fixed
+
+- The structs returned by public functions are documented:
+  `Xochi.Schemas.QuoteResponse`, `ExecuteRequest`, `ExecuteResponse` and
+  `IntentStatus`; `Relay.Schemas.QuoteRequest`, `QuoteResponse`,
+  `ExecuteRequest` and `StatusResponse`; `Pxe.Schemas.HealthStatus`. `mix docs`
+  builds without warnings.
+
 ## [0.3.0] - 2026-11-14
 
 ### Upgrading from 0.2

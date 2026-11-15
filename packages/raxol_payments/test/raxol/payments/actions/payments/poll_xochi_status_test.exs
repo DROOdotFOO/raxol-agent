@@ -173,6 +173,51 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
     assert :noop = Ledger.release_by_intent(ledger, "agent_1", "int_c")
   end
 
+  test "refund_pending keeps polling and the reservation until refunded releases it" do
+    polls = :counters.new(1, [])
+
+    Req.Test.stub(__MODULE__, fn conn ->
+      :counters.add(polls, 1, 1)
+
+      status =
+        if :counters.get(polls, 1) < 3,
+          do: %{"intent_id" => "int_rp", "status" => "refund_pending", "terminal" => true},
+          else: %{"intent_id" => "int_rp", "status" => "refunded", "terminal" => true}
+
+      Req.Test.json(conn, status)
+    end)
+
+    {:ok, ledger} = Ledger.start_link(table_name: :"poll_rp_#{:erlang.unique_integer()}")
+    ctx = %{xochi_config: config(), ledger: ledger, agent_id: "agent_1"}
+    :ok = Ledger.try_spend(ledger, "agent_1", Decimal.new("1.00"), policy(), %{})
+    :ok = Ledger.tag_reservation(ledger, "agent_1", "int_rp", Decimal.new("1.00"))
+
+    params = %{intent_id: "int_rp", timeout_ms: 2_000, interval_ms: 10, budget_ms: 0}
+
+    assert {:error, %Failure{reason: :refunded}} = PollXochiStatus.run(params, ctx)
+    assert :counters.get(polls, 1) == 3
+    assert Decimal.equal?(Ledger.get_totals(ledger, "agent_1", policy()).lifetime, "0")
+  end
+
+  test "a poll that ends on refund_pending is stranded and keeps the reservation" do
+    Req.Test.stub(__MODULE__, fn conn ->
+      Req.Test.json(conn, %{"intent_id" => "int_rq", "status" => "refund_pending"})
+    end)
+
+    {:ok, ledger} = Ledger.start_link(table_name: :"poll_rq_#{:erlang.unique_integer()}")
+    ctx = %{xochi_config: config(), ledger: ledger, agent_id: "agent_1"}
+    :ok = Ledger.try_spend(ledger, "agent_1", Decimal.new("1.00"), policy(), %{})
+    :ok = Ledger.tag_reservation(ledger, "agent_1", "int_rq", Decimal.new("1.00"))
+
+    params = %{intent_id: "int_rq", timeout_ms: 40, interval_ms: 10}
+
+    assert {:error, %Failure{reason: :stranded, detail: {:stranded, "int_rq"}}} =
+             PollXochiStatus.run(params, ctx)
+
+    assert Decimal.equal?(Ledger.get_totals(ledger, "agent_1", policy()).lifetime, "1.00")
+    assert :released = Ledger.release_by_intent(ledger, "agent_1", "int_rq")
+  end
+
   # xochi#563: the worker withholds a stealth intent's legs unless the caller
   # presents the read token execute returned. The sim reveals `tx_hash` only
   # for the right token, as the worker does.

@@ -357,7 +357,11 @@ defmodule Raxol.Payments.Xochi.Schemas do
   end
 
   defmodule QuoteResponse do
-    @moduledoc false
+    @moduledoc """
+    A Xochi quote: the intent and quote ids to sign and execute, the delivered
+    amount and fee, and the EIP-712 data or pull authorization the wallet signs.
+    `can_solve` is false when no solver can fill the request.
+    """
     @enforce_keys [:intent_id, :quote_id]
     defstruct [
       :intent_id,
@@ -445,7 +449,9 @@ defmodule Raxol.Payments.Xochi.Schemas do
   end
 
   defmodule ExecuteRequest do
-    @moduledoc false
+    @moduledoc """
+    The signed intent sent to `POST /api/intent/execute`.
+    """
     @enforce_keys [:intent_id, :quote_id, :signature, :nonce]
     defstruct [
       :intent_id,
@@ -483,10 +489,12 @@ defmodule Raxol.Payments.Xochi.Schemas do
   end
 
   defmodule ExecuteResponse do
-    @moduledoc false
-    # `read_token` is a bearer secret: it reveals a non-public
-    # intent's settlement tx hashes to whoever presents it. Keep it out of
-    # inspect output so a logged or crash-dumped response never carries it.
+    @moduledoc """
+    The answer to `POST /api/intent/execute`. `reconciling` is true when the
+    outcome is in doubt; poll the intent rather than executing again.
+    `read_token` unlocks a private intent's settlement legs on a status read; it
+    is a bearer secret and is left out of `inspect/1`.
+    """
     @derive {Inspect, except: [:read_token]}
     @enforce_keys [:intent_id, :status]
     defstruct [
@@ -565,15 +573,27 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
     defp parse_status(nil), do: :unknown
     defp parse_status("pending"), do: :pending
+    defp parse_status("pull_pending"), do: :pull_pending
     defp parse_status("executing"), do: :executing
+    defp parse_status("bridging"), do: :bridging
     defp parse_status("settling"), do: :settling
+    defp parse_status("source_finalized"), do: :source_finalized
     defp parse_status("completed"), do: :completed
+    defp parse_status("refund_pending"), do: :refund_pending
+    defp parse_status("refunded"), do: :refunded
     defp parse_status("failed"), do: :failed
+    defp parse_status("expired"), do: :expired
     defp parse_status(_s), do: :unknown
   end
 
   defmodule IntentStatus do
-    @moduledoc false
+    @moduledoc """
+    An intent's status from `GET /api/intent/:id/status`.
+
+    Terminal statuses are `:completed`, `:failed`, `:expired` and `:refunded`.
+    `:refund_pending` and `:source_finalized` stay non-terminal even when the
+    server flags them terminal. An unlisted status parses as `:unknown`.
+    """
     @enforce_keys [:intent_id, :status]
     defstruct [
       :intent_id,
@@ -607,16 +627,20 @@ defmodule Raxol.Payments.Xochi.Schemas do
     @type status ::
             :idle
             | :pending
+            | :pull_pending
             | :quoting
             | :quoted
             | :signing
             | :executing
             | :bridging
             | :settling
+            | :source_finalized
             | :completed
+            | :refund_pending
             | :failed
             | :expired
             | :refunded
+            | :unknown
 
     @type settlement_type :: :public | :stealth | :shielded | nil
     @type attestation_status :: :verified | :rejected | :not_required | nil
@@ -644,6 +668,12 @@ defmodule Raxol.Payments.Xochi.Schemas do
           }
 
     @terminal_statuses [:completed, :failed, :expired, :refunded]
+
+    # Non-terminal whatever the server's `terminal` flag says: `refund_pending`
+    # is a queued refund with no refund tx yet, and `source_finalized` is where a
+    # shielded tracer intent rests, never `completed`. Polling continues and the
+    # reservation stays until a terminal status.
+    @held_statuses [:source_finalized, :refund_pending]
 
     # The Xochi worker's status response is snake_case (`intent_id`, `tx_hash`,
     # `terminal`, ...); older/sim responses are camelCase. Accept both so the poll
@@ -673,9 +703,12 @@ defmodule Raxol.Payments.Xochi.Schemas do
         settlement_chain_id: integer_or_nil(json["settlement_chain_id"]),
         settlement_confirmed: json["settlement_confirmed"] == true,
         legs_withheld: json["legs_withheld"] == true,
-        terminal: json["terminal"] || status in @terminal_statuses
+        terminal: terminal_status?(status, json["terminal"])
       }
     end
+
+    defp terminal_status?(status, _flag) when status in @held_statuses, do: false
+    defp terminal_status?(status, flag), do: flag == true or status in @terminal_statuses
 
     defp pick(json, keys), do: Enum.find_value(keys, fn key -> json[key] end)
 
@@ -705,13 +738,16 @@ defmodule Raxol.Payments.Xochi.Schemas do
     defp parse_status(nil), do: :unknown
     defp parse_status("idle"), do: :idle
     defp parse_status("pending"), do: :pending
+    defp parse_status("pull_pending"), do: :pull_pending
     defp parse_status("quoting"), do: :quoting
     defp parse_status("quoted"), do: :quoted
     defp parse_status("signing"), do: :signing
     defp parse_status("executing"), do: :executing
     defp parse_status("bridging"), do: :bridging
     defp parse_status("settling"), do: :settling
+    defp parse_status("source_finalized"), do: :source_finalized
     defp parse_status("completed"), do: :completed
+    defp parse_status("refund_pending"), do: :refund_pending
     defp parse_status("failed"), do: :failed
     defp parse_status("expired"), do: :expired
     defp parse_status("refunded"), do: :refunded
@@ -795,8 +831,9 @@ defmodule Raxol.Payments.Xochi.Schemas do
     # THIS module (so they always exist -- `String.to_existing_atom/1` would trip
     # when `IntentStatus` is not loaded), and the compile-time map keeps wire
     # input from minting a new atom; anything unknown degrades to `:unknown`.
-    @status_atoms ~w(idle pending quoting quoted signing executing bridging settling
-                     completed failed expired refunded unknown)a
+    @status_atoms ~w(idle pending pull_pending quoting quoted signing executing bridging
+                     settling source_finalized completed refund_pending failed expired
+                     refunded unknown)a
     @status_by_name Map.new(@status_atoms, &{Atom.to_string(&1), &1})
     defp parse_status(status), do: Map.get(@status_by_name, status, :unknown)
   end
