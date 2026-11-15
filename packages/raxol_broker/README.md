@@ -58,12 +58,17 @@ loads. Run these from your project, in this order.
 6. Arm, from the same `iex` session.
 
    ```elixir
-   Mix.Task.run("raxol.broker.arm")
+   Mix.Task.rerun("raxol.broker.arm")
    ```
 
    Expect the checks, including `account <number> is the agentic account`
    and `trade approvals in the Robinhood app: on`, then type `ARM`; expect
-   `armed`. `mix raxol.broker.disarm` or `K` on the dashboard stops it.
+   `armed`. `Mix.Task.rerun("raxol.broker.disarm")` or `K` then `y` on the
+   dashboard stops it.
+
+   Use `Mix.Task.rerun/2`, not `Mix.Task.run/2`, for every broker task in
+   `iex`: `Mix.Task.run/2` runs a task once per VM and answers `:noop`
+   after that, so a second arm, kill or beat would silently do nothing.
 
 ## Policy
 
@@ -494,9 +499,10 @@ claimant, the executor, may write a `resolve` record.
 
 ## Kill switch and dead-man switch
 
-```sh
-mix raxol.broker.kill   # in the broker's VM
-mix raxol.broker.beat
+```elixir
+# In the broker's iex session (rerun: Mix.Task.run runs a task once per VM)
+Mix.Task.rerun("raxol.broker.kill")
+Mix.Task.rerun("raxol.broker.beat")
 ```
 
 `Raxol.Broker.Halt.kill/1` (the task, or `K` then `y` on an operator's

@@ -8,6 +8,8 @@ defmodule Mix.Tasks.Raxol.Broker.Kill do
 
   Run it in the broker's VM (`iex -S mix`): only the running executor can
   cancel. Without one here it disarms and says the orders were not touched.
+  In `iex`, call `Mix.Task.rerun("raxol.broker.kill")`: `Mix.Task.run/2`
+  runs a task once per VM, so a second kill through it would do nothing.
   """
 
   use Mix.Task

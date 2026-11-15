@@ -81,7 +81,7 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
 
   test "a refused refresh disarms; a new sign-in reconnects, and orders wait for a fresh arm",
        ctx do
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     auth = AuthServer.start(refresh_status: 400)
     Fake.accept(ctx.fake, [ctx.refreshed["access_token"]])
     Fake.inject(ctx.fake, [{"initialize", :hold}])
@@ -122,7 +122,7 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
     assert :ok = Executor.await_port(executor, 5_000)
 
     assert place!(executor, "after-sign-in") == {:error, :not_armed}
-    :ok = Journal.put_mode(:armed, %{"by" => "test"}, ctx.journal)
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     assert {:ok, %{status: :placed}} = place!(executor, "after-arm")
   end
 
