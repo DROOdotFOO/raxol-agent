@@ -21,9 +21,15 @@ defmodule Raxol.Broker.Strategy.Runner do
   The context sent with each intent carries the last quote price of every
   symbol the runner has seen.
 
+  The runner registers itself in the strategy supervisor's registry under
+  its strategy id, with `%{id, strategy, params, symbols, status}` as the
+  value, so it is found without being called. It subscribes to the feed
+  with a cast, so a feed busy polling never delays its start.
+
   ## Options
 
-  From the strategy supervisor: `:journal`, `:executor`, `:feed` (nil: no
+  From the strategy supervisor: `:registry`, `:journal`, `:executor`,
+  `:feed` (nil: no
   subscription) and `:retry_ms`. Then the spec map.
   """
 
@@ -43,51 +49,45 @@ defmodule Raxol.Broker.Strategy.Runner do
   end
 
   @spec start_link(keyword(), Strategy.spec()) :: GenServer.on_start()
-  def start_link(config, spec), do: GenServer.start_link(__MODULE__, {config, spec})
-
-  @doc "`%{id, strategy, params, symbols, status}` for this runner."
-  @spec info(GenServer.server()) :: map()
-  def info(runner), do: GenServer.call(runner, :info)
-
-  @impl GenServer
-  def init({config, %{"id" => id} = spec}) do
+  def start_link(config, %{"id" => id} = spec) do
     case Strategy.start(spec) do
       {:ok, module, model} ->
-        state = %{
+        info = %{
           id: id,
-          spec: spec,
-          module: module,
-          model: model,
-          journal: Keyword.get(config, :journal, Journal),
-          executor: Keyword.get(config, :executor, Executor),
-          retry_ms: Keyword.get(config, :retry_ms, @default_retry_ms),
-          quotes: %{},
-          retry: nil
+          strategy: spec["strategy"],
+          params: spec["params"],
+          symbols: module.symbols(model),
+          status: :running
         }
 
-        if feed = Keyword.get(config, :feed), do: Feed.subscribe(feed, module.symbols(model))
-        {:ok, state, {:continue, :recover}}
+        name = {:via, Registry, {Keyword.fetch!(config, :registry), id, info}}
+        GenServer.start_link(__MODULE__, {config, spec, module, model}, name: name)
 
       {:error, reason} ->
-        {:stop, {:invalid_strategy, reason}}
+        {:error, {:invalid_strategy, reason}}
     end
   end
 
   @impl GenServer
-  def handle_continue(:recover, state), do: {:noreply, send_pending(state)}
-
-  @impl GenServer
-  def handle_call(:info, _from, state) do
-    info = %{
-      id: state.id,
-      strategy: state.spec["strategy"],
-      params: state.spec["params"],
-      symbols: state.module.symbols(state.model),
-      status: :running
+  def init({config, %{"id" => id} = spec, module, model}) do
+    state = %{
+      id: id,
+      spec: spec,
+      module: module,
+      model: model,
+      journal: Keyword.get(config, :journal, Journal),
+      executor: Keyword.get(config, :executor, Executor),
+      retry_ms: Keyword.get(config, :retry_ms, @default_retry_ms),
+      quotes: %{},
+      retry: nil
     }
 
-    {:reply, info, state}
+    if feed = Keyword.get(config, :feed), do: Feed.subscribe(feed, module.symbols(model))
+    {:ok, state, {:continue, :recover}}
   end
+
+  @impl GenServer
+  def handle_continue(:recover, state), do: {:noreply, send_pending(state)}
 
   @impl GenServer
   def handle_info({:quote, symbol, %{last: price}} = message, state) do

@@ -1,36 +1,60 @@
 defmodule Raxol.Broker.Strategy.Supervisor do
   @moduledoc """
-  A `DynamicSupervisor` of `Raxol.Broker.Strategy.Runner`s, one per added
-  strategy.
+  Runs one `Raxol.Broker.Strategy.Runner` per added strategy.
+
+  A `:rest_for_one` supervisor of three children:
+
+    * a `Registry` of runners keyed by strategy id. A runner registers
+      itself on start, so two runners for one id cannot exist, and every
+      lookup (`running/1`, `stop/2`, `list/1`) reads the registry instead of
+      calling a runner that may be busy in the executor;
+    * a `DynamicSupervisor` of the runners;
+    * `Raxol.Broker.Strategy.Restorer`, which starts every strategy the
+      journal holds as added (`restore/1`) whenever it starts. Because it is
+      a permanent child after the runners' supervisor, a crash that restarts
+      the runners (or this whole supervisor) restores them again.
 
   Adding and stopping are journaled (`Raxol.Broker.Journal.put_strategy/2`,
-  `drop_strategy/2`), so `restore/1` starts the strategies that were added
-  and not stopped when the broker starts again, and
-  `mix raxol.broker.strategy` can add or stop one while the broker is not
-  running.
+  `drop_strategy/2`), so `mix raxol.broker.strategy` can add or stop one
+  while the broker is not running.
 
   ## Options
 
-  `start_link/1`: `:name` (default this module), and for every runner
-  `:journal` (default `Raxol.Broker.Journal`), `:executor` (default
-  `Raxol.Broker.Executor`), `:feed` (default nil, no quotes) and
-  `:retry_ms`. The functions below take `:supervisor` (default this module)
-  and `:journal`.
+  `start_link/1`: `:name` (default this module), `:restore` (default
+  `true`), and for every runner `:journal` (default `Raxol.Broker.Journal`),
+  `:executor` (default `Raxol.Broker.Executor`), `:feed` (default nil, no
+  quotes) and `:retry_ms`. The functions below take `:supervisor` (default
+  this module) and `:journal`.
   """
 
-  use DynamicSupervisor
+  use Supervisor
+
+  require Logger
 
   alias Raxol.Broker.{Journal, Strategy}
-  alias Raxol.Broker.Strategy.Runner
+  alias Raxol.Broker.Strategy.{Restorer, Runner}
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts \\ []) do
     {name, config} = Keyword.pop(opts, :name, __MODULE__)
-    DynamicSupervisor.start_link(__MODULE__, config, name: name)
+    Supervisor.start_link(__MODULE__, {name, config}, name: name)
   end
 
-  @impl DynamicSupervisor
-  def init(config), do: DynamicSupervisor.init(strategy: :one_for_one, extra_arguments: [config])
+  @impl Supervisor
+  def init({name, config}) do
+    {restore?, config} = Keyword.pop(config, :restore, true)
+    journal = Keyword.get(config, :journal, Journal)
+    runner_config = Keyword.put(config, :registry, registry(name))
+
+    children =
+      [
+        {Registry, keys: :unique, name: registry(name)},
+        {DynamicSupervisor,
+         name: runners(name), strategy: :one_for_one, extra_arguments: [runner_config]}
+      ] ++ if(restore?, do: [{Restorer, supervisor: name, journal: journal}], else: [])
+
+    Supervisor.init(children, strategy: :rest_for_one)
+  end
 
   @doc """
   Journal `spec` as added and start its runner, when the supervisor is
@@ -48,7 +72,11 @@ defmodule Raxol.Broker.Strategy.Supervisor do
     end
   end
 
-  @doc "Stop the runner for `id`, if running, and journal it as stopped."
+  @doc """
+  Stop the runner for `id`, if running, and journal it as stopped. The
+  runner is found in the registry and terminated even while it waits on the
+  executor.
+  """
   @spec stop(String.t(), keyword()) :: :ok | {:error, term()}
   def stop(id, opts \\ []) when is_binary(id) do
     journal = Keyword.get(opts, :journal, Journal)
@@ -56,7 +84,7 @@ defmodule Raxol.Broker.Strategy.Supervisor do
     with {:ok, specs} <- Journal.strategies(journal),
          true <- Enum.any?(specs, &(&1["id"] == id)) || {:error, {:not_added, id}} do
       sup = supervisor(opts)
-      for {pid, %{id: ^id}} <- running(sup), do: DynamicSupervisor.terminate_child(sup, pid)
+      for {pid, %{id: ^id}} <- running(sup), do: terminate(sup, pid)
       Journal.drop_strategy(id, journal)
     end
   end
@@ -88,13 +116,24 @@ defmodule Raxol.Broker.Strategy.Supervisor do
     end
   end
 
-  @doc "Start a runner for every added strategy that is not running."
+  @doc """
+  Start a runner for every added strategy that is not running. A runner
+  that fails to start is logged and the rest are still started.
+  """
   @spec restore(keyword()) :: :ok | {:error, term()}
   def restore(opts \\ []) do
     with {:ok, specs} <- Journal.strategies(Keyword.get(opts, :journal, Journal)) do
       sup = supervisor(opts)
       up = MapSet.new(running(sup), fn {_pid, info} -> info.id end)
-      for spec <- specs, not MapSet.member?(up, spec["id"]), do: start_runner(sup, spec)
+
+      for spec <- specs, not MapSet.member?(up, spec["id"]) do
+        with {:error, reason} <- start_runner(sup, spec) do
+          Logger.error(
+            "[Broker.Strategy] #{spec["id"]} not restored: #{inspect(reason, structs: false)}"
+          )
+        end
+      end
+
       :ok
     end
   end
@@ -103,35 +142,36 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   @spec stop_all(keyword()) :: :ok
   def stop_all(opts \\ []) do
     sup = supervisor(opts)
-
-    if GenServer.whereis(sup) do
-      for {pid, _info} <- running(sup), do: DynamicSupervisor.terminate_child(sup, pid)
-    end
-
-    :ok
+    Enum.each(running(sup), fn {pid, _info} -> terminate(sup, pid) end)
   end
 
-  @doc "`[{pid, info}]` for each running runner; `[]` when the supervisor is not running."
+  @doc """
+  `[{pid, info}]` for each running runner, read from the registry (no runner
+  is called); `[]` when the supervisor is not running. `info` is what the
+  runner registered: `%{id, strategy, params, symbols, status}`.
+  """
   @spec running(GenServer.server()) :: [{pid(), map()}]
   def running(sup \\ __MODULE__) do
-    if GenServer.whereis(sup) do
-      sup
-      |> DynamicSupervisor.which_children()
-      |> Enum.flat_map(fn {_id, pid, _type, _modules} ->
-        case is_pid(pid) && safe_info(pid) do
-          %{} = info -> [{pid, info}]
-          _gone -> []
-        end
-      end)
+    registry = registry(sup)
+
+    if Process.whereis(registry) do
+      registry
+      |> Registry.select([{{:_, :"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}])
+      |> Enum.sort_by(fn {_pid, info} -> info.id end)
     else
       []
     end
   end
 
-  defp safe_info(pid) do
-    Runner.info(pid)
-  catch
-    :exit, _reason -> nil
+  @doc false
+  @spec registry(atom()) :: atom()
+  def registry(sup), do: :"#{sup}.Registry"
+
+  defp runners(sup), do: :"#{sup}.Runners"
+
+  defp terminate(sup, pid) do
+    _ = DynamicSupervisor.terminate_child(runners(sup), pid)
+    :ok
   end
 
   defp not_added(specs, id) do
@@ -139,9 +179,10 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   end
 
   defp start_runner(sup, spec) do
-    if GenServer.whereis(sup) do
-      case DynamicSupervisor.start_child(sup, {Runner, spec}) do
+    if Process.whereis(runners(sup)) do
+      case DynamicSupervisor.start_child(runners(sup), {Runner, spec}) do
         {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
         {:error, reason} -> {:error, reason}
       end
     else

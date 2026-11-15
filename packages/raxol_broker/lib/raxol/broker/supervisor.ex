@@ -31,8 +31,9 @@ defmodule Raxol.Broker.Supervisor do
       the shared `Raxol.Broker.Feed.Bucket`. Omit it to start no feed.
     * `:strategies` - options for `Raxol.Broker.Strategy.Supervisor`
       (`:journal`, `:executor` and `:feed` default to this supervisor's).
-      When given, every strategy the journal holds as added is started once
-      the supervisor is up.
+      When given, every strategy the journal holds as added is started when
+      the strategy supervisor starts, and again whenever an earlier child's
+      crash restarts it.
 
   ## Restart semantics
 
@@ -147,14 +148,9 @@ defmodule Raxol.Broker.Supervisor do
           |> Keyword.put_new(:feed, feed)
           |> Keyword.put_new(:name, Strategy.Supervisor)
 
-        restore = [supervisor: strategy_opts[:name], journal: journal_name(opts)]
-
-        [
-          {Strategy.Supervisor, strategy_opts},
-          Supervisor.child_spec({Task, fn -> Strategy.Supervisor.restore(restore) end},
-            id: :restore_strategies
-          )
-        ]
+        # Strategy.Supervisor restores the added strategies itself, on every
+        # start and restart.
+        [{Strategy.Supervisor, strategy_opts}]
 
       :error ->
         []

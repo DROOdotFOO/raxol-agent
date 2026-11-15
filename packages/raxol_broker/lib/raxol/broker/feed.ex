@@ -47,10 +47,13 @@ defmodule Raxol.Broker.Feed do
     GenServer.start_link(__MODULE__, opts, gen_opts)
   end
 
-  @doc "Send the calling process quotes for `symbols` (added to any it already has)."
+  @doc """
+  Send the calling process quotes for `symbols` (added to any it already
+  has). A cast: it returns at once, even while the feed waits on a poll.
+  """
   @spec subscribe(GenServer.server(), [String.t()]) :: :ok
   def subscribe(feed, symbols) when is_list(symbols),
-    do: GenServer.call(feed, {:subscribe, self(), symbols})
+    do: GenServer.cast(feed, {:subscribe, self(), symbols})
 
   @doc "Stop sending the calling process quotes."
   @spec unsubscribe(GenServer.server()) :: :ok
@@ -100,7 +103,7 @@ defmodule Raxol.Broker.Feed do
   end
 
   @impl GenServer
-  def handle_call({:subscribe, pid, symbols}, _from, state) do
+  def handle_cast({:subscribe, pid, symbols}, state) do
     first? = map_size(state.subscribers) == 0
 
     subscribers =
@@ -109,9 +112,10 @@ defmodule Raxol.Broker.Feed do
       end)
 
     if first?, do: state.schedule.(max(state.due_at - state.clock.(), 0))
-    {:reply, :ok, %{state | subscribers: subscribers}}
+    {:noreply, %{state | subscribers: subscribers}}
   end
 
+  @impl GenServer
   def handle_call({:unsubscribe, pid}, _from, state), do: {:reply, :ok, drop(state, pid)}
 
   @impl GenServer
