@@ -1,6 +1,6 @@
 defmodule Raxol.Payments.Ramp.Peer do
   @moduledoc """
-  Read-only Peer Curator v3 quote adapter, pinned to @zkp2p/sdk 0.15.0-rc.11.
+  Peer Curator v3 quote adapter and onramp coordinator, pinned to @zkp2p/sdk 0.15.0-rc.11.
 
   Requires trusted `:user` and `:orchestrator` addresses in context and a validated
   `:intent`. `:req_options` injects Req's transport (e.g. a Plug in unit tests).
@@ -10,7 +10,8 @@ defmodule Raxol.Payments.Ramp.Peer do
   must be future and at most five minutes away.
 
   Only direct USD/Base USDC onramps without region constraints are currently supported.
-  Offramp maker capabilities, composition, and execution belong to R2–R5. Browser and payment-account
+  Offramp maker capabilities and composition belong to R4–R5. Onramp
+  execution delegates to `Raxol.Payments.Ramp.Onramp`. Browser and payment-account
   enrollment readiness must be attested by the trusted caller (`:interaction_ready` and a per-rail `:ready_rails` allowlist); otherwise
   no executable offers are returned. Availability is quote-specific, so offer bounds
   equal the exact requested amount. Requoting preserves the offer reference but
@@ -18,7 +19,7 @@ defmodule Raxol.Payments.Ramp.Peer do
   """
   @behaviour Raxol.Payments.Ramp.Provider
   alias Raxol.Payments.Ramp
-  alias Raxol.Payments.Ramp.Coherence
+  alias Raxol.Payments.Ramp.{Coherence, Onramp}
   @usdc "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
   @disclosures %{
     "public_state" => ["base_settlement"],
@@ -47,11 +48,14 @@ defmodule Raxol.Payments.Ramp.Peer do
   end
 
   @impl true
-  def approve(_, _, _, _), do: {:error, :not_implemented}
+  def approve(operation, quote, command, context),
+    do: Onramp.approve(operation, quote, command, context)
+
   @impl true
-  def status(_, _), do: {:error, :not_implemented}
+  def status(operation, context), do: Onramp.status(operation, context)
   @impl true
-  def recover(_, _, _, _), do: {:error, :not_implemented}
+  def recover(operation, action_ref, command, context),
+    do: Onramp.resume(operation, action_ref, command, context)
 
   defp fetch(%{intent: %Ramp.Intent{} = intent} = context) do
     with :ok <- supported(intent, context),
@@ -142,8 +146,32 @@ defmodule Raxol.Payments.Ramp.Peer do
     ]
 
     case Req.request(Keyword.merge(options, Map.get(context, :req_options, []))) do
-      {:ok, %{status: 200} = response} -> {:ok, response}
-      _ -> {:error, :provider_unavailable}
+      {:ok, %{status: 200} = response} ->
+        if session_required?(response.body), do: {:error, :setup_required}, else: {:ok, response}
+
+      {:ok, %{status: status}} when status in [401, 403] ->
+        {:error, :setup_required}
+
+      {:ok, response} ->
+        if session_required?(response.body),
+          do: {:error, :setup_required},
+          else: {:error, :provider_unavailable}
+
+      _ ->
+        {:error, :provider_unavailable}
+    end
+  end
+
+  # Classify only a bounded message in memory; never retain upstream text.
+  defp session_required?(body) do
+    with {:ok, %{"message" => message}} <- decode_body(body),
+         true <- is_binary(message) do
+      Regex.match?(
+        ~r/privy|wallet.{0,32}link|unauthenticated|unauthorized|authentication required/i,
+        String.slice(message, 0, 512)
+      )
+    else
+      _ -> false
     end
   end
 

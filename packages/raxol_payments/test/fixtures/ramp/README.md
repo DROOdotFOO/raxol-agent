@@ -2,7 +2,7 @@
 
 `contract.schema.json` and `conformance.json` are copied without edits from
 [xochi-fi/xochi-sdk](https://github.com/xochi-fi/xochi-sdk), branch
-`feature/ramp-contract-peer`, commit `85c0b606304e98afd03f0c7dee06e1e06cd6d3a9`:
+`feature/ramp-onramp`, commit `367f3185943672af1b7c227fd608ba7f7fd39aad`:
 
 - `packages/client/ramp/contract.schema.json`
 - `packages/client/ramp/conformance.json`
