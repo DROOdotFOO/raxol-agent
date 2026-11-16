@@ -264,9 +264,21 @@ defmodule Raxol.Payments.Ramp.PeerTest do
     assert {:ok, []} = Ramps.discover(intent(), Map.put(context(), :ready_rails, []))
   end
 
-  test "execution is explicitly deferred" do
-    assert Peer.approve(nil, nil, nil, %{}) == {:error, :not_implemented}
-    assert Peer.status(nil, %{}) == {:error, :not_implemented}
-    assert Peer.recover(nil, nil, nil, %{}) == {:error, :not_implemented}
+  test "execution requires durable coordination" do
+    assert Peer.approve(nil, nil, nil, %{}) == {:error, :checkpoint_required}
+    assert Peer.status(nil, %{}) == {:error, :operation_not_found}
+    assert Peer.recover(nil, nil, nil, %{}) == {:error, :checkpoint_required}
+  end
+
+  test "Curator linked-session requirements are bounded setup codes" do
+    for status <- [200, 400, 401, 403] do
+      assert {:error, :setup_required} =
+               Ramps.discover(
+                 intent(),
+                 context(%{"message" => "A Privy session linked to the wallet is required"},
+                   status: status
+                 )
+               )
+    end
   end
 end
