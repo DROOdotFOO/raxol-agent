@@ -446,6 +446,9 @@ confirmation shows whether Robinhood's own trade approvals are on
 (`human_must_approve_trades`), and the `armed` record keeps it. Only the
 owner can change that setting, in the app. `disarm` writes a `disarmed`
 record unconditionally.
+The journal commits arming only if its mode generation has not changed
+since the checks began and no halt marker exists. A kill or other mode
+change while the confirmation prompt waits requires starting arm again.
 An off setting refuses with `{:approvals_off, account}` before confirmation
 and writes nothing; an unreadable setting also refuses.
 
@@ -476,6 +479,11 @@ independently off the TEA process, with one outstanding task per operation.
 Slow approvals and kills remain visibly pending until their actual outcome
 returns; frozen dependencies do not block input or independent heartbeats.
 Initial account and snapshot loading starts on the first one-second tick.
+Kill completion reports incomplete listings and each failed or unknown
+cancel/decline explicitly, including the affected id. A successful response
+count is not a claim that every order is cancelled; verify the Robinhood app.
+If no optional heartbeat process is running, the view explicitly shows
+`dead-man switch: not configured`, rather than an uncertain action outcome.
 
 Only an operator may answer or kill, and the operator is what the
 approval's `by` and the kill's trigger record. The terminal's operator is
@@ -547,13 +555,17 @@ against the Fake is in `bench/kill_latency.md`.
 From another shell, `mix raxol.broker.kill --journal PATH` submits an empty,
 owner-checked 0600 `halt.request` in the private journal directory when the
 writer lock is held. Its presence blocks new orders and arming immediately.
-The broker's supervised `HaltRequest` polls every 100 ms, disarms, and runs
+The broker's supervised `HaltRequest` polls every 100 ms, disarms once, and runs
 the same kill path, including cancels and declines. No node cookie or RPC
 endpoint is exposed, and the file accepts no payload or trade operation.
 Submission is **not cancellation confirmation**: inspect the halt journal
-and the Robinhood app. If the executor is not ready, the marker stays until
-it connects; do not remove it to re-arm. Without a running broker, the task
-opens the journal and disarms only.
+and the Robinhood app. If the executor is not ready, the marker stays and
+an off-process worker waits for readiness with a bound and backoff, without
+repeated disarm/halt journal writes. Unsafe markers block trading and are
+reported with repair guidance, not repeatedly logged every poll.
+Without a running broker, the task opens the journal and disarms only.
+Cross-shell requests use the broker's default 10 s per-call bound;
+`--bound` overrides calls only when the task runs in the broker's VM.
 
 `Raxol.Broker.Heartbeat` is the dead-man switch: with no beat within the
 policy's `dead_man_timeout` (24 hours by default, `:off` to disable) it

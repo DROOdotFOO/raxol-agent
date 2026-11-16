@@ -13,8 +13,51 @@ defmodule Raxol.Broker.HaltRequestTest do
     :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     :ok = HaltRequest.request(ctx.path)
     assert Mode.current(ctx.journal) == :disarmed
-    assert Journal.mode(ctx.journal) == {:error, :halt_requested}
+    assert {:ok, :armed, _latest_record} = Journal.mode(ctx.journal)
     assert Bitwise.band(File.stat!(HaltRequest.path(ctx.path)).mode, 0o777) == 0o600
+  end
+
+  test "a not-ready executor retains the marker without repeated journal writes" do
+    ctx = Broker.journal!()
+    fake = Fake.start(faults: [{"initialize", :hold}])
+
+    executor =
+      start_supervised!(
+        {Executor,
+         journal: ctx.journal,
+         session: Fake.session(fake),
+         account_number: "FAKE-0001",
+         policy: Broker.policy(),
+         clock: &Broker.t0/0}
+      )
+
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
+    :ok = HaltRequest.request(ctx.path)
+
+    worker =
+      start_supervised!(
+        {HaltRequest,
+         path: ctx.path, journal: ctx.journal, executor: executor, strategies: :no_strategies}
+      )
+
+    :erlang.trace(worker, true, [:receive])
+    assert %{disarmed: true, task: %{ref: ref}} = :sys.get_state(worker)
+    before = Broker.records(ctx.path)
+
+    for _ <- 1..10 do
+      send(worker, :poll)
+      assert %{task: %{ref: ^ref}} = :sys.get_state(worker)
+    end
+
+    assert Broker.records(ctx.path) == before
+    assert File.exists?(HaltRequest.path(ctx.path))
+    assert Mode.current(ctx.journal) == :disarmed
+
+    Fake.release(fake)
+    assert_receive {:trace, ^worker, :receive, {:halt_result, _, {:ok, _summary}}}, 5_000
+    :sys.get_state(worker)
+    refute File.exists?(HaltRequest.path(ctx.path))
+    assert Enum.count(Broker.records(ctx.path), &(&1["type"] == "halt")) == 1
   end
 
   test "a second OS process requests a kill despite the journal writer lock" do
@@ -35,7 +78,10 @@ defmodule Raxol.Broker.HaltRequestTest do
     :erlang.trace(worker, true, [:receive])
 
     {output, status} =
-      System.cmd("mix", ["raxol.broker.kill", "--journal", ctx.path], stderr_to_stdout: true)
+      System.cmd("mix", ["raxol.broker.kill", "--journal", ctx.path],
+        env: [{"MIX_ENV", "test"}],
+        stderr_to_stdout: true
+      )
 
     assert status == 0, output
     assert output =~ "halt requested"

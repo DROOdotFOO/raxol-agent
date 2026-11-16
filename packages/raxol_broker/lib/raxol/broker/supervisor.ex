@@ -13,7 +13,8 @@ defmodule Raxol.Broker.Supervisor do
   decisions starts after `Raxol.Broker.Journal` and restarts with it. The
   journal is first: a process that could place an order must never outlive it.
 
-      Journal, Executor, MCP.Client, Feed.Bucket, Feed, Strategy.Supervisor
+      Journal, Executor, MCP.Client, Feed.Bucket, Feed, Strategy.Supervisor,
+      Heartbeat, HaltRequest
 
   ## Options
 
@@ -23,7 +24,7 @@ defmodule Raxol.Broker.Supervisor do
       given, the executor starts after the journal and restarts with it. Its
       `:journal` is always this supervisor's journal: passing a different one
       makes `start_link/1` return `{:error, {:journal_mismatch, given}}`. Its `:name`
-      defaults to `Raxol.Broker.Executor`. Omit it to run the journal alone.
+      defaults to `Raxol.Broker.Executor`. Omit it to run without an executor.
     * `:client` - options for the read-only `Raxol.Broker.MCP.Client`
       (`:name` defaults to that module). Omit it to start none.
     * `:feed` - options for `Raxol.Broker.Feed` (`:name` defaults to that
@@ -38,6 +39,10 @@ defmodule Raxol.Broker.Supervisor do
       switch); `:timeout` defaults to the executor policy's
       `dead_man_timeout`, `:journal` and `:strategies` to this supervisor's.
       Omit it to run without one.
+
+  `HaltRequest` always starts last, including journal-only installs, watching
+  the configured journal directory for owner-only cross-process halts.
+  It disarms once per request and waits for a ready executor before cancelling.
 
   ## Restart semantics
 

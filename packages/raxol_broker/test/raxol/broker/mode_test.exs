@@ -62,6 +62,31 @@ defmodule Raxol.Broker.ModeTest do
     assert Journal.mode(ctx.journal) == {:ok, :disarmed, nil}
   end
 
+  test "a halt requested inside confirmation refuses without arming", ctx do
+    confirm = fn _ ->
+      :ok = Raxol.Broker.HaltRequest.request(ctx.path)
+      "ARM"
+    end
+
+    assert arm(ctx, "ARM", confirm: confirm) == {:error, :halt_requested}
+    assert Journal.mode(ctx.journal) == {:ok, :disarmed, nil}
+  end
+
+  test "a completed kill while confirmation waits invalidates that arm", ctx do
+    assert {:ok, _} = arm(ctx, "ARM")
+
+    confirm = fn _ ->
+      :ok = Raxol.Broker.HaltRequest.request(ctx.path)
+      :ok = Mode.disarm("kill", journal: ctx.journal)
+      File.rm!(Raxol.Broker.HaltRequest.path(ctx.path))
+      "ARM"
+    end
+
+    assert arm(ctx, "ARM", confirm: confirm) == {:error, :mode_changed}
+    assert {:ok, :disarmed, %{"reason" => "kill"}} = Journal.mode(ctx.journal)
+    assert Mode.current(ctx.journal) == :disarmed
+  end
+
   test "anything but ARM writes nothing", ctx do
     assert arm(ctx, "arm") == {:error, :not_confirmed}
     assert arm(ctx, nil) == {:error, :not_confirmed}

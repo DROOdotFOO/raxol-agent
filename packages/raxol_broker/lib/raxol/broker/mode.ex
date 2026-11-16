@@ -5,11 +5,11 @@ defmodule Raxol.Broker.Mode do
   disarmed.
 
   `Raxol.Broker.Executor` sends no order tool unless the broker is armed:
-  a disarmed executor journals an intent with `mode: :dry_run`, runs the
-  pre-review policy and closes the group as `not_armed`, and a group parked
-  or in review when the broker is disarmed is closed the same way before
-  `placing`. Cancels are exempt, so the kill switch can cancel after
-  disarming.
+  a disarmed executor journals a minimal intent/context group with
+  `mode: :dry_run` and closes it as `not_armed`, without context reads or
+  policy evaluation. A group parked or in review when disarmed is closed
+  the same way before `placing`. Only the kill's human cancels and declines
+  bypass arming.
 
   ## Arming
 
@@ -30,6 +30,10 @@ defmodule Raxol.Broker.Mode do
        `max_notional_per_order`, because limit orders are whole shares and
        a share above the cap could never be bought;
     7. the person arming types `ARM` after reading what was checked.
+
+  Any mode change during the checks invalidates their journal generation.
+  The final append checks that generation and the halt marker inside the
+  journal process, so an old confirmation cannot undo a completed kill.
 
   `disarm/2` is unconditional: it writes a `disarmed` record whatever the
   state. Only a damaged journal refuses it, and a damaged journal refuses
@@ -57,8 +61,10 @@ defmodule Raxol.Broker.Mode do
   @doc "`:armed` or `:disarmed`."
   @spec current(Journal.server()) :: :armed | :disarmed
   def current(journal \\ Journal) do
-    case Journal.mode(journal) do
-      {:ok, :armed, _record} -> :armed
+    with false <- Journal.halt_pending?(journal),
+         {:ok, :armed, _record} <- Journal.mode(journal) do
+      :armed
+    else
       _disarmed_or_unreadable -> :disarmed
     end
   end
@@ -84,6 +90,7 @@ defmodule Raxol.Broker.Mode do
     confirm = Keyword.fetch!(opts, :confirm)
 
     with {:ok, policy} <- policy(path),
+         {:ok, generation} <- Journal.arm_generation(journal),
          :ok <- verified(journal),
          :ok <- connected(client),
          false <- Journal.halt_pending?(journal),
@@ -92,7 +99,8 @@ defmodule Raxol.Broker.Mode do
          {:ok, quotes} <- strategy_quotes(journal, client, policy),
          fields = record(policy, quotes, account, approvals?, Keyword.get(opts, :by, "cli")),
          :ok <- confirmed(confirm.(summary(path, fields))),
-         :ok <- Journal.record_armed(fields, journal) do
+         false <- Journal.halt_pending?(journal),
+         :ok <- Journal.record_armed(fields, journal, generation) do
       supervisor = Keyword.get(opts, :strategies, Strategy.Supervisor)
       Strategy.Supervisor.resume_all(:drawdown_halt, supervisor: supervisor)
       {:ok, fields}

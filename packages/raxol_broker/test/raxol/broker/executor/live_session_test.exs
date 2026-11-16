@@ -108,6 +108,8 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
 
     assert {:ok, :disarmed, %{"reason" => "reauth_required"}} = Journal.mode(ctx.journal)
 
+    :ok = Raxol.Broker.HaltRequest.request(ctx.path)
+
     for _retry <- 1..2 do
       send(executor, :refresh_due)
 
@@ -123,6 +125,7 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
     end
 
     assert length(reauth_disarms.()) == 1
+    File.rm!(Raxol.Broker.HaltRequest.path(ctx.path))
 
     :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     send(executor, :refresh_due)

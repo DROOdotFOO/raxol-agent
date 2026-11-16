@@ -55,7 +55,7 @@ defmodule Raxol.Broker.Dashboard do
 
   use Raxol.Core.Runtime.Application
 
-  alias Raxol.Broker.{Executor, Halt, Heartbeat, Journal, Response, Snapshot}
+  alias Raxol.Broker.{Executor, Halt, Heartbeat, Journal, Mode, Response, Snapshot}
   alias Raxol.Broker.MCP.Client
   alias Raxol.Broker.Strategy
 
@@ -206,7 +206,12 @@ defmodule Raxol.Broker.Dashboard do
       decision_lines(model.decisions),
       Enum.map(
         Enum.sort(Map.keys(model.errors)),
-        &"#{&1} unavailable; outcome or snapshot unconfirmed"
+        fn operation ->
+          case {operation, Map.fetch!(model.errors, operation)} do
+            {:heartbeat, :heartbeat_not_running} -> "dead-man switch: not configured"
+            _other -> "#{operation} unavailable; outcome or snapshot unconfirmed"
+          end
+        end
       ),
       status_lines(model.status)
     ])
@@ -346,9 +351,8 @@ defmodule Raxol.Broker.Dashboard do
       {:executor, fn -> Executor.parked(model.executor, @call_timeout) end},
       {:journal,
        fn ->
-         with {:ok, decisions} <- Journal.recent(model.journal, 5),
-              {:ok, mode, _record} <- Journal.mode(model.journal) do
-           {:ok, mode, decisions}
+         with {:ok, decisions} <- Journal.recent(model.journal, 5) do
+           {:ok, Mode.current(model.journal), decisions}
          end
        end},
       {:strategies,
@@ -406,7 +410,7 @@ defmodule Raxol.Broker.Dashboard do
   end
 
   defp complete(:kill, {:ok, summary}, model) do
-    refresh(%{model | status: "killed: #{length(summary.results)} cancel(s) and decline(s) sent"})
+    refresh(%{clear_error(model, :kill) | status: kill_report(summary)})
   end
 
   defp complete(operation, {:error, reason}, model) do
@@ -420,6 +424,36 @@ defmodule Raxol.Broker.Dashboard do
       {model, []}
     end
   end
+
+  defp kill_report(summary) do
+    disarm =
+      if summary.disarmed == :ok,
+        do: [],
+        else: ["disarm unconfirmed: #{inspect(summary.disarmed, structs: false)}"]
+
+    failed =
+      for result <- summary.results,
+          result.outcome != "placed",
+          do: "#{result.kind} #{result.id} unconfirmed: #{result.outcome}"
+
+    issues =
+      disarm ++
+        listing_issue("orders", summary.orders) ++
+        listing_issue("approvals", summary.approvals) ++ failed
+
+    case issues do
+      [] ->
+        "kill completed: #{length(summary.results)} successful cancel/decline response(s); verify Robinhood app"
+
+      issues ->
+        "kill INCOMPLETE: " <> Enum.join(issues, "; ") <> "; check Robinhood app"
+    end
+  end
+
+  defp listing_issue(_name, {:ok, _ids}), do: []
+
+  defp listing_issue(name, {:error, reason}),
+    do: ["#{name} incomplete: #{inspect(reason, structs: false)}"]
 
   defp clear_error(model, operation),
     do: %{model | errors: Map.delete(model.errors, operation)}

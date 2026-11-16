@@ -8,6 +8,8 @@ defmodule Mix.Tasks.Raxol.Broker.Kill do
 
   From another shell, submits an owner-only halt file to the running broker.
   Submission is not proof of cancellation; check the halt journal and app.
+  Cross-shell requests use the broker's default 10 s per-call bound;
+  `--bound` overrides calls only inside the broker's VM.
   In `iex`, call `Mix.Task.rerun("raxol.broker.kill")`: `Mix.Task.run/2`
   runs a task once per VM, so a second kill through it would do nothing.
   """
@@ -50,7 +52,12 @@ defmodule Mix.Tasks.Raxol.Broker.Kill do
               CLI.info("cancellation is not confirmed; check the halt journal and Robinhood app")
 
             {:error, reason} ->
-              Mix.raise("cannot submit halt request: #{inspect(reason)}")
+              Mix.raise(
+                "cannot submit halt request: #{inspect(reason)}; check " <>
+                  "#{HaltRequest.path(Journal.path(journal_opts))}: expected an empty " <>
+                  "owner-owned regular file, mode 0600, in a private directory; " <>
+                  "fix an unsafe marker from the owner's shell; cancellation is unconfirmed"
+              )
           end
 
         {:error, reason} ->

@@ -255,6 +255,7 @@ defmodule Raxol.Broker.Journal do
          {:ok, handle} <- open_store(path) do
       table = :ets.new(name, [:named_table, :ordered_set, :protected, read_concurrency: true])
       :ets.insert(table, {:halt_request_path, Raxol.Broker.HaltRequest.path(path)})
+      :ets.insert(table, {:arm_generation, make_ref()})
 
       state = %{
         handle: handle,
@@ -558,7 +559,25 @@ defmodule Raxol.Broker.Journal do
   """
   @spec record_armed(map(), server()) :: :ok | {:error, term()}
   def record_armed(fields, server \\ __MODULE__) when is_map(fields),
-    do: event("mode", Map.put(fields, "mode", "armed"), server)
+    do: record_armed(fields, server, :any)
+
+  @doc "Arm only if no mode change or halt occurred during the checks."
+  @spec record_armed(map(), server(), reference() | :any) :: :ok | {:error, term()}
+  def record_armed(fields, server, generation) when is_map(fields),
+    do: GenServer.call(server, {:arm, Codec.term(fields), generation}, :infinity)
+
+  @doc "The journal-local generation invalidated by every mode record or restart."
+  @spec arm_generation(server()) :: {:ok, reference()} | {:error, term()}
+  def arm_generation(server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        case :ets.lookup(server, :arm_generation) do
+          [{:arm_generation, generation}] -> {:ok, generation}
+          [] -> {:error, :journal_not_ready}
+        end
+      end)
+    end
+  end
 
   @doc "Record the broker as disarmed, with `fields` (who, why). Open to any caller."
   @spec record_disarmed(map(), server()) :: :ok | {:error, term()}
@@ -593,8 +612,7 @@ defmodule Raxol.Broker.Journal do
   """
   @spec mode(server()) :: {:ok, :armed | :disarmed, map() | nil} | {:error, term()}
   def mode(server \\ __MODULE__) do
-    with :ok <- healthy(server),
-         false <- halt_pending?(server) do
+    with :ok <- healthy(server) do
       select(fn ->
         case :ets.lookup(server, :mode) do
           [{:mode, %{"mode" => "armed"} = record}] -> {:ok, :armed, record}
@@ -602,9 +620,6 @@ defmodule Raxol.Broker.Journal do
           [] -> {:ok, :disarmed, nil}
         end
       end)
-    else
-      true -> {:error, :halt_requested}
-      {:error, _reason} = error -> error
     end
   end
 
@@ -763,6 +778,21 @@ defmodule Raxol.Broker.Journal do
       {:reply, :ok, state}
     else
       {:error, reason} -> refuse(state, reason)
+    end
+  end
+
+  def handle_call({:arm, fields, expected}, from, state) do
+    [{:arm_generation, current}] = :ets.lookup(state.table, :arm_generation)
+
+    cond do
+      halt_pending?(state.table) ->
+        {:reply, {:error, :halt_requested}, state}
+
+      expected != :any and expected != current ->
+        {:reply, {:error, :mode_changed}, state}
+
+      true ->
+        handle_call({:event, "mode", Map.put(fields, "mode", "armed")}, from, state)
     end
   end
 
@@ -1293,7 +1323,7 @@ defmodule Raxol.Broker.Journal do
   # An armed record ends the drawdown pause: only a fresh arm resumes.
   defp index_event(table, %{"kind" => "broker", "type" => "mode"} = record) do
     if record["mode"] == "armed", do: :ets.delete(table, {:pause, :drawdown_halt})
-    :ets.insert(table, {:mode, record})
+    :ets.insert(table, [{:mode, record}, {:arm_generation, make_ref()}])
   end
 
   defp index_event(table, %{"kind" => "broker", "type" => "halt", "reason" => reason}) do

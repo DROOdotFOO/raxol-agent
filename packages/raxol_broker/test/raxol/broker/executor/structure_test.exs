@@ -9,7 +9,7 @@ defmodule Raxol.Broker.Executor.StructureTest do
 
     * The sinks are restricted by call graph. Only `Raxol.Broker.Executor`
       may reference `Place.run`, `ReviewReceipt.issue`, `Journal.claim` and
-      `Port.MCP.start`, whether as a remote call, a remote capture, or a
+      `Port.MCP.start`/`start_client`, whether as a remote call, a remote capture, or a
       literal `Module, :function` pair (an MFA handed to `spawn/3`,
       `Task.async/3`, a child spec and the like). Only `Place`, `Review` and
       `Read` (which permits `:read` tools only) call `Port.call/4`; only
@@ -59,7 +59,8 @@ defmodule Raxol.Broker.Executor.StructureTest do
     {Place, :run_many},
     {ReviewReceipt, :issue},
     {Journal, :claim},
-    {@port_mcp, :start}
+    {@port_mcp, :start},
+    {@port_mcp, :start_client}
   ]
   @sink_functions @sinks |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
 
@@ -456,6 +457,9 @@ defmodule Raxol.Broker.Executor.StructureTest do
           "def f(j), do: Raxol.Broker.Journal.claim(j)",
           "def f, do: Raxol.Broker.Journal.claim()",
           "def f(s), do: Raxol.Broker.Executor.Port.MCP.start(s, mode: :dry_run)",
+          "def f(s), do: Raxol.Broker.Executor.Port.MCP.start_client(s)",
+          "def f, do: &Raxol.Broker.Executor.Port.MCP.start_client/1",
+          "def f, do: {Raxol.Broker.Executor.Port.MCP, :start_client, [[]]}",
           "def f(a), do: Task.async(Raxol.Broker.Executor.Place, :run, a)",
           "def f(a), do: spawn(Raxol.Broker.Journal, :claim, a)",
           "def f, do: {Raxol.Broker.Executor.Port.MCP, :start, [[], []]}"

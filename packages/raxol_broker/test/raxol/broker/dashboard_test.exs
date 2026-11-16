@@ -246,11 +246,57 @@ defmodule Raxol.Broker.DashboardTest do
     assert Raxol.Broker.Mode.current(ctx.journal) == :armed
 
     model = press(model, ["K", "y"])
-    assert model.status =~ "killed:"
+    assert model.status =~ "kill completed:"
     assert Raxol.Broker.Mode.current(ctx.journal) == :disarmed
 
     halt = ctx.path |> Broker.records() |> Enum.filter(&(&1["type"] == "halt")) |> List.last()
     assert %{"reason" => "kill", "trigger" => "ssh:alice"} = halt
+  end
+
+  test "kill reports an unavailable executor as incomplete", ctx do
+    model = operator_model() |> Map.put(:executor, :not_running) |> press(["K", "y"])
+    assert model.status =~ "kill INCOMPLETE:"
+    assert model.status =~ "executor_down"
+    assert Raxol.Broker.Mode.current(ctx.journal) == :disarmed
+  end
+
+  test "kill reports incomplete listings instead of claiming cancellation", ctx do
+    Fake.on_call(ctx.fake, "get_equity_orders", fn _ ->
+      {:result,
+       %{"isError" => true, "content" => [%{"type" => "text", "text" => "listing unavailable"}]}}
+    end)
+
+    model = operator_model() |> press(["K", "y"])
+    assert model.status =~ "kill INCOMPLETE:"
+    assert model.status =~ "orders incomplete:"
+  end
+
+  test "kill shows the timed-out cancel and its unknown outcome", ctx do
+    group = ask!(ctx, "cancel-timeout")
+    assert {:ok, %{status: :placed}} = Executor.approve(ctx.executor, group, "test")
+    [%{"order_id" => order_id}] = Fake.orders(ctx.fake)
+    Fake.on_call(ctx.fake, "cancel_equity_order", fn _ -> :hang end)
+
+    {:ok, summary} =
+      Raxol.Broker.Halt.kill(
+        journal: ctx.journal,
+        executor: ctx.executor,
+        strategies: :no_strategies_here,
+        bound: 25
+      )
+
+    ref = make_ref()
+    model = %{operator_model() | in_flight: %{kill: ref}}
+
+    {model, _effects} =
+      Dashboard.update(
+        {:command_result, {:broker_dashboard, :kill, ref, {:ok, summary}}},
+        model
+      )
+
+    assert model.status =~ "kill INCOMPLETE:"
+    assert model.status =~ order_id
+    assert model.status =~ "unknown :timeout"
   end
 
   test "an SSH surface with no operator, and LiveView, are read-only" do
@@ -434,7 +480,7 @@ defmodule Raxol.Broker.DashboardTest do
 
     :ok = :sys.resume(ctx.journal)
     model = settle(model)
-    assert model.status =~ "killed:"
+    assert model.status =~ "kill completed:"
     assert Raxol.Broker.Mode.current(ctx.journal) == :disarmed
   end
 

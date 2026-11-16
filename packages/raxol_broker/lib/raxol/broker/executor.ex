@@ -100,12 +100,12 @@ defmodule Raxol.Broker.Executor do
   ## ASK
 
   A post-review ASK parks the group and returns `{:ask, group_id, prompts}`;
-  the group id is the token. `approve/3` rebuilds the counters from the
-  journal, journals the approval and runs the policy again: a DENY now (the
-  cap moved while it was parked) ends the group; an ASK (the questions the
-  human just answered) or ALLOW goes on to `placing`. `decline/3` and
-  `close/3` end the group. `Raxol.Broker.Dashboard` shows parked groups to
-  a person in the terminal, LiveView or SSH.
+  the group id is the token. `approve/3` re-fetches quotes, positions,
+  portfolio, calendar and journal counters off-process, records the fresh
+  context and approval, then evaluates policy again. A fresh DENY ends the
+  group; a drawdown DENY also disarms and pauses runners. ASK (the questions
+  the human just answered) or ALLOW proceeds to `placing`. `decline/3` and
+  `close/3` end the group. The dashboard shows ASKs in terminal, LiveView and SSH.
 
   The timeout is this process's, not a view's: parking starts a timer of the
   policy's `ask_timeout` (five minutes by default), and a group still parked
@@ -114,9 +114,10 @@ defmodule Raxol.Broker.Executor do
 
   `approve/3` and `decline/3` need a non-empty `by`, `close/3` a non-nil
   atom reason; anything else raises `FunctionClauseError` in the caller and
-  leaves the group parked. An approve refused before the approval is
-  journaled (port down, journal unreadable, or the approval entry rejected
-  as invalid) also leaves the group parked.
+  leaves the group parked. Approval while disarmed closes it `not_armed`.
+  An ASK that expires during the context fetch is already terminal; the
+  approval's context append fails and sends nothing. A port-down refusal
+  before fetching context leaves the group parked.
 
   Parked groups live in this process. On start, every group the journal
   still has open is closed with `{:close, :executor_restarted}`, so a group
