@@ -274,7 +274,8 @@ defmodule Raxol.Broker.Executor do
   alias Raxol.Broker.Executor.{Place, Port, Read, Review, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
   alias Raxol.Agent.Auth.Credential
-  alias Raxol.Broker.{CredentialStore, Halt, Intent, Journal, MarketCalendar, Mode, Plain, Policy}
+  alias Raxol.Broker.{AccountPin, CredentialStore, Halt, Intent, Journal, MarketCalendar}
+  alias Raxol.Broker.{Mode, Plain, Policy}
   alias Raxol.Broker.{PolicyFile, Response, Session}
   alias Raxol.Broker.Journal.Codec
   alias Raxol.Broker.Policy.{Context, ContextBuilder}
@@ -350,6 +351,10 @@ defmodule Raxol.Broker.Executor do
   @doc "Parked ASKs: `[%{group_id, intent, prompts, expires_at}]`, oldest first."
   @spec parked(GenServer.server(), timeout()) :: [map()]
   def parked(server, timeout \\ :infinity), do: GenServer.call(server, :parked, timeout)
+
+  @doc "The account this executor sends orders for (its `:account_number`)."
+  @spec account(GenServer.server(), timeout()) :: String.t()
+  def account(server, timeout \\ 5_000), do: GenServer.call(server, :account, timeout)
 
   @doc """
   The kill switch's order step: list the account's open agent-initiated
@@ -663,6 +668,8 @@ defmodule Raxol.Broker.Executor do
   end
 
   @impl GenServer
+  def handle_call(:account, _from, state), do: {:reply, state.account, state}
+
   def handle_call(:parked, _from, state) do
     list =
       state.parked
@@ -827,7 +834,8 @@ defmodule Raxol.Broker.Executor do
   defp connect(state) do
     case PortMCP.start_client(state.client_spec) do
       {:ok, port} ->
-        task = Task.async(fn -> await_catalog(port) end)
+        account = state.account
+        task = Task.async(fn -> await_catalog(port, account) end)
         %{state | port: port, port_status: :connecting, connect: task}
 
       {:error, reason} ->
@@ -837,11 +845,15 @@ defmodule Raxol.Broker.Executor do
 
   # The session's tool classes: the live list reconciled against the frozen
   # capture (`Raxol.Broker.Tools.Catalog`). A port whose list cannot be read
-  # never becomes ready, so no tool is ever called unclassified.
-  defp await_catalog(port) do
+  # never becomes ready, so no tool is ever called unclassified; nor one
+  # whose `get_accounts` does not mark this executor's account as the
+  # agentic one (`Raxol.Broker.AccountPin`).
+  defp await_catalog(port, account) do
     with :ok <- PortMCP.await_ready(port),
-         {:ok, tools} <- PortMCP.list_tools(port) do
-      {:ok, Catalog.reconcile(tools)}
+         {:ok, tools} <- PortMCP.list_tools(port),
+         catalog = Catalog.reconcile(tools),
+         :ok <- AccountPin.check(Read.call(port, catalog, "get_accounts", %{}, 30_000), account) do
+      {:ok, catalog}
     end
   end
 

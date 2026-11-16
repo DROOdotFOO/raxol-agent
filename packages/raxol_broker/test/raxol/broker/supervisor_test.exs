@@ -46,7 +46,7 @@ defmodule Raxol.Broker.SupervisorTest do
          executor: [
            name: executor,
            session: Fake.session(server),
-           account_number: "ACC-1",
+           account_number: "FAKE-0001",
            policy: policy
          ]}
       )
@@ -124,7 +124,7 @@ defmodule Raxol.Broker.SupervisorTest do
         {Raxol.Broker.Supervisor,
          name: :"broker_sup_#{System.unique_integer([:positive])}",
          journal: [name: journal, path: path],
-         executor: [name: executor, session: session, account_number: "ACC-1", policy: policy]}
+         executor: [name: executor, session: session, account_number: "FAKE-0001", policy: policy]}
       )
 
     sup_ref = Process.monitor(sup)
@@ -175,7 +175,7 @@ defmodule Raxol.Broker.SupervisorTest do
          executor: [
            name: executor,
            session: session,
-           account_number: "ACC-1",
+           account_number: "FAKE-0001",
            policy: policy,
            reconnect_ms: 60_000
          ]}

@@ -19,7 +19,7 @@ defmodule Mix.Tasks.Raxol.Broker.ArmTest do
     on_exit(fn -> Mix.shell(previous_shell) end)
 
     ctx = Broker.journal!(name: Journal)
-    fake = Fake.start(quotes: %{"F" => "9.80"})
+    fake = Fake.start(quotes: %{"F" => "9.80"}, trade_approvals: true)
     start_supervised!({Client, Fake.client_opts(fake, name: Client)})
     Map.put(ctx, :policy, Broker.policy_file!(ctx.base))
   end
@@ -34,11 +34,17 @@ defmodule Mix.Tasks.Raxol.Broker.ArmTest do
 
   test "arm asks for ARM after printing its checks; disarm undoes it", ctx do
     send(self(), {:mix_shell_input, :prompt, "ARM\n"})
-    Arm.run(["--policy", ctx.policy])
+    Arm.run(["--policy", ctx.policy, "--account", "FAKE-0001"])
 
     assert_received {:mix_shell, :prompt, ["Type ARM to place real orders:"]}
-    assert "armed" in lines()
+    printed = lines()
+    assert "account FAKE-0001 is the agentic account" in printed
+
+    assert "trade approvals in the Robinhood app: on (human_must_approve_trades: true)" in printed
+
+    assert "armed" in printed
     assert Mode.current(Journal) == :armed
+    assert {:ok, :armed, %{"human_must_approve_trades" => true}} = Journal.mode(Journal)
 
     Disarm.run(["--reason", "test"])
     assert lines() == ["disarmed"]
@@ -49,7 +55,15 @@ defmodule Mix.Tasks.Raxol.Broker.ArmTest do
     send(self(), {:mix_shell_input, :prompt, "yes\n"})
 
     assert_raise Mix.Error, ~r/confirmation not typed/, fn ->
-      Arm.run(["--policy", ctx.policy])
+      Arm.run(["--policy", ctx.policy, "--account", "FAKE-0001"])
+    end
+
+    assert Journal.mode(Journal) == {:ok, :disarmed, nil}
+  end
+
+  test "arm refuses an account that is not the agentic one", ctx do
+    assert_raise Mix.Error, ~r/not_the_agentic_account/, fn ->
+      Arm.run(["--policy", ctx.policy, "--account", "OTHER-1"])
     end
 
     assert Journal.mode(Journal) == {:ok, :disarmed, nil}

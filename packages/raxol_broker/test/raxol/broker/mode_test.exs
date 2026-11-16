@@ -9,7 +9,7 @@ defmodule Raxol.Broker.ModeTest do
 
   setup do
     ctx = Broker.journal!()
-    fake = Fake.start(quotes: %{"F" => "9.80"})
+    fake = Fake.start(quotes: %{"F" => "9.80"}, trade_approvals: true)
     client = start_supervised!({Client, Fake.client_opts(fake)})
     {:ok, spec} = Strategy.spec("dip_buy", %{"symbol" => "F", "usd" => "25"})
     :ok = Journal.put_strategy(spec, ctx.journal)
@@ -24,7 +24,13 @@ defmodule Raxol.Broker.ModeTest do
       answer
     end
 
-    [journal: ctx.journal, client: ctx.client, policy_path: ctx.policy, confirm: confirm]
+    [
+      journal: ctx.journal,
+      client: ctx.client,
+      policy_path: ctx.policy,
+      account: "FAKE-0001",
+      confirm: confirm
+    ]
     |> Keyword.merge(extra)
     |> Mode.arm()
   end
@@ -36,12 +42,24 @@ defmodule Raxol.Broker.ModeTest do
 
   test "typing ARM after the checks writes an armed record", ctx do
     assert {:ok, fields} = arm(ctx, "ARM")
+    assert fields["human_must_approve_trades"] == true
     assert fields["quotes"] == %{"F" => "9.80"}
     assert Mode.current(ctx.journal) == :armed
 
     assert_received {:summary, lines}
     assert "  F last 9.80" in lines
     assert List.last(lines) =~ "Type ARM"
+  end
+
+  test "approvals off refuses before confirmation and writes nothing", ctx do
+    fake = Fake.start(trade_approvals: false)
+    client = start_supervised!({Client, Fake.client_opts(fake)}, id: :approvals_off)
+    before = Broker.records(ctx.path)
+
+    assert arm(ctx, "ARM", client: client) == {:error, {:approvals_off, "FAKE-0001"}}
+    refute_received {:summary, _}
+    assert Broker.records(ctx.path) == before
+    assert Journal.mode(ctx.journal) == {:ok, :disarmed, nil}
   end
 
   test "anything but ARM writes nothing", ctx do

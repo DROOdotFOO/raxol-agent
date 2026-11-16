@@ -298,10 +298,16 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   order placed after an approval carries the approval id, not the `ref_id`
   sent.
   A recorded response (`test/fixtures/robinhood/review_equity_order.json`)
-  confirms the flag sits under `data`. The same recording shows Robinhood's
-  alerts are `data.order_checks`, which `Review` does not read yet, so a
-  real review is an "unreadable review response" and always asks a person.
-  `Raxol.Broker.MCP.Fake` models approvals with `trade_approvals: true`.
+  confirms the flag sits under `data`. `Raxol.Broker.MCP.Fake` models
+  approvals with `trade_approvals: true`.
+* **Review alerts.** Robinhood lists its pre-trade alerts in
+  `data.order_checks`, `{}` when there are none. `Review` turns every entry
+  into a warning, and so an ASK: `"<name>: <message>"` for a string or a
+  `"message"`, `"order check <name>"` for a shape it does not know. Only
+  the empty case has been recorded so far.
+* **Account pin.** The executor's session is ready only when `get_accounts`
+  marks its `:account_number` as the one `agentic_allowed` account; it is
+  checked on every connect, and again when arming.
 * **Fail closed.** Any journal error before `placing`, review error or
   unsupported order kind means no order. Once the order call is made the
   result is `{:ok, _}`: a place call that times out is journaled
@@ -329,27 +335,38 @@ advanced orders are refused with `{:error, {:no_adapter, kind}}`.
 ## Arming
 
 ```sh
-mix raxol.broker.connect       # policy file first, then browser sign-in and drift report
+mix raxol.broker.connect --account NUMBER   # policy file first, then sign-in, pin and drift report
 mix raxol.broker.inspect --sample "buy F 1 @ 12.25"
-mix raxol.broker.arm           # checks, then type ARM
+mix raxol.broker.arm --account NUMBER       # checks, then type ARM
 mix raxol.broker.disarm
 ```
 
 `connect` refuses to run unless `broker.policy.exs` loads, so limits exist
 before a credential is stored. It signs in, stores the credential
-encrypted, and reports which served tools were added, changed or are
-missing against the frozen capture.
+encrypted, checks that `--account` is the account Robinhood marks
+`agentic_allowed` (without `--account` it names that account), and reports
+which served tools were added, changed or are missing against the frozen
+capture.
 
-`inspect` prints the accounts and their buying power, positions, the mode,
-the journal's status and the pre-review policy verdict for a sample intent,
-through the read-only session only: no review and no order.
+`inspect` prints the accounts, the agentic account's buying power (from
+`get_portfolio`; `get_accounts` does not carry a reliable figure), its
+positions, the mode, the journal's status and the pre-review policy
+verdict for a sample intent, through the read-only session only: no review
+and no order.
 
 `arm` writes an `armed` mode record (`Raxol.Broker.Mode.arm/1`) only when
 the policy file loads, the journal's hash chain verifies on disk (a
-one-byte edit blocks arming), the read-only session is connected, every
-added strategy's symbols quote at or below `max_notional_per_order` (limit
-orders are whole shares), and you type `ARM` after reading what was
-checked. `disarm` writes a `disarmed` record unconditionally.
+one-byte edit blocks arming), the read-only session is connected, the
+account (`--account`, else the running executor's) is the agentic one, the
+account's trade approvals are on (`human_must_approve_trades: true`), every added strategy's
+symbols quote at or below `max_notional_per_order` (limit orders are whole
+shares), and you type `ARM` after reading what was checked. The
+confirmation shows whether Robinhood's own trade approvals are on
+(`human_must_approve_trades`), and the `armed` record keeps it. Only the
+owner can change that setting, in the app. `disarm` writes a `disarmed`
+record unconditionally.
+An off setting refuses with `{:approvals_off, account}` before confirmation
+and writes nothing; an unreadable setting also refuses.
 
 Both connections, the executor's and the read-only one, refresh through
 `Raxol.Broker.Session.refresh/3`, which re-reads the store under a VM-wide

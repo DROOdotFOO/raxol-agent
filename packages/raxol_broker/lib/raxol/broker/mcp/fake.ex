@@ -32,8 +32,8 @@ defmodule Raxol.Broker.MCP.Fake do
       quote it. A symbol not listed is omitted from the answer.
     * `:positions` - maps, answered by `get_equity_positions`.
     * `:portfolio` - the map `get_portfolio` answers (default `%{"equity"
-      => "100000", "adjusted_equity_previous_close" => "100000"}`);
-      `portfolio/2` replaces it.
+      => "100000", "adjusted_equity_previous_close" => "100000",
+      "buying_power" => "1000"}`); `portfolio/2` replaces it.
     * `:page_size` - pages `get_equity_orders` and `get_trade_approvals`
       (default `nil`, one page): each page holds at most this many entries
       and a `"next"` cursor while more remain.
@@ -109,7 +109,11 @@ defmodule Raxol.Broker.MCP.Fake do
   # A reserved `.test` host: nothing real answers it, so a spec that lost its
   # `:exchange` cannot reach a brokerage either.
   @url "https://fake.broker.test/mcp"
-  @portfolio %{"equity" => "100000", "adjusted_equity_previous_close" => "100000"}
+  @portfolio %{
+    "equity" => "100000",
+    "adjusted_equity_previous_close" => "100000",
+    "buying_power" => "1000"
+  }
 
   @recordings Path.expand("../../../../priv/robinhood", __DIR__)
 

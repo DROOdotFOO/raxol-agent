@@ -50,7 +50,7 @@ defmodule Raxol.Broker.Test.Broker do
         [
           journal: journal,
           session: Raxol.Broker.MCP.Fake.session(fake),
-          account_number: "ACC-1",
+          account_number: "FAKE-0001",
           policy: policy(),
           clock: fn -> @t0 end
         ],
