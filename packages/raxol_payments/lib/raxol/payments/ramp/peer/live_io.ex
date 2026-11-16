@@ -89,6 +89,9 @@ defmodule Raxol.Payments.Ramp.Peer.LiveIO do
 
       result =
         cond do
+          mapping[:pending_failed] == true and mapping[:pending_kind] != :withdraw_unmatched ->
+            %{state: :reverted}
+
           is_binary(mapping[:deposit_id]) ->
             LiveReads.deposit!(context, LiveReads.uint!(mapping.deposit_id), context.user)
 
@@ -138,24 +141,33 @@ defmodule Raxol.Payments.Ramp.Peer.LiveIO do
 
     true =
       LiveReads.quantity(receipt["blockNumber"]) <=
-        min(height, LiveReads.quantity(finalized["number"])) and receipt["status"] == "0x1"
+        min(height, LiveReads.quantity(finalized["number"])) and
+        receipt["status"] in ["0x0", "0x1"]
 
     resolved =
-      case mapping.pending_kind do
-        :create_deposit ->
-          id = creation_id!(receipt["logs"], context.user, mapping.total)
-          Map.merge(mapping, %{deposit_id: to_string(id), creation_tx_hash: hash})
-
-        :approve_usdc ->
-          Map.put(mapping, :approval_confirmed, true)
-
-        :withdraw_unmatched ->
-          mapping
+      if receipt["status"] == "0x0" do
+        Map.put(mapping, :pending_failed, true)
+      else
+        resolve_success!(mapping, receipt, context, hash)
       end
 
     resolved = Map.merge(resolved, %{pending_resolved: true})
     :ok = Mapping.put(context.maker_mapping, operation, resolved)
     resolved
+  end
+
+  defp resolve_success!(mapping, receipt, context, hash) do
+    case mapping.pending_kind do
+      :create_deposit ->
+        id = creation_id!(receipt["logs"], context.user, mapping.total)
+        Map.merge(mapping, %{deposit_id: to_string(id), creation_tx_hash: hash})
+
+      :approve_usdc ->
+        Map.put(mapping, :approval_confirmed, true)
+
+      :withdraw_unmatched ->
+        mapping
+    end
   end
 
   defp creation_id!(logs, owner, total) when is_list(logs) and length(logs) <= 1000 do

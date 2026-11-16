@@ -11,7 +11,8 @@ defmodule Raxol.Payments.Ramp.Peer do
   must be future and at most five minutes away.
 
   Direct USD/Base USDC ramps without region constraints are supported.
-  Offramp execution delegates to `Peer.Maker`; the default maker implementation
+  Onramp execution delegates to `Onramp`, offramp execution to `Peer.Maker`.
+  The default maker implementation
   reads fresh Base protocol/oracle and public-indexer evidence. Browser and payment-account
   enrollment readiness must be attested by the trusted caller (`:interaction_ready` and a per-rail `:ready_rails` allowlist); otherwise
   no executable offers are returned. Availability is quote-specific, so offer bounds
@@ -19,8 +20,9 @@ defmodule Raxol.Payments.Ramp.Peer do
   changes the revision when amounts, fees, or requirements change.
   """
   @behaviour Raxol.Payments.Ramp.Provider
-  alias Raxol.Payments.Ramp
+  alias Raxol.Payments.{Checkpoint, Ramp}
   alias Raxol.Payments.Ramp.{Coherence, Onramp}
+  alias Raxol.Payments.Ramp.Peer.{Discovery, Maker}
   @usdc "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
   @disclosures %{
     "public_state" => ["base_settlement"],
@@ -30,7 +32,7 @@ defmodule Raxol.Payments.Ramp.Peer do
 
   @impl true
   def capabilities(%{intent: %Ramp.Intent{direction: "offramp"}} = context),
-    do: __MODULE__.Discovery.capabilities(context)
+    do: Discovery.capabilities(context)
 
   def capabilities(context) do
     with {:ok, entries} <- fetch(context) do
@@ -40,7 +42,7 @@ defmodule Raxol.Payments.Ramp.Peer do
 
   @impl true
   def preview(%Ramp.Intent{direction: "offramp"} = intent, offer_ref, revision, context),
-    do: __MODULE__.Discovery.preview(intent, offer_ref, revision, context)
+    do: Discovery.preview(intent, offer_ref, revision, context)
 
   def preview(intent, offer_ref, revision, context) do
     with {:ok, entries} <- fetch(Map.put(context, :intent, intent)),
@@ -71,17 +73,26 @@ defmodule Raxol.Payments.Ramp.Peer do
   end
 
   defp coordinator(operation, context) do
-    case Raxol.Payments.Checkpoint.fetch(context[:checkpoint], "peer_onramp:" <> to_string(operation)) do
-      {:ok, _} -> Onramp
-      _ ->
-        case Raxol.Payments.Checkpoint.fetch(context[:checkpoint], "peer_maker:" <> to_string(operation)) do
-          {:ok, _} -> __MODULE__.Maker
-          _ -> if context[:intent] && context.intent.direction == "offramp",
-                 do: __MODULE__.Maker, else: Onramp
-        end
+    cond do
+      match?(
+        {:ok, _},
+        Checkpoint.fetch(context[:checkpoint], "peer_onramp:" <> to_string(operation))
+      ) ->
+        Onramp
+
+      match?(
+        {:ok, _},
+        Checkpoint.fetch(context[:checkpoint], "peer_maker:" <> to_string(operation))
+      ) ->
+        Maker
+
+      true ->
+        coordinator_for(context[:intent])
     end
   end
 
+  defp coordinator_for(%Ramp.Intent{direction: "offramp"}), do: Maker
+  defp coordinator_for(_), do: Onramp
 
   defp fetch(%{intent: %Ramp.Intent{} = intent} = context) do
     with :ok <- supported(intent, context),

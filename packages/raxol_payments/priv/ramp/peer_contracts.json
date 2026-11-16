@@ -5,7 +5,8 @@
     "orchestratorV4": "0x74c55679268FAfB493864915aD16A320AB8c40Ba",
     "protocolViewerV4": "0x685123dB5fE2b88D00ED3764c088d600D9B2b6Fc",
     "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "intentGuardian": "0x83671606454fA72ba1e2831E18C5090D25629414"
+    "intentGuardian": "0x83671606454fA72ba1e2831E18C5090D25629414",
+    "stakeVaultV2": "0x4aDE08EC1098D0d8856dd7bbBBc7789794089A97"
   },
   "rails": {
     "venmo": {
@@ -784,6 +785,147 @@
         ],
         "stateMutability": "view",
         "type": "function"
+      },
+      {
+        "anonymous": false,
+        "inputs": [
+          {
+            "indexed": true,
+            "internalType": "bytes32",
+            "name": "intentHash",
+            "type": "bytes32"
+          },
+          {
+            "indexed": true,
+            "internalType": "address",
+            "name": "fundsTransferredTo",
+            "type": "address"
+          },
+          {
+            "indexed": false,
+            "internalType": "uint256",
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "indexed": false,
+            "internalType": "address",
+            "name": "releasedBy",
+            "type": "address"
+          }
+        ],
+        "name": "IntentFulfilled",
+        "type": "event"
+      },
+      {
+        "anonymous": false,
+        "inputs": [
+          {
+            "indexed": true,
+            "internalType": "bytes32",
+            "name": "intentHash",
+            "type": "bytes32"
+          },
+          {
+            "indexed": true,
+            "internalType": "address",
+            "name": "escrow",
+            "type": "address"
+          },
+          {
+            "indexed": true,
+            "internalType": "uint256",
+            "name": "depositId",
+            "type": "uint256"
+          },
+          {
+            "indexed": false,
+            "internalType": "bytes32",
+            "name": "paymentMethod",
+            "type": "bytes32"
+          },
+          {
+            "indexed": false,
+            "internalType": "address",
+            "name": "owner",
+            "type": "address"
+          },
+          {
+            "indexed": false,
+            "internalType": "address",
+            "name": "to",
+            "type": "address"
+          },
+          {
+            "indexed": false,
+            "internalType": "uint256",
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "indexed": false,
+            "internalType": "bytes32",
+            "name": "fiatCurrency",
+            "type": "bytes32"
+          },
+          {
+            "indexed": false,
+            "internalType": "uint256",
+            "name": "conversionRate",
+            "type": "uint256"
+          },
+          {
+            "indexed": false,
+            "internalType": "uint256",
+            "name": "timestamp",
+            "type": "uint256"
+          },
+          {
+            "indexed": false,
+            "internalType": "bytes32",
+            "name": "groupId",
+            "type": "bytes32"
+          },
+          {
+            "indexed": false,
+            "internalType": "address",
+            "name": "arbitrator",
+            "type": "address"
+          }
+        ],
+        "name": "IntentSignaled",
+        "type": "event"
+      },
+      {
+        "anonymous": false,
+        "inputs": [
+          {
+            "indexed": true,
+            "internalType": "bytes32",
+            "name": "intentHash",
+            "type": "bytes32"
+          },
+          {
+            "indexed": true,
+            "internalType": "address",
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "indexed": true,
+            "internalType": "address",
+            "name": "vault",
+            "type": "address"
+          },
+          {
+            "indexed": false,
+            "internalType": "uint256",
+            "name": "amount",
+            "type": "uint256"
+          }
+        ],
+        "name": "IntentPayoutDeferred",
+        "type": "event"
       }
     ],
     "protocolViewerV4": [
@@ -1190,6 +1332,37 @@
             "internalType": "struct IProtocolViewerV2.IntentView",
             "name": "intentView",
             "type": "tuple"
+          }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+      }
+    ],
+    "stakeVaultV2": [
+      {
+        "inputs": [
+          {
+            "internalType": "bytes32",
+            "name": "",
+            "type": "bytes32"
+          }
+        ],
+        "name": "locks",
+        "outputs": [
+          {
+            "internalType": "address",
+            "name": "stakeOwner",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint64",
+            "name": "maturesAt",
+            "type": "uint64"
           }
         ],
         "stateMutability": "view",

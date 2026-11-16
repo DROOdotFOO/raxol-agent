@@ -110,3 +110,39 @@ paths to the S5 adapter and pinned SDK module and runs through `tsx`; it invokes
 no wallet, RPC or API. Contract ABIs/deployments are pinned from that same SDK in
 `priv/ramp/peer_contracts.json`; they supply encoding metadata, never capability
 authority.
+
+## Shared reconciliation policy
+
+`Ramps.status/2` (or `Peer.status/2`) reconciles either direction using the
+existing checkpoint, without invoking a wallet or widget submission. A conflict
+against an existing operation returns `{:error, :session_conflict, snapshot}`;
+the snapshot is the latest sanitized `ramp/1` value. Operation-direction and
+idempotency claims span both coordinators in the principal-scoped checkpoint
+store. Keep those claims and terminal records: deleting them discards duplicate
+execution protection. Each interaction command requires a new idempotency key.
+Terminal reconciliation closes the same checkpoint with `closed: true` and a
+receipt containing only public operation, revision, direction, state and time.
+A finalized, matching reverted maker receipt is known failure; missing receipts,
+timeouts and read errors remain non-terminal `in_doubt` with `check_status` only.
+
+For onramps, attach the same `Peer.Runtime` resources, authenticated `user`, and
+approved `intent` as well as the R2 preview/widget context. Before dispatch, the
+coordinator binds the original wallet, recipient and expected atomic USDC amount
+in the private mapping. The trusted widget calls `Peer.OnrampReads.track/3` with
+only public `intent_hash`, `signal_tx_hash` and `settlement_tx_hash` evidence;
+these are protocol hashes, never provider session handles or proof identifiers.
+Hash registration is immutable and cannot change the original wallet binding.
+Do not expose this method as an agent action or accept these hashes from model
+parameters. Missing binding/evidence leaves status in doubt, without resubmission.
+
+Onramp reconciliation verifies finalized OrchestratorV4 `IntentSignaled` and
+`IntentFulfilled` receipts against the public indexer's existing Intent and
+fulfillment entities, and confirms recipient Base USDC transfer logs. An active
+intent can resume the next user stage only when initial signaling is proven;
+status never repeats signaling, payment interaction, proof or submission.
+Widget release notifications alone are non-terminal. Deferred payouts require
+a matching `IntentPayoutDeferred` event and the pinned StakeVaultV2 `locks` read:
+a nonzero lock remains held (including matured, unclaimed locks), and only a
+finalized cleared lock establishes release. Unknown vaults or incoherent data
+stay in doubt. These deployments, ABI events and reads use the same pinned SDK
+as S5; no provider credential endpoint is queried.

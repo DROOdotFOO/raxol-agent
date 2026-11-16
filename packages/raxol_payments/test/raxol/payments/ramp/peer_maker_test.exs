@@ -169,6 +169,7 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
 
     assert Enum.sort(Map.keys(saved)) ==
              Enum.sort([
+               :approval,
                :operation_ref,
                :revision,
                :idempotency_key,
@@ -234,7 +235,10 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
 
     assert action.action == "withdraw_unmatched"
     assert pending.peer["state"] == "in_doubt"
-    assert {:error, :invalid_request} = Peer.recover("op_synthetic", "recover_peer", cmd, c)
+
+    assert {:error, :session_conflict, ^pending} =
+             Peer.recover("op_synthetic", "recover_peer", cmd, c)
+
     Agent.update(fake, &Map.put(&1, :facts, {:ok, %{state: :pending}}))
     assert {:ok, uncertain} = Peer.status("op_synthetic", c)
     assert uncertain.allowed_actions == ["check_status"]
@@ -302,7 +306,7 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     assert {:requires_user, _, _} = approve(c)
     other = %{c | preview: %{c.preview | operation_id: "op_other"}}
 
-    assert {:error, :session_conflict} =
+    assert {:error, :session_conflict, _} =
              Peer.approve("op_other", "quote_synthetic", command(), other)
 
     assert length(Agent.get(fake, & &1.requests)) == 1
@@ -314,5 +318,52 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
 
     assert Enum.all?(results, fn {:ok, result} -> elem(result, 0) in [:ok, :requires_user] end)
     assert length(Agent.get(fake, & &1.requests)) == 1
+  end
+
+  test "lost submission reconciles the existing checkpoint and closes a bounded receipt", %{
+    context: c,
+    fake: fake
+  } do
+    Agent.update(fake, &Map.put(&1, :request, :lost))
+    assert {:ok, pending} = approve(c)
+    facts(fake, %{remaining: "0", unmatched: "0", filled: "1000000"})
+
+    assert {:ok, done} =
+             Peer.recover("op_synthetic", "check_status", command(pending.revision), c)
+
+    assert done.terminal
+    assert {:ok, ^done} = Peer.status("op_synthetic", c)
+    assert {:ok, ^done} = approve(c)
+
+    assert {:ok, %{closed: true, receipt: receipt}} =
+             Checkpoint.fetch(c.checkpoint, "peer_maker:op_synthetic")
+
+    assert Enum.sort(Map.keys(receipt)) == [
+             :direction,
+             :operation_id,
+             :revision,
+             :state,
+             :updated_at
+           ]
+
+    assert length(Agent.get(fake, & &1.requests)) == 1
+    assert {:error, :session_conflict, ^done} = approve(c, command("0", "changed"))
+
+    assert {:error, :session_conflict, ^done} =
+             Peer.recover("op_synthetic", "recover_peer", command(), c)
+
+    assert {:ok, _} = Ramp.encode(done)
+  end
+
+  test "authoritative reverted submission closes failed while unknown stays nonterminal", %{
+    context: c,
+    fake: fake
+  } do
+    assert {:requires_user, _, _} = approve(c)
+    Agent.update(fake, &Map.put(&1, :facts, {:ok, %{state: :reverted}}))
+    assert {:ok, done} = Peer.status("op_synthetic", c)
+    assert done.terminal and done.peer["state"] == "failed"
+    assert done.allowed_actions == []
+    assert {:ok, %{closed: true}} = Checkpoint.fetch(c.checkpoint, "peer_maker:op_synthetic")
   end
 end

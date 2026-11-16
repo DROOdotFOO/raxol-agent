@@ -266,7 +266,7 @@ defmodule Raxol.Payments.Ramp.PeerTest do
 
   test "execution requires durable coordination" do
     assert Peer.approve(nil, nil, nil, %{}) == {:error, :checkpoint_required}
-    assert Peer.status(nil, %{}) == {:error, :operation_not_found}
+    assert Peer.status(nil, %{}) == {:error, :checkpoint_required}
     assert Peer.recover(nil, nil, nil, %{}) == {:error, :checkpoint_required}
   end
 
@@ -280,6 +280,5 @@ defmodule Raxol.Payments.Ramp.PeerTest do
                  )
                )
     end
-
   end
 end

@@ -81,6 +81,7 @@ defmodule Raxol.Payments.Ramp.Peer.Wallet do
           owner: context.user,
           pending_action_ref: pending,
           pending_resolved: false,
+          pending_failed: false,
           pending_kind: plan.action,
           pending_tx_hash: hash,
           expected_to: plan.to,

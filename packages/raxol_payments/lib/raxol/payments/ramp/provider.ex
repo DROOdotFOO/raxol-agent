@@ -3,8 +3,8 @@ defmodule Raxol.Payments.Ramp.Provider do
   Trusted ramp provider boundary from phase 1 plan section 8.
 
   Context contains runtime dependencies and the validated intent. Provider raw
-  payloads and errors must never be returned. Execution callbacks are reserved
-  for R2–R4; the read-only Peer adapter returns `{:error, :not_implemented}`.
+  payloads and errors must never be returned. Command conflicts return
+  `{:error, :session_conflict, latest_snapshot}` when the operation exists.
   """
   @type context :: map()
   @type capability :: struct()
@@ -23,8 +23,14 @@ defmodule Raxol.Payments.Ramp.Provider do
   @callback preview(intent(), offer_ref(), revision(), context()) ::
               {:ok, preview()} | {:error, term()}
   @callback approve(operation_ref(), quote_ref(), command_context(), context()) ::
-              {:ok, snapshot()} | {:requires_user, public_action(), snapshot()} | {:error, term()}
+              {:ok, snapshot()}
+              | {:requires_user, public_action(), snapshot()}
+              | {:error, term()}
+              | {:error, :session_conflict, snapshot()}
   @callback status(operation_ref(), context()) :: {:ok, snapshot()} | {:error, term()}
   @callback recover(operation_ref(), action_code(), command_context(), context()) ::
-              {:ok, snapshot()} | {:requires_user, public_action(), snapshot()} | {:error, term()}
+              {:ok, snapshot()}
+              | {:requires_user, public_action(), snapshot()}
+              | {:error, term()}
+              | {:error, :session_conflict, snapshot()}
 end

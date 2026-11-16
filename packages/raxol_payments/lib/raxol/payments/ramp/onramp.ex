@@ -17,7 +17,8 @@ defmodule Raxol.Payments.Ramp.Onramp do
   """
   alias Raxol.Payments.Actions.SpendGate
   alias Raxol.Payments.{Checkpoint, Ramp, SpendingPolicy}
-  alias Raxol.Payments.Ramp.Coherence
+  alias Raxol.Payments.Ramp.{Coherence, Recovery}
+  alias Raxol.Payments.Ramp.Peer.OnrampReads
 
   @stages [:intent_signaling, :external_interaction, :proof_finalization, :onchain_submission]
 
@@ -27,22 +28,96 @@ defmodule Raxol.Payments.Ramp.Onramp do
 
   def resume(operation, action_ref, command, context) do
     locked(operation, context, fn ->
-      with {:ok, record} <- Checkpoint.fetch(context.checkpoint, key(operation)),
-           true <- record.action_ref == action_ref,
-           true <- command[:expected_revision] == record.snapshot.revision do
-        advance(record, context)
-      else
-        _ -> {:error, :session_conflict}
+      case Checkpoint.fetch(context.checkpoint, key(operation)) do
+        {:ok, record} -> resume_record(record, action_ref, command, context)
+        _ -> {:error, :operation_not_found}
       end
     end)
   end
 
   def status(operation, context) do
-    case Checkpoint.fetch(context[:checkpoint], key(operation)) do
-      {:ok, record} -> {:ok, record.snapshot}
-      _ -> {:error, :operation_not_found}
+    locked(operation, context, fn ->
+      case Checkpoint.fetch(context.checkpoint, key(operation)) do
+        {:ok, %{snapshot: %{terminal: true}} = record} -> result(record)
+        {:ok, record} -> reconcile(record, context)
+        _ -> {:error, :operation_not_found}
+      end
+    end)
+  end
+
+  defp resume_record(record, ref, command, context) do
+    if ref == record.action_ref and valid_command?(command) do
+      resume_current(record, ref, command, context)
+    else
+      Recovery.conflict(record)
     end
   end
+
+  defp resume_current(record, ref, command, context) do
+    cond do
+      command[:expected_revision] != record.snapshot.revision ->
+        Recovery.conflict(record)
+
+      record.dispatched or record.snapshot.terminal ->
+        result(record)
+
+      true ->
+        case Recovery.claim(context, record.snapshot.operation_id, {:resume, ref}, command) do
+          :new -> advance(record, context)
+          :replayed -> result(record)
+          :conflict -> Recovery.conflict(record)
+        end
+    end
+  end
+
+  defp reconcile(record, context) do
+    reader = Map.get(context, :onramp_reader, {OnrampReads, context})
+    {module, handle} = reader
+    # Status never invokes the widget, signs, or replays a submitted stage.
+    case module.reconcile(handle, record.snapshot.operation_id) do
+      {:ok, :completed} ->
+        reconciled(record, "completed", "released", context)
+
+      {:ok, :held} ->
+        reconciled(record, "processing", "held", context)
+
+      {:ok, :processing} ->
+        reconciled(record, "processing", nil, context)
+
+      {:ok, :signaled} when record.stage == 0 ->
+        updated = %{
+          record
+          | stage: 1,
+            dispatched: false,
+            snapshot:
+              snapshot(
+                record.snapshot.operation_id,
+                next_revision(record),
+                "action_required",
+                context
+              )
+        }
+
+        with :ok <- save(updated, context), do: result(updated)
+
+      _ ->
+        uncertain(record, context)
+    end
+  rescue
+    _ -> uncertain(record, context)
+  catch
+    _, _ -> uncertain(record, context)
+  end
+
+  defp reconciled(record, state, payout, context) do
+    snap = snapshot(record.snapshot.operation_id, next_revision(record), state, context)
+    snap = if payout, do: %{snap | peer: Map.put(snap.peer, "payout_state", payout)}, else: snap
+    updated = %{record | dispatched: true, snapshot: snap}
+    with :ok <- save(updated, context), do: result(updated)
+  end
+
+  defp uncertain(%{dispatched: false} = record, _context), do: result(record)
+  defp uncertain(record, context), do: reconciled(record, "in_doubt", nil, context)
 
   defp locked(operation, %{checkpoint: {_, _}} = context, fun) do
     :global.trans({{__MODULE__, context.checkpoint, operation}, self()}, fun)
@@ -64,13 +139,15 @@ defmodule Raxol.Payments.Ramp.Onramp do
   defp replay(record, quote, command) do
     if record.quote_id == quote and record.command == command,
       do: result(record),
-      else: {:error, :session_conflict}
+      else: Recovery.conflict(record)
   end
 
   defp begin(operation, quote, command, context) do
     with {:ok, preview} <- valid_preview(operation, quote, context),
          true <- command[:expected_revision] == "0" and valid_command?(command),
-         :ok <- authorize(preview, context) do
+         :ok <- Recovery.reserve(context, operation, "onramp"),
+         :ok <- authorize(preview, context),
+         :new <- Recovery.claim(context, operation, {:approve, quote}, command) do
       record = %{
         quote_id: quote,
         command: command,
@@ -81,10 +158,16 @@ defmodule Raxol.Payments.Ramp.Onramp do
       }
 
       case Checkpoint.put_new(context.checkpoint, key(operation), record) do
-        :ok -> advance(record, context)
-        _ -> {:error, :session_conflict}
+        :ok ->
+          :ok = OnrampReads.reserve(context, operation, preview)
+          advance(record, context)
+
+        _ ->
+          {:error, :session_conflict}
       end
     else
+      :conflict -> {:error, :session_conflict}
+      :replayed -> {:error, :session_conflict}
       _ -> {:error, :approval_required}
     end
   end
@@ -131,7 +214,6 @@ defmodule Raxol.Payments.Ramp.Onramp do
 
   defp authorize(_, _), do: {:error, :approval_required}
 
-  defp advance(%{dispatched: true} = record, _), do: result(record)
   defp advance(%{stage: stage} = record, _) when stage >= 4, do: result(record)
 
   defp advance(record, context) do
@@ -160,7 +242,7 @@ defmodule Raxol.Payments.Ramp.Onramp do
 
   defp finish_stage(record, response, context)
        when response == :ready or (record.stage == 3 and response in [:pending, :held, :released]) do
-    state = if response == :released, do: "completed", else: "action_required"
+    state = if response == :released, do: "processing", else: "action_required"
 
     state =
       if response in [:pending, :held] or (record.stage == 3 and response == :ready),
@@ -209,7 +291,12 @@ defmodule Raxol.Payments.Ramp.Onramp do
   defp result(record), do: {:ok, record.snapshot}
 
   defp save(record, context),
-    do: Checkpoint.put(context.checkpoint, key(record.snapshot.operation_id), record)
+    do:
+      Checkpoint.put(
+        context.checkpoint,
+        key(record.snapshot.operation_id),
+        Recovery.close(record)
+      )
 
   defp key(operation), do: "peer_onramp:" <> to_string(operation)
   defp next_revision(record), do: to_string(String.to_integer(record.snapshot.revision) + 1)

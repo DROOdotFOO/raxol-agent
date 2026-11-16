@@ -21,6 +21,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   alias Raxol.Payments.Checkpoint
   alias Raxol.Payments.Ramp
   alias Raxol.Payments.Ramp.Peer.Mapping
+  alias Raxol.Payments.Ramp.Recovery
 
   @usdc "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
 
@@ -34,8 +35,13 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
 
   defp approve_locked(operation, quote, command, context) do
     case Checkpoint.fetch(context.checkpoint, key(operation)) do
-      {:ok, record} -> {:ok, record.snapshot}
-      :error -> begin_deposit(operation, quote, command, context)
+      {:ok, record} ->
+        if record[:approval] == approval(quote, command),
+          do: {:ok, record.snapshot},
+          else: Recovery.conflict(record)
+
+      :error ->
+        begin_deposit(operation, quote, command, context)
     end
   end
 
@@ -57,6 +63,20 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   def recover(_, _, _, _), do: {:error, :invalid_request}
 
   defp recover_locked(operation, command, context) do
+    with {:ok, record} <- Checkpoint.fetch(context.checkpoint, key(operation)),
+         true <- is_map(command) and command[:expected_revision] == record.revision do
+      recover_current(operation, command, context)
+    else
+      false ->
+        {:ok, record} = Checkpoint.fetch(context.checkpoint, key(operation))
+        Recovery.conflict(record)
+
+      _ ->
+        {:error, :operation_not_found}
+    end
+  end
+
+  defp recover_current(operation, command, context) do
     case Checkpoint.fetch(context.checkpoint, key(operation)) do
       {:ok, %{snapshot: %{peer: %{"state" => "action_required"}}} = previous} ->
         with :ok <- command_valid(command, previous.revision),
@@ -105,8 +125,14 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
          true <- positive?(preview.pay["atomic"]),
          {:ok, expiry, 0} <- DateTime.from_iso8601(preview.expires_at),
          true <- DateTime.compare(expiry, now(context)) == :gt,
-         :ok <- command_valid(command, "0") do
-      record = record(operation, "0", command.idempotency_key, nil, context)
+         :ok <- command_valid(command, "0"),
+         :ok <- Recovery.reserve(context, operation, "offramp") do
+      record =
+        Map.put(
+          record(operation, "0", command.idempotency_key, nil, context),
+          :approval,
+          approval(quote, command)
+        )
 
       with :ok <- Checkpoint.put_new(context.checkpoint, key(operation), record),
            :ok <- Mapping.put(context.maker_mapping, operation, %{total: preview.pay["atomic"]}) do
@@ -121,18 +147,20 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   end
 
   defp handoff(operation, action, terms, previous, command, context) do
-    command_key = "peer_maker_command:" <> Checkpoint.derive_key([command.idempotency_key])
-
-    case Checkpoint.put_new(context.checkpoint, command_key, previous) do
-      :ok -> handoff_once(operation, action, terms, previous, command, context)
-      _ -> {:error, :session_conflict}
+    case Recovery.claim(context, operation, action, command) do
+      :new -> handoff_once(operation, action, terms, previous, command, context)
+      :replayed -> {:ok, previous.snapshot}
+      :conflict -> Recovery.conflict(previous)
     end
   end
 
   defp handoff_once(operation, action, terms, previous, command, context) do
     revision = to_string(String.to_integer(previous.revision) + 1)
     pending = "action_" <> Checkpoint.derive_key([operation, revision, action])
-    reserved = record(operation, revision, command.idempotency_key, pending, context)
+
+    reserved =
+      Map.merge(previous, record(operation, revision, command.idempotency_key, pending, context))
+
     # Persist uncertainty before preparing a plan, reserving spend or calling the wallet.
     :ok = Checkpoint.put(context.checkpoint, key(operation), reserved)
 
@@ -204,6 +232,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
               previous.pending_action_ref,
               context
             )
+            |> then(&Map.merge(previous, &1))
 
           :ok = Checkpoint.put(context.checkpoint, key(operation), reserved)
           reconcile_facts(operation, reserved, context)
@@ -224,6 +253,12 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
         Map.put(mapping, :requested_action_ref, record.pending_action_ref)
       ])
     end
+  end
+
+  defp reconciliation_result(operation, record, %{state: :reverted}, context) do
+    snapshot = snapshot(operation, record.revision, "failed", [], context)
+    closed = Recovery.close(%{record | snapshot: snapshot, pending_action_ref: nil})
+    with :ok <- Checkpoint.put(context.checkpoint, key(operation), closed), do: {:ok, snapshot}
   end
 
   defp reconciliation_result(operation, record, %{state: :approval_confirmed}, context) do
@@ -275,11 +310,15 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
       snapshot = snapshot(operation, record.revision, state, actions, context)
 
       :ok =
-        Checkpoint.put(context.checkpoint, key(operation), %{
-          record
-          | snapshot: snapshot,
-            pending_action_ref: nil
-        })
+        Checkpoint.put(
+          context.checkpoint,
+          key(operation),
+          Recovery.close(%{
+            record
+            | snapshot: snapshot,
+              pending_action_ref: nil
+          })
+        )
 
       {:ok, snapshot}
     else
@@ -342,11 +381,11 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
         "peer" => %{
           "name" => "peer",
           "state" => state,
-          "recoverable" => state not in ["completed", "refunded"]
+          "recoverable" => state not in ["completed", "refunded", "failed"]
         },
         "allowed_actions" => actions,
         "updated_at" => DateTime.to_iso8601(now(context)),
-        "terminal" => state in ["completed", "refunded"]
+        "terminal" => state in ["completed", "refunded", "failed"]
       })
 
     snapshot
@@ -368,6 +407,9 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     do:
       Ramp.atomic?(v) and byte_size(v) <= 78 and String.to_integer(v) > 0 and
         String.to_integer(v) < Integer.pow(2, 256)
+
+  defp approval(quote, command),
+    do: :crypto.hash(:sha256, :erlang.term_to_binary({quote, command}, [:deterministic]))
 
   defp key(operation), do: "peer_maker:" <> operation
   defp now(context), do: Map.get(context, :now, &DateTime.utc_now/0).()

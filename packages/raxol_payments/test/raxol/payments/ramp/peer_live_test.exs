@@ -573,6 +573,10 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
     assert {:error, :capability_unavailable} =
              LiveIO.reconcile(c, op, %{mapping | requested_action_ref: "action_other"})
 
+    Agent.update(state, &put_in(&1, [:receipts, hash, "status"], "0x0"))
+    assert {:ok, %{state: :reverted}} = LiveIO.reconcile(c, op, mapping)
+    Agent.update(state, &put_in(&1, [:receipts, hash, "status"], "0x1"))
+
     Agent.update(state, &put_in(&1, [:transactions, hash, "input"], "0x00"))
     assert {:error, :capability_unavailable} = LiveIO.reconcile(c, op, mapping)
   end

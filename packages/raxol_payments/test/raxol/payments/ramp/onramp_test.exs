@@ -5,6 +5,10 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
   alias Raxol.Payments.Ramp.Onramp
   alias Raxol.Payments.Ramps
 
+  defmodule MemoryReader do
+    def reconcile(state, _operation), do: {:ok, state}
+  end
+
   defp context do
     vectors =
       File.read!(Path.expand("../../../fixtures/ramp/conformance.json", __DIR__))
@@ -29,7 +33,7 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
   end
 
   defp command(revision \\ "0"),
-    do: %{expected_revision: revision, idempotency_key: "test_command"}
+    do: %{expected_revision: revision, idempotency_key: "test_command_" <> revision}
 
   test "explicit approval and checkpoint are mandatory" do
     c = context()
@@ -70,7 +74,9 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
     assert_received :intent_signaling
     assert {:requires_user, ^action, ^snap} = Onramp.approve(op, quote, command(), c)
     refute_received :intent_signaling
-    assert {:error, :session_conflict} = Onramp.resume(op, "wrong", command(snap.revision), c)
+
+    assert {:error, :session_conflict, ^snap} =
+             Onramp.resume(op, "wrong", command(snap.revision), c)
 
     assert {:requires_user, _, s2} =
              Onramp.resume(op, action.action_ref, command(snap.revision), c)
@@ -117,7 +123,7 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
              Onramp.approve(op, quote, Map.put(command(), :unexpected, "value"), c)
   end
 
-  test "released payout alone produces a valid terminal snapshot" do
+  test "widget release requires authoritative reconciliation for a terminal snapshot" do
     c = %{
       context()
       | widget: fn stage, _, _ -> if stage == :onchain_submission, do: :released, else: :ready end
@@ -128,8 +134,19 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
     assert {:requires_user, _, s2} = Onramp.resume(op, action.action_ref, command(s1.revision), c)
     assert {:requires_user, _, s3} = Onramp.resume(op, action.action_ref, command(s2.revision), c)
     assert {:ok, done} = Onramp.resume(op, action.action_ref, command(s3.revision), c)
-    assert done.terminal
-    assert done.allowed_actions == []
+    refute done.terminal
+    assert done.allowed_actions == ["check_status"]
+
+    assert {:ok, terminal} =
+             Onramp.status(op, Map.put(c, :onramp_reader, {__MODULE__.MemoryReader, :completed}))
+
+    assert terminal.terminal
+    assert terminal.allowed_actions == []
+
+    assert {:ok, %{closed: true, receipt: receipt}} =
+             Checkpoint.fetch(c.checkpoint, "peer_onramp:" <> op)
+
+    assert receipt.state == "completed"
     assert done.peer["payout_state"] == "released"
     for snapshot <- [s1, s2, s3, done], do: assert({:ok, _} = Ramp.decode(Ramp.to_wire(snapshot)))
   end
@@ -167,5 +184,75 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
     assert {:requires_user, _, resumed} = Ramps.resume(op, c)
     assert resumed.operation_id == op
     assert String.to_integer(resumed.revision) > String.to_integer(snap.revision)
+  end
+
+  test "killed submission resumes by status without another widget dispatch" do
+    c = context()
+    owner = self()
+
+    c = %{
+      c
+      | widget: fn stage, _, _ ->
+          if stage == :onchain_submission do
+            send(owner, {:dispatched, stage})
+
+            receive do
+              :unblock -> :ready
+            end
+          else
+            :ready
+          end
+        end
+    }
+
+    op = c.preview.operation_id
+    assert {:requires_user, action, s1} = Onramp.approve(op, c.preview.quote_id, command(), c)
+    assert {:requires_user, _, s2} = Onramp.resume(op, action.action_ref, command(s1.revision), c)
+    assert {:requires_user, _, s3} = Onramp.resume(op, action.action_ref, command(s2.revision), c)
+    pid = spawn(fn -> Onramp.resume(op, action.action_ref, command(s3.revision), c) end)
+    monitor = Process.monitor(pid)
+    assert_receive {:dispatched, :onchain_submission}
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}
+    assert {:ok, record} = Checkpoint.fetch(c.checkpoint, "peer_onramp:" <> op)
+    snap = record.snapshot
+    assert snap.peer["state"] == "in_doubt"
+    assert {:ok, ^snap} = Onramp.resume(op, record.action_ref, command(snap.revision), c)
+    assert {:ok, ^snap} = Onramp.approve(op, c.preview.quote_id, command(), c)
+    assert {:ok, done} = Ramps.status(op, Map.put(c, :onramp_reader, {MemoryReader, :completed}))
+    assert done.terminal
+    refute_received {:dispatched, _}
+    assert {:ok, ^done} = Ramps.status(op, c)
+
+    assert {:ok, %{closed: true, receipt: receipt}} =
+             Checkpoint.fetch(c.checkpoint, "peer_onramp:" <> op)
+
+    assert Enum.sort(Map.keys(receipt)) == [
+             :direction,
+             :operation_id,
+             :revision,
+             :state,
+             :updated_at
+           ]
+  end
+
+  test "conflicts return the latest sanitized snapshot and cannot create another operation" do
+    c = context()
+    op = c.preview.operation_id
+    assert {:requires_user, action, latest} = Onramp.approve(op, c.preview.quote_id, command(), c)
+
+    assert {:error, :session_conflict, ^latest} =
+             Onramp.resume(op, action.action_ref, command(), c)
+
+    assert {:error, :session_conflict, ^latest} =
+             Onramp.approve(op, c.preview.quote_id, %{command() | idempotency_key: "changed"}, c)
+
+    other = %{c | preview: %{c.preview | operation_id: "op_other"}}
+
+    assert {:error, :session_conflict} =
+             Onramp.approve("op_other", c.preview.quote_id, command(), other)
+
+    assert :error = Checkpoint.fetch(c.checkpoint, "peer_onramp:op_other")
+    assert {:ok, _} = Ramp.encode(latest)
   end
 end

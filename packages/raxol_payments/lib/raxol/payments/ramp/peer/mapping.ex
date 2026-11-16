@@ -60,6 +60,10 @@ defmodule Raxol.Payments.Ramp.Peer.Mapping do
   def handle_call({:put, operation, value}, _from, table) do
     clean =
       Map.take(value, [
+        :intent_hash,
+        :signal_tx_hash,
+        :settlement_tx_hash,
+        :recipient,
         :deposit_id,
         :order_id,
         :total,
@@ -71,6 +75,7 @@ defmodule Raxol.Payments.Ramp.Peer.Mapping do
         :expected_to,
         :expected_input_hash,
         :approval_confirmed,
+        :pending_failed,
         :pending_resolved
       ])
 
