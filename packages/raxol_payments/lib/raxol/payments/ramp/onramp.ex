@@ -113,9 +113,8 @@ defmodule Raxol.Payments.Ramp.Onramp do
 
   defp authorize(preview, %{policy: %SpendingPolicy{}, on_confirm: confirm} = context)
        when is_function(confirm, 2) do
-    amount = Decimal.new(preview.pay["atomic"])
-    scale = Decimal.new(Integer.pow(10, preview.pay["asset"]["decimals"]))
-    amount = Decimal.div(amount, scale)
+    amount =
+      Decimal.new(1, String.to_integer(preview.pay["atomic"]), -preview.pay["asset"]["decimals"])
 
     # Require explicit consent even when the policy threshold would auto-approve.
     with :approve <- confirm.(amount, "peer"),
