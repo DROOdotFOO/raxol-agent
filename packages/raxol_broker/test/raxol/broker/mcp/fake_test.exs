@@ -40,13 +40,25 @@ defmodule Raxol.Broker.MCP.FakeTest do
 
     port = port!(fake)
 
-    assert {false, %{"quotes" => [%{"symbol" => "AAPL", "ask_price" => "125.50"}]}} =
+    assert {false, %{"results" => [%{"quote" => %{"symbol" => "AAPL", "ask_price" => "125.50"}}]}} =
              body!(Port.call(port, "get_equity_quotes", %{"symbols" => ["AAPL", "MSFT"]}, 5_000))
 
     assert {false, %{"positions" => [%{"symbol" => "AAPL"}]}} =
              body!(Port.call(port, "get_equity_positions", %{}, 5_000))
 
     assert {false, %{"alerts" => [_]}} = body!(Port.call(port, "get_alert_log", %{}, 5_000))
+  end
+
+  test "approval settings and portfolio buying power use the live nested shapes" do
+    fake = Fake.start(trade_approvals: true)
+    client = start_supervised!({Client, Fake.client_opts(fake)})
+    args = %{"account_number" => "FAKE-0001"}
+
+    assert {false, %{"setting" => %{"human_must_approve_trades" => true}}} =
+             body!(Client.call(client, "get_trade_approval_setting", args))
+
+    assert {false, %{"buying_power" => %{"buying_power" => "1000"}}} =
+             body!(Client.call(client, "get_portfolio", args))
   end
 
   test "a re-sent ref_id answers the same order and creates no second one" do

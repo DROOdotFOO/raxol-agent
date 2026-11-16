@@ -28,12 +28,13 @@ defmodule Raxol.Broker.MCP.Fake do
 
     * `:account` - the one tradable account `get_accounts` lists
       (default `"FAKE-0001"`).
-    * `:quotes` - `%{symbol => price}`; `get_equity_quotes` and every review
-      quote it. A symbol not listed is omitted from the answer.
+    * `:quotes` - `%{symbol => price}`; `get_equity_quotes` answers nested
+      `results[].quote` rows and every review quotes it. A symbol not listed
+      is omitted from the answer.
     * `:positions` - maps, answered by `get_equity_positions`.
-    * `:portfolio` - the map `get_portfolio` answers (default `%{"equity"
-      => "100000", "adjusted_equity_previous_close" => "100000",
-      "buying_power" => "1000"}`); `portfolio/2` replaces it.
+    * `:portfolio` - the map `get_portfolio` answers (default `%{"total_value"
+      => "100000", "currency" => "USD",
+      "buying_power" => %{"buying_power" => "1000"}}`); `portfolio/2` replaces it.
     * `:page_size` - pages `get_equity_orders` and `get_trade_approvals`
       (default `nil`, one page): each page holds at most this many entries
       and a `"next"` cursor while more remain.
@@ -110,9 +111,9 @@ defmodule Raxol.Broker.MCP.Fake do
   # `:exchange` cannot reach a brokerage either.
   @url "https://fake.broker.test/mcp"
   @portfolio %{
-    "equity" => "100000",
-    "adjusted_equity_previous_close" => "100000",
-    "buying_power" => "1000"
+    "total_value" => "100000",
+    "currency" => "USD",
+    "buying_power" => %{"buying_power" => "1000"}
   }
 
   @recordings Path.expand("../../../../priv/robinhood", __DIR__)
@@ -582,7 +583,8 @@ defmodule Raxol.Broker.MCP.Fake do
 
   defp tool("get_equity_quotes", args, state) do
     symbols = List.wrap(args["symbols"])
-    ok(%{"quotes" => for(s <- symbols, q = price_quote(state, s), do: q)}, state)
+    rows = for s <- symbols, quote = price_quote(state, s), do: %{"quote" => quote}
+    ok(%{"results" => rows}, state)
   end
 
   defp tool("get_equity_positions", _args, state),
@@ -701,7 +703,7 @@ defmodule Raxol.Broker.MCP.Fake do
   end
 
   defp tool("get_trade_approval_setting", _args, state),
-    do: ok(%{"human_must_approve_trades" => state.trade_approvals}, state)
+    do: ok(%{"setting" => %{"human_must_approve_trades" => state.trade_approvals}}, state)
 
   # Every served tool has a clause above. One added to the capture without an
   # answer here fails the call loudly rather than answering a made-up shape.

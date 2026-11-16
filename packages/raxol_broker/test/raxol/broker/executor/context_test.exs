@@ -56,7 +56,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
         Fake.start(
           quotes: %{"AAPL" => "125"},
           positions: [%{"symbol" => "AAPL", "quantity" => "1"}],
-          portfolio: %{"equity" => "1000", "adjusted_equity_previous_close" => "1000"}
+          portfolio: %{"total_value" => "1000", "currency" => "USD"}
         )
 
       policy = Broker.policy("1000", "5000", max_position_weight: d("0.3"))
@@ -105,8 +105,14 @@ defmodule Raxol.Broker.Executor.ContextTest do
 
   describe "drawdown breaker" do
     setup do
-      ctx = Broker.journal!()
-      fake = Fake.start(quotes: %{"F" => "9.80"}, trade_approvals: true)
+      fake =
+        Fake.start(
+          quotes: %{"F" => "9.80"},
+          trade_approvals: true,
+          portfolio: %{"total_value" => "1000", "currency" => "USD"}
+        )
+
+      ctx = Broker.baseline_journal!(fake)
       policy = Broker.policy("1000", "5000", drawdown_halt: d("0.05"))
       sup = :"strategies_#{System.unique_integer([:positive])}"
       executor = Broker.executor!(ctx.journal, fake, policy: policy, strategies: sup)
@@ -134,7 +140,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
     end
 
     test "a loss past drawdown_halt pauses every runner and places nothing until arm", ctx do
-      Fake.portfolio(ctx.fake, %{"equity" => "940", "adjusted_equity_previous_close" => "1000"})
+      Fake.portfolio(ctx.fake, %{"total_value" => "940", "currency" => "USD"})
       _ = dip!(ctx.sup)
 
       assert Mode.current(ctx.journal) == :disarmed
@@ -153,7 +159,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
       assert Enum.count(Broker.records(ctx.path), &(&1["type"] == "emit")) == emits
 
       # A fresh arm resumes the runners.
-      Fake.portfolio(ctx.fake, %{"equity" => "1000", "adjusted_equity_previous_close" => "1000"})
+      Fake.portfolio(ctx.fake, %{"total_value" => "1000", "currency" => "USD"})
       client = start_supervised!({Client, Fake.client_opts(ctx.fake)})
 
       assert {:ok, _} =
@@ -171,7 +177,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
     end
 
     test "a loss inside drawdown_halt places", ctx do
-      Fake.portfolio(ctx.fake, %{"equity" => "960", "adjusted_equity_previous_close" => "1000"})
+      Fake.portfolio(ctx.fake, %{"total_value" => "960", "currency" => "USD"})
       _ = dip!(ctx.sup)
       assert Mode.current(ctx.journal) == :armed
       assert Fake.calls(ctx.fake, "place_") == ["place_equity_order"]
@@ -192,7 +198,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
     end
 
     test "a runner restarted, or a strategy added, during the pause starts paused", ctx do
-      Fake.portfolio(ctx.fake, %{"equity" => "940", "adjusted_equity_previous_close" => "1000"})
+      Fake.portfolio(ctx.fake, %{"total_value" => "940", "currency" => "USD"})
       [{runner, %{status: :paused}}] = dip!(ctx.sup)
 
       ref = Process.monitor(runner)
@@ -215,7 +221,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
     end
 
     test "an intent pending during the pause is sent only after a fresh arm", ctx do
-      Fake.portfolio(ctx.fake, %{"equity" => "940", "adjusted_equity_previous_close" => "1000"})
+      Fake.portfolio(ctx.fake, %{"total_value" => "940", "currency" => "USD"})
       [{runner, _}] = dip!(ctx.sup)
 
       {:ok, intent} =
@@ -229,7 +235,7 @@ defmodule Raxol.Broker.Executor.ContextTest do
       assert {:ok, [%{id: "pending-in-pause"}]} =
                Journal.pending_intents("dip_buy-F", ctx.journal)
 
-      Fake.portfolio(ctx.fake, %{"equity" => "1000", "adjusted_equity_previous_close" => "1000"})
+      Fake.portfolio(ctx.fake, %{"total_value" => "1000", "currency" => "USD"})
       arm!(ctx)
       :sys.get_state(runner)
 

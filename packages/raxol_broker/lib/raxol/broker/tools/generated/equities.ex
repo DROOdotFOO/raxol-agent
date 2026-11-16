@@ -14,7 +14,9 @@ defmodule Raxol.Broker.Tools.Equities do
     * `order_id` (optional, string)
     * `placed_agent` (optional, string)
     * `state` (optional, string)
+    * `state_group` (optional, string)
     * `symbol` (optional, string)
+    * `updated_at_gte` (optional, string)
   """
   @spec get_equity_orders(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def get_equity_orders(client, args \\ %{}),

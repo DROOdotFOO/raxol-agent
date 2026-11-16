@@ -48,6 +48,62 @@ defmodule Raxol.Broker.SnapshotTest do
     refute Enum.any?(calls, &String.match?(&1, ~r/\A(place|cancel|review|preview|decline)_/))
   end
 
+  test "live nested buying power appears in the account line", ctx do
+    body = %{
+      "data" => %{
+        "buying_power" => %{
+          "buying_power" => "1234.50",
+          "display_currency" => "USD",
+          "unleveraged_buying_power" => "900.00"
+        }
+      },
+      "guide" => "portfolio guide"
+    }
+
+    Fake.on_call(ctx.fake, "get_portfolio", fn _args ->
+      {:result, %{"content" => [%{"type" => "text", "text" => Jason.encode!(body)}]}}
+    end)
+
+    assert "account FAKE-0001: agentic_allowed=true buying_power=1234.50" in lines(ctx, nil)
+    assert {"get_portfolio", %{"account_number" => "FAKE-0001"}} in Fake.calls(ctx.fake)
+  end
+
+  test "missing, legacy and malformed buying power is unknown rather than raw text", ctx do
+    bodies = [
+      %{},
+      %{"buying_power" => "1000"},
+      %{"buying_power" => %{"amount" => "1000"}},
+      %{"buying_power" => nil},
+      %{"buying_power" => %{}},
+      %{"buying_power" => %{"buying_power" => nil}},
+      %{"buying_power" => %{"buying_power" => 1000}},
+      %{"buying_power" => %{"buying_power" => ""}},
+      %{"buying_power" => %{"buying_power" => "not an amount"}},
+      %{"buying_power" => %{"buying_power" => "1000 USD"}},
+      %{"buying_power" => %{"buying_power" => "NaN"}},
+      %{"buying_power" => %{"buying_power" => "Infinity"}}
+    ]
+
+    for body <- bodies do
+      :ok = Fake.portfolio(ctx.fake, body)
+      assert Snapshot.buying_power(ctx.client, "FAKE-0001") == "?", inspect(body)
+      assert "account FAKE-0001: agentic_allowed=true buying_power=?" in lines(ctx, nil)
+    end
+  end
+
+  test "a zero nested buying power remains a readable amount", ctx do
+    :ok = Fake.portfolio(ctx.fake, %{"buying_power" => %{"buying_power" => "0.00"}})
+    assert Snapshot.buying_power(ctx.client, "FAKE-0001") == "0.00"
+  end
+
+  test "an unreadable portfolio response renders unknown buying power", ctx do
+    Fake.on_call(ctx.fake, "get_portfolio", fn _args ->
+      {:result, %{"content" => [%{"type" => "text", "text" => "not JSON"}]}}
+    end)
+
+    assert "account FAKE-0001: agentic_allowed=true buying_power=?" in lines(ctx, nil)
+  end
+
   test "the mode line follows the journal", ctx do
     :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
     assert "mode: armed" in lines(ctx, nil)

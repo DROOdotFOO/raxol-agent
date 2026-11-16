@@ -1307,7 +1307,7 @@ defmodule Raxol.Broker.ExecutorTest do
              ]
     end
 
-    test "a port gone before the place call is :failed, not_sent; a re-run places", ctx do
+    test "a port lost after review sends nothing and the intent can be retried", ctx do
       executor = start_executor!(ctx, reconnect_ms: 10)
       %{port: {PortMCP, %{pid: client}}} = :sys.get_state(executor)
       test_pid = self()
@@ -1324,9 +1324,8 @@ defmodule Raxol.Broker.ExecutorTest do
       run = Task.async(fn -> Executor.run(executor, intent, context()) end)
       assert_receive {:reviewing, hook}, 5_000
 
-      # The review result reaches the executor's mailbox while it is
-      # suspended; the client then dies, so its EXIT queues behind the
-      # result and the place call meets a dead pid.
+      # Let review complete before the client's EXIT. The final asynchronous
+      # clock check gives the executor another chance to refuse the dead port.
       %{busy: %{pid: review}} = :sys.get_state(executor)
       :ok = :sys.suspend(executor)
       review_ref = Process.monitor(review)
@@ -1337,9 +1336,9 @@ defmodule Raxol.Broker.ExecutorTest do
       assert_receive {:DOWN, ^client_ref, :process, ^client, _}, 5_000
       :ok = :sys.resume(executor)
 
-      assert {:ok, %{status: :failed, response: %{"not_sent" => true}, journaled: true}} =
-               Task.await(run)
-
+      assert {:error, :port_not_ready} = Task.await(run)
+      [gid] = groups_for(ctx.path, "noproc")
+      refute "placing" in types(ctx.path, gid)
       assert Fake.calls(ctx.server, "place_") == []
 
       Fake.on_call(ctx.server, "review_equity_order", fn _args -> :answer end)

@@ -166,6 +166,12 @@ defmodule Raxol.Broker.Journal do
       pending the owner's approval, turned out (`resolve/4`). An order the
       broker never received, or a proposal declined or expired, stops
       counting and frees its intent id.
+    * `day_baseline`: the first live USD account total observed in the first
+      60 seconds after New York midnight (`record_day_baseline/2`).
+      Only `Raxol.Broker.DailyBaseline` references that writer in production.
+      `day_baseline/3` reads the exact account/day's durable value; duplicate
+      writes cannot reset losses, and invalid or duplicate recovery records
+      make the journal unavailable. There is no intraday/manual substitute.
   """
 
   use GenServer
@@ -186,7 +192,8 @@ defmodule Raxol.Broker.Journal do
   # and the reasons that end one, written only by `record_resume/2`.
   @pauses %{"drawdown_halt" => :drawdown_halt, "dead_man_pause" => :dead_man}
   @resumes %{"dead_man_resume" => :dead_man}
-  @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
+  @types ~w(intent context verdict review approval placing order close fill day_baseline) ++
+           @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
   @decisions [:approved, :declined]
@@ -396,6 +403,25 @@ defmodule Raxol.Broker.Journal do
   @doc "Record a fill with the realized P&L the broker reported for it."
   @spec append_fill(fill(), server()) :: :ok | {:error, term()}
   def append_fill(fill, server \\ __MODULE__), do: GenServer.call(server, {:append_fill, fill})
+
+  @doc "Persist the first boundary observation for an account/day; never replace it."
+  @spec record_day_baseline(map(), server()) :: :ok | {:error, term()}
+  def record_day_baseline(fields, server \\ __MODULE__),
+    do: GenServer.call(server, {:day_baseline, fields}, :infinity)
+
+  @doc "Read the durable boundary value for this exact account and New York day."
+  @spec day_baseline(String.t(), DateTime.t(), server()) ::
+          {:ok, Decimal.t() | nil} | {:error, term()}
+  def day_baseline(account, %DateTime{} = day, server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        case :ets.lookup(server, {:day_baseline, account, to_us(day)}) do
+          [{_key, value}] -> {:ok, value}
+          [] -> {:ok, nil}
+        end
+      end)
+    end
+  end
 
   @doc """
   Claim the journal for the calling process, the only one allowed to write
@@ -746,6 +772,19 @@ defmodule Raxol.Broker.Journal do
   def handle_call(:open_groups, _from, state) do
     ids = state.open |> Enum.sort_by(fn {_id, group} -> group.seq end) |> Enum.map(&elem(&1, 0))
     {:reply, {:ok, ids}, state}
+  end
+
+  def handle_call({:day_baseline, fields}, _from, state) do
+    with {:ok, record} <- Codec.encode_day_baseline(fields, state.clock.()),
+         key = {:day_baseline, fields.account, to_us(fields.day_start)},
+         [] <- :ets.lookup(state.table, key),
+         {:ok, _offsets} <- write(state, [record]) do
+      :ets.insert(state.table, {key, fields.value})
+      {:reply, :ok, state}
+    else
+      [_existing] -> {:reply, {:error, :day_baseline_exists}, state}
+      {:error, reason} -> refuse(state, reason)
+    end
   end
 
   def handle_call({:append_group, intent, context, entries, opts}, {caller, _tag}, state) do
@@ -1191,7 +1230,8 @@ defmodule Raxol.Broker.Journal do
   defp recover_records(state, records) do
     {groups, fills} = Groups.fold(records)
 
-    with {:ok, _offsets} <- write(state, crash_closes(state, groups)),
+    with :ok <- index_day_baselines(state.table, records),
+         {:ok, _offsets} <- write(state, crash_closes(state, groups)),
          :ok <- index_groups(state.table, Enum.filter(groups, &Groups.counts?/1)),
          :ok <- index_intents(state.table, groups),
          :ok <- index_fills(state.table, fills) do
@@ -1414,6 +1454,22 @@ defmodule Raxol.Broker.Journal do
         {:error, _} = error -> {:halt, error}
         _malformed -> {:halt, {:error, unindexable}}
       end
+    end)
+  end
+
+  defp index_day_baselines(table, records) do
+    Enum.reduce_while(records, :ok, fn
+      %{"type" => "day_baseline"} = record, :ok ->
+        with {:ok, fields} <- Codec.decode_day_baseline(record),
+             key = {:day_baseline, fields.account, to_us(fields.day_start)},
+             true <- :ets.insert_new(table, {key, fields.value}) do
+          {:cont, :ok}
+        else
+          _invalid -> {:halt, {:error, :invalid_or_duplicate_day_baseline}}
+        end
+
+      _record, :ok ->
+        {:cont, :ok}
     end)
   end
 

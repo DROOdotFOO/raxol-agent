@@ -390,6 +390,11 @@ defmodule Raxol.Broker.Executor.StructureTest do
     assert callers(facts, &match?({Journal, :record_resume, _}, &1)) == [Raxol.Broker.Heartbeat]
   end
 
+  test "only DailyBaseline writes a day baseline", %{facts: facts} do
+    assert callers(facts, &match?({Journal, :record_day_baseline, _}, &1)) ==
+             [Raxol.Broker.DailyBaseline]
+  end
+
   test "nothing calls Port.MCP.call/4 directly; it is reached only through Port",
        %{facts: facts} do
     assert callers(facts, &match?({@port_mcp, :call, _}, &1)) == []

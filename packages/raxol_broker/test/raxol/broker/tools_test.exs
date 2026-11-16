@@ -56,7 +56,7 @@ defmodule Raxol.Broker.ToolsTest do
     assert {:ok, %{is_error: false, content: [%{"text" => text}]}} =
              MarketData.get_equity_quotes(client, %{"symbols" => ["AAPL"]})
 
-    assert %{"quotes" => [%{"symbol" => "AAPL"}]} = Jason.decode!(text)
+    assert %{"results" => [%{"quote" => %{"symbol" => "AAPL"}}]} = Jason.decode!(text)
   end
 
   test "technical indicators take exactly one of symbol and symbols, checked before sending" do

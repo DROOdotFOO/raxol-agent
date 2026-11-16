@@ -8,6 +8,35 @@ switches. Equity orders only. The package is pre-alpha and has not yet
 traded real money; a read-only session and the policy tooling work on
 their own.
 
+## Live preflight — 2026-11-16
+
+Read-only checks against server `1.19.1` established the live envelopes now
+used by the consumers: `data.results[].quote`,
+`data.setting.human_must_approve_trades` (observed `true`) and
+`data.buying_power.buying_power`. The reviewed tool capture and generated
+read wrappers include the current contracts. Equity limit/stop orders
+require whole shares; fractional and dollar market orders retain GFD and
+regular-hours defaults. Unsupported option/advanced/crypto execution stays
+refused rather than inferring instrument eligibility or changing prices.
+Stable 36-byte UUID idempotency keys remain unchanged and satisfy the refreshed
+server contract (a nonempty string of at most 256 bytes).
+
+**This is not a live-soak GO.** The MCP server provides current USD
+`total_value`, but no historical account NAV or complete daily P&L source.
+The owner chose a durable New York day-boundary observation instead:
+`DailyBaseline` captures during the first 60 seconds after local midnight.
+Both request start and completion, and the journal's record timestamp, must
+fit that window. A missed window leaves baseline-dependent orders denied all day.
+No arbitrary intraday value, previous-close alias or caller context can
+substitute for the capture; same-day restarts reuse it without replacement.
+
+All five kill-state queries succeeded with empty orders. Positions and
+pending approvals were empty too: their row fields, `ref_id` and actual
+response cursors remain unverified. Field/type observations and remaining
+gaps are recorded in
+[`live_readiness_2026_11_16.json`](test/fixtures/robinhood/live_readiness_2026_11_16.json).
+No arming, order action, credential refresh or policy access occurred.
+
 ## Quick start
 
 Limits come first: nothing stores a credential before the policy file
@@ -54,6 +83,16 @@ loads. Run these from your project, in this order.
    `Raxol.run(Raxol.Broker.Dashboard)`. Expect `mode: DISARMED` and the
    strategy `running`; its intents are journaled as dry run and nothing is
    sent.
+
+   Keep the read-only client and supervisor running across New York
+   midnight when `drawdown_halt` is configured. The executor's account
+   automatically starts `DailyBaseline`, using the configured read client's
+   name (or the separately started `Raxol.Broker.MCP.Client`). It does not
+   create another credential/session. Before arming, check that
+   `Raxol.Broker.Journal.day_baseline(account, day)` returns
+   `{:ok, %Decimal{}}`, where
+   `day = Raxol.Broker.MarketCalendar.day_start(DateTime.utc_now())`.
+   Starting after the capture window cannot backfill today's baseline.
 
 6. Arm, from the same `iex` session.
 
@@ -271,12 +310,21 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   `today_notional` and `orders_last_minute` come from the journal, with
   the day starting at midnight America/New_York on both sides of a
   daylight-saving change (`Raxol.Broker.MarketCalendar`, over the `tz`
-  database); quotes, positions, portfolio value, start-of-day value, day
-  P&L and market session are read through the executor's own session
-  (`Raxol.Broker.Policy.ContextBuilder`, `get_equity_quotes`,
-  `get_equity_positions`, `get_portfolio`). A read that fails leaves its
-  fields empty, and every rule that needs one denies; positions are read
-  page by page, and a listing that fails, cannot be read or is longer than
+  database); current quotes, positions and USD portfolio `total_value`
+  come through the executor's own session (`Raxol.Broker.Policy.ContextBuilder`,
+  `get_equity_quotes`, `get_equity_positions`, `get_portfolio`).
+  Start-of-day value comes only from the journal's account/day baseline;
+  day P&L is current NAV minus that observation. This is not a cash-flow
+  adjusted return: do not deposit or withdraw during the soak. Failed reads
+  or a missing baseline leave the fields empty and the dependent rules deny.
+  A context fetch crossing New York midnight or a backwards clock change
+  is discarded before review; the market session is refreshed at completion.
+  Immediately before placing, another asynchronous clock check refuses a
+  snapshot whose day or market session changed, or whose clock moved backwards,
+  including during review or approval. It sends nothing and does not retry;
+  a new intent must fetch a fresh context. Cancels and declines remain exempt.
+  Positions are read page by page; a listing that fails, cannot be read or
+  is longer than
   its page limit leaves them empty too. Full-day NYSE holidays for 2026
   and 2027 and weekends are closed for the entire New York calendar day
   ([NYSE calendar](https://www.nyse.com/trade/hours-calendars)).
@@ -379,8 +427,10 @@ A person answers an ASK later with `approve(executor, token, "name")`,
 * **Review alerts.** Robinhood lists its pre-trade alerts in
   `data.order_checks`, `{}` when there are none. `Review` turns every entry
   into a warning, and so an ASK: `"<name>: <message>"` for a string or a
-  `"message"`, `"order check <name>"` for a shape it does not know. Only
-  the empty case has been recorded so far.
+  `"message"`, `"order check <name>"` for a shape it does not know.
+  `test/fixtures/robinhood/review_equity_order_checks.json` records a
+  non-empty `EQUITY_NOT_ENOUGH_BP` alert from a review-only limit-buy
+  simulation above available buying power; no order or approval resulted.
 * **Account pin.** The executor's session is ready only when `get_accounts`
   marks its `:account_number` as the one `agentic_allowed` account; it is
   checked on every connect, and again when arming.

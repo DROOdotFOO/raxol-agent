@@ -186,10 +186,17 @@ defmodule Raxol.Broker.Mode do
 
   defp approval_setting(client, account) do
     case read(client, "get_trade_approval_setting", %{"account_number" => account}) do
-      {:ok, %{"human_must_approve_trades" => true}} -> {:ok, true}
-      {:ok, %{"human_must_approve_trades" => false}} -> {:error, {:approvals_off, account}}
-      {:ok, _other} -> {:error, {:approval_setting, :unreadable}}
-      {:error, reason} -> {:error, {:approval_setting, reason}}
+      {:ok, %{"setting" => %{"human_must_approve_trades" => true}}} ->
+        {:ok, true}
+
+      {:ok, %{"setting" => %{"human_must_approve_trades" => false}}} ->
+        {:error, {:approvals_off, account}}
+
+      {:ok, _other} ->
+        {:error, {:approval_setting, :unreadable}}
+
+      {:error, reason} ->
+        {:error, {:approval_setting, reason}}
     end
   end
 

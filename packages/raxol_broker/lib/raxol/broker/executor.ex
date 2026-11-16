@@ -21,11 +21,17 @@ defmodule Raxol.Broker.Executor do
     * `today_notional` and `orders_last_minute`, read from
       `Raxol.Broker.Journal` at decision time. The day starts at midnight
       America/New_York (`Raxol.Broker.MarketCalendar.day_start/1`).
-    * `quotes`, `positions`, `portfolio_value`, `start_of_day_value`,
-      `day_pnl` and `market_session`, read through its own session's read
-      tools by `Raxol.Broker.Policy.ContextBuilder` when an intent arrives
-      (cancels excepted: they need none). A read that fails leaves its
-      fields `nil`, and every rule that needs one denies.
+    * `quotes`, `positions`, `portfolio_value`, `day_pnl` and
+      `market_session`, fetched by `Raxol.Broker.Policy.ContextBuilder`.
+      Current portfolio value is the live USD total; `start_of_day_value`
+      is this account/day's persisted midnight journal baseline, never a
+      caller value or a previous-close alias. Missing reads or a missed
+      baseline leave fields `nil`, so rules that need them deny (cancels
+      and declines are exempt).
+      A fetch crossing New York midnight or a backwards clock change is
+      discarded before review; the market session is refreshed at completion.
+      Before placement, an asynchronous clock check also expires that context
+      on day/session crossings or backwards time, including after review/approval.
     * `review_warnings`, from this executor's own review call (empty
       before it).
 
@@ -1099,23 +1105,44 @@ defmodule Raxol.Broker.Executor do
   defp complete_stage(state, %{stage: :review} = pending, result),
     do: reviewed(state, pending, result)
 
-  defp complete_stage(state, %{stage: :context, intent: intent}, {:ok, context}) do
+  defp complete_stage(state, %{stage: :context, intent: intent}, {:ok, context, context_at}) do
     with :ok <- port_up(state),
          {:ok, group_id} <- open(state, intent, context, true) do
-      pre_review(state, intent, context, group_id, armed?(state, intent))
+      pre_review(state, intent, context, group_id, armed?(state, intent), context_at)
     else
       {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
-  defp complete_stage(state, %{stage: :approval_context} = pending, {:ok, context}),
-    do: approved(state, pending.group_id, pending.group, pending.by, context)
+  defp complete_stage(state, %{stage: :approval_context} = pending, {:ok, context, context_at}),
+    do: approved(state, pending.group_id, pending.group, pending.by, context, context_at)
 
   defp complete_stage(state, %{stage: :reconcile}, {:ok, resolved}),
     do: {:reply, journal_resolutions(state, resolved), state}
 
   defp complete_stage(state, %{stage: :halt, bound: bound}, {:ok, orders, approvals}),
     do: halt_orders_listed(state, bound, orders, approvals)
+
+  defp complete_stage(state, %{stage: :place_clock} = pending, {:ok, finished}) do
+    with :ok <- placement_epoch(pending.context_at, finished),
+         :ok <- port_up(state) do
+      if armed?(state, pending.intent),
+        do:
+          send_order(
+            state,
+            pending.intent,
+            pending.group_id,
+            pending.receipt,
+            pending.customer_approval_required
+          ),
+        else: not_armed(state, pending.group_id)
+    else
+      {:error, reason} -> refuse_place(state, pending.group_id, reason)
+    end
+  end
+
+  defp complete_stage(state, %{stage: :place_clock} = pending, {:error, reason}),
+    do: refuse_place(state, pending.group_id, reason)
 
   defp complete_stage(state, _pending, {:error, reason}),
     do: {:reply, {:error, reason}, state}
@@ -1257,7 +1284,7 @@ defmodule Raxol.Broker.Executor do
     safe(fn -> Journal.open_group(intent, context, state.journal, mode: mode) end)
   end
 
-  defp pre_review(state, intent, context, group_id, armed?) do
+  defp pre_review(state, intent, context, group_id, armed?, context_at) do
     verdict = Policy.evaluate(intent, context)
 
     case {append(state, group_id, {:verdict, :pre_review, verdict}), verdict} do
@@ -1281,14 +1308,23 @@ defmodule Raxol.Broker.Executor do
         {:reply, {:error, :not_armed}, state}
 
       {:ok, _allow_or_ask} ->
-        review(state, intent, context, group_id)
+        review(state, intent, context, group_id, context_at)
     end
   end
 
-  defp review(state, intent, context, group_id) do
+  defp review(state, intent, context, group_id, context_at) do
     %{port: port, catalog: catalog, account: account, review_timeout: timeout} = state
     task = Task.async(fn -> Review.run(port, catalog, intent, account, timeout) end)
-    pending = %{stage: :review, ref: task.ref, pid: task.pid, intent: intent, context: context}
+
+    pending = %{
+      stage: :review,
+      ref: task.ref,
+      pid: task.pid,
+      intent: intent,
+      context: context,
+      context_at: context_at
+    }
+
     {:await, Map.put(pending, :group_id, group_id), state}
   end
 
@@ -1324,7 +1360,14 @@ defmodule Raxol.Broker.Executor do
         park(state, pending, receipt, prompts)
 
       {:ok, {:allow, _intent}} ->
-        place(state, intent, group_id, receipt, pending.customer_approval_required)
+        place(
+          state,
+          intent,
+          group_id,
+          receipt,
+          pending.customer_approval_required,
+          pending.context_at
+        )
     end
   end
 
@@ -1391,12 +1434,12 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  defp approved(state, group_id, group, by, context) do
+  defp approved(state, group_id, group, by, context, context_at) do
     unparked = %{state | parked: Map.delete(state.parked, group_id)}
 
     with :ok <- safe(fn -> Journal.record_context(group_id, context, state.journal) end),
          :ok <- append(state, group_id, {:approval, :approved, by}) do
-      recheck(unparked, group_id, group, context)
+      recheck(unparked, group_id, group, context, context_at)
     else
       {:error, {:invalid_entry, _} = reason} ->
         {:reply, {:error, reason}, state}
@@ -1407,7 +1450,7 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  defp recheck(state, group_id, group, context) do
+  defp recheck(state, group_id, group, context, context_at) do
     verdict = Policy.evaluate(group.intent, context)
 
     case {append(state, group_id, {:verdict, :post_review, verdict}), verdict} do
@@ -1428,7 +1471,14 @@ defmodule Raxol.Broker.Executor do
         {:reply, {:deny, group_id, reason}, state}
 
       {:ok, _ask_answered_or_allow} ->
-        place(state, group.intent, group_id, group.receipt, group.customer_approval_required)
+        place(
+          state,
+          group.intent,
+          group_id,
+          group.receipt,
+          group.customer_approval_required,
+          context_at
+        )
     end
   end
 
@@ -1444,16 +1494,62 @@ defmodule Raxol.Broker.Executor do
   # The port can go down between review and here (its EXIT handled before
   # the review result): close the group without `placing`, send nothing.
   # So can the mode: a disarm while the group was parked or in review.
-  defp place(%{port_status: status, port: port} = state, _intent, group_id, _receipt, _approval)
-       when status != :ready or is_nil(port) do
-    _ = close_group(state, group_id, :port_not_ready)
-    {:reply, {:error, :port_not_ready}, state}
+  defp place(
+         %{port_status: status, port: port} = state,
+         _intent,
+         group_id,
+         _receipt,
+         _approval,
+         _context_at
+       )
+       when status != :ready or is_nil(port),
+       do: refuse_place(state, group_id, :port_not_ready)
+
+  defp place(state, intent, group_id, receipt, customer_approval_required, context_at) do
+    cond do
+      not armed?(state, intent) ->
+        not_armed(state, group_id)
+
+      intent.kind in [:cancel, :decline] ->
+        send_order(state, intent, group_id, receipt, customer_approval_required)
+
+      true ->
+        clock = state.clock
+
+        pending = %{
+          intent: intent,
+          group_id: group_id,
+          receipt: receipt,
+          customer_approval_required: customer_approval_required,
+          context_at: context_at
+        }
+
+        read_stage(state, :place_clock, pending, fn -> now(clock) end)
+    end
   end
 
-  defp place(state, intent, group_id, receipt, customer_approval_required) do
-    if armed?(state, intent),
-      do: send_order(state, intent, group_id, receipt, customer_approval_required),
-      else: not_armed(state, group_id)
+  defp placement_epoch(%DateTime{} = at, %DateTime{} = finished) do
+    if DateTime.compare(finished, at) != :lt and
+         MarketCalendar.day_start(finished) == MarketCalendar.day_start(at) and
+         MarketCalendar.session(finished) == MarketCalendar.session(at),
+       do: :ok,
+       else: {:error, {:context, :clock_changed}}
+  end
+
+  defp placement_epoch(_at, _finished), do: {:error, {:context, :clock_changed}}
+
+  defp refuse_place(state, group_id, reason) do
+    status =
+      case reason do
+        {:context, :clock_changed} -> :clock_changed
+        :port_not_ready -> :port_not_ready
+        _ -> :placing_refused
+      end
+
+    case close_group(state, group_id, status) do
+      :ok -> {:reply, {:error, reason}, state}
+      {:error, close_error} -> {:reply, {:error, {:close_failed, reason, close_error}}, state}
+    end
   end
 
   defp not_armed(state, group_id) do
@@ -1797,29 +1893,40 @@ defmodule Raxol.Broker.Executor do
     with {:ok, now} <- now(state.clock),
          day_start = MarketCalendar.day_start(now),
          {:ok, notional} <- safe(fn -> Journal.today_notional(day_start, state.journal) end),
-         {:ok, count} <- safe(fn -> Journal.orders_last_minute(now, state.journal) end) do
-      context = fetched(state, context, intent, now)
-
+         {:ok, count} <- safe(fn -> Journal.orders_last_minute(now, state.journal) end),
+         {:ok, context, context_at} <- fetched(state, context, intent, now) do
       {:ok,
-       %{context | policy: state.policy, today_notional: notional, orders_last_minute: count}}
+       %{context | policy: state.policy, today_notional: notional, orders_last_minute: count},
+       context_at}
     else
       {:error, reason} -> {:error, {:context, reason}}
     end
   end
 
-  defp fetched(_state, context, %Intent{kind: kind}, _now) when kind in [:cancel, :decline],
-    do: context
+  defp fetched(_state, context, %Intent{kind: kind}, now) when kind in [:cancel, :decline],
+    do: {:ok, context, now}
 
   defp fetched(state, context, intent, now) do
     env = %{
       port: state.port,
       catalog: state.catalog,
       account: state.account,
+      journal: state.journal,
       timeout: state.review_timeout,
       now: now
     }
 
-    ContextBuilder.build(intent, context, env)
+    context = ContextBuilder.build(intent, context, env)
+
+    with {:ok, finished} <- now(state.clock),
+         true <-
+           DateTime.compare(finished, now) != :lt and
+             MarketCalendar.day_start(finished) == MarketCalendar.day_start(now) do
+      {:ok, %{context | market_session: MarketCalendar.session(finished)}, finished}
+    else
+      false -> {:error, :clock_changed}
+      {:error, _reason} = error -> error
+    end
   end
 
   # The clock is caller code, so it runs in a task: never in this process,

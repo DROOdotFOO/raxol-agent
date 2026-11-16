@@ -8,6 +8,7 @@ defmodule Raxol.Broker.Tools.MarketData do
 
   Arguments (string keys):
     * `days` (optional, integer)
+    * `end_date` (optional, string)
     * `filter` (optional, string)
     * `start_date` (optional, string)
   """
@@ -146,10 +147,14 @@ defmodule Raxol.Broker.Tools.MarketData do
     do: Raxol.Broker.Tools.call(client, "get_index_historicals", args)
 
   @doc ~S"""
-  Get real-time values for one or more market indexes by instrument ID. Returns current index level, state, and timestamps.
+  Get real-time values for one or more market indexes by instrument ID or symbol. Returns current index level, state, and timestamps.
 
   Arguments (string keys):
-    * `instrument_ids` (required, null | array)
+    * `instrument_ids` (optional, null | array)
+    * `symbols` (optional, null | array)
+
+  Pass exactly one of `instrument_ids`, `symbols`.
+  The selection must be a nonempty list of nonblank identifiers or symbols.
   """
   @spec get_index_quotes(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def get_index_quotes(client, args \\ %{}),
@@ -166,11 +171,13 @@ defmodule Raxol.Broker.Tools.MarketData do
   def get_indexes(client, args \\ %{}), do: Raxol.Broker.Tools.call(client, "get_indexes", args)
 
   @doc ~S"""
-  Get disclosed trading activity of US politicians from Tip Ranks. Use when the user asks about politician/congressional trades - either for a specific stock ("which politicians traded NVDA?") or a specific politician. Data comes from public STOCK Act disclosures; amounts are ranges, not exact values, and disclosures lag the actual trade by up to 45 days.
+  Get disclosed trading activity of US politicians from Tip Ranks. Use when the user asks about politician/congressional trades - either for a specific stock ("which politicians traded NVDA?") or a specific politician. Every call needs politician_name, equity_symbol, or both: there is no feed of recent trades across all politicians, so for a general question ask the user which politician or stock to look up. Data comes from public STOCK Act disclosures; amounts are ranges, not exact values, and disclosures lag the actual trade by up to 45 days.
 
   Arguments (string keys):
     * `equity_symbol` (optional, string)
     * `politician_name` (optional, string)
+
+  Pass at least one nonblank `politician_name`, `equity_symbol`; both are allowed.
   """
   @spec get_politician_trades(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def get_politician_trades(client, args \\ %{}),
@@ -212,7 +219,7 @@ defmodule Raxol.Broker.Tools.MarketData do
     do: Raxol.Broker.Tools.call(client, "get_sec_filing_facts_catalog", args)
 
   @doc ~S"""
-  List a company's SEC filings, optionally filtered by form type and date. Use this to find a specific annual report (10-K), quarterly report (10-Q), or material event disclosure (8-K).
+  List a company's SEC filings, optionally filtered by form type and date. Use this first for any question that needs a company's annual report (10-K), quarterly reports (10-Q) and material event disclosures (8-K), and whether each filing has markdown text to read. It also returns the filing_id that get_sec_filing and get_sec_filing_facts take.
 
   Arguments (string keys):
     * `cursor` (optional, string)

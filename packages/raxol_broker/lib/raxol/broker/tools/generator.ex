@@ -122,10 +122,30 @@ defmodule Raxol.Broker.Tools.Generator do
   end
 
   defp rule(name) do
-    case Tools.exactly_one(name) do
-      [] -> ""
-      keys -> "Pass exactly one of " <> Enum.map_join(keys, ", ", &"`#{&1}`") <> "."
-    end
+    exactly_one =
+      case Tools.exactly_one(name) do
+        [] -> ""
+        keys -> "Pass exactly one of " <> Enum.map_join(keys, ", ", &"`#{&1}`") <> "."
+      end
+
+    at_least_one =
+      case Tools.at_least_one(name) do
+        [] ->
+          ""
+
+        keys ->
+          "Pass at least one nonblank " <>
+            Enum.map_join(keys, ", ", &"`#{&1}`") <> "; both are allowed."
+      end
+
+    nonempty =
+      if name == "get_index_quotes",
+        do: "The selection must be a nonempty list of nonblank identifiers or symbols.",
+        else: ""
+
+    [exactly_one, at_least_one, nonempty]
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.join("\n")
   end
 
   defp argument_line({key, sub}, required) do

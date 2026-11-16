@@ -12,9 +12,12 @@ defmodule Raxol.Broker.Tools do
   alias Raxol.Broker.MCP.Client
   alias Raxol.Broker.Tools.{Catalog, Schema}
 
-  # Rules Robinhood states only in a property's description, which the
-  # captured schema cannot carry: exactly one of these arguments per call.
-  @exactly_one %{"get_equity_technical_indicators" => ["symbol", "symbols"]}
+  # Rules stated only in descriptions, not the captured JSON Schema.
+  @exactly_one %{
+    "get_equity_technical_indicators" => ["symbol", "symbols"],
+    "get_index_quotes" => ["instrument_ids", "symbols"]
+  }
+  @at_least_one %{"get_politician_trades" => ["politician_name", "equity_symbol"]}
 
   @doc """
   The arguments of which a call to `tool` must pass exactly one, or `[]`.
@@ -22,6 +25,10 @@ defmodule Raxol.Broker.Tools do
   """
   @spec exactly_one(String.t()) :: [String.t()]
   def exactly_one(tool) when is_binary(tool), do: Map.get(@exactly_one, tool, [])
+
+  @doc "The arguments of which a call must pass at least one nonblank string, or `[]`."
+  @spec at_least_one(String.t()) :: [String.t()]
+  def at_least_one(tool) when is_binary(tool), do: Map.get(@at_least_one, tool, [])
 
   @doc """
   Validate `args` against `tool`'s captured schema, then call it on the
@@ -40,7 +47,9 @@ defmodule Raxol.Broker.Tools do
 
   defp validate(tool, args) do
     with :ok <- Schema.validate(Catalog.schema(tool), args),
-         :ok <- one_of(exactly_one(tool), args) do
+         :ok <- one_of(exactly_one(tool), args),
+         :ok <- nonempty_selection(tool, args),
+         :ok <- at_least_one_of(at_least_one(tool), args) do
       :ok
     else
       {:error, errors} -> {:error, {:invalid_args, tool, errors}}
@@ -55,4 +64,25 @@ defmodule Raxol.Broker.Tools do
       _none_or_several -> {:error, [{[], {:exactly_one_of, keys}}]}
     end
   end
+
+  defp nonempty_selection("get_index_quotes" = tool, args) do
+    keys = exactly_one(tool)
+    selection = Enum.find_value(keys, &Map.get(args, &1))
+
+    if is_list(selection) and selection != [] and Enum.all?(selection, &nonblank?/1),
+      do: :ok,
+      else: {:error, [{[], {:nonempty_selection, keys}}]}
+  end
+
+  defp nonempty_selection(_tool, _args), do: :ok
+
+  defp at_least_one_of([], _args), do: :ok
+
+  defp at_least_one_of(keys, args) do
+    if Enum.any?(keys, &nonblank?(Map.get(args, &1))),
+      do: :ok,
+      else: {:error, [{[], {:at_least_one_of, keys}}]}
+  end
+
+  defp nonblank?(value), do: is_binary(value) and String.trim(value) != ""
 end

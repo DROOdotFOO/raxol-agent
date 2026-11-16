@@ -56,8 +56,9 @@ defmodule Raxol.Broker.Executor.Review do
   Anything else, an absent key included, is false, and
   `Raxol.Broker.Executor.Place` then reads a successful place as an order.
 
-  A non-empty `order_checks` sample has not been recorded yet; the reader
-  follows the shape above and fails closed on anything else.
+  A non-empty buying-power alert is recorded in
+  `test/fixtures/robinhood/review_equity_order_checks.json`. Its `alertType`
+  and detail object are both warnings under the reader above.
   """
 
   alias Raxol.Broker.Executor.Port

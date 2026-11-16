@@ -96,9 +96,12 @@ defmodule Raxol.Broker.Snapshot do
   @doc "The buying power `get_portfolio` reports for `account`, as text (`?` when unreadable)."
   @spec buying_power(GenServer.server(), String.t()) :: String.t()
   def buying_power(client, account) do
-    case read(client, "get_portfolio", %{"account_number" => account}) do
-      {:ok, %{"buying_power" => value}} when is_binary(value) -> value
-      {:ok, %{"buying_power" => %{"amount" => value}}} when is_binary(value) -> value
+    with {:ok, %{"buying_power" => %{"buying_power" => value}}} <-
+           read(client, "get_portfolio", %{"account_number" => account}),
+         true <- is_binary(value),
+         %Decimal{} = amount <- Response.decimal(value) do
+      Decimal.to_string(amount)
+    else
       _unreadable -> "?"
     end
   end

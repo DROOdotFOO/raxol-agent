@@ -243,6 +243,38 @@ defmodule Raxol.Broker.SupervisorTest do
     assert is_pid(child(sup, Client))
   end
 
+  test "executor account automatically captures using the configured read client", %{path: path} do
+    id = System.unique_integer([:positive])
+    journal = :"broker_baseline_journal_#{id}"
+    client = :"broker_baseline_client_#{id}"
+    fake = Fake.start(portfolio: %{"total_value" => "1000", "currency" => "USD"})
+    {clock, _agent} = Raxol.Broker.Test.Broker.clock(~U[2026-10-02 04:00:00Z])
+    owner = self()
+
+    _sup =
+      start_supervised!(
+        {Raxol.Broker.Supervisor,
+         name: :"broker_baseline_sup_#{id}",
+         journal: [name: journal, path: path, clock: clock],
+         executor: [
+           name: :"broker_baseline_executor_#{id}",
+           session: Fake.session(fake),
+           account_number: "FAKE-0001",
+           clock: clock,
+           policy: Raxol.Broker.Test.Broker.policy()
+         ],
+         client: Fake.client_opts(fake, name: client),
+         daily_baseline: [schedule: fn delay -> send(owner, {:baseline_scheduled, delay}) end]}
+      )
+
+    assert_receive {:baseline_scheduled, 86_400_000}, 5_000
+
+    assert Journal.day_baseline("FAKE-0001", ~U[2026-10-02 04:00:00Z], journal) ==
+             {:ok, Decimal.new("1000")}
+
+    assert Fake.calls(fake, "get_portfolio") == ["get_portfolio"]
+  end
+
   # Kills the `module` child, waits for it to go down, then reads the restarted
   # child. The supervisor restarts while handling the EXIT, so the call that
   # follows the :DOWN sees the new pid without polling.

@@ -26,6 +26,11 @@ defmodule Raxol.Broker.Intent do
   exposure is not derivable from a share price; adapter-specific arguments go
   in `params` and are never read by the policy.
 
+  Equity orders use the server defaults: GFD and regular hours. Dollar
+  orders are market-only; fractional shares are market-only. Limit and stop
+  orders require whole shares and never round quantities or prices. Equity
+  `params` overrides are refused rather than silently changing these terms.
+
   Options common to every constructor:
 
     * `:provenance` (required) -- `:strategy`, `:llm`, `:human`, or
@@ -184,7 +189,8 @@ defmodule Raxol.Broker.Intent do
 
   defp rebuild(fields) do
     with {:ok, common} <- common_fields(fields),
-         {:ok, order_fields} <- validate_fields(present_order_fields(fields)) do
+         {:ok, order_fields} <- validate_fields(present_order_fields(fields)),
+         :ok <- validate_quantity(fields.kind, order_fields) do
       {:ok, struct!(__MODULE__, common ++ order_fields)}
     end
   end
@@ -245,7 +251,8 @@ defmodule Raxol.Broker.Intent do
          {:ok, strategy} <- strategy(Keyword.get(opts, :strategy)),
          {:ok, id} <- id(Keyword.get(opts, :id)),
          {:ok, params} <- params(kind, Keyword.get(opts, :params, %{})),
-         {:ok, fields} <- validate_fields(fields) do
+         {:ok, fields} <- validate_fields(fields),
+         :ok <- validate_quantity(kind, fields) do
       {:ok,
        struct!(
          __MODULE__,
@@ -278,6 +285,16 @@ defmodule Raxol.Broker.Intent do
   defp params(kind, value) when kind in [:option, :advanced] and is_map(value), do: {:ok, value}
   defp params(_kind, value) when value == %{}, do: {:ok, %{}}
   defp params(_kind, value), do: {:error, {:invalid, :params, value}}
+
+  defp validate_quantity(kind, fields) when kind in [:limit, :stop_limit, :stop_market] do
+    qty = Keyword.get(fields, :qty)
+
+    if match?(%Decimal{}, qty) and Decimal.integer?(qty),
+      do: :ok,
+      else: {:error, {:invalid, :qty, qty}}
+  end
+
+  defp validate_quantity(_kind, _fields), do: :ok
 
   defp validate_fields(fields) do
     Enum.reduce_while(fields, {:ok, []}, fn {key, value}, {:ok, acc} ->

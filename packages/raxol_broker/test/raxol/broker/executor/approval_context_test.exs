@@ -9,15 +9,15 @@ defmodule Raxol.Broker.Executor.ApprovalContextTest do
   @moduletag :capture_log
 
   defp broker!(policy) do
-    ctx = Broker.journal!()
-
     fake =
       Fake.start(
         warnings: ["operator review"],
         quotes: %{"AAPL" => "125"},
         positions: [],
-        portfolio: %{"equity" => "1000", "adjusted_equity_previous_close" => "1000"}
+        portfolio: %{"total_value" => "1000", "currency" => "USD"}
       )
+
+    ctx = Broker.baseline_journal!(fake)
 
     executor = Broker.executor!(ctx.journal, fake, policy: policy)
     :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
@@ -35,7 +35,7 @@ defmodule Raxol.Broker.Executor.ApprovalContextTest do
   test "approval denies a position weight that changed while parked" do
     ctx = broker!(Broker.policy("1000", "5000", max_position_weight: Broker.d("0.3")))
     group = ask!(ctx, "weight")
-    Fake.portfolio(ctx.fake, %{"equity" => "500", "adjusted_equity_previous_close" => "1000"})
+    Fake.portfolio(ctx.fake, %{"total_value" => "500", "currency" => "USD"})
 
     assert {:deny, ^group, {:max_position_weight, _}} =
              Executor.approve(ctx.executor, group, "operator")
@@ -52,7 +52,7 @@ defmodule Raxol.Broker.Executor.ApprovalContextTest do
   test "approval drawdown denial disarms and holds the journal pause" do
     ctx = broker!(Broker.policy("1000", "5000", drawdown_halt: Broker.d("0.05")))
     group = ask!(ctx, "drawdown")
-    Fake.portfolio(ctx.fake, %{"equity" => "940", "adjusted_equity_previous_close" => "1000"})
+    Fake.portfolio(ctx.fake, %{"total_value" => "940", "currency" => "USD"})
 
     assert {:deny, ^group, {:drawdown_breaker, _}} =
              Executor.approve(ctx.executor, group, "operator")
@@ -74,7 +74,11 @@ defmodule Raxol.Broker.Executor.ApprovalContextTest do
            %{
              "type" => "text",
              "text" =>
-               Jason.encode!(%{"quotes" => [%{"symbol" => "AAPL", "last_trade_price" => "150"}]})
+               Jason.encode!(%{
+                 "results" => [
+                   %{"quote" => %{"symbol" => "AAPL", "last_trade_price" => "150"}}
+                 ]
+               })
            }
          ]
        }}
