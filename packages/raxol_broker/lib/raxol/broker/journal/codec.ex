@@ -62,6 +62,7 @@ defmodule Raxol.Broker.Journal.Codec do
          true <-
            is_binary(account) and account != "" and is_integer(coef) and coef > 0 and
              is_integer(exp),
+         true <- Enum.all?([day, started, observed, at], &baseline_timestamp?/1),
          true <-
            capture_window?(day, started) and capture_window?(day, observed) and
              capture_window?(day, at),
@@ -87,6 +88,14 @@ defmodule Raxol.Broker.Journal.Codec do
     _error in [ArgumentError, FunctionClauseError] -> {:error, :invalid_day_baseline}
   end
 
+  defp baseline_timestamp?(%DateTime{calendar: Calendar.ISO} = at) do
+    Calendar.ISO.valid_date?(at.year, at.month, at.day) and
+      Calendar.ISO.valid_time?(at.hour, at.minute, at.second, at.microsecond) and
+      at.utc_offset in -86_400..86_400 and at.std_offset in -86_400..86_400
+  end
+
+  defp baseline_timestamp?(_at), do: false
+
   defp baseline_iso(at), do: at |> DateTime.shift_zone!("Etc/UTC") |> DateTime.to_iso8601()
 
   @doc "Validate a persisted baseline before rebuilding its first-write-wins index."
@@ -97,6 +106,7 @@ defmodule Raxol.Broker.Journal.Codec do
          {:ok, observed, 0} <- DateTime.from_iso8601(record["observed_at"]),
          {:ok, at, 0} <- DateTime.from_iso8601(record["at"]),
          {:ok, value} <- parse_decimal(record["value"]),
+         {:ok, value} <- Raxol.Broker.Plain.normalize(value),
          fields = %{
            account: record["account_number"],
            day_start: day,

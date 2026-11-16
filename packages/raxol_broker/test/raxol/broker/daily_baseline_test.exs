@@ -222,6 +222,82 @@ defmodule Raxol.Broker.DailyBaselineTest do
     end
   end
 
+  test "submillisecond and early midnight wakes reschedule and still capture" do
+    fake = Fake.start(portfolio: portfolio("1000"))
+    {clock, agent} = Broker.clock(DateTime.add(@day, -1001, :microsecond))
+    ctx = Broker.journal!(clock: clock)
+    owner = self()
+
+    baseline =
+      Broker.capture_baseline!(ctx.journal, fake, clock,
+        schedule: fn delay -> send(owner, {:scheduled, delay}) end
+      )
+
+    assert_receive {:scheduled, 2}
+
+    Agent.update(agent, fn _ -> DateTime.add(@day, -1, :microsecond) end)
+    send(baseline.worker, :capture)
+    assert_receive {:scheduled, 1}, 5_000
+    assert Fake.calls(fake, "get_portfolio") == []
+
+    Agent.update(agent, fn _ -> @day end)
+    send(baseline.worker, :capture)
+    assert_receive {:scheduled, 86_400_000}, 5_000
+    assert Journal.day_baseline("FAKE-0001", @day, ctx.journal) == {:ok, Broker.d("1000")}
+  end
+
+  test "a backwards clock schedules the next boundary from actual current time" do
+    fake = Fake.start(portfolio: portfolio("1000"))
+    {clock, agent} = Broker.clock(~U[2026-10-02 14:00:00Z])
+    ctx = Broker.journal!(clock: clock)
+    owner = self()
+
+    baseline =
+      Broker.capture_baseline!(ctx.journal, fake, clock,
+        schedule: fn delay -> send(owner, {:scheduled, delay}) end
+      )
+
+    assert_receive {:scheduled, 50_400_000}
+
+    Agent.update(agent, fn _ -> ~U[2026-10-02 13:00:00Z] end)
+    send(baseline.worker, :capture)
+    assert_receive {:scheduled, 54_000_000}, 5_000
+    assert Fake.calls(fake, "get_portfolio") == []
+  end
+
+  test "bad configured clocks cannot crash the collector and a valid clock recovers" do
+    for failure <- [:malformed, :raising] do
+      {:ok, mode} = Agent.start_link(fn -> failure end)
+
+      clock = fn ->
+        case Agent.get(mode, & &1) do
+          :malformed -> :not_a_timestamp
+          :raising -> raise ArgumentError, "configured clock failed"
+          :valid -> @day
+        end
+      end
+
+      fake = Fake.start(portfolio: portfolio("1000"))
+      ctx = Broker.journal!(clock: fn -> @day end)
+      owner = self()
+
+      baseline =
+        Broker.capture_baseline!(ctx.journal, fake, clock,
+          schedule: fn delay -> send(owner, {:scheduled, delay}) end
+        )
+
+      assert_receive {:scheduled, 1000}, 5_000
+      assert Process.alive?(baseline.worker)
+      assert Fake.calls(fake, "get_portfolio") == []
+      assert Journal.day_baseline("FAKE-0001", @day, ctx.journal) == {:ok, nil}
+
+      Agent.update(mode, fn _ -> :valid end)
+      send(baseline.worker, :capture)
+      assert_receive {:scheduled, 86_400_000}, 5_000
+      assert Journal.day_baseline("FAKE-0001", @day, ctx.journal) == {:ok, Broker.d("1000")}
+    end
+  end
+
   test "next midnight scheduling observes both DST changes" do
     for {now, delay} <- [
           {~U[2026-03-08 05:01:00Z], 82_740_000},

@@ -284,7 +284,7 @@ defmodule Raxol.Broker.Executor do
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
   alias Raxol.Agent.Auth.Credential
   alias Raxol.Broker.{AccountPin, CredentialStore, Halt, Intent, Journal, MarketCalendar}
-  alias Raxol.Broker.{Mode, Plain, Policy}
+  alias Raxol.Broker.{Clock, Mode, Policy}
   alias Raxol.Broker.{PolicyFile, Response, Session}
   alias Raxol.Broker.Journal.Codec
   alias Raxol.Broker.Policy.{Context, ContextBuilder}
@@ -295,7 +295,6 @@ defmodule Raxol.Broker.Executor do
   @default_reconcile_ms 300_000
   @default_reconcile_min_age_ms 120_000
   @max_backoff 60_000
-  @clock_timeout 5_000
   # `receive after` and `Process.send_after/3` refuse anything above
   # 4_294_967_295 ms; the cap leaves headroom under that.
   @max_timeout 4_294_000_000
@@ -1524,7 +1523,7 @@ defmodule Raxol.Broker.Executor do
           context_at: context_at
         }
 
-        read_stage(state, :place_clock, pending, fn -> now(clock) end)
+        read_stage(state, :place_clock, pending, fn -> Clock.now(clock) end)
     end
   end
 
@@ -1650,7 +1649,7 @@ defmodule Raxol.Broker.Executor do
          ) do
       {:ok, orders} ->
         by_ref = orders |> Enum.filter(&is_map/1) |> Map.new(&{order_ref(&1), &1})
-        now = now(state.clock)
+        now = Clock.now(state.clock)
 
         Enum.flat_map(entries, fn entry ->
           case Map.fetch(by_ref, Place.ref_id(entry["intent_id"])) do
@@ -1890,7 +1889,7 @@ defmodule Raxol.Broker.Executor do
   # no caller input moves it. With an intent, the fields the executor
   # fetches are read first (a cancel needs none).
   defp fill(state, %Context{} = context, intent) do
-    with {:ok, now} <- now(state.clock),
+    with {:ok, now} <- Clock.now(state.clock),
          day_start = MarketCalendar.day_start(now),
          {:ok, notional} <- safe(fn -> Journal.today_notional(day_start, state.journal) end),
          {:ok, count} <- safe(fn -> Journal.orders_last_minute(now, state.journal) end),
@@ -1918,7 +1917,7 @@ defmodule Raxol.Broker.Executor do
 
     context = ContextBuilder.build(intent, context, env)
 
-    with {:ok, finished} <- now(state.clock),
+    with {:ok, finished} <- Clock.now(state.clock),
          true <-
            DateTime.compare(finished, now) != :lt and
              MarketCalendar.day_start(finished) == MarketCalendar.day_start(now) do
@@ -1928,41 +1927,6 @@ defmodule Raxol.Broker.Executor do
       {:error, _reason} = error -> error
     end
   end
-
-  # The clock is caller code, so it runs in a task: never in this process,
-  # where it would hold the executor's identity and receipt key. Its result
-  # is rebuilt by pattern matching before any Calendar function sees it.
-  defp now(clock) do
-    task = Task.async(clock)
-
-    case Task.yield(task, @clock_timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, %DateTime{} = now} -> utc(Plain.normalize(now))
-      {:ok, other} -> {:error, {:invalid_clock, other}}
-      {:exit, reason} -> {:error, {:clock_crashed, reason}}
-      nil -> {:error, :clock_timeout}
-    end
-  end
-
-  # Plain rebuilds an ISO DateTime with integer fields; the offsets and the
-  # field ranges are checked here so no Calendar.ISO function can raise.
-  defp utc(
-         {:ok,
-          %DateTime{
-            time_zone: "Etc/UTC",
-            utc_offset: 0,
-            std_offset: 0,
-            microsecond: {micro, precision}
-          } = now}
-       )
-       when precision in 0..6 do
-    if Calendar.ISO.valid_date?(now.year, now.month, now.day) and
-         Calendar.ISO.valid_time?(now.hour, now.minute, now.second, {micro, precision}),
-       do: {:ok, now},
-       else: {:error, {:invalid_clock, now}}
-  end
-
-  defp utc({:ok, other}), do: {:error, {:invalid_clock, other}}
-  defp utc({:error, reason}), do: {:error, {:invalid_clock, reason}}
 
   defp close_group(state, group_id, reason) do
     with {:error, error} <- append(state, group_id, {:close, reason}) do

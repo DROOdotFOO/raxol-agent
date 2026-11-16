@@ -10,6 +10,18 @@ defmodule Raxol.Broker.Journal.DayBaselineTest do
   @moduletag :capture_log
   @day ~U[2026-10-02 04:00:00Z]
 
+  defmodule CallerCalendar do
+    def naive_datetime_to_iso_days(year, month, day, hour, minute, second, microsecond) do
+      send(Process.whereis(Raxol.Broker.Journal.DayBaselineTest), :caller_calendar_ran)
+      Calendar.ISO.naive_datetime_to_iso_days(year, month, day, hour, minute, second, microsecond)
+    end
+
+    def day_rollover_relative_to_midnight_utc do
+      send(Process.whereis(Raxol.Broker.Journal.DayBaselineTest), :caller_calendar_ran)
+      {0, 1}
+    end
+  end
+
   defp fields(value \\ "1000") do
     %{
       account: "FAKE-0001",
@@ -64,8 +76,45 @@ defmodule Raxol.Broker.Journal.DayBaselineTest do
     assert Broker.records(ctx.path) == []
   end
 
+  test "baseline timestamps never dispatch caller calendars inside the journal" do
+    Process.register(self(), __MODULE__)
+    ctx = Broker.journal!(clock: fn -> @day end)
+
+    for key <- [:day_start, :request_started_at, :observed_at] do
+      forged = Map.put(fields(), key, %{@day | calendar: CallerCalendar})
+      assert Journal.record_day_baseline(forged, ctx.journal) == {:error, :invalid_day_baseline}
+      refute_received :caller_calendar_ran
+    end
+
+    assert Journal.mode(ctx.journal) == {:ok, :disarmed, nil}
+    assert Broker.records(ctx.path) == []
+  end
+
+  test "malformed ISO timestamps and oversized decimals cannot become a baseline" do
+    ctx = Broker.journal!(clock: fn -> @day end)
+
+    malformed = [
+      %{@day | month: 13},
+      %{@day | hour: 24},
+      %{@day | microsecond: {1_000_000, 6}}
+    ]
+
+    for timestamp <- malformed, key <- [:day_start, :request_started_at, :observed_at] do
+      assert Journal.record_day_baseline(Map.put(fields(), key, timestamp), ctx.journal) ==
+               {:error, :invalid_day_baseline}
+    end
+
+    assert Journal.record_day_baseline(
+             %{fields() | value: %Decimal{coef: 1, exp: 1_000_000}},
+             ctx.journal
+           ) ==
+             {:error, :invalid_day_baseline}
+
+    assert Broker.records(ctx.path) == []
+  end
+
   test "recovery rejects malformed and duplicate baseline records despite a valid hash chain" do
-    for extra <- [:duplicate, :negative, :late, :missing] do
+    for extra <- [:duplicate, :negative, :oversized, :late, :missing] do
       fake = Fake.start(portfolio: %{"total_value" => "1000", "currency" => "USD"})
       ctx = Broker.baseline_journal!(fake, @day)
       GenServer.stop(ctx.baseline.worker)
@@ -76,6 +125,7 @@ defmodule Raxol.Broker.Journal.DayBaselineTest do
         case extra do
           :duplicate -> record
           :negative -> Map.put(record, "value", "-1")
+          :oversized -> Map.put(record, "value", "1E+1000000")
           :late -> Map.put(record, "observed_at", "2026-10-02T04:01:00Z")
           :missing -> Map.delete(record, "day_start")
         end

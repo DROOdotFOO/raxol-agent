@@ -27,6 +27,11 @@ The owner chose a durable New York day-boundary observation instead:
 `DailyBaseline` captures during the first 60 seconds after local midnight.
 Both request start and completion, and the journal's record timestamp, must
 fit that window. A missed window leaves baseline-dependent orders denied all day.
+The first drawdown-policy evaluation without it also disarms and pauses
+strategies; a later capture does not resume or re-arm them automatically.
+Collector timers round up and reschedule early wakes, including after wall-clock
+changes. Configured clocks run in bounded tasks and are rebuilt as valid UTC ISO
+timestamps; a refused clock leaves the collector alive and schedules another check.
 No arbitrary intraday value, previous-close alias or caller context can
 substitute for the capture; same-day restarts reuse it without replacement.
 
@@ -321,8 +326,9 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   is discarded before review; the market session is refreshed at completion.
   Immediately before placing, another asynchronous clock check refuses a
   snapshot whose day or market session changed, or whose clock moved backwards,
-  including during review or approval. It sends nothing and does not retry;
-  a new intent must fetch a fresh context. Cancels and declines remain exempt.
+  including during review or approval. The executor sends nothing and does not
+  retry inline. A retry, including the runner's existing retry path, fetches fresh
+  context and reviews again. Cancels and declines remain exempt.
   Positions are read page by page; a listing that fails, cannot be read or
   is longer than
   its page limit leaves them empty too. Full-day NYSE holidays for 2026

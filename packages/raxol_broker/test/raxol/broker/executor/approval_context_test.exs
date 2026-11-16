@@ -88,4 +88,56 @@ defmodule Raxol.Broker.Executor.ApprovalContextTest do
     assert {:ok, counted} = Journal.today_notional(~U[2026-10-02 04:00:00Z], ctx.journal)
     assert Decimal.equal?(counted, Broker.d("300"))
   end
+
+  test "approval uses its fresh capture time and refuses a session change after capture" do
+    before_close = ~U[2026-10-02 19:59:59Z]
+    after_close = ~U[2026-10-02 20:00:01Z]
+
+    for crossing <- [:while_parked, :after_fresh_capture] do
+      fake =
+        Fake.start(
+          warnings: ["operator review"],
+          quotes: %{"AAPL" => "125"},
+          portfolio: %{"total_value" => "1000", "currency" => "USD"}
+        )
+
+      ctx = Broker.baseline_journal!(fake, before_close)
+      {:ok, times} = Agent.start_link(fn -> [before_close] end)
+
+      clock = fn ->
+        Agent.get_and_update(times, fn [at | rest] ->
+          {at, if(rest == [], do: [at], else: rest)}
+        end)
+      end
+
+      executor =
+        Broker.executor!(ctx.journal, fake,
+          clock: clock,
+          policy: Broker.policy("1000", "5000")
+        )
+
+      :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
+      group = ask!(Map.merge(ctx, %{executor: executor}), "approval-clock")
+
+      case crossing do
+        :while_parked ->
+          Agent.update(times, fn _ -> [after_close] end)
+          assert {:ok, %{status: :placed}} = Executor.approve(executor, group, "operator")
+          assert Fake.calls(fake, "place_") == ["place_equity_order"]
+
+        :after_fresh_capture ->
+          Agent.update(times, fn _ -> [before_close, before_close, after_close] end)
+
+          assert {:error, {:context, :clock_changed}} =
+                   Executor.approve(executor, group, "operator")
+
+          assert Fake.calls(fake, "place_") == []
+
+          assert Enum.any?(Broker.records(ctx.path), fn record ->
+                   record["group_id"] == group and record["type"] == "close" and
+                     record["reason"] == "clock_changed"
+                 end)
+      end
+    end
+  end
 end

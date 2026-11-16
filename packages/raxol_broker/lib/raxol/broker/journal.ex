@@ -775,7 +775,8 @@ defmodule Raxol.Broker.Journal do
   end
 
   def handle_call({:day_baseline, fields}, _from, state) do
-    with {:ok, record} <- Codec.encode_day_baseline(fields, state.clock.()),
+    with {:ok, {fields, at}} <- Raxol.Broker.Plain.normalize({fields, state.clock.()}),
+         {:ok, record} <- Codec.encode_day_baseline(fields, at),
          key = {:day_baseline, fields.account, to_us(fields.day_start)},
          [] <- :ets.lookup(state.table, key),
          {:ok, _offsets} <- write(state, [record]) do
@@ -783,6 +784,7 @@ defmodule Raxol.Broker.Journal do
       {:reply, :ok, state}
     else
       [_existing] -> {:reply, {:error, :day_baseline_exists}, state}
+      {:error, {:not_plain, _path}} -> refuse(state, :invalid_day_baseline)
       {:error, reason} -> refuse(state, reason)
     end
   end

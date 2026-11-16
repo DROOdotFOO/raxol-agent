@@ -2,7 +2,9 @@ defmodule Raxol.Broker.DailyBaseline do
   @moduledoc """
   Captures the account's live USD `total_value` only in the first 60 seconds
   of a New York day. Both the start and completion of the read must fall in
-  that window. Missing it leaves baseline-dependent orders denied all day.
+  that window. Missing it leaves baseline-dependent orders denied all day;
+  the first drawdown-policy evaluation also disarms and pauses strategies.
+  Capture on a later day does not resume or arm them automatically.
 
   The journal is authoritative: an existing account/day capture is never
   refreshed, including after restart. Reads use the read-only MCP client in
@@ -17,7 +19,7 @@ defmodule Raxol.Broker.DailyBaseline do
 
   require Logger
 
-  alias Raxol.Broker.{AccountPin, Journal, MarketCalendar, Response}
+  alias Raxol.Broker.{AccountPin, Clock, Journal, MarketCalendar, Response}
   alias Raxol.Broker.Journal.Codec
   alias Raxol.Broker.MCP.Client
 
@@ -61,37 +63,47 @@ defmodule Raxol.Broker.DailyBaseline do
   def handle_info({:baseline_read, pid, result}, %{task: {pid, ref, started}} = state) do
     Process.demonitor(ref, [:flush])
     state = %{state | task: nil}
-    now = state.clock.()
 
-    result =
-      with {:ok, value, observed} <- result,
-           true <- DateTime.compare(observed, started) != :lt,
-           true <- DateTime.compare(now, observed) != :lt do
-        Journal.record_day_baseline(
-          %{
-            account: state.account,
-            day_start: state.day,
-            value: value,
-            currency: "USD",
-            request_started_at: started,
-            observed_at: observed
-          },
-          state.journal
-        )
-      else
-        _invalid -> {:error, :invalid_observation}
-      end
+    case Clock.now(state.clock) do
+      {:ok, now} ->
+        result =
+          with {:ok, value, observed} <- result,
+               true <- DateTime.compare(observed, started) != :lt,
+               true <- DateTime.compare(now, observed) != :lt do
+            Journal.record_day_baseline(
+              %{
+                account: state.account,
+                day_start: state.day,
+                value: value,
+                currency: "USD",
+                request_started_at: started,
+                observed_at: observed
+              },
+              state.journal
+            )
+          else
+            _invalid -> {:error, :invalid_observation}
+          end
 
-    case result do
-      :ok -> {:noreply, tomorrow(%{state | last: now}, now)}
-      {:error, reason} -> {:noreply, failed(state, now, reason)}
+        case result do
+          :ok -> {:noreply, tomorrow(%{state | last: now}, now)}
+          {:error, reason} -> {:noreply, failed(state, now, reason)}
+        end
+
+      {:error, reason} ->
+        {:noreply, clock_failed(state, reason)}
     end
   catch
     :exit, reason -> {:stop, {:journal_unavailable, reason}, state}
   end
 
   def handle_info({:DOWN, ref, :process, pid, reason}, %{task: {pid, ref, _}} = state) do
-    {:noreply, failed(%{state | task: nil}, state.clock.(), {:read_down, reason})}
+    state = %{state | task: nil}
+
+    case Clock.now(state.clock) do
+      {:ok, now} -> {:noreply, failed(state, now, {:read_down, reason})}
+      {:error, clock_error} -> {:noreply, clock_failed(state, {:read_down, reason, clock_error})}
+    end
   end
 
   def handle_info(_message, state), do: {:noreply, state}
@@ -106,13 +118,19 @@ defmodule Raxol.Broker.DailyBaseline do
   def terminate(_reason, _state), do: :ok
 
   defp capture(state) do
-    now = state.clock.()
+    case Clock.now(state.clock) do
+      {:ok, now} -> capture_at(state, now)
+      {:error, reason} -> clock_failed(state, reason)
+    end
+  end
+
+  defp capture_at(state, now) do
     day = MarketCalendar.day_start(now)
     state = if state.day == day, do: state, else: %{state | day: day, attempts: 0}
 
     cond do
-      state.last && DateTime.compare(now, state.last) == :lt -> tomorrow(state, state.last)
-      state.due && DateTime.compare(now, state.due) == :lt -> state
+      state.last && DateTime.compare(now, state.last) == :lt -> tomorrow(state, now)
+      state.due && DateTime.compare(now, state.due) == :lt -> schedule(state, now, state.due)
       true -> maybe_read(%{state | last: now}, now, day)
     end
   end
@@ -142,14 +160,21 @@ defmodule Raxol.Broker.DailyBaseline do
   defp fetch(state) do
     with :ok <- AccountPin.check(read(state.client, "get_accounts", %{}), state.account),
          {:ok, body} <- read(state.client, "get_portfolio", %{"account_number" => state.account}),
-         {:ok, value} <- Codec.portfolio_value(body) do
-      {:ok, value, state.clock.()}
+         {:ok, value} <- Codec.portfolio_value(body),
+         {:ok, observed} <- Clock.now(state.clock) do
+      {:ok, value, observed}
     end
   catch
     :exit, reason -> {:error, {:client_unavailable, reason}}
   end
 
   defp read(client, name, args), do: Response.body(Client.call(client, name, args, @timeout))
+
+  defp clock_failed(state, reason) do
+    Logger.warning("[Broker.DailyBaseline] clock refused: #{inspect(reason, structs: false)}")
+    state.schedule.(@retry)
+    state
+  end
 
   defp failed(state, now, reason) do
     Logger.warning("[Broker.DailyBaseline] capture refused: #{inspect(reason, structs: false)}")
@@ -173,7 +198,8 @@ defmodule Raxol.Broker.DailyBaseline do
   end
 
   defp schedule(state, now, due) do
-    state.schedule.(max(DateTime.diff(due, now, :millisecond), 0))
+    remaining_us = max(DateTime.diff(due, now, :microsecond), 0)
+    state.schedule.(div(remaining_us + 999, 1000))
     %{state | due: due}
   end
 end
