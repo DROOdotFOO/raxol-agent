@@ -21,10 +21,16 @@ defmodule Raxol.Payments.ChainReader.Stub do
     state = %{
       receipts: Keyword.get(opts, :receipts, %{}),
       balances: Keyword.get(opts, :balances, %{}),
-      erc20: Keyword.get(opts, :erc20, %{})
+      erc20: Keyword.get(opts, :erc20, %{}),
+      requests: Keyword.get(opts, :requests, %{})
     }
 
     {__MODULE__, state}
+  end
+
+  @impl true
+  def request(state, chain, method, params) do
+    Map.get(state.requests, {chain, method, params}, {:error, :not_found})
   end
 
   @impl true

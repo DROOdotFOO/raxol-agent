@@ -38,6 +38,17 @@ defmodule Raxol.Payments.ChainReader do
               owner :: String.t()
             ) :: {:ok, non_neg_integer()} | {:error, term()}
 
+  @doc "Bounded raw protocol read; optional for accounting-only readers."
+  @callback request(state(), pos_integer(), String.t(), list()) ::
+              {:ok, term()} | {:error, atom()}
+  @optional_callbacks request: 4
+
+  def request({module, state}, chain, method, params) do
+    if function_exported?(module, :request, 4),
+      do: module.request(state, chain, method, params),
+      else: {:error, :unsupported_read}
+  end
+
   @doc """
   Fetch a receipt for `tx_hash` on `chain_id`. `{:ok, :pending}` means the tx is
   not yet mined; the caller decides whether to retry.

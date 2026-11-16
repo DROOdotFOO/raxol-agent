@@ -1,6 +1,7 @@
 defmodule Raxol.Payments.Ramp.Peer do
   @moduledoc """
-  Read-only Peer Curator v3 quote adapter, pinned to @zkp2p/sdk 0.15.0-rc.11.
+  Peer Curator onramp reads and concrete maker/offramp execution, pinned to
+  @zkp2p/sdk 0.15.0-rc.11.
 
   Requires trusted `:user` and `:orchestrator` addresses in context and a validated
   `:intent`. `:req_options` injects Req's transport (e.g. a Plug in unit tests).
@@ -9,8 +10,9 @@ defmodule Raxol.Payments.Ramp.Peer do
   HTTP Date must be within 30 seconds, Age must be absent/zero, and expiry
   must be future and at most five minutes away.
 
-  Only direct USD/Base USDC onramps without region constraints are currently supported.
-  Offramp maker capabilities, composition, and execution belong to R2–R5. Browser and payment-account
+  Direct USD/Base USDC ramps without region constraints are supported.
+  Offramp execution delegates to `Peer.Maker`; the default maker implementation
+  reads fresh Base protocol/oracle and public-indexer evidence. Browser and payment-account
   enrollment readiness must be attested by the trusted caller (`:interaction_ready` and a per-rail `:ready_rails` allowlist); otherwise
   no executable offers are returned. Availability is quote-specific, so offer bounds
   equal the exact requested amount. Requoting preserves the offer reference but
@@ -27,6 +29,9 @@ defmodule Raxol.Payments.Ramp.Peer do
   }
 
   @impl true
+  def capabilities(%{intent: %Ramp.Intent{direction: "offramp"}} = context),
+    do: __MODULE__.Discovery.capabilities(context)
+
   def capabilities(context) do
     with {:ok, entries} <- fetch(context) do
       {:ok, Enum.map(entries, &elem(&1, 0))}
@@ -34,6 +39,9 @@ defmodule Raxol.Payments.Ramp.Peer do
   end
 
   @impl true
+  def preview(%Ramp.Intent{direction: "offramp"} = intent, offer_ref, revision, context),
+    do: __MODULE__.Discovery.preview(intent, offer_ref, revision, context)
+
   def preview(intent, offer_ref, revision, context) do
     with {:ok, entries} <- fetch(Map.put(context, :intent, intent)),
          {offer, values} <- Enum.find(entries, fn {offer, _} -> offer.offer_id == offer_ref end),
@@ -47,11 +55,11 @@ defmodule Raxol.Payments.Ramp.Peer do
   end
 
   @impl true
-  def approve(_, _, _, _), do: {:error, :not_implemented}
+  defdelegate approve(operation, quote, command, context), to: __MODULE__.Maker
   @impl true
-  def status(_, _), do: {:error, :not_implemented}
+  defdelegate status(operation, context), to: __MODULE__.Maker
   @impl true
-  def recover(_, _, _, _), do: {:error, :not_implemented}
+  defdelegate recover(operation, action, command, context), to: __MODULE__.Maker
 
   defp fetch(%{intent: %Ramp.Intent{} = intent} = context) do
     with :ok <- supported(intent, context),
