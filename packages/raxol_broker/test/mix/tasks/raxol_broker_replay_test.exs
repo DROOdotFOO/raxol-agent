@@ -170,4 +170,39 @@ defmodule Mix.Tasks.Raxol.Broker.ReplayTest do
       Mix.Tasks.Raxol.Broker.Replay.run(["--date", "2026-10-02", "--journal", path])
     end
   end
+
+  test "account numbers are redacted unless --unredacted is given",
+       %{opts: opts, name: name, path: path} do
+    start_supervised!({Journal, opts})
+    ExecutorIdentity.assume!(name)
+    ctx = context()
+    allow = Policy.evaluate(limit("2"), ctx)
+
+    text = Jason.encode!(%{"data" => %{"account_number" => "5QR12345", "state" => "queued"}})
+
+    {:ok, _id} =
+      Journal.append_group(
+        %{
+          intent: limit("2"),
+          context: ctx,
+          entries: [
+            {:verdict, :pre_review, allow},
+            {:review, %{"account_number" => "5QR12345", "rhs_account_number" => 998_877_665}},
+            {:verdict, :post_review, allow},
+            {:placing},
+            {:order, :placed, %{"content" => [%{"type" => "text", "text" => text}]}}
+          ]
+        },
+        name
+      )
+
+    Mix.Tasks.Raxol.Broker.Replay.run(["--date", "2026-10-02", "--journal", path])
+    shared = Enum.join(output(), "\n")
+    refute shared =~ "5QR12345"
+    refute shared =~ "998877665"
+    assert shared =~ "[account]"
+
+    Mix.Tasks.Raxol.Broker.Replay.run(["--date", "2026-10-02", "--journal", path, "--unredacted"])
+    assert Enum.join(output(), "\n") =~ "5QR12345"
+  end
 end

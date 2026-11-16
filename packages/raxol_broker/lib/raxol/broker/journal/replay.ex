@@ -21,6 +21,14 @@ defmodule Raxol.Broker.Journal.Replay do
   controls are written as visible `\\uXXXX` escapes and invalid UTF-8 bytes
   as `\\xNN`, so journal content (intent ids and strategies can come from
   model output) cannot drive the terminal.
+
+  ## Redaction
+
+  With `redact: true` every account number in the journal is printed as
+  `[account]`, so a replay can be shared. Account numbers are found as the
+  values of `account_number` and `rhs_account_number` keys anywhere in a
+  record, and inside the JSON text of recorded responses; every occurrence
+  of each in the rendered lines is replaced, wherever it appears.
   """
 
   alias Raxol.Agent.Journal.Chain
@@ -28,18 +36,23 @@ defmodule Raxol.Broker.Journal.Replay do
   alias Raxol.Broker.Journal
   alias Raxol.Broker.Journal.Groups
 
+  @account_text ~r/"(?:rhs_)?account_number"\s*:\s*"?([A-Za-z0-9\-]+)"?/
+  @account_keys ["account_number", "rhs_account_number"]
+  @redacted "[account]"
+
   @doc """
   Load and render the journal at `path` for `date`. `{:error, reason}` when
-  there is no journal there or its chain is broken.
+  there is no journal there or its chain is broken. Options: `:redact`
+  (default `false`; see "Redaction").
   """
-  @spec run(Path.t(), Date.t()) :: {:ok, [String.t()]} | {:error, term()}
-  def run(path, %Date{} = date) do
+  @spec run(Path.t(), Date.t(), keyword()) :: {:ok, [String.t()]} | {:error, term()}
+  def run(path, %Date{} = date, opts \\ []) do
     {base, session} = Journal.location(path)
 
     with true <- File.dir?(Path.join(base, session)) || {:error, {:no_journal, path}},
          :ok <- verified(FileStore.verify_session(session, base_dir: base)),
          {:ok, records} <- FileStore.read_records(session, base_dir: base) do
-      {:ok, render(records, date)}
+      {:ok, render(records, date, opts)}
     end
   end
 
@@ -47,9 +60,9 @@ defmodule Raxol.Broker.Journal.Replay do
   defp verified({:broken, offset}), do: {:error, {:broken, offset}}
   defp verified({:error, :unchained}), do: {:error, :unchained}
 
-  @doc "Render decoded journal records for `date` (UTC) as text lines."
-  @spec render([map()], Date.t()) :: [String.t()]
-  def render(records, %Date{} = date) do
+  @doc "Render decoded journal records for `date` (UTC) as text lines; `opts` as `run/3`."
+  @spec render([map()], Date.t(), keyword()) :: [String.t()]
+  def render(records, %Date{} = date, opts \\ []) do
     {groups, fills} = Groups.fold(records)
     groups = Enum.filter(groups, &on?(&1.opened_at, date))
     fills = Enum.filter(fills, &on?(&1["at"], date))
@@ -57,9 +70,40 @@ defmodule Raxol.Broker.Journal.Replay do
     header =
       "broker journal #{Date.to_iso8601(date)} (UTC): #{length(groups)} group(s), #{length(fills)} fill(s)"
 
-    [header | Enum.flat_map(groups, &group_lines/1) ++ Enum.map(fills, &fill_line/1)]
-    |> Enum.map(&escape/1)
+    lines = [header | Enum.flat_map(groups, &group_lines/1) ++ Enum.map(fills, &fill_line/1)]
+
+    lines =
+      if Keyword.get(opts, :redact, false), do: redact(lines, accounts(records)), else: lines
+
+    Enum.map(lines, &escape/1)
   end
+
+  @doc "Every account number `records` hold (see \"Redaction\")."
+  @spec accounts(term()) :: [String.t()]
+  def accounts(records),
+    do: records |> collect([]) |> Enum.uniq() |> Enum.sort_by(&(-byte_size(&1)))
+
+  defp collect(map, acc) when is_map(map) do
+    Enum.reduce(map, acc, fn
+      {key, value}, acc when key in @account_keys and (is_binary(value) or is_integer(value)) ->
+        [to_string(value) | acc]
+
+      {_key, value}, acc ->
+        collect(value, acc)
+    end)
+  end
+
+  defp collect(list, acc) when is_list(list), do: Enum.reduce(list, acc, &collect/2)
+
+  defp collect(text, acc) when is_binary(text) do
+    for([_, number] <- Regex.scan(@account_text, text), do: number) ++ acc
+  end
+
+  defp collect(_other, acc), do: acc
+
+  # Longest first, so one number that contains another is replaced whole.
+  defp redact(lines, []), do: lines
+  defp redact(lines, accounts), do: Enum.map(lines, &String.replace(&1, accounts, @redacted))
 
   @doc """
   Make `line` safe to print: C0 controls (< 0x20), DEL and C1 controls

@@ -1,9 +1,76 @@
 # Raxol Broker
 
-Fail-closed brokerage policy parsing, initialization and order evaluation, a
-hash-chained decision journal, and a read-only Robinhood MCP session, for
-Raxol. The package is pre-alpha. This release does not include order
-execution, arming, or review.
+A guarded order path from Raxol to Robinhood's agent MCP server: written
+limits checked in code before and after Robinhood's own review, explicit
+arming, a hash-chained journal of every decision, strategy runners, ASK
+approvals in the terminal, LiveView and SSH, and kill and dead-man
+switches. Equity orders only. The package is pre-alpha and has not yet
+traded real money; a read-only session and the policy tooling work on
+their own.
+
+## Quick start
+
+Limits come first: nothing stores a credential before the policy file
+loads. Run these from your project, in this order.
+
+1. Write the policy.
+
+   ```sh
+   mix raxol.broker.init --max-notional 25 --daily-cap 100
+   ```
+
+   Expect `Wrote broker.policy.exs` and the recommendation to turn on trade
+   approvals in the Robinhood app.
+
+2. Sign in and check the session.
+
+   ```sh
+   mix raxol.broker.connect
+   ```
+
+   The browser opens Robinhood's sign-in. Expect `signed in; credential
+   stored`, `connected: 87 tools served`, `agentic account: <number>` and
+   `no drift from the capture`.
+
+3. Look before trading.
+
+   ```sh
+   mix raxol.broker.inspect --sample "buy F 1 @ 12.25"
+   ```
+
+   Expect the accounts, buying power, positions, `mode: disarmed`,
+   `journal: ok` and the sample's verdict with `(no order placed)`.
+
+4. Add a strategy.
+
+   ```sh
+   mix raxol.broker.strategy add dip_buy --symbol F --usd 25
+   ```
+
+   Expect `added dip_buy-F (dip_buy symbol=F usd=25)`.
+
+5. Start the broker in `iex -S mix` (see "Quote feed" for the
+   `Raxol.Broker.Supervisor` children) and open the dashboard with
+   `Raxol.run(Raxol.Broker.Dashboard)`. Expect `mode: DISARMED` and the
+   strategy `running`; its intents are journaled as dry run and nothing is
+   sent.
+
+6. Arm, from the same `iex` session.
+
+   ```elixir
+   Mix.Task.rerun("raxol.broker.arm")
+   ```
+
+   Expect the checks, including `account <number> is the agentic account`
+   and `trade approvals in the Robinhood app: on`, then type `ARM`; expect
+   `armed`. `Mix.Task.rerun("raxol.broker.disarm")` or `K` then `y` on the
+   dashboard stops it.
+   If trade approvals are off, arming refuses with `{:approvals_off, account}`
+   before confirmation and writes nothing; turn them on in the Robinhood app.
+
+   Use `Mix.Task.rerun/2`, not `Mix.Task.run/2`, for every broker task in
+   `iex`: `Mix.Task.run/2` runs a task once per VM and answers `:noop`
+   after that, so a second arm, kill or beat would silently do nothing.
 
 ## Policy
 
@@ -326,7 +393,10 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   admits Robinhood; with `credential: [store: ..., auth: ...]` the session
   carries the stored credential's bearer, is refreshed five minutes before
   the token expires and on a 401 at connect, and reconnects with the new
-  token after any review in flight.
+  token after any review in flight. A refresh Robinhood refuses disarms the
+  broker (`reauth_required`): sign in again with `mix raxol.broker.connect`
+  and the executor takes the new credential over, but orders wait for a
+  fresh `mix raxol.broker.arm`.
 
 Only equity orders (`review_equity_order`, `place_equity_order`) and equity
 cancels are mapped until the generated tool adapters land; options and
@@ -431,9 +501,10 @@ claimant, the executor, may write a `resolve` record.
 
 ## Kill switch and dead-man switch
 
-```sh
-mix raxol.broker.kill   # in the broker's VM
-mix raxol.broker.beat
+```elixir
+# In the broker's iex session (rerun: Mix.Task.run runs a task once per VM)
+Mix.Task.rerun("raxol.broker.kill")
+Mix.Task.rerun("raxol.broker.beat")
 ```
 
 `Raxol.Broker.Halt.kill/1` (the task, or `K` then `y` on an operator's
@@ -606,7 +677,7 @@ the chain exists so history cannot be edited. To recover:
 ### Replay
 
 ```sh
-mix raxol.broker.replay --date 2026-10-02 [--journal PATH]
+mix raxol.broker.replay --date 2026-10-02 [--journal PATH] [--unredacted]
 ```
 
 Prints every group opened that day (UTC) in journal order: intent, context,
@@ -615,7 +686,9 @@ and outcome. Rules before a denying rule show `pass` (they allowed or asked)
 and rules after it `not run`, because the policy stops at the first DENY.
 Control characters in recorded text are printed escaped, never raw. The task
 reads without taking the writer lock, so it works while the broker runs, and
-refuses a journal whose chain does not verify.
+refuses a journal whose chain does not verify. Account numbers, wherever
+they appear in recorded responses, print as `[account]` so a replay can be
+shared; `--unredacted` prints them.
 
 ## Fake server
 

@@ -5,7 +5,9 @@ defmodule Mix.Tasks.Raxol.Broker.Beat do
 
       mix raxol.broker.beat
 
-  Run it in the broker's VM (`iex -S mix`), where the heartbeat runs.
+  Run it in the broker's VM (`iex -S mix`), where the heartbeat runs, as
+  `Mix.Task.rerun("raxol.broker.beat")`: `Mix.Task.run/2` runs a task once
+  per VM, so a second beat through it would do nothing.
   """
 
   use Mix.Task

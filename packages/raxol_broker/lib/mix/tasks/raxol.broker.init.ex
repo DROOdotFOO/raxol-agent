@@ -85,6 +85,11 @@ defmodule Mix.Tasks.Raxol.Broker.Init do
 
     stage_and_publish!(path, contents)
     Mix.shell().info("Wrote #{path}")
+
+    Mix.shell().info(
+      "Recommended for the first weeks: turn on trade approvals for the agentic account " <>
+        "in the Robinhood app, so every order also waits for your approval there."
+    )
   end
 
   defp ensure_destination_available!(path) do
