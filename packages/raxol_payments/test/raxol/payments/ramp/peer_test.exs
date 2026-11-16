@@ -195,7 +195,7 @@ defmodule Raxol.Payments.Ramp.PeerTest do
   test "caller cannot enable unsupported region, route, asset or browser requirements" do
     assert {:error, :not_supported} = Ramps.discover(Map.put(intent(), "region", "US"), context())
 
-    assert {:error, :not_supported} =
+    assert {:error, :capability_unavailable} =
              Ramps.discover(Map.put(intent(), "direction", "offramp"), context())
 
     assert {:error, :setup_required} =
@@ -266,7 +266,7 @@ defmodule Raxol.Payments.Ramp.PeerTest do
 
   test "execution requires durable coordination" do
     assert Peer.approve(nil, nil, nil, %{}) == {:error, :checkpoint_required}
-    assert Peer.status(nil, %{}) == {:error, :operation_not_found}
+    assert Peer.status(nil, %{}) == {:error, :checkpoint_required}
     assert Peer.recover(nil, nil, nil, %{}) == {:error, :checkpoint_required}
   end
 
