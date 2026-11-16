@@ -10,7 +10,7 @@ ExUnit.start()
 #     with a funded wallet.
 #   :live_relay -- drives the EVM->Tron relay with a funded wallet.
 #   :live_property -- property runs against the live quote endpoints.
-live_exclude = [:live_xochi, :live_relay, :live_property]
+live_exclude = [:live_xochi, :live_relay, :live_property, :live_peer]
 
 # Each entry excludes a tag by default unless its enabling env var is set.
 # These read fixtures or spawn a local CLI; none of them move funds.

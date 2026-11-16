@@ -1,0 +1,38 @@
+{
+  "success": true,
+  "responseObject": {
+    "fiat": {
+      "currencyCode": "USD"
+    },
+    "token": {
+      "chainId": 8453,
+      "decimals": 6,
+      "token": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+    },
+    "quoteExpiresAt": "2026-11-16T12:01:00Z",
+    "orchestratorAddress": "0x0000000000000000000000000000000000000002",
+    "mode": "eligible",
+    "platformQuotes": [
+      {
+        "platform": "wise",
+        "supported": true,
+        "available": true,
+        "bestQuote": {
+          "fiatAmount": "100000000",
+          "tokenAmount": "99000000",
+          "totalFeeAmount": "1000000",
+          "paymentMethod": "wise",
+          "whitelistEnabled": false,
+          "disputeProtectionRequiresStake": false,
+          "intent": {
+            "processorName": "wise",
+            "fiatCurrencyCode": "USD",
+            "chainId": "8453",
+            "toAddress": "0x0000000000000000000000000000000000000001",
+            "orchestratorAddress": "0x0000000000000000000000000000000000000002"
+          }
+        }
+      }
+    ]
+  }
+}

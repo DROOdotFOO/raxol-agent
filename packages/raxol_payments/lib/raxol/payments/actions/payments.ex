@@ -27,6 +27,8 @@ defmodule Raxol.Payments.Actions.Payments do
   @actions [
     Raxol.Payments.Actions.Payments.GetWalletInfo,
     Raxol.Payments.Actions.Payments.GetQuote,
+    Raxol.Payments.Actions.Payments.DiscoverRamps,
+    Raxol.Payments.Actions.Payments.PreviewRamp,
     Raxol.Payments.Actions.Payments.Transfer,
     Raxol.Payments.Actions.Payments.SpendingStatus,
     Raxol.Payments.Actions.Payments.ListHistory,

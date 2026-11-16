@@ -77,3 +77,44 @@ or **external (C)**, returning the deposit address for an outside wallet to fund
 - `Raxol.Payments.Req.Mandate`: Req plugin attaching `X-Xochi-Delegation` on outbound Xochi calls
 
 See the [Agentic Commerce docs](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/AGENTIC_COMMERCE.md) for the full design.
+
+### Read-only Peer ramps
+
+`Raxol.Payments.Ramps.discover/2` and `preview/4` accept a validated snake_case
+`ramp/1` intent and trusted runtime context. The `payment_discover_ramps` and
+`payment_preview_ramp` actions expose these through `context.ramps`; tool input
+cannot set the provider, transport, browser readiness, or wallet configuration.
+Amounts remain canonical atomic strings. The packaged canonical schema and
+cross-runtime vectors are pinned in `test/fixtures/ramp/README.md`.
+
+The initial adapter supports direct USD/Base USDC onramps. It queries Peer's
+public Curator v3 best-by-platform API for each discovery and preview. Offers
+apply to the exact requested amount; preview requotes and rejects changed prices,
+fees, rails or requirements. HTTP Date must be within 30 seconds, Age must be
+zero/absent, and quote expiry must be within five minutes. Missing/malformed/stale
+responses fail closed, and no raw response or provider error reaches action
+results. Fractional fiat cents are rejected without rounding.
+
+Trusted runtime context requires `:user` and `:orchestrator` public addresses
+(the orchestrator must be obtained from the reviewed Peer deployment), plus
+`:interaction_ready` only after the user's browser extension, origin connection,
+and required payment-account enrollment have been checked. The `:ready_rails` list
+contains only the rail names for which those checks succeeded. None of these checks
+are inferred from an LLM request. `:req_options` injects Req transport for tests.
+
+Offramps, regional eligibility, composed routes, execution, resume and recovery
+remain unavailable. Provider execution callbacks return `{:error, :not_implemented}`
+until R2–R4 (DROOdotFOO/raxol #1358, #1360, #1359); the read-only facade omits them.
+
+Run deterministic coverage with `mix test test/raxol/payments/ramp`. A network
+check is excluded by default and requires an explicit opt-in:
+
+```sh
+PEER_USER_ADDRESS=0x... PEER_ORCHESTRATOR_ADDRESS=0x... \
+PEER_INTERACTION_READY=true PEER_READY_RAILS=wise \
+mix test --only live_peer test/raxol/payments/ramp/live_peer_test.exs
+```
+
+The current host's public probe returned HTTP 400. The positive fixture is
+synthetic SDK-shaped data, not a successful live recording; live availability
+must be demonstrated before release.
