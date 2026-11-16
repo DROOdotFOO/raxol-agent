@@ -60,6 +60,33 @@ defmodule Raxol.Payments.ChainReader.JSONRPC do
 
   def get_erc20_balance(_state, _chain_id, _token, _owner), do: {:error, :invalid_argument}
 
+  @impl true
+  def request(state, chain, method, params)
+      when method in ~w(eth_chainId eth_blockNumber eth_getBlockByNumber eth_call eth_getTransactionByHash eth_getTransactionReceipt eth_getTransactionCount eth_estimateGas eth_gasPrice eth_maxPriorityFeePerGas) do
+    bounded_call(state, chain, method, params)
+  end
+
+  def request(_, _, _, _), do: {:error, :unsupported_read}
+
+  @doc "Submit once; callers must durably reserve the operation and hash first."
+  def broadcast(state, chain, raw),
+    do: bounded_call(state, chain, "eth_sendRawTransaction", [raw])
+
+  defp bounded_call(state, chain, method, params) do
+    # Never retry a submission or return/log raw provider errors.
+    opts =
+      Keyword.merge(state.req_options, retry: false, redirect: false, receive_timeout: 10_000)
+
+    case call(%{state | req_options: opts}, chain, method, params) do
+      {:ok, value} -> {:ok, value}
+      _ -> {:error, :chain_unavailable}
+    end
+  rescue
+    _ -> {:error, :chain_unavailable}
+  catch
+    _, _ -> {:error, :chain_unavailable}
+  end
+
   # -- internal --
 
   defp pad_address("0x" <> hex), do: hex |> String.downcase() |> String.pad_leading(64, "0")

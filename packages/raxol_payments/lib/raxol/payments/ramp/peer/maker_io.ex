@@ -13,8 +13,8 @@ defmodule Raxol.Payments.Ramp.Peer.MakerIO do
   `unmatched` excludes active intents and fees. Confirmed fiat fills alone count
   as delivered. Implementations must bind operation refs to the original wallet.
 
-  Runtime injection is `{module, handle}` under `:maker_io`. No live transport is
-  enabled by default: deployment must supply this trusted SDK/wallet integration.
+  Runtime injection is `{module, handle}` under `:maker_io`. The default `LiveIO` implements public protocol/indexer reads and unsigned
+  planning; deployments configure supervised resources and user-wallet setup.
   """
   @callback prepare(term(), String.t(), :create_deposit | :withdraw_unmatched, map(), map()) ::
               {:ok, map()} | {:error, atom()}

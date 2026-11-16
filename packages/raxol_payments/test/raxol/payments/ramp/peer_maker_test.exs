@@ -36,7 +36,7 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     end
 
     def reconcile(pid, _, mapping) do
-      Agent.update(pid, &Map.put(&1, :last_pending, mapping.pending_action_ref))
+      Agent.update(pid, &Map.put(&1, :last_pending, mapping.requested_action_ref))
       Agent.get(pid, & &1.facts)
     end
   end
@@ -113,7 +113,7 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
       maker_io: {MemoryIO, fake},
       maker_wallet: {MemoryIO, fake},
       ledger: ledger,
-      policy: %SpendingPolicy{
+      peer_cashout_policy: %SpendingPolicy{
         per_request_max: Decimal.new(10),
         session_max: Decimal.new(100),
         lifetime_max: Decimal.new(1000),
@@ -198,7 +198,12 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     assert {:error, :invalid_request} = approve(c, %{command() | approved: false})
     expired = %{c | now: fn -> DateTime.add(@now, 120) end}
     assert {:error, :invalid_request} = approve(expired)
-    denied = %{c | policy: %{c.policy | per_request_max: Decimal.new("0.01")}}
+
+    denied = %{
+      c
+      | peer_cashout_policy: %{c.peer_cashout_policy | per_request_max: Decimal.new("0.01")}
+    }
+
     assert {:ok, _} = approve(denied)
     assert Agent.get(fake, & &1.requests) == []
   end
@@ -207,7 +212,7 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     Agent.update(fake, &Map.put(&1, :validation, {:error, :invalid_plan}))
     assert {:ok, _} = approve(c)
     assert Agent.get(fake, & &1.requests) == []
-    assert Ledger.get_history(c.ledger, :unknown) == []
+    assert Ledger.get_history(c.ledger, {:peer_cashout, :unknown}) == []
   end
 
   test "reconciles deposit then requires a distinct withdrawal approval", %{
@@ -274,6 +279,23 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     assert {:ok, %{total: "1000000", deposit_id: _}} = Mapping.fetch(mapping, "op_synthetic")
     assert {:ok, _} = approve(%{c | maker_mapping: mapping})
     assert length(Agent.get(fake, & &1.requests)) == 1
+  end
+
+  test "Peer cash-out has a separate policy and budget class", %{context: c, fake: fake} do
+    Ledger.record_spend(c.ledger, :unknown, Decimal.new(10_000))
+    assert {:requires_user, _, _} = approve(c)
+    assert length(Ledger.get_history(c.ledger, {:peer_cashout, :unknown})) == 1
+    assert length(Ledger.get_history(c.ledger, :unknown)) == 1
+    assert length(Agent.get(fake, & &1.requests)) == 1
+  end
+
+  test "generic spending policy cannot replace a dedicated cash-out policy", %{
+    context: c,
+    fake: fake
+  } do
+    generic = c |> Map.put(:policy, c.peer_cashout_policy) |> Map.delete(:peer_cashout_policy)
+    assert {:ok, _} = approve(generic)
+    assert Agent.get(fake, & &1.requests) == []
   end
 
   test "idempotency key cannot authorize a different operation", %{context: c, fake: fake} do
