@@ -264,9 +264,9 @@ defmodule Raxol.Payments.Ramp.PeerTest do
     assert {:ok, []} = Ramps.discover(intent(), Map.put(context(), :ready_rails, []))
   end
 
-  test "execution is explicitly deferred" do
-    assert Peer.approve(nil, nil, nil, %{}) == {:error, :not_implemented}
-    assert Peer.status(nil, %{}) == {:error, :not_implemented}
-    assert Peer.recover(nil, nil, nil, %{}) == {:error, :not_implemented}
+  test "execution fails closed without trusted runtime dependencies" do
+    assert Peer.approve(nil, nil, nil, %{}) == {:error, :provider_unavailable}
+    assert Peer.status(nil, %{}) == {:error, :provider_unavailable}
+    assert Peer.recover(nil, nil, nil, %{}) == {:error, :invalid_request}
   end
 end

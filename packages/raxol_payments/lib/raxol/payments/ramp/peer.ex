@@ -10,7 +10,8 @@ defmodule Raxol.Payments.Ramp.Peer do
   must be future and at most five minutes away.
 
   Only direct USD/Base USDC onramps without region constraints are currently supported.
-  Offramp maker capabilities, composition, and execution belong to R2–R5. Browser and payment-account
+  Offramp execution delegates to `Peer.Maker` with trusted maker I/O and wallet
+  dependencies; maker discovery remains unavailable without fresh maker evidence. Browser and payment-account
   enrollment readiness must be attested by the trusted caller (`:interaction_ready` and a per-rail `:ready_rails` allowlist); otherwise
   no executable offers are returned. Availability is quote-specific, so offer bounds
   equal the exact requested amount. Requoting preserves the offer reference but
@@ -47,11 +48,11 @@ defmodule Raxol.Payments.Ramp.Peer do
   end
 
   @impl true
-  def approve(_, _, _, _), do: {:error, :not_implemented}
+  defdelegate approve(operation, quote, command, context), to: __MODULE__.Maker
   @impl true
-  def status(_, _), do: {:error, :not_implemented}
+  defdelegate status(operation, context), to: __MODULE__.Maker
   @impl true
-  def recover(_, _, _, _), do: {:error, :not_implemented}
+  defdelegate recover(operation, action, command, context), to: __MODULE__.Maker
 
   defp fetch(%{intent: %Ramp.Intent{} = intent} = context) do
     with :ok <- supported(intent, context),
