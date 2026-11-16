@@ -125,7 +125,7 @@ defmodule RaxolPayments.MixProject do
   defp package do
     [
       name: "raxol_payments",
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE.md CHANGELOG.md),
+      files: ~w(lib priv .formatter.exs mix.exs README.md LICENSE.md CHANGELOG.md),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
