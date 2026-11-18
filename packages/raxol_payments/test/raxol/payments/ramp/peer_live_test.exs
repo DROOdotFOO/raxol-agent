@@ -9,6 +9,30 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
   @owner "0x0000000000000000000000000000000000000001"
   @zero "0x0000000000000000000000000000000000000000"
 
+  defmodule CrashCheckpoint do
+    @behaviour Checkpoint
+    alias Checkpoint.ETS
+
+    defdelegate fetch(table, key), to: ETS
+    defdelegate delete(table, key), to: ETS
+    defdelegate sweep_expired(table, now), to: ETS
+
+    def put(table, key, record) do
+      interrupt({:before_put, key, record})
+      :ok = ETS.put(table, key, record)
+      interrupt({:after_put, key, record})
+    end
+
+    def put_new(table, key, record) do
+      with :ok <- ETS.put_new(table, key, record), do: interrupt({:after_insert, key, record})
+    end
+
+    defp interrupt(event) do
+      if Process.get(__MODULE__, fn _ -> false end).(event), do: Process.exit(self(), :kill)
+      :ok
+    end
+  end
+
   defmodule MemoryChain do
     @now ~U[2026-11-16 12:00:00Z]
     @behaviour ChainReader
@@ -380,6 +404,59 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
     refute_received :sign_requested
     assert repeat == snapshot
   end
+
+  for point <- [:before_reserve, :after_reserve, :after_claim, :after_mapping, :after_nonce_claim] do
+    test "deposit approval recovers after a crash at #{point}", %{c: c, state: state} do
+      c = preview(c)
+      {_, table} = c.checkpoint
+      c = %{c | checkpoint: {CrashCheckpoint, table}}
+      op = c.preview.operation_id
+      key = "peer_maker:" <> op
+      cmd = %{approved: true, expected_revision: "0", idempotency_key: "interrupted"}
+      point = unquote(point)
+
+      {pid, monitor} =
+        spawn_monitor(fn ->
+          Process.put(CrashCheckpoint, &crash_at?(&1, point, key, op, c))
+          Peer.approve(op, c.preview.quote_id, cmd, c)
+        end)
+
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}, 5_000
+
+      assert {:ok, stored} = Checkpoint.fetch(c.checkpoint, key)
+      assert_reservation(point, stored)
+      snapshot = stored.snapshot
+      assert {:ok, ^snapshot} = Peer.approve(op, c.preview.quote_id, cmd, c)
+      assert {:ok, restored} = Peer.status(op, c)
+      assert restored.peer["state"] == "action_required"
+      assert "recover_peer" in restored.allowed_actions
+
+      retry = %{cmd | expected_revision: restored.revision, idempotency_key: "fresh"}
+      assert {:ok, _} = Peer.recover(op, "recover_peer", retry, c)
+      assert_received :sign_requested
+      refute_received :sign_requested
+      assert Agent.get(state, & &1.broadcasts) == 0
+    end
+  end
+
+  defp assert_reservation(:before_reserve, stored), do: assert(is_nil(stored.pending_action_ref))
+  defp assert_reservation(_, stored), do: assert(is_binary(stored.pending_action_ref))
+
+  defp crash_at?({:before_put, key, %{revision: "1"}}, :before_reserve, key, _, _), do: true
+  defp crash_at?({:after_put, key, %{revision: "1"}}, :after_reserve, key, _, _), do: true
+  defp crash_at?({:after_insert, "peer_command:" <> _, _}, :after_claim, _, _, _), do: true
+
+  defp crash_at?({:before_put, key, %{revision: "1"}}, point, key, op, c) do
+    {:ok, mapping} = Mapping.fetch_maker(c, op)
+
+    case {point, mapping[:pending_kind]} do
+      {:after_mapping, {:requested, :create_deposit}} -> true
+      {:after_nonce_claim, {:nonce, :create_deposit, 0}} -> true
+      _ -> false
+    end
+  end
+
+  defp crash_at?(_, _, _, _, _), do: false
 
   test "a denied withdrawal leaves the existing deposit withdrawable", %{c: c, state: state} do
     c = preview(c)
