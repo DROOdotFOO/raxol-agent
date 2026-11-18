@@ -35,6 +35,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
       do: {:ok, %{"number" => "0x64", "timestamp" => LiveReads.hex(DateTime.to_unix(@now))}}
 
     defp reply(_, "eth_getBlockByNumber", ["finalized", false]), do: {:ok, %{"number" => "0x64"}}
+    defp reply(s, "eth_getTransactionCount", [_, "finalized"]), do: {:ok, s.finalized_nonce}
     defp reply(_, "eth_getTransactionCount", _), do: {:ok, "0x0"}
     defp reply(_, "eth_gasPrice", _), do: {:ok, "0x1"}
     defp reply(_, "eth_maxPriorityFeePerGas", _), do: {:ok, "0x1"}
@@ -60,7 +61,9 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
     @behaviour Peer.MakerWallet
     def validate(context, plan, terms), do: Wallet.validate(context, plan, terms)
 
-    def request(_context, operation, pending, plan) do
+    def request(context, operation, pending, plan) do
+      {:ok, mapping} = Mapping.fetch(context.maker_mapping, operation)
+      :ok = Mapping.put(context.maker_mapping, operation, %{mapping | pending_kind: plan.action})
       send(self(), {:wallet_handoff, operation, pending, plan})
       :ok
     end
@@ -83,6 +86,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
              calls: 0,
              broadcasts: 0,
              fault: nil,
+             finalized_nonce: "0x0",
              transactions: %{},
              receipts: %{},
              rate_limit: nil,
@@ -363,7 +367,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
              )
 
     assert_received :sign_requested
-    assert snapshot.peer["state"] == "in_doubt"
+    assert snapshot.peer["state"] == "action_required"
 
     assert {:ok, repeat} =
              Peer.approve(
@@ -375,6 +379,78 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
 
     refute_received :sign_requested
     assert repeat == snapshot
+  end
+
+  test "a denied withdrawal leaves the existing deposit withdrawable", %{c: c, state: state} do
+    c = preview(c)
+    op = reserve(c)
+    assert :ok = Mapping.put(c.maker_mapping, op, %{total: "2000000", deposit_id: "7"})
+    {:ok, saved} = Checkpoint.fetch(c.checkpoint, "peer_maker:" <> op)
+    :ok = Checkpoint.put(c.checkpoint, "peer_maker:" <> op, %{saved | pending_action_ref: nil})
+    assert {:ok, processing} = Peer.status(op, c)
+    assert processing.peer["state"] == "processing"
+
+    deny = fn _, _ -> :deny end
+
+    command = %{
+      approved: true,
+      expected_revision: processing.revision,
+      idempotency_key: "deny_withdrawal",
+      amount: "2000000"
+    }
+
+    assert {:ok, restored} = Peer.recover(op, "recover_peer", command, %{c | on_confirm: deny})
+    assert restored.peer["state"] == "processing"
+    assert "recover_peer" in restored.allowed_actions
+    assert {:ok, %{peer: %{"state" => "processing"}}} = Peer.status(op, c)
+    assert Agent.get(state, & &1.broadcasts) == 0
+    refute_received :sign_requested
+  end
+
+  test "status checks a crash-window nonce before clearing the pending withdrawal", %{
+    c: c,
+    state: state
+  } do
+    c = preview(c)
+    op = reserve(c)
+    pending = "action_synthetic"
+
+    assert :ok =
+             Mapping.put(c.maker_mapping, op, %{
+               total: "2000000",
+               deposit_id: "7",
+               owner: @owner,
+               pending_action_ref: pending,
+               pending_kind: {:nonce, :withdraw_unmatched, 0}
+             })
+
+    assert :ok = Mapping.claim_nonce(c.maker_mapping, @owner, 0, pending)
+    Agent.update(state, &Map.put(&1, :finalized_nonce, "0x1"))
+    assert {:ok, %{peer: %{"state" => "in_doubt"}}} = Peer.status(op, c)
+    assert {:error, :nonce_reserved} = Mapping.claim_nonce(c.maker_mapping, @owner, 0, "other")
+
+    Agent.update(state, &Map.put(&1, :finalized_nonce, "0x0"))
+    assert {:ok, %{peer: %{"state" => "processing"}}} = Peer.status(op, c)
+    assert :ok = Mapping.claim_nonce(c.maker_mapping, @owner, 0, "other")
+    assert Agent.get(state, & &1.broadcasts) == 0
+  end
+
+  test "status repairs a checkpoint that advanced ahead of the mapping", %{c: c} do
+    c = preview(c)
+    op = reserve(c)
+
+    assert :ok =
+             Mapping.put(c.maker_mapping, op, %{
+               total: "2000000",
+               deposit_id: "7",
+               pending_action_ref: "action_previous",
+               pending_tx_hash: ABI.hash("previous finalized action"),
+               pending_resolved: true
+             })
+
+    assert {:ok, restored} = Peer.status(op, c)
+    assert restored.peer["state"] == "processing"
+    assert "recover_peer" in restored.allowed_actions
   end
 
   test "wallet refuses changed calldata and denied approval before signing", %{c: c} do

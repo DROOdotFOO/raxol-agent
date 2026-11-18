@@ -13,7 +13,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   Before any I/O the operation is reserved in the checkpoint. Once wallet
   handoff starts, only reconciliation can advance it. A crash, exception or lost
   response cannot authorize another deposit or withdrawal. Failed preparation
-  also conservatively requires reconciliation. Withdrawal uses `recover_peer`
+  can return to the previous state when submission was ruled out. Withdrawal uses `recover_peer`
   with a separately reviewed `:amount` and explicit `:approved` command flag.
   No runtime wallet keys or signatures are accepted by this API.
   """
@@ -80,12 +80,14 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     case Checkpoint.fetch(context.checkpoint, key(operation)) do
       {:ok, %{snapshot: %{peer: %{"state" => "action_required"}}} = previous} ->
         with :ok <- command_valid(command, previous.revision),
+             true <- command.idempotency_key != previous.idempotency_key,
              %Ramp.Preview{} = preview <- context[:preview],
              %Ramp.Intent{} = intent <- context[:intent],
              {:ok, expiry, 0} <- DateTime.from_iso8601(preview.expires_at),
              true <- DateTime.compare(expiry, now(context)) == :gt,
              true <- preview.operation_id == operation do
           terms = %{amount: preview.pay["atomic"], preview: preview, intent: intent}
+
           handoff(operation, :create_deposit, terms, previous, command, context)
         else
           _ -> {:error, :invalid_request}
@@ -129,13 +131,16 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
          :ok <- Recovery.reserve(context, operation, "offramp") do
       record =
         Map.put(
-          record(operation, "0", command.idempotency_key, nil, context),
+          %{
+            record(operation, "0", command.idempotency_key, nil, context)
+            | snapshot: ready_to_deposit(operation, "0", context)
+          },
           :approval,
           approval(quote, command)
         )
 
-      with :ok <- Checkpoint.put_new(context.checkpoint, key(operation), record),
-           :ok <- Mapping.put(context.maker_mapping, operation, %{total: preview.pay["atomic"]}) do
+      with :ok <- Mapping.put(context.maker_mapping, operation, %{total: preview.pay["atomic"]}),
+           :ok <- Checkpoint.put_new(context.checkpoint, key(operation), record) do
         terms = %{amount: preview.pay["atomic"], preview: preview, intent: intent}
         handoff(operation, :create_deposit, terms, record, command, context)
       else
@@ -164,43 +169,71 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     # Persist uncertainty before preparing a plan, reserving spend or calling the wallet.
     :ok = Checkpoint.put(context.checkpoint, key(operation), reserved)
 
-    result =
-      uncertain(reserved, fn ->
-        with {:ok, mapping} <- Mapping.fetch(context.maker_mapping, operation),
-             {:ok, plan} <- io(context, :prepare, [operation, action, terms, mapping]),
-             :ok <- wallet(context, :validate, [plan, Map.put(terms, :action, action)]),
-             {:ok, spend} <- authorize(terms.amount, context),
-             :ok <- tag_approval(plan, pending, spend, context),
-             :ok <- wallet(context, :request, [operation, pending, plan]) do
+    uncertain(reserved, fn ->
+      with {:ok, mapping} <- Mapping.fetch(context.maker_mapping, operation),
+           {:ok, requested} <- mark_requested(operation, action, pending, mapping, context) do
+        prepare_handoff(operation, action, terms, requested, reserved, context)
+      else
+        _ -> {:ok, reserved.snapshot}
+      end
+    end)
+  end
+
+  defp mark_requested(operation, action, pending, mapping, context) do
+    requested =
+      Map.merge(mapping, %{
+        pending_action_ref: pending,
+        pending_kind: {:requested, action},
+        pending_tx_hash: nil,
+        pending_resolved: false,
+        pending_failed: false
+      })
+
+    with :ok <- Mapping.put(context.maker_mapping, operation, requested), do: {:ok, requested}
+  end
+
+  defp prepare_handoff(operation, action, terms, mapping, record, context) do
+    pending = record.pending_action_ref
+
+    with {:ok, plan} <- io(context, :prepare, [operation, action, terms, mapping]),
+         :ok <- wallet(context, :validate, [plan, Map.put(terms, :action, action)]),
+         :ok <- authorize(action, terms.amount, pending, context) do
+      case wallet(context, :request, [operation, pending, plan]) do
+        :ok ->
           public = %{
             action_ref: pending,
             kind: "wallet_approval",
             action: Atom.to_string(Map.get(plan, :action, action))
           }
 
-          {:requires_user, public, reserved.snapshot}
-        else
-          _ -> {:ok, reserved.snapshot}
-        end
-      end)
+          {:requires_user, public, record.snapshot}
 
-    result
+        {:error, _} ->
+          reconcile_facts(operation, record, context)
+      end
+    else
+      _ ->
+        :ok =
+          Mapping.put(context.maker_mapping, operation, %{mapping | pending_resolved: true})
+
+        reconciliation_result(operation, record, %{state: :unsubmitted}, context)
+    end
   end
 
-  defp tag_approval(%{action: :approve_usdc}, pending, spend, context),
-    do: SpendGate.tag_reservation(class_context(context), pending, spend)
+  defp authorize(:withdraw_unmatched, _, _, _), do: :ok
 
-  defp tag_approval(_, _, _, _), do: :ok
-
-  defp authorize(amount, context) do
+  defp authorize(:create_deposit, amount, pending, context) do
     # Require the dedicated cash-out policy and atomic session/lifetime accounting in all environments.
     if not is_nil(context[:peer_cashout_policy]) and not is_nil(context[:ledger]) do
       human = Decimal.div(Decimal.new(amount), Decimal.new(1_000_000))
 
-      SpendGate.authorize(cashout_budget(context), human,
-        asset: {:token, 8453, @usdc},
-        target: {:domain, "peer.xyz"}
-      )
+      with {:ok, spend} <-
+             SpendGate.authorize(cashout_budget(context), human,
+               asset: {:token, 8453, @usdc},
+               target: {:domain, "peer.xyz"}
+             ) do
+        SpendGate.tag_reservation(class_context(context), pending, spend)
+      end
     else
       {:error, :policy_required}
     end
@@ -218,29 +251,38 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
 
   defp reconcile(operation, context) do
     case Checkpoint.fetch(context.checkpoint, key(operation)) do
+      {:ok, %{snapshot: %{terminal: true} = snapshot}} ->
+        {:ok, snapshot}
+
       {:ok, previous} ->
-        if previous.snapshot.terminal do
-          {:ok, previous.snapshot}
-        else
-          revision = to_string(String.to_integer(previous.revision) + 1)
-
-          reserved =
-            record(
-              operation,
-              revision,
-              previous.idempotency_key,
-              previous.pending_action_ref,
-              context
-            )
-            |> then(&Map.merge(previous, &1))
-
-          :ok = Checkpoint.put(context.checkpoint, key(operation), reserved)
-          reconcile_facts(operation, reserved, context)
-        end
+        current = status_record(operation, previous, context)
+        :ok = Checkpoint.put(context.checkpoint, key(operation), current)
+        reconcile_facts(operation, current, context)
 
       _ ->
         {:error, :invalid_request}
     end
+  end
+
+  defp status_record(operation, previous, context) do
+    revision = to_string(String.to_integer(previous.revision) + 1)
+
+    current =
+      Map.merge(
+        previous,
+        record(
+          operation,
+          revision,
+          previous.idempotency_key,
+          previous.pending_action_ref,
+          context
+        )
+      )
+
+    if is_nil(previous.pending_action_ref) and
+         match?(%{"state" => "action_required"}, previous.snapshot.peer),
+       do: %{current | snapshot: ready_to_deposit(operation, revision, context)},
+       else: current
   end
 
   defp read_facts(operation, record, context) do
@@ -256,24 +298,48 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   end
 
   defp reconciliation_result(operation, record, %{state: :reverted}, context) do
+    release_reservation(record, context)
     snapshot = snapshot(operation, record.revision, "failed", [], context)
     closed = Recovery.close(%{record | snapshot: snapshot, pending_action_ref: nil})
     with :ok <- Checkpoint.put(context.checkpoint, key(operation), closed), do: {:ok, snapshot}
   end
 
   defp reconciliation_result(operation, record, %{state: :approval_confirmed}, context) do
-    if record.pending_action_ref,
-      do: SpendGate.release_by_intent(class_context(context), record.pending_action_ref)
+    release_reservation(record, context)
+
+    clear_pending(
+      operation,
+      record,
+      ready_to_deposit(operation, record.revision, context),
+      context
+    )
+  end
+
+  defp reconciliation_result(operation, record, %{state: :unsubmitted}, context) do
+    release_reservation(record, context)
+    {:ok, mapping} = Mapping.fetch(context.maker_mapping, operation)
 
     snapshot =
-      snapshot(
-        operation,
-        record.revision,
-        "action_required",
-        ["recover_peer", "check_status"],
-        context
-      )
+      if mapping[:deposit_id] do
+        snapshot(
+          operation,
+          record.revision,
+          "processing",
+          ["check_status", "recover_peer"],
+          context
+        )
+      else
+        ready_to_deposit(operation, record.revision, context)
+      end
 
+    clear_pending(operation, record, snapshot, context)
+  end
+
+  defp reconciliation_result(operation, record, facts, context) do
+    finish_facts(operation, record, facts, context)
+  end
+
+  defp clear_pending(operation, record, snapshot, context) do
     :ok =
       Checkpoint.put(context.checkpoint, key(operation), %{
         record
@@ -284,9 +350,14 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     {:ok, snapshot}
   end
 
-  defp reconciliation_result(operation, record, facts, context) do
-    finish_facts(operation, record, facts, context)
+  defp release_reservation(record, context) do
+    if record.pending_action_ref,
+      do: SpendGate.release_by_intent(class_context(context), record.pending_action_ref)
   end
+
+  defp ready_to_deposit(operation, revision, context),
+    do:
+      snapshot(operation, revision, "action_required", ["recover_peer", "check_status"], context)
 
   defp reconcile_facts(operation, record, context) do
     uncertain(record, fn ->

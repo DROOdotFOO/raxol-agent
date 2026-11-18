@@ -35,6 +35,26 @@ defmodule Raxol.Payments.Ramp.PeerPlansTest do
     end
   end
 
+  test "maker calldata fixes the reviewed rate regardless of template pricing" do
+    payee = "0x" <> String.duplicate("1", 64)
+    terms = %{minimum: 1, maximum: 2_000_000, rate: 10 ** 18}
+
+    oracle = %{
+      "adapter" => "0x" <> String.duplicate("2", 40),
+      "adapterConfig" => "0xab",
+      "spreadBps" => -50,
+      "maxStaleness" => 60
+    }
+
+    assert Plans.deposit(
+             2_000_000,
+             "revolut",
+             payee,
+             Map.merge(terms, %{oracle: oracle, floor: 1})
+           ) ==
+             Plans.deposit(2_000_000, "revolut", payee, terms)
+  end
+
   test "unsigned EIP-1559 payload matches viem serialization and signing digest" do
     plan = Plans.approval(2_000_000)
 

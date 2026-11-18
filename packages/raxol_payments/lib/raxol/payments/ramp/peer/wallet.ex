@@ -56,13 +56,23 @@ defmodule Raxol.Payments.Ramp.Peer.Wallet do
     true = DateTime.compare(plan.expires_at, LiveReads.now(context)) == :gt
     :ok = validate(context, plan, Map.put(plan.review, :action, plan.requested_action))
     nonce = Enum.at(fields, 1)
-    :ok = Mapping.claim_nonce(context.maker_mapping, context.user, nonce, operation)
+    {:ok, mapping} = Mapping.fetch(context.maker_mapping, operation)
+    true = mapping.pending_action_ref == pending and is_nil(mapping.pending_tx_hash)
+    true = mapping.pending_kind == {:requested, plan.requested_action}
+
+    claiming =
+      Map.merge(mapping, %{owner: context.user, pending_kind: {:nonce, plan.action, nonce}})
+
+    :ok = Mapping.put(context.maker_mapping, operation, claiming)
+    :ok = Mapping.claim_nonce(context.maker_mapping, context.user, nonce, pending)
     digest = ExKeccak.hash_256(<<2>> <> rlp(fields))
     LiveReads.boundary!(context)
     signature = wallet.sign_hash(digest)
 
-    if match?({:error, _}, signature),
-      do: Mapping.release_nonce(context.maker_mapping, context.user, nonce, operation)
+    if match?({:error, _}, signature) do
+      :ok = Mapping.release_nonce(context.maker_mapping, context.user, nonce, pending)
+      :ok = Mapping.put(context.maker_mapping, operation, mapping)
+    end
 
     {:ok, <<r::binary-size(32), s::binary-size(32), v>>} = signature
     parity = if v >= 27, do: v - 27, else: v
@@ -71,7 +81,6 @@ defmodule Raxol.Payments.Ramp.Peer.Wallet do
     true = LiveReads.same?(EIP712.address_from_pubkey(public), context.user)
     raw = <<2>> <> rlp(fields ++ [parity, :binary.decode_unsigned(r), :binary.decode_unsigned(s)])
     hash = ABI.hash(raw)
-    {:ok, mapping} = Mapping.fetch(context.maker_mapping, operation)
 
     :ok =
       Mapping.put(

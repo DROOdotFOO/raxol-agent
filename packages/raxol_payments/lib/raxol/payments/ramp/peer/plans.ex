@@ -23,18 +23,15 @@ defmodule Raxol.Payments.Ramp.Peer.Plans do
     true = payee_hash != "0x" <> String.duplicate("0", 64)
     method = ABI.config()["rails"][rail]["paymentMethodHash"]
 
-    oracle =
-      Map.get(terms, :oracle, %{
+    currency = %{
+      "code" => ABI.config()["currencyHash"],
+      "minConversionRate" => terms.rate,
+      "oracleRateConfig" => %{
         "adapter" => @zero,
         "adapterConfig" => "0x",
         "spreadBps" => 0,
         "maxStaleness" => 0
-      })
-
-    currency = %{
-      "code" => ABI.config()["currencyHash"],
-      "minConversionRate" => Map.get(terms, :floor, terms.rate),
-      "oracleRateConfig" => oracle
+      }
     }
 
     params = %{
