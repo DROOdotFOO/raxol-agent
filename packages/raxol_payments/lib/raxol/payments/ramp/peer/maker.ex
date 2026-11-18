@@ -259,13 +259,13 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     if not is_nil(context[:peer_cashout_policy]) and not is_nil(context[:ledger]) do
       human = Decimal.div(Decimal.new(amount), Decimal.new(1_000_000))
 
-      with {:ok, spend} <-
+      with {:ok, _} <-
              SpendGate.authorize(cashout_budget(context), human,
                asset: {:token, 8453, @usdc},
-               target: {:domain, "peer.xyz"}
-             ) do
-        SpendGate.tag_reservation(class_context(context), pending, spend)
-      end
+               target: {:domain, "peer.xyz"},
+               reservation_ref: pending
+             ),
+           do: :ok
     else
       {:error, :policy_required}
     end
@@ -409,6 +409,10 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
              operation,
              Map.merge(mapping, Map.take(facts, [:deposit_id, :order_id]))
            ) do
+      if record.pending_action_ref do
+        :ok = SpendGate.forget_reservation(class_context(context), record.pending_action_ref)
+      end
+
       {state, actions} = normalized(facts)
       snapshot = snapshot(operation, record.revision, state, actions, context)
 
