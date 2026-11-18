@@ -95,7 +95,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
             operation,
             :create_deposit,
             terms,
-            Map.put(previous, :reviewed_terms, review),
+            previous,
             command,
             context
           )
@@ -167,14 +167,6 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   end
 
   defp handoff(operation, action, terms, previous, command, context) do
-    case Recovery.claim(context, operation, action, command) do
-      :new -> handoff_once(operation, action, terms, previous, command, context)
-      :replayed -> {:ok, previous.snapshot}
-      :conflict -> Recovery.conflict(previous)
-    end
-  end
-
-  defp handoff_once(operation, action, terms, previous, command, context) do
     revision = to_string(String.to_integer(previous.revision) + 1)
     owner = String.downcase(context.user)
     pending = "action_" <> Checkpoint.derive_key([owner, operation, revision, action])
@@ -182,13 +174,37 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     reserved =
       Map.merge(previous, record(operation, revision, command.idempotency_key, pending, context))
 
-    # Persist uncertainty before preparing a plan, reserving spend or calling the wallet.
+    # Until the mapping has this pending ref, it represents a request that has
+    # never reached the wallet. Persist it before consuming the command key.
     :ok = Checkpoint.put(context.checkpoint, key(operation), reserved)
 
+    case Recovery.claim(context, operation, action, command) do
+      :new ->
+        handoff_once(operation, action, terms, reserved, context)
+
+      result ->
+        :ok = Checkpoint.put(context.checkpoint, key(operation), previous)
+        if result == :replayed, do: {:ok, previous.snapshot}, else: Recovery.conflict(previous)
+    end
+  end
+
+  defp save_review(record, :create_deposit, %{preview: preview, intent: intent}),
+    do: Map.put(record, :reviewed_terms, reviewed_terms(preview, intent))
+
+  defp save_review(record, :withdraw_unmatched, _), do: record
+
+  defp handoff_once(operation, action, terms, reserved, context) do
     uncertain(reserved, fn ->
+      reviewed = save_review(reserved, action, terms)
+
+      if reviewed != reserved do
+        :ok = Checkpoint.put(context.checkpoint, key(operation), reviewed)
+      end
+
       with {:ok, mapping} <- Mapping.fetch_maker(context, operation),
-           {:ok, requested} <- mark_requested(operation, action, pending, mapping, context) do
-        prepare_handoff(operation, action, terms, requested, reserved, context)
+           {:ok, requested} <-
+             mark_requested(operation, action, reserved.pending_action_ref, mapping, context) do
+        prepare_handoff(operation, action, terms, requested, reviewed, context)
       else
         _ -> {:ok, reserved.snapshot}
       end
