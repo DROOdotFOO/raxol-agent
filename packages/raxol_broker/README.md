@@ -898,9 +898,10 @@ To refresh the capture from a signed-in account:
 The checked-in capture contains 87 tools; see its provenance for the exact
 capture timestamp. There are 57 reads, four reviews, 11 writes and 15 unknowns.
 The reviews are `review_equity_order`, `review_option_order`,
-`review_advanced_order` and `preview_crypto_order`. Writes include the supported
-equity, option, crypto and advanced `place_*`/`cancel_*` tools, alert create/update,
-and `decline_trade_approval`. Unknown tools remain refused.
+`review_advanced_order` and `preview_crypto_order`. Writes are allowlisted equity,
+option, crypto and advanced `place_*`/`cancel_*` tool-name shapes, alert create/update,
+and `decline_trade_approval`. Classification is not an execution adapter: the
+order/cancel adapters are equity-only. Unknown tools remain refused.
 
 ## Robinhood sign-in
 
