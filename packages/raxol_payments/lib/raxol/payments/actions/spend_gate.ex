@@ -54,7 +54,7 @@ defmodule Raxol.Payments.Actions.SpendGate do
   a failed payment does not permanently consume the agent's budget.
   """
 
-  alias Raxol.Payments.{Ledger, PolicyGate, SpendingPolicy, SpendPricing}
+  alias Raxol.Payments.{Deployment, Ledger, PolicyGate, SpendingPolicy, SpendPricing}
 
   @type target :: {:domain, String.t()} | {:address, String.t()}
 
@@ -79,6 +79,7 @@ defmodule Raxol.Payments.Actions.SpendGate do
   * `:metadata` -- map recorded with the ledger entry on success, with the
     policy's `currency`, `source_asset` and `source_amount` (the unconverted
     amount) added.
+  * `:reservation_ref` -- existing operation reference to attach atomically to the spend.
   """
   @spec authorize(map(), Decimal.t(), keyword()) :: {:ok, Decimal.t()} | {:error, error()}
   def authorize(context, %Decimal{} = amount, opts \\ []) when is_map(context) do
@@ -92,7 +93,8 @@ defmodule Raxol.Payments.Actions.SpendGate do
          {:ok, spend} <- SpendPricing.to_policy_unit(policy, amount, asset, context),
          :ok <- validate_amount(spend),
          :ok <- gate(policy, spend, target, context),
-         :ok <- reserve(context, spend, metadata(policy, opts, asset, amount)) do
+         :ok <-
+           reserve(context, spend, metadata(policy, opts, asset, amount), opts[:reservation_ref]) do
       {:ok, spend}
     end
   end
@@ -204,7 +206,7 @@ defmodule Raxol.Payments.Actions.SpendGate do
         Application.get_env(
           :raxol_payments,
           :require_policy,
-          Raxol.Payments.Deployment.production?()
+          Deployment.production?()
         )
     end
   end
@@ -262,13 +264,18 @@ defmodule Raxol.Payments.Actions.SpendGate do
   # With a ledger the spend is checked against every cap and recorded
   # atomically. Without one only `per_request_max` can be checked, and nothing
   # is recorded.
-  defp reserve(context, amount, metadata) do
+  defp reserve(context, amount, metadata, ref) do
     case {Map.get(context, :ledger), Map.get(context, :policy)} do
       {_ledger, nil} ->
         :ok
 
       {nil, %SpendingPolicy{} = policy} ->
         over_budget(Ledger.check_request(amount, policy))
+
+      {ledger, %SpendingPolicy{} = policy} when is_binary(ref) ->
+        over_budget(
+          Ledger.try_spend_tagged(ledger, agent_id(context), amount, policy, metadata, ref)
+        )
 
       {ledger, %SpendingPolicy{} = policy} ->
         agent_id = Map.get(context, :agent_id, :unknown)

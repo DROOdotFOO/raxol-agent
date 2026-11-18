@@ -94,7 +94,25 @@ defmodule Raxol.Payments.Ledger do
         ) ::
           :ok | {:over_limit, atom()}
   def try_spend(server, agent_id, amount, policy, metadata \\ %{}) do
-    GenServer.call(server, {:try_spend, agent_id, amount, policy, metadata})
+    GenServer.call(server, {:try_spend, agent_id, amount, policy, metadata, nil})
+  end
+
+  @doc """
+  Check budget and record a reservation with its existing operation reference.
+  The reference remains available until explicitly released or forgotten.
+  """
+  @spec try_spend_tagged(
+          GenServer.server(),
+          term(),
+          Decimal.t(),
+          SpendingPolicy.t(),
+          map(),
+          String.t()
+        ) ::
+          :ok | {:over_limit, atom()}
+  def try_spend_tagged(server, agent_id, amount, policy, metadata, ref)
+      when is_binary(ref) and ref != "" do
+    GenServer.call(server, {:try_spend, agent_id, amount, policy, metadata, ref})
   end
 
   @doc """
@@ -353,6 +371,11 @@ defmodule Raxol.Payments.Ledger do
     do: {:noreply, state}
 
   def handle_manager_cast({:forget_reservation, agent_id, intent_id}, state) do
+    case pending_reservation(state.table, agent_id, intent_id) do
+      nil -> :ok
+      row -> :ets.delete_object(state.table, row)
+    end
+
     {:noreply, %{state | reservations: Map.delete(state.reservations, {agent_id, intent_id})}}
   end
 
@@ -362,15 +385,11 @@ defmodule Raxol.Payments.Ledger do
     {:reply, result, state}
   end
 
-  def handle_manager_call(
-        {:try_spend, agent_id, amount, policy, metadata},
-        _from,
-        state
-      ) do
+  def handle_manager_call({:try_spend, agent_id, amount, policy, metadata, ref}, _from, state) do
     case check_budget_or_frozen(state, agent_id, amount, policy) do
       :ok ->
         entry = build_entry(agent_id, amount, metadata)
-        :ets.insert(state.table, {agent_id, entry})
+        insert_spend(state.table, entry, ref)
         notify_subscribers(state.subscribers, entry)
 
         :telemetry.execute(
@@ -402,28 +421,25 @@ defmodule Raxol.Payments.Ledger do
   def handle_manager_call({:release_by_intent, agent_id, intent_id}, _from, state) do
     key = {agent_id, intent_id}
 
-    case Map.fetch(state.reservations, key) do
-      {:ok, {amount, _at}} ->
-        entry =
-          build_entry(agent_id, Decimal.negate(amount), %{
-            type: :release,
-            intent_id: intent_id,
-            reason: :refunded
-          })
+    case pending_reservation(state.table, agent_id, intent_id) do
+      {_, :pending, %{amount: amount, timestamp_ms: at, currency: currency}} = row ->
+        :ets.delete_object(state.table, row)
+        release_tagged(state, key, amount, at, currency)
 
-        :ets.insert(state.table, {agent_id, entry})
-        notify_subscribers(state.subscribers, entry)
+      nil ->
+        case Map.pop(state.reservations, key) do
+          {nil, _} ->
+            {:reply, :noop, state}
 
-        :telemetry.execute(
-          [:raxol, :payments, :refund_reconciled],
-          %{amount: amount},
-          %{agent_id: agent_id, intent_id: intent_id}
-        )
-
-        {:reply, :released, %{state | reservations: Map.delete(state.reservations, key)}}
-
-      :error ->
-        {:reply, :noop, state}
+          {{amount, _at}, reservations} ->
+            release_tagged(
+              %{state | reservations: reservations},
+              key,
+              amount,
+              System.system_time(:millisecond),
+              "USDC"
+            )
+        end
     end
   end
 
@@ -495,6 +511,43 @@ defmodule Raxol.Payments.Ledger do
 
   # -- Private --
 
+  defp pending_reservation(table, agent_id, ref) do
+    table
+    |> :ets.lookup({:pending_reservation, agent_id, ref})
+    |> Enum.find(&match?({_, :pending, _}, &1))
+  end
+
+  defp insert_spend(table, entry, nil), do: :ets.insert(table, {entry.agent_id, entry})
+
+  defp insert_spend(table, entry, ref) do
+    # ETS inserts the debit and its recovery index atomically.
+    :ets.insert(table, [
+      {entry.agent_id, entry},
+      {{:pending_reservation, entry.agent_id, ref}, :pending, entry}
+    ])
+  end
+
+  defp release_tagged(state, {agent_id, intent_id}, amount, at, currency) do
+    entry =
+      build_entry(agent_id, Decimal.negate(amount), %{
+        type: :release,
+        intent_id: intent_id,
+        reason: :refunded
+      })
+
+    entry = %{entry | timestamp_ms: at, currency: currency}
+    :ets.insert(state.table, {agent_id, entry})
+    notify_subscribers(state.subscribers, entry)
+
+    :telemetry.execute(
+      [:raxol, :payments, :refund_reconciled],
+      %{amount: amount},
+      %{agent_id: agent_id, intent_id: intent_id}
+    )
+
+    {:reply, :released, state}
+  end
+
   # Drop tags past the TTL, then cap the map to its newest entries. Runs off the
   # sweep timer and the manual `sweep_reservations/1`, never on the tag hot path.
   defp prune_reservations(state) do
@@ -551,9 +604,8 @@ defmodule Raxol.Payments.Ledger do
     with :ok <- check_policy(policy, [:session_max, :session_window_ms, :lifetime_max]),
          :ok <- check_request(amount, policy),
          entries = get_entries(table, agent_id),
-         :ok <- check_session(entries, amount, policy),
-         :ok <- check_lifetime(entries, amount, policy) do
-      :ok
+         :ok <- check_session(entries, amount, policy) do
+      check_lifetime(entries, amount, policy)
     end
   end
 
@@ -620,7 +672,10 @@ defmodule Raxol.Payments.Ledger do
 
   defp get_entries(table, agent_id) do
     :ets.lookup(table, agent_id)
-    |> Enum.map(fn {_key, entry} -> entry end)
+    |> Enum.flat_map(fn
+      {_key, entry} -> [entry]
+      {_key, :pending, _entry} -> []
+    end)
     |> Enum.sort_by(& &1.timestamp_ms)
   end
 

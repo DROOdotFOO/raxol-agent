@@ -427,7 +427,11 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
       assert_reservation(point, stored)
       snapshot = stored.snapshot
       assert {:ok, ^snapshot} = Peer.approve(op, c.preview.quote_id, cmd, c)
+
+      assert_nonce_recovery(point, op, c, state)
+
       assert {:ok, restored} = Peer.status(op, c)
+      assert_budget(c, 0)
       assert restored.peer["state"] == "action_required"
       assert "recover_peer" in restored.allowed_actions
 
@@ -438,6 +442,90 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
       assert Agent.get(state, & &1.broadcasts) == 0
     end
   end
+
+  test "a crash after the budget debit can release it exactly once on restart", %{c: c} do
+    c = preview(c)
+    op = c.preview.operation_id
+    cmd = %{approved: true, expected_revision: "0", idempotency_key: "budget_crash"}
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        receive do
+          :approve -> Peer.approve(op, c.preview.quote_id, cmd, c)
+        end
+      end)
+
+    event = [:raxol, :payments, :spend]
+    handler = {__MODULE__, monitor}
+
+    :ok =
+      :telemetry.attach(handler, event, &__MODULE__.kill_after_debit/4, {c.ledger, pid})
+
+    on_exit(fn -> :telemetry.detach(handler) end)
+    send(pid, :approve)
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}, 5_000
+    assert_budget(c, 2)
+    refute_received :sign_requested
+
+    # Pending cash-outs remain recoverable even if legacy intent tags are swept.
+    assert 0 == Ledger.sweep_reservations(c.ledger)
+    assert {:ok, %{peer: %{"state" => "action_required"}}} = Peer.status(op, c)
+    assert_budget(c, 0)
+    assert {:ok, _} = Peer.status(op, c)
+    assert_budget(c, 0)
+    assert length(Ledger.get_history(c.ledger, {:peer_cashout, :unknown})) == 2
+  end
+
+  @doc false
+  def kill_after_debit(_, _, %{agent_id: {:peer_cashout, :unknown}}, {ledger, pid}) do
+    if self() == ledger, do: Process.exit(pid, :kill)
+  end
+
+  def kill_after_debit(_, _, _, _), do: :ok
+
+  test "a lost broadcast response keeps the cash-out budget reserved", %{c: c, state: state} do
+    c = c |> Map.put(:maker_wallet, {DeferredWallet, c}) |> preview()
+    op = c.preview.operation_id
+    cmd = %{approved: true, expected_revision: "0", idempotency_key: "budget_broadcast"}
+    assert {:requires_user, _, _} = Peer.approve(op, c.preview.quote_id, cmd, c)
+    assert_received {:wallet_handoff, ^op, pending, plan}
+    {:ok, mapping} = Mapping.fetch_maker(c, op)
+    payload = "synthetic transaction"
+
+    :ok =
+      Mapping.put_maker(
+        c,
+        op,
+        Map.merge(mapping, %{
+          pending_action_ref: pending,
+          pending_tx_hash: ABI.hash(payload),
+          expected_to: plan.to,
+          expected_input_hash: ABI.hash(ABI.unhex(plan.data))
+        })
+      )
+
+    assert {:error, :lost_response} = MemoryChain.broadcast(state, 8453, payload)
+    assert {:ok, %{peer: %{"state" => "in_doubt"}}} = Peer.status(op, c)
+    assert_budget(c, 2)
+    assert Agent.get(state, & &1.broadcasts) == 1
+  end
+
+  defp assert_budget(c, expected) do
+    totals = Ledger.get_totals(c.ledger, {:peer_cashout, :unknown}, c.peer_cashout_policy)
+    assert Decimal.equal?(totals.session, Decimal.new(expected))
+    assert Decimal.equal?(totals.lifetime, Decimal.new(expected))
+  end
+
+  defp assert_nonce_recovery(:after_nonce_claim, op, c, state) do
+    assert_budget(c, 2)
+    Agent.update(state, &Map.put(&1, :finalized_nonce, "0x1"))
+    assert {:ok, %{peer: %{"state" => "in_doubt"}}} = Peer.status(op, c)
+    assert_budget(c, 2)
+    Agent.update(state, &Map.put(&1, :finalized_nonce, "0x0"))
+  end
+
+  defp assert_nonce_recovery(_, _, _, _), do: :ok
 
   defp assert_reservation(:before_reserve, stored), do: assert(is_nil(stored.pending_action_ref))
   defp assert_reservation(_, stored), do: assert(is_binary(stored.pending_action_ref))
