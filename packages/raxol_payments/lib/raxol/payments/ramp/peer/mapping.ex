@@ -14,6 +14,38 @@ defmodule Raxol.Payments.Ramp.Peer.Mapping do
   def fetch(server, operation), do: GenServer.call(server, {:fetch, operation})
   def put(server, operation, value), do: GenServer.call(server, {:put, operation, value})
 
+  def fetch_maker(context, operation) do
+    {owner, _} = key = maker_key(context, operation)
+
+    case fetch(context.maker_mapping, key) do
+      :error ->
+        # Older records can be recovered only when the wallet was recorded.
+        with {:ok, %{owner: legacy_owner} = value} when is_binary(legacy_owner) <-
+               fetch(context.maker_mapping, operation),
+             true <- String.downcase(legacy_owner) == owner do
+          {:ok, value}
+        else
+          _ -> :error
+        end
+
+      result ->
+        result
+    end
+  end
+
+  def put_maker(context, operation, value) do
+    {owner, _} = key = maker_key(context, operation)
+    put(context.maker_mapping, key, Map.put(value, :owner, owner))
+  end
+
+  def insert_maker(context, operation, value) do
+    {owner, _} = key = maker_key(context, operation)
+    GenServer.call(context.maker_mapping, {:insert_maker, key, Map.put(value, :owner, owner)})
+  end
+
+  defp maker_key(%{user: owner}, operation) when is_binary(owner),
+    do: {String.downcase(owner), operation}
+
   def claim_nonce(server, owner, nonce, operation),
     do: GenServer.call(server, {:claim_nonce, owner, nonce, operation})
 
@@ -58,28 +90,20 @@ defmodule Raxol.Payments.Ramp.Peer.Mapping do
   end
 
   def handle_call({:put, operation, value}, _from, table) do
-    clean =
-      Map.take(value, [
-        :intent_hash,
-        :signal_tx_hash,
-        :settlement_tx_hash,
-        :recipient,
-        :deposit_id,
-        :order_id,
-        :total,
-        :owner,
-        :pending_tx_hash,
-        :creation_tx_hash,
-        :pending_action_ref,
-        :pending_kind,
-        :expected_to,
-        :expected_input_hash,
-        :approval_confirmed,
-        :pending_failed,
-        :pending_resolved
-      ])
+    result = with :ok <- :dets.insert(table, {operation, clean(value)}), do: :dets.sync(table)
+    {:reply, result, table}
+  end
 
-    result = with :ok <- :dets.insert(table, {operation, clean}), do: :dets.sync(table)
+  def handle_call({:insert_maker, {owner, operation} = key, value}, _from, table) do
+    result =
+      with true <- legacy_available?(table, operation, owner),
+           true <- :dets.insert_new(table, {key, clean(value)}) do
+        :dets.sync(table)
+      else
+        false -> {:error, :exists}
+        error -> error
+      end
+
     {:reply, result, table}
   end
 
@@ -108,6 +132,41 @@ defmodule Raxol.Payments.Ramp.Peer.Mapping do
       end
 
     {:reply, result, table}
+  end
+
+  defp clean(value) do
+    Map.take(value, [
+      :intent_hash,
+      :signal_tx_hash,
+      :settlement_tx_hash,
+      :recipient,
+      :deposit_id,
+      :order_id,
+      :total,
+      :owner,
+      :pending_tx_hash,
+      :creation_tx_hash,
+      :pending_action_ref,
+      :pending_kind,
+      :expected_to,
+      :expected_input_hash,
+      :approval_confirmed,
+      :pending_failed,
+      :pending_resolved
+    ])
+  end
+
+  defp legacy_available?(table, operation, owner) do
+    case :dets.lookup(table, operation) do
+      [] ->
+        true
+
+      [{^operation, %{owner: legacy_owner}}] when is_binary(legacy_owner) ->
+        String.downcase(legacy_owner) != owner
+
+      _ ->
+        false
+    end
   end
 
   @impl true
