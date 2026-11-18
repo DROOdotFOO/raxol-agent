@@ -2,6 +2,8 @@
 
 ## 0.1.0 - Unreleased
 
+- Refresh the reviewed `get_option_orders` read schema and generated reader: accept `state_group` and `updated_at_gte`, include `unconfirmed` among documented single-state filters, and distinguish pending-cancel result rows from their open-state filter. Preserve all 87 names and read/review/write/unknown classes; no order/review schemas or option execution adapters changed.
+- Review description-only updates to `get_equity_historicals` (explicit-interval 5,000-bar cap), `place_option_order` and `review_option_order` (option-level, multi-leg and account restrictions). Document the history bound without adding an execution adapter or adopting vendor review/approval bypass guidance. Preserve the authenticated recording's actual capture timestamp.
 - Normalize server `1.19.1` quote, approval-setting and buying-power envelopes; migrate the Fake and consumer regressions to the actual nested shapes, rejecting malformed data without legacy fallbacks.
 - Source drawdown baselines from the first durable USD account-total observation in the first 60 seconds after New York midnight. Persist one value per account/day, reuse it after restart, reject late/conflicting observations and ignore caller or invented previous-close baselines. A missed window denies baseline-dependent orders; deposits/withdrawals are not cash-flow adjusted.
 - Recheck the executor clock after context reads and asynchronously just before placement. Reject New York day crossings and backwards time; refresh the fetched session and expire snapshots crossing a session during review/approval. Halt preempts the final clock task too; cancels and declines remain exempt.

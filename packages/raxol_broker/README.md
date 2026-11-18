@@ -849,6 +849,17 @@ against the captured schema before sending:
 {:ok, result} = Raxol.Broker.Tools.MarketData.get_equity_quotes(session, %{"symbols" => ["AAPL"]})
 ```
 
+Option-order reads accept `state_group: "open" | "closed"` and
+`updated_at_gte` (inclusive UTC timestamp/date) alongside the existing filters.
+Use the open group to include orders with pending cancellation; `pending_cancelled`
+is a result state, not a supported single-state filter. These are read filters,
+not permission to place, cancel or otherwise execute option orders.
+
+The reviewed history guide documents a 5,000-bar cap for explicit intervals.
+The option place/review capability descriptions are vendor metadata, not a
+broker execution adapter: their workflow guidance cannot bypass local review,
+approval or mode gates, and option execution remains unsupported.
+
 To refresh the capture from a signed-in account:
 
 1. Capture, then list what the new capture changes for the order tools:
@@ -884,12 +895,12 @@ To refresh the capture from a signed-in account:
    that a new order tool is meant to be one.
 4. Update the counts below from the `classes` line, and the CHANGELOG.
 
-The checked-in capture is Robinhood's live list of 2026-11-11 (87 tools):
-57 are readable, `review_equity_order`, `review_option_order`,
-`review_advanced_order` and `preview_crypto_order` are the review tools, and
-the equity, option, crypto and advanced `place_*`/`cancel_*` tools plus alert
-create/update are the writes. The other 16, `decline_trade_approval` among
-them, are `:unknown` and refused.
+The checked-in capture contains 87 tools; see its provenance for the exact
+capture timestamp. There are 57 reads, four reviews, 11 writes and 15 unknowns.
+The reviews are `review_equity_order`, `review_option_order`,
+`review_advanced_order` and `preview_crypto_order`. Writes include the supported
+equity, option, crypto and advanced `place_*`/`cancel_*` tools, alert create/update,
+and `decline_trade_approval`. Unknown tools remain refused.
 
 ## Robinhood sign-in
 
