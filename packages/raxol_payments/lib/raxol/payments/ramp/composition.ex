@@ -31,11 +31,12 @@ defmodule Raxol.Payments.Ramp.Composition do
     end)
   end
 
-  @doc "Replace only a confirmed failed Peer leg with a fresh preview/reference."
+  @doc "Replace a confirmed failed or refunded Peer leg with a fresh preview/reference."
   def retry_peer(id, operation, context) do
     lock(id, context, fn ->
       with {:ok, record} <- Checkpoint.fetch(context.checkpoint, key(id)),
-           true <- record.peer.state == :failed and record.peer.receipt.terminal == true,
+           true <-
+             peer_state(record) in [:failed, :refunded] and record.peer.receipt.terminal == true,
            true <- operation != record.peer.operation,
            plan = %{record.plan | peer_operation: operation},
            true <- bound?(plan, context),
@@ -62,7 +63,7 @@ defmodule Raxol.Payments.Ramp.Composition do
     with {:ok, record} <- Checkpoint.fetch(context.checkpoint, key(id)),
          true <- eligible?(record, leg) and bound?(record.plan, context),
          true <- action in [:approve, :resume, :status],
-         true <- record[leg].state != :completed,
+         true <- leg_state(record, leg) not in [:completed, :refunded, :partial_success],
          true <- action == :approve or record[leg].state != :ready,
          true <-
            action != :approve or record[leg].state == :ready or
@@ -158,23 +159,11 @@ defmodule Raxol.Payments.Ramp.Composition do
   end
 
   defp apply_result(record, :peer, {:ok, snapshot}) do
-    completed =
-      snapshot.peer["state"] == "completed" and
-        (record.plan.direction == "offramp" or snapshot.peer["payout_state"] == "released")
-
-    state =
-      cond do
-        completed -> :completed
-        snapshot.peer["state"] == "failed" -> :failed
-        snapshot.peer["state"] == "in_doubt" -> :in_doubt
-        true -> :pending
-      end
-
     %{
       record
       | peer: %{
-          record.peer
-          | state: state,
+          Map.delete(record.peer, :action)
+          | state: classify_peer(snapshot, record.plan.direction),
             receipt: snapshot
         }
     }
@@ -227,6 +216,20 @@ defmodule Raxol.Payments.Ramp.Composition do
 
   defp apply_result(record, leg, _), do: put_in(record[leg].state, :in_doubt)
 
+  defp classify_peer(%{terminal: true, peer: %{"state" => "refunded"}}, _), do: :refunded
+
+  defp classify_peer(%{terminal: true, peer: %{"partial_result" => split}}, _) when is_map(split),
+    do: :partial_success
+
+  defp classify_peer(%{peer: %{"state" => "completed"}}, "offramp"), do: :completed
+
+  defp classify_peer(%{peer: %{"state" => "completed", "payout_state" => "released"}}, _),
+    do: :completed
+
+  defp classify_peer(%{peer: %{"state" => "failed"}}, _), do: :failed
+  defp classify_peer(%{peer: %{"state" => "in_doubt"}}, _), do: :in_doubt
+  defp classify_peer(_, _), do: :pending
+
   defp eligible?(%{plan: %{direction: "onramp"}}, :peer), do: true
   defp eligible?(%{plan: %{direction: "offramp"}}, :xochi), do: true
   defp eligible?(record, :peer), do: record.xochi.state == :completed
@@ -266,18 +269,28 @@ defmodule Raxol.Payments.Ramp.Composition do
 
   defp positive?(value), do: is_binary(value) and Regex.match?(~r/\A[1-9][0-9]*\z/, value)
 
+  defp peer_state(%{peer: %{receipt: %{terminal: true, peer: %{"state" => "refunded"}}}}),
+    do: :refunded
+
+  defp peer_state(record), do: record.peer.state
+
+  defp leg_state(record, :peer), do: peer_state(record)
+  defp leg_state(record, :xochi), do: record.xochi.state
+
   defp view(record) do
-    states = [record.peer.state, record.xochi.state]
+    peer = %{record.peer | state: peer_state(record)}
+    states = [peer.state, record.xochi.state]
 
     state =
       cond do
         Enum.all?(states, &(&1 == :completed)) ->
           :completed
 
-        :completed in states and Enum.any?(states, &(&1 in [:failed, :in_doubt])) ->
+        :partial_success in states or
+            (:completed in states and Enum.any?(states, &(&1 in [:failed, :in_doubt, :refunded]))) ->
           :partial_success
 
-        :failed in states ->
+        :failed in states or :refunded in states ->
           :failed
 
         :in_doubt in states ->
@@ -288,7 +301,7 @@ defmodule Raxol.Payments.Ramp.Composition do
       end
 
     %{
-      peer: record.peer,
+      peer: peer,
       xochi: record.xochi,
       state: state,
       peer_history: Map.get(record, :peer_history, []),
@@ -347,6 +360,24 @@ defmodule Raxol.Payments.Ramp.Composition do
 
   defp execution_failure(_, record, :xochi, :approve, {:error, :approval_required}, _),
     do: put_in(record.xochi.state, :failed)
+
+  defp execution_failure(_, record, :peer, :approve, {:error, reason}, context)
+       when reason in [
+              :invalid_request,
+              :approval_required,
+              :setup_required,
+              :capability_changed,
+              :session_conflict
+            ] do
+    operation = record.peer.operation
+
+    with :error <- Checkpoint.fetch(context.checkpoint, "peer_onramp:" <> operation),
+         :error <- Checkpoint.fetch(context.checkpoint, "peer_maker:" <> operation) do
+      put_in(record.peer.state, :ready)
+    else
+      _ -> record
+    end
+  end
 
   defp execution_failure(_, record, _, _, _, _), do: record
 

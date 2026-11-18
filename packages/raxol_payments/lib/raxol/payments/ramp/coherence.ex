@@ -70,7 +70,8 @@ defmodule Raxol.Payments.Ramp.Coherence do
     actions = v["allowed_actions"]
 
     v["leg_order"] == expected_order(v) and v["terminal"] == terminal?(v) and
-      length(actions) == length(Enum.uniq(actions)) and snapshot_actions?(v, actions)
+      length(actions) == length(Enum.uniq(actions)) and snapshot_actions?(v, actions) and
+      partial_result_valid?(v)
   end
 
   defp coherent?(%{"kind" => "command"} = v),
@@ -81,6 +82,13 @@ defmodule Raxol.Payments.Ramp.Coherence do
   defp expected_order(%{"xochi" => _, "direction" => "onramp"}), do: ["peer", "xochi"]
   defp expected_order(%{"xochi" => _}), do: ["xochi", "peer"]
   defp expected_order(_), do: ["peer"]
+
+  defp partial_result_valid?(v) do
+    is_nil(get_in(v, ["xochi", "partial_result"])) and
+      (is_nil(v["peer"]["partial_result"]) or
+         (v["direction"] == "offramp" and v["peer"]["state"] == "completed" and
+            v["peer"]["recoverable"] == false and is_nil(v["peer"]["payout_state"])))
+  end
 
   defp snapshot_actions?(v, actions) do
     (v["xochi"] != nil or not Enum.any?(actions, &String.ends_with?(&1, "route"))) and

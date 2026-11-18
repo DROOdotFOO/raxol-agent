@@ -2,7 +2,7 @@
 
 `contract.schema.json` and `conformance.json` are copied without edits from
 [xochi-fi/xochi-sdk](https://github.com/xochi-fi/xochi-sdk), branch
-`feature/ramp-onramp`, commit `367f3185943672af1b7c227fd608ba7f7fd39aad`:
+`fix/rv-m1-mixed-fill-result`, commit `18ba5a2aa080f5aef2be34b30d6b2431ab09afa2`:
 
 - `packages/client/ramp/contract.schema.json`
 - `packages/client/ramp/conformance.json`
@@ -17,7 +17,7 @@ command preflight (validation only, no execution).
 `peer_quote.json` is a synthetic, sanitized positive response based on the
 `BestByPlatformResponse` / `QuoteSingleResponse` definitions and adapter source
 in the published `@zkp2p/sdk@0.15.0-rc.11` tarball, the exact SDK version pinned by
-`examples/peer-compatibility/package.json` at the commit above. It contains no
+`examples/peer-compatibility/package.json` at commit `367f3185943672af1b7c227fd608ba7f7fd39aad`. It contains no
 maker identifiers, order/deposit/session handles, payment identity, or proof data.
 Its recipient and orchestrator addresses are deliberately synthetic. It is not
 represented as a successful live capture.

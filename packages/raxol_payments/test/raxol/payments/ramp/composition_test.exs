@@ -14,6 +14,8 @@ defmodule Raxol.Payments.Ramp.CompositionTest do
   # In-memory leg ports exercise orchestration independently of provider I/O.
   # Their operation records survive the caller, just like the production ports.
   defmodule MemoryPeer do
+    def run(_, _, %{result: :clean_denial}), do: {:error, :approval_required}
+
     def run(operation, _, context) do
       send(self(), {:peer, :approve, operation})
       :ok = Checkpoint.put_new(context.checkpoint, "memory_peer:" <> operation, %{})
@@ -294,20 +296,61 @@ defmodule Raxol.Payments.Ramp.CompositionTest do
     assert {:error, :leg_not_ready} = Composition.advance("c", :xochi, :approve, changed)
   end
 
-  test "confirmed failed Peer can use a fresh reference without repeating prerequisite" do
+  test "clean Peer denial keeps the leg ready for explicit approval" do
+    {plan, c} = setup_plan("onramp")
+    assert {:ok, _} = Composition.create("c", plan, c)
+    denied = put_in(c.peer_context[:result], :clean_denial)
+
+    assert {:ok, %{peer: %{state: :ready}}} = Composition.advance("c", :peer, :approve, denied)
+    refute_received {:peer, :approve, _}
+    assert {:ok, %{peer: %{state: :completed}}} = Composition.advance("c", :peer, :approve, c)
+    assert_received {:peer, :approve, "peer_1"}
+  end
+
+  test "mixed terminal Peer result is partial success and cannot be resubmitted" do
     {plan, c} = setup_plan("offramp")
     assert {:ok, _} = Composition.create("c", plan, c)
     assert {:ok, _} = Composition.advance("c", :xochi, :approve, c)
     assert {:ok, _} = Composition.advance("c", :xochi, :status, c)
 
-    failed =
+    split = %{
+      "settlement" => "base_usdc",
+      "filled_atomic" => "300000",
+      "returned_atomic" => "200000"
+    }
+
+    mixed =
       put_in(c.peer_context.snapshot, %Ramp.Snapshot{
         operation_id: "peer_1",
         terminal: true,
-        peer: %{"state" => "failed"}
+        peer: %{"state" => "completed", "partial_result" => split}
       })
 
-    assert {:ok, %{state: :partial_success}} = Composition.advance("c", :peer, :approve, failed)
+    assert {:ok, %{state: :partial_success, peer: peer}} =
+             Composition.advance("c", :peer, :approve, mixed)
+
+    assert peer.state == :partial_success
+    assert peer.receipt.peer["partial_result"] == split
+    assert {:error, :leg_not_ready} = Composition.advance("c", :peer, :resume, mixed)
+    assert {:error, :reconcile_required} = Composition.retry_peer("c", "peer_2", mixed)
+    assert_received {:peer, :approve, "peer_1"}
+    refute_received {:peer, _, _}
+  end
+
+  test "fully refunded Peer can use a fresh reference without repeating prerequisite" do
+    {plan, c} = setup_plan("offramp")
+    assert {:ok, _} = Composition.create("c", plan, c)
+    assert {:ok, _} = Composition.advance("c", :xochi, :approve, c)
+    assert {:ok, _} = Composition.advance("c", :xochi, :status, c)
+
+    refunded =
+      put_in(c.peer_context.snapshot, %Ramp.Snapshot{
+        operation_id: "peer_1",
+        terminal: true,
+        peer: %{"state" => "refunded"}
+      })
+
+    assert {:ok, %{state: :partial_success}} = Composition.advance("c", :peer, :approve, refunded)
     fresh = put_in(c.peer_context.preview.operation_id, "peer_2")
     fresh = put_in(fresh.peer_context.snapshot.operation_id, "peer_2")
 

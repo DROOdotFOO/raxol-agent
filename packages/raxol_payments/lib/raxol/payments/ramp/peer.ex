@@ -22,7 +22,7 @@ defmodule Raxol.Payments.Ramp.Peer do
   @behaviour Raxol.Payments.Ramp.Provider
   alias Raxol.Payments.{Checkpoint, Ramp}
   alias Raxol.Payments.Ramp.{Coherence, Onramp}
-  alias Raxol.Payments.Ramp.Peer.{Discovery, Maker}
+  alias Raxol.Payments.Ramp.Peer.{Discovery, Maker, OnrampReads}
   @usdc "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
   @disclosures %{
     "public_state" => ["base_settlement"],
@@ -46,9 +46,12 @@ defmodule Raxol.Payments.Ramp.Peer do
 
   def preview(intent, offer_ref, revision, context) do
     with {:ok, entries} <- fetch(Map.put(context, :intent, intent)),
-         {offer, values} <- Enum.find(entries, fn {offer, _} -> offer.offer_id == offer_ref end),
-         true <- offer.capability_revision == revision do
-      preview_message(offer, values, intent)
+         {offer, values, terms} <-
+           Enum.find(entries, fn {offer, _, _} -> offer.offer_id == offer_ref end),
+         true <- offer.capability_revision == revision,
+         {:ok, preview} <- preview_message(offer, values, intent),
+         :ok <- OnrampReads.remember_preview(context, preview, intent, terms) do
+      {:ok, preview}
     else
       nil -> {:error, :capability_changed}
       false -> {:error, :capability_changed}
@@ -268,8 +271,9 @@ defmodule Raxol.Payments.Ramp.Peer do
        ) do
     with true <- valid_quote?(q, rail, intent, data),
          {:ok, values} <- quote_values(q, intent),
-         {:ok, offer} <- offer_message(rail, values, data, intent, now) do
-      if rail in Map.get(context, :ready_rails, []), do: {offer, values}, else: nil
+         terms = OnrampReads.quote_terms(q, rail, intent.fiat["currency"]),
+         {:ok, offer} <- offer_message(rail, values, terms, data, intent, now) do
+      if rail in Map.get(context, :ready_rails, []), do: {offer, values, terms}, else: nil
     else
       _ -> :error
     end
@@ -318,13 +322,14 @@ defmodule Raxol.Payments.Ramp.Peer do
     end
   end
 
-  defp offer_message(rail, values, data, intent, now) do
+  defp offer_message(rail, values, terms, data, intent, now) do
     exact = intent.exact
     ref = digest(%{"intent" => Ramp.to_wire(intent), "rail" => rail})
 
     revision =
       digest(%{
         "values" => values,
+        "signal_terms" => terms,
         "rail" => rail,
         "requirements" => ["peer_extension"],
         "orchestrator" => String.downcase(data["orchestratorAddress"])
