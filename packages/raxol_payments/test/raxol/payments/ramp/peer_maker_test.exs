@@ -211,7 +211,8 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
 
   test "invalid unsigned plan never reaches wallet", %{context: c, fake: fake} do
     Agent.update(fake, &Map.put(&1, :validation, {:error, :invalid_plan}))
-    assert {:ok, _} = approve(c)
+    assert {:ok, snapshot} = approve(c)
+    assert snapshot.peer["state"] == "action_required"
     assert Agent.get(fake, & &1.requests) == []
     assert Ledger.get_history(c.ledger, {:peer_cashout, :unknown}) == []
   end
@@ -248,6 +249,22 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     assert terminal.terminal
     assert terminal.peer["state"] == "refunded"
     assert length(Agent.get(fake, & &1.requests)) == 2
+  end
+
+  test "withdrawal can proceed when deposit exhausted the session budget", %{
+    context: c,
+    fake: fake
+  } do
+    c = %{c | peer_cashout_policy: %{c.peer_cashout_policy | session_max: Decimal.new(1)}}
+    assert {:requires_user, _, _} = approve(c)
+    facts(fake)
+    assert {:ok, processing} = Peer.status("op_synthetic", c)
+    cmd = Map.put(command(processing.revision, "withdraw"), :amount, "1000000")
+
+    assert {:requires_user, %{action: "withdraw_unmatched"}, _} =
+             Peer.recover("op_synthetic", "recover_peer", cmd, c)
+
+    assert length(Ledger.get_history(c.ledger, {:peer_cashout, :unknown})) == 1
   end
 
   test "partial fills and active intents cannot free unavailable funds", %{context: c, fake: fake} do
@@ -364,6 +381,11 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     assert {:ok, done} = Peer.status("op_synthetic", c)
     assert done.terminal and done.peer["state"] == "failed"
     assert done.allowed_actions == []
+
+    %{session: session} =
+      Ledger.get_totals(c.ledger, {:peer_cashout, :unknown}, c.peer_cashout_policy)
+
+    assert Decimal.eq?(session, Decimal.new(0))
     assert {:ok, %{closed: true}} = Checkpoint.fetch(c.checkpoint, "peer_maker:op_synthetic")
   end
 end

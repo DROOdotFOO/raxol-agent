@@ -89,6 +89,9 @@ defmodule Raxol.Payments.Ramp.Peer.LiveIO do
 
       result =
         cond do
+          mapping[:unsubmitted] == true ->
+            %{state: :unsubmitted}
+
           mapping[:pending_failed] == true and mapping[:pending_kind] != :withdraw_unmatched ->
             %{state: :reverted}
 
@@ -109,12 +112,47 @@ defmodule Raxol.Payments.Ramp.Peer.LiveIO do
   defp resolve_pending!(context, operation, mapping) do
     requested = Map.get(mapping, :requested_action_ref, mapping[:pending_action_ref])
 
-    if is_nil(requested) do
-      true = is_nil(mapping[:pending_action_ref]) or mapping[:pending_resolved] == true
-      mapping
-    else
-      true = requested == mapping[:pending_action_ref]
-      resolve_receipt!(context, operation, mapping)
+    cond do
+      is_nil(requested) ->
+        true = is_nil(mapping[:pending_action_ref]) or mapping[:pending_resolved] == true
+        mapping
+
+      requested != mapping[:pending_action_ref] ->
+        # A crash can leave the new checkpoint ahead of the mapping. Older
+        # checkpoints also wrote the mapping only when a hash was available.
+        true = is_nil(mapping[:pending_action_ref]) or mapping[:pending_resolved] == true
+        Map.put(mapping, :unsubmitted, true)
+
+      is_nil(mapping[:pending_tx_hash]) ->
+        resolve_unsubmitted!(context, operation, mapping)
+
+      true ->
+        resolve_receipt!(context, operation, mapping)
+    end
+  end
+
+  defp resolve_unsubmitted!(context, operation, mapping) do
+    :ok = verify_unsubmitted!(context, mapping)
+    resolved = Map.put(mapping, :pending_resolved, true)
+    :ok = Mapping.put(context.maker_mapping, operation, resolved)
+    Map.put(resolved, :unsubmitted, true)
+  end
+
+  defp verify_unsubmitted!(_, %{pending_kind: {:requested, _}}), do: :ok
+
+  defp verify_unsubmitted!(context, %{pending_kind: {:nonce, _, nonce}} = mapping) do
+    true = LiveReads.same?(mapping.owner, context.user)
+    count = LiveReads.rpc!(context, "eth_getTransactionCount", [context.user, "finalized"])
+    true = LiveReads.quantity(count) <= nonce
+
+    case Mapping.release_nonce(
+           context.maker_mapping,
+           context.user,
+           nonce,
+           mapping.pending_action_ref
+         ) do
+      :ok -> :ok
+      {:error, :nonce_reserved} -> :ok
     end
   end
 

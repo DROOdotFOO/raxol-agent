@@ -7,8 +7,8 @@ defmodule Raxol.Payments.Ramp.Peer.LiveReads do
 
   @template """
   query MakerTemplate($method: String!, $currency: String!) {
-    DepositPaymentMethod(where: {paymentMethodHash: {_ilike: $method}, active: {_eq: true}}, limit: 32) { depositId depositIdOnContract paymentMethodHash }
-    MethodCurrency(where: {paymentMethodHash: {_ilike: $method}, currencyCode: {_ilike: $currency}}, limit: 32) { depositId depositIdOnContract }
+    DepositPaymentMethod(where: {paymentMethodHash: {_ilike: $method}, active: {_eq: true}}, order_by: {depositIdOnContract: asc}, limit: 32) { depositId depositIdOnContract paymentMethodHash }
+    MethodCurrency(where: {paymentMethodHash: {_ilike: $method}, currencyCode: {_ilike: $currency}}, order_by: {depositIdOnContract: asc}, limit: 32) { depositId depositIdOnContract }
   }
   """
   @deposit """
@@ -114,12 +114,16 @@ defmodule Raxol.Payments.Ramp.Peer.LiveReads do
     methods = bounded_list!(data["DepositPaymentMethod"], 32)
     currencies = bounded_list!(data["MethodCurrency"], 32)
 
+    # Earliest matching protocol ID supplies a market observation and bounds.
+    # The resulting deposit fixes the observed rate reviewed in the preview.
     candidate =
-      Enum.find(methods, fn item ->
+      methods
+      |> Enum.filter(fn item ->
         item["depositId"] == composite(uint!(item["depositIdOnContract"])) and
           same?(item["paymentMethodHash"], method) and
           Enum.any?(currencies, &(&1["depositId"] == item["depositId"]))
       end)
+      |> Enum.min_by(&uint!(&1["depositIdOnContract"]))
 
     id = uint!(candidate["depositIdOnContract"])
     deposit = read!(context, "escrowV2", "getDeposit", [id], height)
@@ -127,12 +131,6 @@ defmodule Raxol.Payments.Ramp.Peer.LiveReads do
     true = read!(context, "escrowV2", "getDepositPaymentMethodActive", [id, method], height)
     true = read!(context, "escrowV2", "getDepositCurrencyListed", [id, method, currency], height)
     rate = read!(context, "escrowV2", "getEffectiveRate", [id, method, currency], height)
-
-    oracle =
-      read!(context, "escrowV2", "getDepositOracleRateConfig", [id, method, currency], height)
-
-    floor =
-      read!(context, "escrowV2", "getDepositCurrencyMinRate", [id, method, currency], height)
 
     minimum = deposit["intentAmountRange"]["min"]
     maximum = min(deposit["intentAmountRange"]["max"], balance)
@@ -142,8 +140,6 @@ defmodule Raxol.Payments.Ramp.Peer.LiveReads do
       minimum: minimum,
       maximum: maximum,
       rate: rate,
-      oracle: oracle,
-      floor: floor,
       expires_at: DateTime.add(now(context), 20),
       rail: rail
     }
