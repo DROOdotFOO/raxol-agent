@@ -134,7 +134,7 @@ defmodule Raxol.Payments.Ramp.Peer.LiveIO do
   defp resolve_unsubmitted!(context, operation, mapping) do
     :ok = verify_unsubmitted!(context, mapping)
     resolved = Map.put(mapping, :pending_resolved, true)
-    :ok = Mapping.put(context.maker_mapping, operation, resolved)
+    :ok = Mapping.put_maker(context, operation, resolved)
     Map.put(resolved, :unsubmitted, true)
   end
 
@@ -190,7 +190,7 @@ defmodule Raxol.Payments.Ramp.Peer.LiveIO do
       end
 
     resolved = Map.merge(resolved, %{pending_resolved: true})
-    :ok = Mapping.put(context.maker_mapping, operation, resolved)
+    :ok = Mapping.put_maker(context, operation, resolved)
     resolved
   end
 

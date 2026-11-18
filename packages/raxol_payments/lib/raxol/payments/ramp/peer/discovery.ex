@@ -65,7 +65,7 @@ defmodule Raxol.Payments.Ramp.Peer.Discovery do
     {:ok, %{snapshot: %{peer: %{"state" => "action_required"}}}} =
       Checkpoint.fetch(context.checkpoint, "peer_maker:" <> operation)
 
-    {:ok, mapping} = Mapping.fetch(context.maker_mapping, operation)
+    {:ok, mapping} = Mapping.fetch_maker(context, operation)
 
     true =
       mapping[:approval_confirmed] == true and is_nil(mapping[:deposit_id]) and

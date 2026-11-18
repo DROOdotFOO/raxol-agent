@@ -109,6 +109,7 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
 
     context = %{
       checkpoint: Checkpoint.ETS.new(),
+      user: intent.recipient,
       maker_mapping: mapping,
       maker_io: {MemoryIO, fake},
       maker_wallet: {MemoryIO, fake},
@@ -153,6 +154,70 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     Agent.update(fake, &Map.put(&1, :facts, {:ok, value}))
   end
 
+  test "equal operation references preserve each wallet's private mapping", %{
+    context: c,
+    fake: fake
+  } do
+    assert {:requires_user, _, _} = approve(c)
+    facts(fake)
+    assert {:ok, %{peer: %{"state" => "processing"}}} = Peer.status("op_synthetic", c)
+
+    other_owner = "0x0000000000000000000000000000000000000002"
+    other = %{c | checkpoint: Checkpoint.ETS.new(), user: other_owner}
+    assert {:requires_user, _, _} = approve(other)
+
+    assert {:ok, %{deposit_id: "1"}} =
+             Mapping.fetch(c.maker_mapping, {c.user, "op_synthetic"})
+
+    assert {:ok, %{owner: ^other_owner}} =
+             Mapping.fetch(c.maker_mapping, {other_owner, "op_synthetic"})
+
+    same_owner = %{c | checkpoint: Checkpoint.ETS.new()}
+    assert {:error, :session_conflict} = approve(same_owner)
+  end
+
+  test "wallet-bound legacy mappings remain readable only by their owner", %{context: c} do
+    op = c.preview.operation_id
+    assert :ok = Mapping.put(c.maker_mapping, op, %{owner: c.user, total: "1000000"})
+    assert {:ok, %{total: "1000000"}} = Mapping.fetch_maker(c, op)
+
+    assert :error =
+             Mapping.fetch_maker(%{c | user: "0x0000000000000000000000000000000000000002"}, op)
+
+    assert {:error, :session_conflict} = approve(c)
+  end
+
+  test "deposit retry requires the approved terms or explicit approval of a new quote", %{
+    context: c,
+    fake: fake
+  } do
+    Agent.update(fake, &Map.put(&1, :validation, {:error, :invalid_plan}))
+    assert {:ok, %{revision: revision, peer: %{"state" => "action_required"}}} = approve(c)
+    Agent.update(fake, &Map.put(&1, :validation, :ok))
+
+    changed = %{c.preview | receive: %{c.preview.receive | "atomic" => "99"}}
+    cmd = command(revision, "retry")
+
+    assert {:error, :invalid_request} =
+             Peer.recover("op_synthetic", "recover_peer", cmd, %{c | preview: changed})
+
+    fresh = %{changed | quote_id: "quote_fresh", offer_id: "offer_fresh"}
+    fresh_context = %{c | preview: fresh}
+
+    assert {:error, :invalid_request} =
+             Peer.recover("op_synthetic", "recover_peer", cmd, fresh_context)
+
+    assert Agent.get(fake, &length(&1.prepared)) == 1
+
+    assert {:requires_user, _, _} =
+             Peer.recover(
+               "op_synthetic",
+               "recover_peer",
+               Map.put(cmd, :quote_id, fresh.quote_id),
+               fresh_context
+             )
+  end
+
   test "wallet handoff checkpoints uncertainty and resume cannot deposit twice", %{
     context: c,
     fake: fake
@@ -170,6 +235,7 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     assert Enum.sort(Map.keys(saved)) ==
              Enum.sort([
                :approval,
+               :reviewed_terms,
                :operation_ref,
                :revision,
                :idempotency_key,
@@ -297,7 +363,9 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     mapping =
       start_supervised!({Mapping, path: Path.join(tmp, "mapping.dets"), name: :peer_maker_test})
 
-    assert {:ok, %{total: "1000000", deposit_id: _}} = Mapping.fetch(mapping, "op_synthetic")
+    assert {:ok, %{total: "1000000", deposit_id: _}} =
+             Mapping.fetch(mapping, {c.user, "op_synthetic"})
+
     assert {:ok, _} = approve(%{c | maker_mapping: mapping})
     assert length(Agent.get(fake, & &1.requests)) == 1
   end

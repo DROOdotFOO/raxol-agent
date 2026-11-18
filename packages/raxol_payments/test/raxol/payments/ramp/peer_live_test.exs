@@ -62,8 +62,8 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
     def validate(context, plan, terms), do: Wallet.validate(context, plan, terms)
 
     def request(context, operation, pending, plan) do
-      {:ok, mapping} = Mapping.fetch(context.maker_mapping, operation)
-      :ok = Mapping.put(context.maker_mapping, operation, %{mapping | pending_kind: plan.action})
+      {:ok, mapping} = Mapping.fetch_maker(context, operation)
+      :ok = Mapping.put_maker(context, operation, %{mapping | pending_kind: plan.action})
       send(self(), {:wallet_handoff, operation, pending, plan})
       :ok
     end
@@ -330,7 +330,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
         snapshot: snapshot
       })
 
-    :ok = Mapping.put(c.maker_mapping, op, %{total: "2000000"})
+    :ok = Mapping.put_maker(c, op, %{total: "2000000"})
     op
   end
 
@@ -384,7 +384,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
   test "a denied withdrawal leaves the existing deposit withdrawable", %{c: c, state: state} do
     c = preview(c)
     op = reserve(c)
-    assert :ok = Mapping.put(c.maker_mapping, op, %{total: "2000000", deposit_id: "7"})
+    assert :ok = Mapping.put_maker(c, op, %{total: "2000000", deposit_id: "7"})
     {:ok, saved} = Checkpoint.fetch(c.checkpoint, "peer_maker:" <> op)
     :ok = Checkpoint.put(c.checkpoint, "peer_maker:" <> op, %{saved | pending_action_ref: nil})
     assert {:ok, processing} = Peer.status(op, c)
@@ -416,7 +416,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
     pending = "action_synthetic"
 
     assert :ok =
-             Mapping.put(c.maker_mapping, op, %{
+             Mapping.put_maker(c, op, %{
                total: "2000000",
                deposit_id: "7",
                owner: @owner,
@@ -440,7 +440,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
     op = reserve(c)
 
     assert :ok =
-             Mapping.put(c.maker_mapping, op, %{
+             Mapping.put_maker(c, op, %{
                total: "2000000",
                deposit_id: "7",
                pending_action_ref: "action_previous",
@@ -479,7 +479,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
     Agent.update(state, &put_in(&1, [:index, "Deposit_by_pk", "remainingDeposits"], "1999999"))
     c = preview(c)
     op = reserve(c)
-    :ok = Mapping.put(c.maker_mapping, op, %{total: "2000000", deposit_id: "7"})
+    :ok = Mapping.put_maker(c, op, %{total: "2000000", deposit_id: "7"})
 
     assert {:error, :capability_unavailable} =
              LiveIO.reconcile(c, op, %{total: "2000000", deposit_id: "7", pending_action_ref: nil})
@@ -643,7 +643,7 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
       expected_input_hash: ABI.hash(ABI.unhex(plan.data))
     }
 
-    :ok = Mapping.put(c.maker_mapping, op, mapping)
+    :ok = Mapping.put_maker(c, op, mapping)
     assert {:ok, %{state: :confirmed, deposit_id: "7"}} = LiveIO.reconcile(c, op, mapping)
 
     assert {:error, :capability_unavailable} =
@@ -768,11 +768,11 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
       &Map.merge(&1, %{transactions: %{hash => transaction}, receipts: %{hash => receipt}})
     )
 
-    {:ok, mapping} = Mapping.fetch(c.maker_mapping, op)
+    {:ok, mapping} = Mapping.fetch_maker(c, op)
 
     :ok =
-      Mapping.put(
-        c.maker_mapping,
+      Mapping.put_maker(
+        c,
         op,
         Map.merge(mapping, %{
           owner: @owner,
@@ -814,7 +814,8 @@ defmodule Raxol.Payments.Ramp.PeerLiveTest do
                %{
                  approved: true,
                  expected_revision: action_required.revision,
-                 idempotency_key: "create_after_allowance"
+                 idempotency_key: "create_after_allowance",
+                 quote_id: fresh.quote_id
                },
                c
              )

@@ -13,14 +13,17 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   Before any I/O the operation is reserved in the checkpoint. Once wallet
   handoff starts, only reconciliation can advance it. A crash, exception or lost
   response cannot authorize another deposit or withdrawal. Failed preparation
-  can return to the previous state when submission was ruled out. Withdrawal uses `recover_peer`
+  can return to the previous state when submission was ruled out. A deposit retry
+  can use the original unexpired reviewed preview. A new preview requires its
+  `:quote_id` in the separately approved `recover_peer` command.
+  Withdrawal uses `recover_peer`
   with a separately reviewed `:amount` and explicit `:approved` command flag.
   No runtime wallet keys or signatures are accepted by this API.
   """
   alias Raxol.Payments.Actions.SpendGate
   alias Raxol.Payments.Checkpoint
   alias Raxol.Payments.Ramp
-  alias Raxol.Payments.Ramp.Peer.Mapping
+  alias Raxol.Payments.Ramp.Peer.{LiveIO, Mapping}
   alias Raxol.Payments.Ramp.Recovery
 
   @usdc "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
@@ -81,14 +84,21 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
       {:ok, %{snapshot: %{peer: %{"state" => "action_required"}}} = previous} ->
         with :ok <- command_valid(command, previous.revision),
              true <- command.idempotency_key != previous.idempotency_key,
-             %Ramp.Preview{} = preview <- context[:preview],
-             %Ramp.Intent{} = intent <- context[:intent],
-             {:ok, expiry, 0} <- DateTime.from_iso8601(preview.expires_at),
-             true <- DateTime.compare(expiry, now(context)) == :gt,
-             true <- preview.operation_id == operation do
-          terms = %{amount: preview.pay["atomic"], preview: preview, intent: intent}
+             {:ok, preview, intent} <- deposit_review(operation, context),
+             review <- reviewed_terms(preview, intent),
+             true <- reviewed?(previous[:reviewed_terms], review, command),
+             {:ok, %{total: amount}} <- Mapping.fetch_maker(context, operation),
+             true <- preview.pay["atomic"] == amount do
+          terms = %{amount: amount, preview: preview, intent: intent}
 
-          handoff(operation, :create_deposit, terms, previous, command, context)
+          handoff(
+            operation,
+            :create_deposit,
+            terms,
+            Map.put(previous, :reviewed_terms, review),
+            command,
+            context
+          )
         else
           _ -> {:error, :invalid_request}
         end
@@ -104,7 +114,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
          true <- "recover_peer" in record.snapshot.allowed_actions,
          :ok <- command_valid(command, record.revision),
          true <- command.idempotency_key != record.idempotency_key,
-         {:ok, mapping} <- Mapping.fetch(context.maker_mapping, operation),
+         {:ok, mapping} <- Mapping.fetch_maker(context, operation),
          {:ok, facts} <- read_facts(operation, record, context),
          true <- valid_facts?(facts, mapping),
          amount when is_binary(amount) <- command[:amount],
@@ -117,35 +127,40 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   end
 
   defp begin_deposit(operation, quote, command, context) do
-    with %Ramp.Preview{} = preview <- context[:preview],
-         %Ramp.Intent{direction: "offramp", route: nil} = intent <- context[:intent],
-         {:ok, _} <- Ramp.decode(Ramp.to_wire(preview)),
-         {:ok, _} <- Ramp.decode(Ramp.to_wire(intent)),
-         true <- preview.operation_id == operation and preview.quote_id == quote,
-         true <- preview.leg_order == ["peer"],
-         true <- base_usdc?(preview.pay["asset"]) and preview.pay["asset"] == intent.crypto,
-         true <- positive?(preview.pay["atomic"]),
-         {:ok, expiry, 0} <- DateTime.from_iso8601(preview.expires_at),
-         true <- DateTime.compare(expiry, now(context)) == :gt,
+    with {:ok, preview, intent} <- deposit_review(operation, context),
+         true <- preview.quote_id == quote,
          :ok <- command_valid(command, "0"),
          :ok <- Recovery.reserve(context, operation, "offramp") do
       record =
-        Map.put(
-          %{
-            record(operation, "0", command.idempotency_key, nil, context)
-            | snapshot: ready_to_deposit(operation, "0", context)
-          },
-          :approval,
-          approval(quote, command)
-        )
+        Map.merge(record(operation, "0", command.idempotency_key, nil, context), %{
+          snapshot: ready_to_deposit(operation, "0", context),
+          approval: approval(quote, command),
+          reviewed_terms: reviewed_terms(preview, intent)
+        })
 
-      with :ok <- Mapping.put(context.maker_mapping, operation, %{total: preview.pay["atomic"]}),
+      with :ok <- Mapping.insert_maker(context, operation, %{total: preview.pay["atomic"]}),
            :ok <- Checkpoint.put_new(context.checkpoint, key(operation), record) do
         terms = %{amount: preview.pay["atomic"], preview: preview, intent: intent}
         handoff(operation, :create_deposit, terms, record, command, context)
       else
         _ -> {:error, :session_conflict}
       end
+    else
+      _ -> {:error, :invalid_request}
+    end
+  end
+
+  defp deposit_review(operation, context) do
+    with %Ramp.Preview{} = preview <- context[:preview],
+         %Ramp.Intent{direction: "offramp", route: nil} = intent <- context[:intent],
+         {:ok, _} <- Ramp.decode(Ramp.to_wire(preview)),
+         {:ok, _} <- Ramp.decode(Ramp.to_wire(intent)),
+         true <- preview.operation_id == operation and preview.leg_order == ["peer"],
+         true <- base_usdc?(preview.pay["asset"]) and preview.pay["asset"] == intent.crypto,
+         true <- positive?(preview.pay["atomic"]),
+         {:ok, expiry, 0} <- DateTime.from_iso8601(preview.expires_at),
+         true <- DateTime.compare(expiry, now(context)) == :gt do
+      {:ok, preview, intent}
     else
       _ -> {:error, :invalid_request}
     end
@@ -161,7 +176,8 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
 
   defp handoff_once(operation, action, terms, previous, command, context) do
     revision = to_string(String.to_integer(previous.revision) + 1)
-    pending = "action_" <> Checkpoint.derive_key([operation, revision, action])
+    owner = String.downcase(context.user)
+    pending = "action_" <> Checkpoint.derive_key([owner, operation, revision, action])
 
     reserved =
       Map.merge(previous, record(operation, revision, command.idempotency_key, pending, context))
@@ -170,7 +186,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     :ok = Checkpoint.put(context.checkpoint, key(operation), reserved)
 
     uncertain(reserved, fn ->
-      with {:ok, mapping} <- Mapping.fetch(context.maker_mapping, operation),
+      with {:ok, mapping} <- Mapping.fetch_maker(context, operation),
            {:ok, requested} <- mark_requested(operation, action, pending, mapping, context) do
         prepare_handoff(operation, action, terms, requested, reserved, context)
       else
@@ -189,7 +205,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
         pending_failed: false
       })
 
-    with :ok <- Mapping.put(context.maker_mapping, operation, requested), do: {:ok, requested}
+    with :ok <- Mapping.put_maker(context, operation, requested), do: {:ok, requested}
   end
 
   defp prepare_handoff(operation, action, terms, mapping, record, context) do
@@ -214,7 +230,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     else
       _ ->
         :ok =
-          Mapping.put(context.maker_mapping, operation, %{mapping | pending_resolved: true})
+          Mapping.put_maker(context, operation, %{mapping | pending_resolved: true})
 
         reconciliation_result(operation, record, %{state: :unsubmitted}, context)
     end
@@ -289,7 +305,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     # Status is an external boundary too, including the read preceding withdrawal.
     :ok = Checkpoint.put(context.checkpoint, key(operation), record)
 
-    with {:ok, mapping} <- Mapping.fetch(context.maker_mapping, operation) do
+    with {:ok, mapping} <- Mapping.fetch_maker(context, operation) do
       io(context, :reconcile, [
         operation,
         Map.put(mapping, :requested_action_ref, record.pending_action_ref)
@@ -317,7 +333,7 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
 
   defp reconciliation_result(operation, record, %{state: :unsubmitted}, context) do
     release_reservation(record, context)
-    {:ok, mapping} = Mapping.fetch(context.maker_mapping, operation)
+    {:ok, mapping} = Mapping.fetch_maker(context, operation)
 
     snapshot =
       if mapping[:deposit_id] do
@@ -369,11 +385,11 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
   end
 
   defp finish_facts(operation, record, facts, context) do
-    with {:ok, mapping} <- Mapping.fetch(context.maker_mapping, operation),
+    with {:ok, mapping} <- Mapping.fetch_maker(context, operation),
          true <- valid_facts?(facts, mapping),
          :ok <-
-           Mapping.put(
-             context.maker_mapping,
+           Mapping.put_maker(
+             context,
              operation,
              Map.merge(mapping, Map.take(facts, [:deposit_id, :order_id]))
            ) do
@@ -478,6 +494,16 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
     do:
       Ramp.atomic?(v) and byte_size(v) <= 78 and String.to_integer(v) > 0 and
         String.to_integer(v) < Integer.pow(2, 256)
+
+  defp reviewed_terms(preview, intent) do
+    {preview.quote_id, LiveIO.digest([Ramp.to_wire(preview), Ramp.to_wire(intent)])}
+  end
+
+  defp reviewed?({quote, _} = review, review, command),
+    do: Map.get(command, :quote_id, quote) == quote
+
+  defp reviewed?({quote, _}, {quote, _}, _command), do: false
+  defp reviewed?(_, {quote, _}, command), do: command[:quote_id] == quote
 
   defp approval(quote, command),
     do: :crypto.hash(:sha256, :erlang.term_to_binary({quote, command}, [:deterministic]))
