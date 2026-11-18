@@ -1,6 +1,6 @@
 defmodule Raxol.Payments.Ramp.OnrampTest do
   use ExUnit.Case, async: true
-  alias Raxol.Payments.{Checkpoint, SpendingPolicy}
+  alias Raxol.Payments.{Checkpoint, Ledger, SpendingPolicy}
   alias Raxol.Payments.Ramp
   alias Raxol.Payments.Ramp.Onramp
   alias Raxol.Payments.Ramps
@@ -27,6 +27,7 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
       policy: SpendingPolicy.unrestricted(),
       preview: %{preview | leg_order: ["peer"], expires_at: "2099-01-01T00:00:00Z"},
       now: fn -> ~U[2026-11-16 12:00:00Z] end,
+      onramp_reader: {MemoryReader, :signaled},
       on_confirm: fn _, _ -> :approve end,
       widget: fn _, _, _ -> :ready end
     }
@@ -123,6 +124,49 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
              Onramp.approve(op, quote, Map.put(command(), :unexpected, "value"), c)
   end
 
+  test "an already-claimed command cannot prompt or reserve for another operation" do
+    c = context()
+
+    assert {:requires_user, _, _} =
+             Onramp.approve(c.preview.operation_id, c.preview.quote_id, command(), c)
+
+    changed = %{
+      c
+      | preview: %{c.preview | operation_id: "op_other"},
+        on_confirm: fn _, _ -> flunk("claimed command must not prompt") end
+    }
+
+    assert {:error, :session_conflict} =
+             Onramp.approve("op_other", changed.preview.quote_id, command(), changed)
+  end
+
+  test "expiry during confirmation releases the undispatched reservation" do
+    c = context()
+    ledger = start_supervised!({Ledger, table_name: :onramp_expiry_test})
+    clock = start_supervised!({Agent, fn -> ~U[2026-11-16 12:00:00Z] end})
+    preview = %{c.preview | expires_at: "2026-11-16T12:01:00Z"}
+
+    c =
+      Map.merge(c, %{
+        agent_id: :onramp_expiry,
+        ledger: ledger,
+        now: fn -> Agent.get(clock, & &1) end,
+        preview: preview,
+        on_confirm: fn _, _ ->
+          Agent.update(clock, fn _ -> ~U[2026-11-16 12:01:00Z] end)
+          :approve
+        end,
+        widget: fn _, _, _ -> flunk("expired quote must not dispatch") end
+      })
+
+    assert {:error, :approval_required} =
+             Onramp.approve(preview.operation_id, preview.quote_id, command(), c)
+
+    assert :error = Checkpoint.fetch(c.checkpoint, "peer_onramp:" <> preview.operation_id)
+    assert %{lifetime: total} = Ledger.get_totals(ledger, c.agent_id, c.policy)
+    assert Decimal.equal?(total, 0)
+  end
+
   test "widget release requires authoritative reconciliation for a terminal snapshot" do
     c = %{
       context()
@@ -173,6 +217,25 @@ defmodule Raxol.Payments.Ramp.OnrampTest do
     assert length(Enum.uniq(results)) == 1
     assert_received :intent_signaling
     refute_received :intent_signaling
+  end
+
+  test "an older checkpoint without a verified signal cannot start a later stage" do
+    c = context()
+    op = c.preview.operation_id
+
+    assert {:requires_user, action, snapshot} =
+             Onramp.approve(op, c.preview.quote_id, command(), c)
+
+    key = "peer_onramp:" <> op
+    assert {:ok, record} = Checkpoint.fetch(c.checkpoint, key)
+    assert :ok = Checkpoint.put(c.checkpoint, key, Map.delete(record, :signal_verified))
+    c = %{c | widget: fn _, _, _ -> flunk("unverified signal must not dispatch") end}
+
+    assert {:ok, doubt} =
+             Onramp.resume(op, action.action_ref, command(snapshot.revision), c)
+
+    assert doubt.peer["state"] == "in_doubt"
+    assert doubt.allowed_actions == ["check_status"]
   end
 
   test "public facade runs and resumes the approved operation" do

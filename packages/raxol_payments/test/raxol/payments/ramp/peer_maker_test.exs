@@ -355,6 +355,32 @@ defmodule Raxol.Payments.Ramp.PeerMakerTest do
     assert {:ok, _} = Ramp.encode(done)
   end
 
+  test "a partial fill followed by return closes with both verified totals", %{
+    context: c,
+    fake: fake
+  } do
+    assert {:requires_user, _, _} = approve(c)
+    facts(fake, %{remaining: "0", unmatched: "0", filled: "600000", withdrawn: "400000"})
+
+    assert {:ok, done} = Peer.status("op_synthetic", c)
+    assert done.terminal
+
+    assert %{
+             "state" => "completed",
+             "partial_result" => %{
+               "settlement" => "base_usdc",
+               "filled_atomic" => "600000",
+               "returned_atomic" => "400000"
+             }
+           } = done.peer
+
+    assert {:ok, %{closed: true, receipt: %{filled_atomic: "600000", returned_atomic: "400000"}}} =
+             Checkpoint.fetch(c.checkpoint, "peer_maker:op_synthetic")
+
+    assert {:ok, ^done} = Peer.status("op_synthetic", c)
+    assert {:ok, _} = Ramp.encode(done)
+  end
+
   test "authoritative reverted submission closes failed while unknown stays nonterminal", %{
     context: c,
     fake: fake

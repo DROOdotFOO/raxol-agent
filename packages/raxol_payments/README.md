@@ -78,7 +78,7 @@ or **external (C)**, returning the deposit address for an outside wallet to fund
 
 See the [Agentic Commerce docs](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/AGENTIC_COMMERCE.md) for the full design.
 
-### Read-only Peer ramps
+### Peer ramps
 
 `Raxol.Payments.Ramps.discover/2` and `preview/4` accept a validated snake_case
 `ramp/1` intent and trusted runtime context. The `payment_discover_ramps` and
@@ -102,9 +102,15 @@ and required payment-account enrollment have been checked. The `:ready_rails` li
 contains only the rail names for which those checks succeeded. None of these checks
 are inferred from an LLM request. `:req_options` injects Req transport for tests.
 
-Offramps, regional eligibility, composed routes, execution, resume and recovery
-remain unavailable. Provider execution callbacks return `{:error, :not_implemented}`
-until R2–R4 (DROOdotFOO/raxol #1358, #1360, #1359); the read-only facade omits them.
+Onramp recovery binds the finalized signal to the approved quote and a
+five-minute approval window. The trusted runtime supplies the same private,
+principal-scoped checkpoint store for preview, approval, and recovery. The
+public actions expose the quote summary and the user wallet owns all signatures.
+
+A `SIGNALED` intent cannot establish whether a later payment, proof, or
+submission widget stage ran when its response was lost. Such an operation
+stays `in_doubt` with status-only recovery until independent evidence resolves
+it. Recovery never re-executes the interrupted stage.
 
 Run deterministic coverage with `mix test test/raxol/payments/ramp`. A network
 check is excluded by default and requires an explicit opt-in:

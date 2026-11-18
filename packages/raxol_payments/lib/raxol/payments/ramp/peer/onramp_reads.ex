@@ -9,6 +9,7 @@ defmodule Raxol.Payments.Ramp.Peer.OnrampReads do
   Deferred payouts use the pinned stake vault lock, as in the SDK payout reader.
   A fulfillment directed to a vault is held until its finalized lock clears.
   """
+  alias Raxol.Payments.{Checkpoint, Ramp}
   alias Raxol.Payments.Ramp.Peer.{ABI, Indexer, LiveReads, Mapping}
 
   @query """
@@ -18,19 +19,80 @@ defmodule Raxol.Payments.Ramp.Peer.OnrampReads do
   }
   """
 
-  def reserve(
-        %{maker_mapping: mapping, intent: %{recipient: recipient}, user: owner},
-        op,
-        preview
-      ) do
-    Mapping.put(mapping, key(op), %{
-      owner: owner,
-      recipient: recipient,
-      total: preview.receive["atomic"]
-    })
+  @signal_window_seconds 300
+
+  def quote_terms(quote, rail, currency) do
+    amount = LiveReads.uint!(quote["signalIntentAmount"])
+    rate = LiveReads.uint!(quote["conversionRate"])
+    deposit = deposit_id!(get_in(quote, ["intent", "depositId"]))
+
+    if amount >= LiveReads.uint!(quote["tokenAmount"]) and amount > 0 and rate > 0 do
+      %{
+        signal_amount: amount,
+        conversion_rate: rate,
+        deposit_id: deposit,
+        payment_method: ABI.hash(rail),
+        fiat_currency: ABI.hash(currency)
+      }
+    end
+  rescue
+    _ -> nil
   end
 
+  defp deposit_id!(value) when is_integer(value) and value in 0..9_007_199_254_740_991,
+    do: value
+
+  defp deposit_id!(value), do: LiveReads.uint!(value)
+
+  def remember_preview(%{checkpoint: {_, _}, user: owner} = context, preview, intent, terms)
+      when is_map(terms) do
+    quote =
+      Map.merge(terms, %{
+        owner: owner,
+        recipient: intent.recipient,
+        preview_digest: digest(preview),
+        total: preview.receive["atomic"]
+      })
+
+    case Checkpoint.put_new(context.checkpoint, quote_key(preview.operation_id), quote) do
+      :ok -> :ok
+      _ -> {:error, :checkpoint_unavailable}
+    end
+  end
+
+  def remember_preview(_, _, _, _), do: :ok
+
+  def reserve(%{maker_mapping: mapping, user: owner} = context, operation, preview) do
+    with {:ok, quote} <- Checkpoint.fetch(context.checkpoint, quote_key(operation)),
+         true <- quote.preview_digest == digest(preview),
+         true <- LiveReads.same?(quote.owner, owner),
+         :ok <-
+           Mapping.put(mapping, key(operation), %{
+             owner: quote.owner,
+             recipient: quote.recipient,
+             total: quote.total
+           }) do
+      approved_at = Map.get(context, :now, &DateTime.utc_now/0).() |> DateTime.to_unix()
+
+      Checkpoint.put_new(
+        context.checkpoint,
+        approval_key(operation),
+        Map.put(quote, :approved_at, approved_at)
+      )
+    else
+      _ -> {:error, :capability_changed}
+    end
+  end
+
+  def reserve(%{maker_mapping: _}, _, _), do: {:error, :capability_changed}
   def reserve(_, _, _), do: :ok
+
+  defp digest(preview) do
+    :crypto.hash(:sha256, :erlang.term_to_binary(Ramp.to_wire(preview), [:deterministic]))
+  end
+
+  defp quote_key(operation), do: "peer_onramp_quote:" <> operation
+  defp approval_key(operation), do: "peer_onramp_binding:" <> operation
 
   @doc "Register only public protocol evidence from the authenticated trusted widget."
   def track(context, operation, hashes) do
@@ -56,14 +118,19 @@ defmodule Raxol.Payments.Ramp.Peer.OnrampReads do
   def reconcile(context, operation) do
     with {:ok, mapping} <- Mapping.fetch(context.maker_mapping, key(operation)),
          true <- LiveReads.same?(mapping.owner, context.user),
+         {:ok, terms} <- Checkpoint.fetch(context.checkpoint, approval_key(operation)),
+         true <- LiveReads.same?(terms.owner, mapping.owner),
+         true <- LiveReads.same?(terms.recipient, mapping.recipient),
+         true <- terms.total == mapping.total,
          true <- hash?(mapping[:intent_hash]) and hash?(mapping[:signal_tx_hash]) do
       height = LiveReads.height!(context)
       signal = receipt!(context, mapping.signal_tx_hash, height)
-      signaled!(signal, mapping)
+      signal_timestamp = signaled!(context, signal, mapping, terms)
       {:ok, data} = Indexer.query(context.maker_indexer, @query, %{hash: mapping.intent_hash})
       [intent] = data["Intent"]
       true = LiveReads.same?(intent["intentHash"], mapping.intent_hash)
       true = LiveReads.same?(intent["orchestratorAddress"], ABI.address("orchestratorV4"))
+      true = LiveReads.uint!(intent["amount"]) == terms.signal_amount
 
       case intent["status"] do
         "SIGNALED" ->
@@ -72,7 +139,12 @@ defmodule Raxol.Payments.Ramp.Peer.OnrampReads do
 
           true = LiveReads.same?(chain["owner"], mapping.owner)
           true = LiveReads.same?(chain["to"], mapping.recipient)
-          true = chain["amount"] == LiveReads.uint!(intent["amount"])
+          true = LiveReads.same?(chain["escrow"], ABI.address("escrowV2"))
+          true = chain["depositId"] == terms.deposit_id and chain["amount"] == terms.signal_amount
+          true = LiveReads.same?(chain["paymentMethod"], terms.payment_method)
+          true = LiveReads.same?(chain["fiatCurrency"], terms.fiat_currency)
+          true = chain["conversionRate"] == terms.conversion_rate
+          true = chain["timestamp"] == signal_timestamp
           {:ok, :signaled}
 
         "FULFILLED" ->
@@ -145,16 +217,30 @@ defmodule Raxol.Payments.Ramp.Peer.OnrampReads do
     end
   end
 
-  defp signaled!(receipt, mapping) do
+  defp signaled!(context, receipt, mapping, terms) do
     event = event!(receipt, "IntentSignaled", mapping.intent_hash)
 
-    [_, owner, recipient, amount | _] =
+    [method, owner, recipient, amount, currency, rate, timestamp | _] =
       ABI.decode(Enum.reject(event.spec["inputs"], & &1["indexed"]), ABI.unhex(event.log["data"]))
 
     true = LiveReads.same?(owner, mapping.owner) and LiveReads.same?(recipient, mapping.recipient)
-    true = amount >= LiveReads.uint!(mapping.total)
-    [_, _, escrow, _] = event.log["topics"]
+    true = amount == terms.signal_amount and rate == terms.conversion_rate
+
+    true =
+      LiveReads.same?(method, terms.payment_method) and
+        LiveReads.same?(currency, terms.fiat_currency)
+
+    [_, _, escrow, deposit] = event.log["topics"]
     true = LiveReads.same?("0x" <> String.slice(escrow, -40, 40), ABI.address("escrowV2"))
+    true = LiveReads.quantity(deposit) == terms.deposit_id
+
+    block = LiveReads.rpc!(context, "eth_getBlockByNumber", [receipt["blockNumber"], false])
+    true = LiveReads.quantity(block["number"]) == LiveReads.quantity(receipt["blockNumber"])
+    true = hash?(block["hash"]) and LiveReads.same?(block["hash"], receipt["blockHash"])
+    block_timestamp = LiveReads.quantity(block["timestamp"])
+    true = block_timestamp >= terms.approved_at
+    true = block_timestamp <= terms.approved_at + @signal_window_seconds
+    timestamp
   end
 
   defp receipt!(context, hash, height) do

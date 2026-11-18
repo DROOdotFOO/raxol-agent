@@ -61,6 +61,9 @@ defmodule Raxol.Payments.Ramp.Onramp do
       record.dispatched or record.snapshot.terminal ->
         result(record)
 
+      record[:signal_verified] != true ->
+        uncertain(record, context)
+
       true ->
         case Recovery.claim(context, record.snapshot.operation_id, {:resume, ref}, command) do
           :new -> advance(record, context)
@@ -98,7 +101,8 @@ defmodule Raxol.Payments.Ramp.Onramp do
               )
         }
 
-        with :ok <- save(updated, context), do: result(updated)
+        verified = Map.put(updated, :signal_verified, true)
+        with :ok <- save(verified, context), do: result(verified)
 
       _ ->
         uncertain(record, context)
@@ -116,7 +120,9 @@ defmodule Raxol.Payments.Ramp.Onramp do
     with :ok <- save(updated, context), do: result(updated)
   end
 
-  defp uncertain(%{dispatched: false} = record, _context), do: result(record)
+  defp uncertain(%{dispatched: false, signal_verified: true} = record, _context),
+    do: result(record)
+
   defp uncertain(record, context), do: reconciled(record, "in_doubt", nil, context)
 
   defp locked(operation, %{checkpoint: {_, _}} = context, fun) do
@@ -131,45 +137,74 @@ defmodule Raxol.Payments.Ramp.Onramp do
 
   defp start(operation, quote, command, context) do
     case Checkpoint.fetch(context.checkpoint, key(operation)) do
-      {:ok, record} -> replay(record, quote, command)
+      {:ok, record} -> replay(record, quote, command, context)
       :error -> begin(operation, quote, command, context)
     end
   end
 
-  defp replay(record, quote, command) do
-    if record.quote_id == quote and record.command == command,
-      do: result(record),
-      else: Recovery.conflict(record)
+  defp replay(record, quote, command, context) do
+    cond do
+      record.quote_id != quote or record.command != command ->
+        Recovery.conflict(record)
+
+      record.dispatched or record.snapshot.terminal or record[:signal_verified] == true ->
+        result(record)
+
+      true ->
+        uncertain(record, context)
+    end
   end
 
   defp begin(operation, quote, command, context) do
     with {:ok, preview} <- valid_preview(operation, quote, context),
          true <- command[:expected_revision] == "0" and valid_command?(command),
          :ok <- Recovery.reserve(context, operation, "onramp"),
-         :ok <- authorize(preview, context),
-         :new <- Recovery.claim(context, operation, {:approve, quote}, command) do
-      record = %{
-        quote_id: quote,
-        command: command,
-        action_ref: "action_" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false),
-        stage: 0,
-        dispatched: false,
-        snapshot: snapshot(operation, "0", "action_required", context)
-      }
-
-      case Checkpoint.put_new(context.checkpoint, key(operation), record) do
-        :ok ->
-          :ok = OnrampReads.reserve(context, operation, preview)
-          advance(record, context)
-
-        _ ->
-          {:error, :session_conflict}
-      end
+         :new <- Recovery.claim(context, operation, {:approve, quote}, command),
+         :ok <- authorize(preview, context) do
+      start_approved(operation, quote, command, preview, context)
     else
       :conflict -> {:error, :session_conflict}
       :replayed -> {:error, :session_conflict}
       _ -> {:error, :approval_required}
     end
+  end
+
+  defp start_approved(operation, quote, command, preview, context) do
+    record = %{
+      quote_id: quote,
+      command: command,
+      action_ref: "action_" <> Base.url_encode64(:crypto.strong_rand_bytes(24), padding: false),
+      stage: 0,
+      dispatched: true,
+      snapshot: snapshot(operation, "1", "in_doubt", context)
+    }
+
+    case reserve_dispatch(record, preview, context) do
+      :ok ->
+        finish_stage(record, widget(context, :intent_signaling, record.snapshot), context)
+
+      error ->
+        SpendGate.release_by_intent(context, operation)
+        error
+    end
+  end
+
+  defp reserve_dispatch(record, preview, context) do
+    operation = record.snapshot.operation_id
+
+    with true <- unexpired?(preview, context),
+         :ok <- OnrampReads.reserve(context, operation, preview),
+         :ok <- Checkpoint.put_new(context.checkpoint, key(operation), record) do
+      :ok
+    else
+      false -> {:error, :approval_required}
+      {:error, :capability_changed} = error -> error
+      _ -> {:error, :session_conflict}
+    end
+  rescue
+    _ -> {:error, :checkpoint_unavailable}
+  catch
+    _, _ -> {:error, :checkpoint_unavailable}
   end
 
   defp valid_preview(operation, quote, context) do
@@ -181,12 +216,16 @@ defmodule Raxol.Payments.Ramp.Onramp do
          true <- clean.pay["asset"]["kind"] == "fiat",
          true <- clean.pay["asset"]["currency"] == "USD",
          true <- base_usdc?(clean.receive["asset"]),
-         {:ok, expiry, 0} <- DateTime.from_iso8601(clean.expires_at),
-         true <- DateTime.compare(expiry, now(context)) == :gt do
+         true <- unexpired?(clean, context) do
       {:ok, clean}
     else
       _ -> {:error, :invalid_preview}
     end
+  end
+
+  defp unexpired?(preview, context) do
+    with {:ok, expiry, 0} <- DateTime.from_iso8601(preview.expires_at),
+         do: DateTime.compare(expiry, now(context)) == :gt
   end
 
   defp base_usdc?(asset) do
@@ -239,6 +278,9 @@ defmodule Raxol.Payments.Ramp.Onramp do
   catch
     _, _ -> :unknown
   end
+
+  defp finish_stage(%{stage: 0} = record, :ready, context),
+    do: reconcile(record, context)
 
   defp finish_stage(record, response, context)
        when response == :ready or (record.stage == 3 and response in [:pending, :held, :released]) do

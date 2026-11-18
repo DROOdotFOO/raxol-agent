@@ -308,12 +308,13 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
            ) do
       {state, actions} = normalized(facts)
       snapshot = snapshot(operation, record.revision, state, actions, context)
+      snapshot = put_partial_result(snapshot, facts)
 
       :ok =
         Checkpoint.put(
           context.checkpoint,
           key(operation),
-          Recovery.close(%{
+          close_facts(%{
             record
             | snapshot: snapshot,
               pending_action_ref: nil
@@ -335,13 +336,20 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
 
       remaining >= unmatched and
         remaining + filled + withdrawn == String.to_integer(mapping.total) and
-        (remaining > 0 or facts.active_intents == 0)
+        (remaining > 0 or facts.active_intents == 0) and
+        valid_partial_result?(facts)
     else
       false
     end
   end
 
   defp valid_facts?(_, _), do: false
+
+  defp valid_partial_result?(%{remaining: "0", filled: filled, withdrawn: returned})
+       when filled != "0" and returned != "0",
+       do: byte_size(filled) <= 31 and byte_size(returned) <= 31
+
+  defp valid_partial_result?(_), do: true
 
   defp valid_identifiers?(facts, mapping) do
     is_integer(facts[:active_intents]) and facts.active_intents >= 0 and
@@ -354,10 +362,36 @@ defmodule Raxol.Payments.Ramp.Peer.Maker do
       (amount != facts.remaining or facts.active_intents == 0)
   end
 
-  defp normalized(%{remaining: "0", withdrawn: "0"}), do: {"completed", []}
+  defp normalized(%{remaining: "0", filled: filled}) when filled != "0", do: {"completed", []}
   defp normalized(%{remaining: "0"}), do: {"refunded", []}
   defp normalized(%{unmatched: "0"}), do: {"processing", ["check_status"]}
   defp normalized(_), do: {"processing", ["check_status", "recover_peer"]}
+
+  defp put_partial_result(%{terminal: true} = snapshot, %{filled: filled, withdrawn: returned})
+       when filled != "0" and returned != "0" do
+    put_in(snapshot.peer["partial_result"], %{
+      "settlement" => "base_usdc",
+      "filled_atomic" => filled,
+      "returned_atomic" => returned
+    })
+  end
+
+  defp put_partial_result(snapshot, _), do: snapshot
+
+  defp close_facts(record) do
+    closed = Recovery.close(record)
+
+    case record.snapshot.peer["partial_result"] do
+      %{"filled_atomic" => filled, "returned_atomic" => returned} ->
+        update_in(
+          closed.receipt,
+          &Map.merge(&1, %{filled_atomic: filled, returned_atomic: returned})
+        )
+
+      nil ->
+        closed
+    end
+  end
 
   defp record(operation, revision, idempotency, pending, context) do
     %{
