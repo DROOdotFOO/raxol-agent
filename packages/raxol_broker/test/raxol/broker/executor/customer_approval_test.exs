@@ -24,6 +24,7 @@ defmodule Raxol.Broker.Executor.CustomerApprovalTest do
       assert Journal.today_notional(t0(), journal) == {:ok, d("0")}
       group_records = Enum.filter(records(path), &(&1["group_id"] == group))
       refute Enum.any?(group_records, &(&1["type"] == "placing"))
+
       assert %{"type" => "close", "reason" => "customer_approval_unconfirmed"} =
                List.last(group_records)
     end
