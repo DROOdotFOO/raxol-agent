@@ -24,7 +24,8 @@ defmodule Raxol.Broker.Executor.CustomerApprovalTest do
       assert Journal.today_notional(t0(), journal) == {:ok, d("0")}
       group_records = Enum.filter(records(path), &(&1["group_id"] == group))
       refute Enum.any?(group_records, &(&1["type"] == "placing"))
-      assert List.last(group_records)["type"] == "close"
+      assert %{"type" => "close", "reason" => "customer_approval_unconfirmed"} =
+               List.last(group_records)
     end
   end
 
@@ -59,7 +60,7 @@ defmodule Raxol.Broker.Executor.CustomerApprovalTest do
     end
   end
 
-  test "strict approval does not block emergency proposal decline or order cancellation" do
+  test "strict approval does not block the emergency kill path" do
     %{executor: executor, fake: fake, journal: journal} = strict_executor(true)
 
     assert {:ok, %{status: :pending_approval}} =
@@ -85,6 +86,31 @@ defmodule Raxol.Broker.Executor.CustomerApprovalTest do
              Executor.halt_orders(executor, 5_000)
 
     assert [%{"state" => "cancelled"}] = Fake.orders(fake)
+  end
+
+  test "strict approval permits targeted operator decline and cancellation" do
+    %{executor: executor, fake: fake} = strict_executor(true)
+    context = %Raxol.Broker.Policy.Context{}
+
+    assert {:ok, %{status: :pending_approval}} =
+             Executor.run(executor, intent(:strategy), context)
+
+    assert [%{"approval_id" => id}] = Fake.approvals(fake)
+    {:ok, decline} = Intent.decline(id, provenance: :human)
+    assert {:ok, %{status: :placed}} = Executor.run(executor, decline, context)
+    assert [%{"state" => "declined"}] = Fake.approvals(fake)
+    assert Fake.calls(fake, "decline_") == ["decline_trade_approval"]
+
+    assert {:ok, %{status: :pending_approval}} =
+             Executor.run(executor, intent(:strategy), context)
+
+    pending = Enum.find(Fake.approvals(fake), &(&1["state"] == "pending"))
+    :ok = Fake.resolve_approval(fake, pending["approval_id"], "approved")
+    assert [%{"order_id" => order_id}] = Fake.orders(fake)
+    {:ok, cancel} = Intent.cancel(order_id, provenance: :human)
+    assert {:ok, %{status: :placed}} = Executor.run(executor, cancel, context)
+    assert [%{"state" => "cancelled"}] = Fake.orders(fake)
+    assert Fake.calls(fake, "cancel_") == ["cancel_equity_order"]
   end
 
   test "an invalid strict-approval value refuses startup rather than disabling the guard" do

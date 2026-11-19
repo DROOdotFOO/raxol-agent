@@ -1557,6 +1557,7 @@ defmodule Raxol.Broker.Executor do
       case reason do
         {:context, :clock_changed} -> :clock_changed
         :port_not_ready -> :port_not_ready
+        :customer_approval_unconfirmed -> :customer_approval_unconfirmed
         _ -> :placing_refused
       end
 

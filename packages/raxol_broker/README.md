@@ -483,8 +483,10 @@ cancels are mapped until the generated tool adapters land; options and
 advanced orders are refused with `{:error, {:no_adapter, kind}}`.
 
 The package requires Plug 1.20.4 or a later 1.20 patch, fixing multipart-parser
-advisory EEF-CVE-2026-120287. Gate the actual runtime checkout used by the browser;
-an older running process is not upgraded by changing the dependency lock.
+advisory EEF-CVE-2026-120287. Launch the canary from this package with the pinned
+`RAXOL_PATH` so it uses this patched lock. Starting the Raxol checkout independently
+uses that project's own lock and must be gated separately. An older running
+process is not upgraded by changing either dependency lock.
 
 Pagination regressions against the real Fake cover multi-page aggregation,
 envelope cursors, later-page failures and the twenty-page bound. Those tests
