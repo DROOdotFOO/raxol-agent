@@ -51,7 +51,8 @@ defmodule RaxolBroker.MixProject do
       {:jason, "~> 1.4"},
       # `Raxol.Broker.MCP.Fake` is built on raxol_mcp's reference server,
       # which compiles only with plug (optional upstream).
-      {:plug, "~> 1.16"},
+      # Plug 1.20.4 fixes multipart parser EEF-CVE-2026-120287.
+      {:plug, "~> 1.20.4"},
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

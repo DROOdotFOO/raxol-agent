@@ -43,6 +43,39 @@ defmodule Raxol.Broker.Executor.ReviewTest do
              Review.run(ctx.port, Catalog.static(), ctx.intent, "ACC-1", 5_000)
   end
 
+  for side <- [:buy, :sell] do
+    @side side
+    test "#{side} reviews explicitly pin GFD and regular hours", ctx do
+      {:ok, intent} =
+        Intent.limit(@side, "AAPL", Decimal.new("2"), Decimal.new("125"), provenance: :strategy)
+
+      assert {:ok, _response, []} =
+               Review.run(ctx.port, Catalog.static(), intent, "ACC-1", 5_000)
+
+      assert [{"review_equity_order", args}] = Fake.calls(ctx.server)
+
+      assert args == %{
+               "account_number" => "ACC-1",
+               "symbol" => "AAPL",
+               "side" => Atom.to_string(@side),
+               "type" => "limit",
+               "quantity" => "2",
+               "limit_price" => "125",
+               "time_in_force" => "gfd",
+               "market_hours" => "regular_hours"
+             }
+    end
+  end
+
+  test "cancel and decline reviews still send no tool call", ctx do
+    for kind <- [:cancel, :decline] do
+      assert {:ok, %{"tool" => nil}, []} =
+               Review.run(ctx.port, Catalog.static(), %{ctx.intent | kind: kind}, "ACC-1", 5_000)
+    end
+
+    assert Fake.calls(ctx.server) == []
+  end
+
   test "alerts become warnings", ctx do
     Fake.warnings(ctx.server, ["pattern day trader"])
 

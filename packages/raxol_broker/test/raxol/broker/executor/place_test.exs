@@ -198,6 +198,9 @@ defmodule Raxol.Broker.Executor.PlaceTest do
 
       assert {:ok, :placed, %{"tool" => "cancel_equity_order"}} =
                Place.run(receipt, cancel, group, env)
+
+      assert {"cancel_equity_order", args} = List.last(Fake.calls(ctx.server))
+      assert args == %{"account_number" => @account, "order_id" => order_id}
     end
 
     test "an unreviewed group is refused by the journal and nothing is sent", ctx do

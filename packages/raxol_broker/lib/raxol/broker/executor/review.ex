@@ -187,8 +187,9 @@ defmodule Raxol.Broker.Executor.Review do
 
   @doc """
   The arguments of an equity order for `intent` against `account`, as the
-  review and place tools take them (all values strings). Cancels take the
-  broker order id.
+  review and place tools take them (all values strings). Equity orders
+  explicitly pin the documented GFD and regular-hours defaults for the audit
+  envelope. Cancels take only the account and broker order id.
   """
   @spec order_args(Intent.t(), String.t()) :: map()
   def order_args(%Intent{kind: :cancel, order_id: order_id}, account),
@@ -198,7 +199,9 @@ defmodule Raxol.Broker.Executor.Review do
     %{
       "account_number" => account,
       "symbol" => intent.symbol,
-      "side" => Atom.to_string(intent.side)
+      "side" => Atom.to_string(intent.side),
+      "time_in_force" => "gfd",
+      "market_hours" => "regular_hours"
     }
     |> Map.merge(kind_args(intent))
   end

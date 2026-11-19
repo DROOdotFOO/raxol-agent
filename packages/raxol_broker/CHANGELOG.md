@@ -2,6 +2,10 @@
 
 ## 0.1.0 - Unreleased
 
+- Add the executor's opt-in `require_customer_approval: true` guard: false/missing review approval-required flags close a new-order group before placement even after ASK approval. Validate the option as a boolean; emergency cancels and approval declines remain available.
+- Explicitly send the documented `gfd` and `regular_hours` equity defaults in the shared review/place envelope. Keep cancel/decline arguments and supported order types unchanged.
+- Require Plug 1.20.4 or a later 1.20 patch to fix multipart-parser EEF-CVE-2026-120287. Refresh the locked transitive resolution needed when gating the pinned LiveView runtime checkout; keep `--check-locked` in the execution gate.
+- Exercise complete multi-page reads, verbatim envelope cursors, later-page transport/tool/schema failures and the twenty-page bound against the real Fake. Incomplete listings cannot resolve unknown exposure absent; Fake results are not live-pagination evidence.
 - Refresh the reviewed `get_option_orders` read schema and generated reader: accept `state_group` and `updated_at_gte`, include `unconfirmed` among documented single-state filters, and distinguish pending-cancel result rows from their open-state filter. Preserve all 87 names and read/review/write/unknown classes; no order/review schemas or option execution adapters changed.
 - Review description-only updates to `get_equity_historicals` (explicit-interval 5,000-bar cap), `place_option_order` and `review_option_order` (option-level, multi-leg and account restrictions). Document the history bound without adding an execution adapter or adopting vendor review/approval bypass guidance. Preserve the authenticated recording's actual capture timestamp.
 - Normalize server `1.19.1` quote, approval-setting and buying-power envelopes; migrate the Fake and consumer regressions to the actual nested shapes, rejecting malformed data without legacy fallbacks.

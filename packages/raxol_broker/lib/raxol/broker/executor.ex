@@ -241,6 +241,11 @@ defmodule Raxol.Broker.Executor do
     * `:mode` - `:dry_run` (default) or `:live`; see "Mode".
     * `:credential` - `[store: store_opts, auth: auth_opts, refresh_skew:
       seconds]` for a live session; see "Live session".
+    * `:require_customer_approval` - boolean (default `false`). When true,
+      every new order requires the review's `customer_approval_required` flag
+      to be true, even after an operator answers ASK. Missing/false flags close
+      the group without placement as `:customer_approval_unconfirmed`.
+      Cancels and approval declines are exempt.
     * `:clock` - zero-arity function returning the UTC `DateTime` used for
       the counters (default `DateTime.utc_now/0`). It runs in a short-lived
       task, never in this process, with a 5 s budget. Its result is rebuilt
@@ -470,6 +475,7 @@ defmodule Raxol.Broker.Executor do
     with {:ok, journal} <- fetch_journal(opts),
          {:ok, timeouts} <- fetch_timeouts(opts),
          {:ok, clock} <- fetch_clock(opts),
+         {:ok, require_customer_approval} <- fetch_customer_approval_requirement(opts),
          {:ok, mode} <- check_mode(Keyword.get(opts, :mode, :dry_run)),
          {:ok, account} <- fetch_account(opts),
          {:ok, policy} <- fetch_policy(opts),
@@ -483,6 +489,7 @@ defmodule Raxol.Broker.Executor do
          mode: mode,
          account: account,
          policy: policy,
+         require_customer_approval: require_customer_approval,
          session: session,
          credential: credential
        })}
@@ -537,6 +544,13 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
+  defp fetch_customer_approval_requirement(opts) do
+    case Keyword.get(opts, :require_customer_approval, false) do
+      required when is_boolean(required) -> {:ok, required}
+      other -> {:error, {:invalid_customer_approval_requirement, other}}
+    end
+  end
+
   # Pure: refuses a live spec in dry run before anything connects.
   defp prepare_port(config) do
     PortMCP.prepare(session_spec(config.session, config.credential),
@@ -570,6 +584,7 @@ defmodule Raxol.Broker.Executor do
       mode: config.mode,
       account: config.account,
       policy: config.policy,
+      require_customer_approval: config.require_customer_approval,
       review_timeout: config.review_timeout,
       place_timeout: config.place_timeout,
       key: :crypto.strong_rand_bytes(32),
@@ -1554,6 +1569,17 @@ defmodule Raxol.Broker.Executor do
   defp not_armed(state, group_id) do
     _ = close_group(state, group_id, :not_armed)
     {:reply, {:error, :not_armed}, state}
+  end
+
+  defp send_order(
+         %{require_customer_approval: true} = state,
+         %Intent{kind: kind},
+         group_id,
+         _receipt,
+         customer_approval_required
+       )
+       when kind not in [:cancel, :decline] and customer_approval_required != true do
+    refuse_place(state, group_id, :customer_approval_unconfirmed)
   end
 
   defp send_order(state, intent, group_id, receipt, customer_approval_required) do

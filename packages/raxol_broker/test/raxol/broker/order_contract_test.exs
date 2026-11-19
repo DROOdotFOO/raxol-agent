@@ -66,6 +66,8 @@ defmodule Raxol.Broker.OrderContractTest do
       assert review == Map.delete(place, "ref_id")
       assert review["quantity"] == "2.00"
       assert review["type"] in ["limit", "stop_limit", "stop_market"]
+      assert review["time_in_force"] == "gfd"
+      assert review["market_hours"] == "regular_hours"
 
       if Map.has_key?(review, "limit_price"), do: assert(review["limit_price"] == "125.123456")
       if Map.has_key?(review, "stop_price"), do: assert(review["stop_price"] == "126.654321")
@@ -79,7 +81,7 @@ defmodule Raxol.Broker.OrderContractTest do
     end
   end
 
-  test "market fractional and dollar orders retain GFD regular-hours defaults", ctx do
+  test "market fractional and dollar orders explicitly pin GFD and regular hours", ctx do
     for {:ok, intent} <- [
           Intent.buy_usd("AAPL", d("100.25"), provenance: :strategy),
           Intent.buy_shares("AAPL", d("0.125"), provenance: :strategy),
@@ -95,8 +97,8 @@ defmodule Raxol.Broker.OrderContractTest do
           Enum.chunk_every(calls, 2) do
       assert review == Map.delete(place, "ref_id")
       assert review["type"] == "market"
-      assert Map.get(review, "time_in_force", "gfd") == "gfd"
-      assert Map.get(review, "market_hours", "regular_hours") == "regular_hours"
+      assert review["time_in_force"] == "gfd"
+      assert review["market_hours"] == "regular_hours"
     end
 
     assert {"review_equity_order", %{"dollar_amount" => "100.25"}} = Enum.at(calls, 0)

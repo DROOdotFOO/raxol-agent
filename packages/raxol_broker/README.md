@@ -440,6 +440,19 @@ A person answers an ASK later with `approve(executor, token, "name")`,
 * **Account pin.** The executor's session is ready only when `get_accounts`
   marks its `:account_number` as the one `agentic_allowed` account; it is
   checked on every connect, and again when arming.
+* **Two-stage approval requirement.** Start the executor with
+  `require_customer_approval: true` to require a literal
+  `customer_approval_required: true` from the recorded review before any new
+  order is sent. A missing/false flag returns
+  `{:error, :customer_approval_unconfirmed}` and closes the group without
+  `placing`, including after an operator approves ASK. The default is `false`;
+  enable this explicitly for the controlled canary. Cancels and approval
+  declines remain available. This does not approve a proposal in Robinhood,
+  re-read the upstream setting at placement, or guarantee that an order cannot fill.
+* **Explicit order envelope.** Equity review and placement both send
+  `time_in_force: "gfd"` and `market_hours: "regular_hours"`, pinning the
+  documented defaults rather than relying on omitted arguments. Cancel and
+  decline arguments are unchanged; no additional order type or session is enabled.
 * **Fail closed.** Any journal error before `placing`, review error or
   unsupported order kind means no order. Once the order call is made the
   result is `{:ok, _}`: a place call that times out is journaled
@@ -468,6 +481,15 @@ A person answers an ASK later with `approve(executor, token, "name")`,
 Only equity orders (`review_equity_order`, `place_equity_order`) and equity
 cancels are mapped until the generated tool adapters land; options and
 advanced orders are refused with `{:error, {:no_adapter, kind}}`.
+
+The package requires Plug 1.20.4 or a later 1.20 patch, fixing multipart-parser
+advisory EEF-CVE-2026-120287. Gate the actual runtime checkout used by the browser;
+an older running process is not upgraded by changing the dependency lock.
+
+Pagination regressions against the real Fake cover multi-page aggregation,
+envelope cursors, later-page failures and the twenty-page bound. Those tests
+prove local complete-listing behavior, not an actual upstream cursor round trip.
+They do not satisfy or waive the live-pagination evidence gate.
 
 ## Arming
 
