@@ -2,6 +2,8 @@
 
 ## 0.1.0 - Unreleased
 
+- Refresh description-only drift in `place_equity_order` (per-order buying power and available-to-sell shares), `place_option_order` (closing availability) and `get_equity_technical_indicators` (period ranges). Preserve all 87 names, non-description schema fields, annotations and execution adapters; retain fail-closed comparison of property descriptions and ignore vendor automatic-submit/cancel prose.
+- Require Phoenix LiveView 1.2.14 or a later 1.2 patch for EEF-CVE-2026-126334 (joining without a URL can skip `live_session` hooks). Update the broker lock and test the pinned identity-forwarding runtime with the patched version; independent runtime launches still need their own patched lock.
 - Add the executor's opt-in `require_customer_approval: true` guard: false/missing review approval-required flags close a new-order group before placement even after ASK approval. Preserve `customer_approval_unconfirmed` in the journal close reason for audit. Validate the option as a boolean; emergency cancels and approval declines remain available.
 - Explicitly send the documented `gfd` and `regular_hours` equity defaults in the shared review/place envelope. Keep cancel/decline arguments and supported order types unchanged.
 - Require Plug 1.20.4 or a later 1.20 patch to fix multipart-parser EEF-CVE-2026-120287. Refresh the transitive resolution selected when gating the pinned LiveView runtime checkout; keep `--check-locked` in the execution gate. Launching that checkout independently uses its own lock, not the broker's patched graph.

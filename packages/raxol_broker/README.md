@@ -483,10 +483,13 @@ cancels are mapped until the generated tool adapters land; options and
 advanced orders are refused with `{:error, {:no_adapter, kind}}`.
 
 The package requires Plug 1.20.4 or a later 1.20 patch, fixing multipart-parser
-advisory EEF-CVE-2026-120287. Launch the canary from this package with the pinned
-`RAXOL_PATH` so it uses this patched lock. Starting the Raxol checkout independently
-uses that project's own lock and must be gated separately. An older running
-process is not upgraded by changing either dependency lock.
+advisory EEF-CVE-2026-120287, and Phoenix LiveView 1.2.14 or a later 1.2 patch,
+fixing live-session hook bypass
+[EEF-CVE-2026-126334](https://osv.dev/vulnerability/EEF-CVE-2026-126334).
+Launch the canary from this package with the pinned `RAXOL_PATH` so it uses this
+patched lock. Starting the Raxol checkout independently uses that project's own
+lock and must be gated separately. An older running process is not upgraded by
+changing either dependency lock.
 
 Pagination regressions against the real Fake cover multi-page aggregation,
 envelope cursors, later-page failures and the twenty-page bound. Those tests
@@ -883,6 +886,16 @@ The reviewed history guide documents a 5,000-bar cap for explicit intervals.
 The option place/review capability descriptions are vendor metadata, not a
 broker execution adapter: their workflow guidance cannot bypass local review,
 approval or mode gates, and option execution remains unsupported.
+
+Description changes inside `inputSchema` still count as order-tool drift; do not
+strip them to get past a refusal. The latest reviewed capture clarifies that
+per-order buying power can be below the displayed account figure, and a sell
+must fit `shares_available_for_sells`, not total position quantity. Its option
+closing-order guidance does not authorize automatic cancellation or an option
+adapter. The technical-indicator period guide allows 2–500 bars, or 1–500 for
+momentum, roc, atr, keltner_channels and supertrend. These are vendor hints, not
+new local validation. Generated readers are unchanged because property
+descriptions are not rendered. No argument type, required field or annotation changed.
 
 To refresh the capture from a signed-in account:
 
