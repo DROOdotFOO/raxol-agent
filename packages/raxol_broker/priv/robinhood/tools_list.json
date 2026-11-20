@@ -1,7 +1,7 @@
 {
   "provenance": {
     "captured": "2026-11-20T15:02:53.572124Z",
-    "note": "Authenticated metadata-only tools/list capture. Reviewed description-only equity buying-power/available-share clarifications, option-closing availability, and technical-indicator period bounds. All 87 names and non-description fields unchanged; option execution remains unsupported, and vendor automatic-submit/cancel prose never bypasses broker approvals. No financial tool or credential-refresh calls.",
+    "note": "Authenticated metadata-only tools/list capture through a read-only audit client with refresh blocked, not the capture_tools task. Reviewed description-only equity buying-power/available-share clarifications, option-closing availability, and technical-indicator period bounds. All 87 names and non-description fields unchanged; option execution remains unsupported, and vendor automatic-submit/cancel prose never bypasses broker approvals. No financial tool or credential-refresh calls.",
     "source": "https://agent.robinhood.com/mcp/trading tools/list"
   },
   "tools": [
