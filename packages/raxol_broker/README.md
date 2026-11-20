@@ -819,6 +819,70 @@ refuses a journal whose chain does not verify. Account numbers, wherever
 they appear in recorded responses, print as `[account]` so a replay can be
 shared; `--unredacted` prints them.
 
+### Redacted checkpoint evidence
+
+```sh
+mix raxol.broker.evidence --date 2026-10-02 [--journal PATH]
+```
+
+Prints one JSON document, without starting a client, reading credentials,
+opening a writer or making financial reads. Damaged/unreadable journals refuse.
+Groups with recorded UTC-day activity and linked fills retain their recorded
+history, including later records; this is not a day-end snapshot.
+
+The allowlist summarizes intent, policy phase/action, review, broker ASK,
+placement, proposal/order, reconciliation and fill links. Identifiers receive
+consistent export-local pseudonyms. Accounts, order/approval/reference IDs,
+actors, symbols, amounts, balances, raw payloads, prompts and free text never
+appear as originals; pseudonyms are not stable across exports.
+
+`journal_integrity: VERIFIED` certifies only the stored chain. Overall result,
+live transport, current broker state and genuine cursor traversal remain
+`UNVERIFIED`. Missing stages and unmatched fills stay unverified/unlinked.
+A proposal is not an order, ASK approval is not Robinhood app approval, and
+a recorded fill does not establish a completely filled order or flat inventory.
+
+### Disarmed macOS handoff
+
+`scripts/handoff.py` coordinates the owner-local launchd collector transition:
+
+```sh
+uv run scripts/handoff.py /absolute/private/handoff.json 2026-11-23T15:15:00Z
+```
+
+This example deadline is not trading permission. Use the absolute expiry from
+a fresh owner decision; the controller never arms or changes a policy.
+The owner-only JSON config contains `collector_label`, `collector_plist`,
+`notifier_label`, `notifier_plist`, `collector_status`, `ready_file`, and
+`command` (an argument list beginning with an absolute executable).
+Control directories must be 0700, files 0600, owner-held, without unsafe or
+symlinked ancestors. Use a new ready-file path for every attempt.
+
+The controller registers an OS exit watch **before** unloading the collector.
+`launchctl bootout` alone is not shutdown proof. Only after the old PID exits
+and the deadline is rechecked may the trusted foreground command start.
+That program must exec the broker VM (no daemonization), start disarmed with
+no strategy restoration, and publish its ready JSON atomically. Its environment
+receives `BROKER_HANDOFF_DEADLINE`, `BROKER_HANDOFF_NONCE`, and
+`BROKER_HANDOFF_READY`. Readiness requires the matching nonce/OS PID, fresh
+`observed_at`, `status: running`, `mode: disarmed`, `client_status: ready`,
+`executor_started: true`, `executor_port_ready: true`,
+`strategies_started: false`, `baseline_verified: true`, and
+`credential_persistence_pending: false`. The worker must verify these facts,
+including persisted credentials; a receipt is not a substitute for verification.
+
+If startup exits unsuccessfully, restore one read-only collector, wait for its
+fresh healthy report (up to five minutes for startup), then restore its notifier.
+If an old or candidate process survives its bound, **do not force-stop it,
+delete locks or start another refresher**. Report an owner-action incident
+instead. A successfully handed-off full runtime needs its own monitoring;
+the collector-only notifier stays unloaded. No live handoff is authorized
+merely by installing this tool.
+
+macOS lifecycle regression: `python3 -m pytest scripts/test_handoff.py -q`
+(Typer 0.24.1, Pydantic 2.12.5 and pytest required). It uses unique disposable
+launchd jobs, an isolated journal and the real MCP.Fake; never live credentials.
+
 ## Fake server
 
 `Raxol.Broker.MCP.Fake` stands in for Robinhood's MCP server in tests, dry
