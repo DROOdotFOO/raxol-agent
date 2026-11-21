@@ -55,6 +55,8 @@ defmodule RaxolBroker.MixProject do
       {:plug, "~> 1.20.4"},
       # Require the fix for live_session hook bypass EEF-CVE-2026-126334.
       {:phoenix_live_view, "~> 1.2.14"},
+      # Phoenix 1.8.17 fixes broadcast/Presence DoS advisories published 2026-11-21.
+      {:phoenix, "~> 1.8.17"},
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

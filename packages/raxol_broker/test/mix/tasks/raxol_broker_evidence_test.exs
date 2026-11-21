@@ -51,6 +51,23 @@ defmodule Mix.Tasks.Raxol.Broker.EvidenceTest do
     assert contents(base) == before
   end
 
+  test "the machine entry point emits parseable JSON without Mix bootstrap chatter",
+       %{base: base, path: path} do
+    before = contents(base)
+    script = Path.expand("../../../scripts/evidence.sh", __DIR__)
+
+    {json, status} =
+      System.cmd("bash", [script, "--date", "2026-10-02", "--journal", path],
+        env: [{"MIX_ENV", "test"}, {"MIX_BUILD_PATH", Mix.Project.build_path()}]
+      )
+
+    assert status == 0
+    assert {:ok, report} = Jason.decode(json)
+    assert report["journal_integrity"] == "VERIFIED"
+    assert [%{"stages" => %{"review" => "UNVERIFIED"}}] = report["groups"]
+    assert contents(base) == before
+  end
+
   test "rejects bad arguments without printing any JSON", %{path: path} do
     for args <- [
           [],

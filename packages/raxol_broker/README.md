@@ -822,8 +822,16 @@ shared; `--unredacted` prints them.
 ### Redacted checkpoint evidence
 
 ```sh
-mix raxol.broker.evidence --date 2026-10-02 [--journal PATH]
+scripts/evidence.sh --date 2026-10-02 [--journal PATH]
 ```
+
+Run the normal compile/gate first. This entry point uses `mix run --no-start
+--no-compile --no-deps-check` to keep Mix's task-discovery/compiler chatter out
+of JSON stdout. Only this immutable reader sets `MIX_OS_CONCURRENCY_LOCK=0`,
+so a running collector's Mix build lock cannot block it; do not use that
+setting for compilation or dependency changes. The human-facing
+`mix raxol.broker.evidence` task is also available, but first task discovery
+may print compiler output before its document.
 
 Prints one JSON document, without starting a client, reading credentials,
 opening a writer or making financial reads. Damaged/unreadable journals refuse.
@@ -847,7 +855,7 @@ a recorded fill does not establish a completely filled order or flat inventory.
 `scripts/handoff.py` coordinates the owner-local launchd collector transition:
 
 ```sh
-uv run scripts/handoff.py /absolute/private/handoff.json 2026-11-23T15:15:00Z
+uv run --locked scripts/handoff.py /absolute/private/handoff.json 2026-11-23T15:15:00Z
 ```
 
 This example deadline is not trading permission. Use the absolute expiry from
@@ -858,9 +866,31 @@ The owner-only JSON config contains `collector_label`, `collector_plist`,
 Control directories must be 0700, files 0600, owner-held, without unsafe or
 symlinked ancestors. Use a new ready-file path for every attempt.
 
-The controller registers an OS exit watch **before** unloading the collector.
-`launchctl bootout` alone is not shutdown proof. Only after the old PID exits
-and the deadline is rechecked may the trusted foreground command start.
+The inline Python environment is hash-locked in `scripts/handoff.py.lock`;
+`--locked` refuses dependency drift before touching services. The deadline
+must be within thirty minutes. Optional bounded budgets are
+`ready_timeout_seconds` (default 600), `drain_timeout_seconds` (60) and
+`recovery_timeout_seconds` (300); none extends the consent deadline.
+
+The web dependency graph also requires Phoenix 1.8.17 for
+[EEF-CVE-2026-129344](https://osv.dev/vulnerability/EEF-CVE-2026-129344) and
+[EEF-CVE-2026-128361](https://osv.dev/vulnerability/EEF-CVE-2026-128361).
+
+The collector must advertise `handoff_protocol: 1` only after installing its
+SIGUSR2 handler. The controller creates an owner-only `handoff-request.json`
+containing the target OS PID, nonce and deadline. A signal alone grants nothing.
+The handler calls `CollectorHandoff.quiesce(directory, root)`: it admits only
+a read-only root's children, suspends restart/refresh processing, refuses an
+armed or non-ready/unpersisted client, then stops the client and journal.
+Use a directly owned root with no external automatic restart. The caller
+stays alive after publishing `handoff-quiesced.json`, so launchd cannot restart
+the collector between drain and unload.
+
+**Only a matching acknowledgement of stopped client and closed journal permits
+`launchctl bootout`.** Its finite forced-kill fallback then has no unstored token
+to lose; an infinite Mac shutdown timeout is unnecessary. The OS exit watch is
+registered before the request, and replacement waits for actual old-PID exit
+and a fresh deadline check. Legacy collectors without this protocol refuse.
 That program must exec the broker VM (no daemonization), start disarmed with
 no strategy restoration, and publish its ready JSON atomically. Its environment
 receives `BROKER_HANDOFF_DEADLINE`, `BROKER_HANDOFF_NONCE`, and
@@ -870,18 +900,25 @@ receives `BROKER_HANDOFF_DEADLINE`, `BROKER_HANDOFF_NONCE`, and
 `strategies_started: false`, `baseline_verified: true`, and
 `credential_persistence_pending: false`. The worker must verify these facts,
 including persisted credentials; a receipt is not a substitute for verification.
+The controller preflights executable/log/temp paths before stopping services.
+Its `.candidate` PID artifact permits cleanup of failed isolated rehearsals.
+Failure JSON includes the phase and whether system state may have changed.
 
-If startup exits unsuccessfully, restore one read-only collector, wait for its
-fresh healthy report (up to five minutes for startup), then restore its notifier.
+If startup exits unsuccessfully, restore one read-only collector, wait through
+missing/intermediate health until a fresh report matches launchd's actual PID,
+then restore the notifier. Recovery remains bounded even after consent expires.
 If an old or candidate process survives its bound, **do not force-stop it,
 delete locks or start another refresher**. Report an owner-action incident
 instead. A successfully handed-off full runtime needs its own monitoring;
 the collector-only notifier stays unloaded. No live handoff is authorized
 merely by installing this tool.
 
-macOS lifecycle regression: `python3 -m pytest scripts/test_handoff.py -q`
-(Typer 0.24.1, Pydantic 2.12.5 and pytest required). It uses unique disposable
-launchd jobs, an isolated journal and the real MCP.Fake; never live credentials.
+macOS lifecycle regression: prebuild `MIX_ENV=test` with the chosen toolchain,
+export its `MIX_BUILD_PATH` (and `RAXOL_PATH` only if using an override), then run
+`python3 -m pytest scripts/test_handoff.py -q` with the locked runtime dependencies
+and pytest available. Missing build/toolchain prerequisites skip explicitly.
+The tests use disposable launchd jobs, isolated journals and the real MCP.Fake;
+no live credentials. Child controllers and candidates are cleaned on failure too.
 
 ## Fake server
 
