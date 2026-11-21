@@ -7,7 +7,7 @@ defmodule Raxol.AgentClientProtocol.Connection.NotificationPoolTest do
   defp item(n), do: {"session/update", n, nil}
 
   test "runs up to the cap, then queues up to the backlog, then refuses" do
-    pool = Pool.new(2, 1)
+    pool = Pool.new(2, 1, 1_000_000)
     assert {:run, pool} = Pool.admit(pool, item(1))
     assert {:run, pool} = Pool.admit(pool, item(2))
     assert {:queued, pool} = Pool.admit(pool, item(3))
@@ -16,7 +16,7 @@ defmodule Raxol.AgentClientProtocol.Connection.NotificationPoolTest do
   end
 
   test "a released slot starts the oldest waiting item" do
-    {:run, pool} = Pool.admit(Pool.new(1, 3), item(1))
+    {:run, pool} = Pool.admit(Pool.new(1, 3, 1_000_000), item(1))
     {:queued, pool} = Pool.admit(pool, item(2))
     {:queued, pool} = Pool.admit(pool, item(3))
 
@@ -26,15 +26,29 @@ defmodule Raxol.AgentClientProtocol.Connection.NotificationPoolTest do
     assert {[], %{running: 0, queued: 0}} = Pool.release(pool)
   end
 
-  test "a new item does not overtake a waiting one, even with a free slot" do
-    pool = %{Pool.new(2, 2) | running: 1, queued: 1, backlog: :queue.from_list([item(1)])}
-    assert {:queued, %{running: 1, queued: 2}} = Pool.admit(pool, item(2))
+  test "the size bound refuses an item the count bound would admit" do
+    size = :erlang.external_size(2)
+    {:run, pool} = Pool.admit(Pool.new(1, 10, 2 * size), item(1))
+    assert {:queued, pool} = Pool.admit(pool, item(2))
+    assert {:queued, pool} = Pool.admit(pool, item(3))
+    assert :full = Pool.admit(pool, item(4))
+    assert %{queued: 2, queued_bytes: bytes} = pool
+    assert bytes == 2 * size
+
+    {[_], pool} = Pool.release(pool)
+    assert pool.queued_bytes == size
+  end
+
+  test "release with nothing running changes nothing" do
+    pool = Pool.new(1, 1, 1_000_000)
+    assert {[], ^pool} = Pool.release(pool)
   end
 
   test "reset forgets running and waiting items" do
-    {:run, pool} = Pool.admit(Pool.new(1, 1), item(1))
+    {:run, pool} = Pool.admit(Pool.new(1, 1, 1_000_000), item(1))
     {:queued, pool} = Pool.admit(pool, item(2))
-    assert %{running: 0, queued: 0} = pool = Pool.reset(pool)
+    assert {[{_, 2, _}], pool} = Pool.reset(pool)
+    assert %{running: 0, queued: 0, queued_bytes: 0} = pool
     assert :queue.is_empty(pool.backlog)
   end
 
@@ -47,7 +61,7 @@ defmodule Raxol.AgentClientProtocol.Connection.NotificationPoolTest do
             ops <- list_of(member_of([:arrive, :finish]), max_length: 60)
           ) do
       {pool, started, admitted, _n} =
-        Enum.reduce(ops, {Pool.new(max_running, max_queued), [], [], 0}, fn op, acc ->
+        Enum.reduce(ops, {Pool.new(max_running, max_queued, 1_000_000), [], [], 0}, fn op, acc ->
           {pool, _, _, _} = acc = step(op, acc)
           assert pool.running <= max_running
           assert pool.queued <= max_queued

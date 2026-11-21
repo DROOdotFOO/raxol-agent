@@ -44,9 +44,11 @@ defmodule Raxol.AgentClientProtocol.Connection do
   @default_max_inbound 1_000
 
   # Concurrent notification-handler cap; notifications beyond it wait in a
-  # backlog of this many, and are dropped once that is full.
+  # backlog bounded by count and by size (external term size of the params),
+  # and are dropped once either bound is reached.
   @default_max_notification_tasks 500
   @default_max_queued_notifications 10_000
+  @default_max_queued_notification_bytes 64 * 1024 * 1024
 
   # After the peer closes its write side, the Connection stops once every
   # in-flight inbound request is answered, or after this bound.
@@ -78,7 +80,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
             handler_state: nil,
             task_sup: nil,
             max_in: @default_max_inbound,
-            notifications: nil,
+            notif_sup: nil,
+            notif_pool: nil,
             close_drain_ms: @default_close_drain_ms,
             draining?: false,
             cancel_reply_timeout_ms: @default_cancel_reply_timeout_ms,
@@ -115,7 +118,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
           handler_state: term(),
           task_sup: GenServer.server() | nil,
           max_in: pos_integer(),
-          notifications: NotificationPool.t() | nil,
+          notif_sup: pid() | nil,
+          notif_pool: NotificationPool.t() | nil,
           close_drain_ms: pos_integer() | :infinity,
           draining?: boolean(),
           cancel_reply_timeout_ms: pos_integer() | :infinity,
@@ -145,6 +149,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   #{@default_max_notification_tasks}), `:max_queued_notifications` (how many more
   notifications may wait for a handler, in order, before further ones are
   dropped; likewise, default #{@default_max_queued_notifications}),
+  `:max_queued_notification_bytes` (the most those waiting notifications'
+  params may total, as external term size; likewise, default
+  #{@default_max_queued_notification_bytes}),
   `:close_drain_ms` (how long, after the peer closes, in-flight requests may
   still be answered; a positive integer or `:infinity`, default
   #{@default_close_drain_ms}), `:cancel_reply_timeout_ms` (how long an adopter
@@ -263,6 +270,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
              :max_queued_notifications,
              @default_max_queued_notifications
            ),
+         {:ok, max_queued_notification_bytes} <-
+           positive_option(
+             opts,
+             :max_queued_notification_bytes,
+             @default_max_queued_notification_bytes
+           ),
          {:ok, close_drain_ms} <- timeout_option(opts, :close_drain_ms, @default_close_drain_ms),
          {:ok, cancel_reply_timeout_ms} <-
            timeout_option(opts, :cancel_reply_timeout_ms, @default_cancel_reply_timeout_ms),
@@ -279,7 +292,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
         handler: handler,
         handler_state: handler_state,
         max_in: max_in,
-        notifications: NotificationPool.new(max_notification_tasks, max_queued_notifications),
+        notif_pool:
+          NotificationPool.new(
+            max_notification_tasks,
+            max_queued_notifications,
+            max_queued_notification_bytes
+          ),
         close_drain_ms: close_drain_ms,
         cancel_reply_timeout_ms: cancel_reply_timeout_ms
       }
@@ -320,7 +338,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
       do: state.transport_mod.set_owner(state.transport_state, self())
 
     # Notification handlers get their own task supervisor, so they cannot use
-    # up the capacity requests need. It has no `max_children`: NotificationPool
+    # up the capacity requests need. It has no `max_children`: `notif_pool`
     # bounds it, and a supervisor's count lags behind handlers that just ended.
     {:ok, notif_sup} = Task.Supervisor.start_link()
 
@@ -328,7 +346,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
      %{
        state
        | task_sup: task_sup,
-         notifications: %{state.notifications | sup: notif_sup},
+         notif_sup: notif_sup,
          session_sup: session_sup,
          transport_ref: carrier,
          transport_monitor: carrier && Process.monitor(carrier),

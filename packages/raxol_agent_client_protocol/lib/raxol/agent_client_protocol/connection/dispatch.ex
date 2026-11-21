@@ -17,7 +17,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Dispatch do
     }
   end
 
-  # `async_nolink` raises once the supervisor hits `max_children`.
+  # `async_nolink` raises once the request supervisor hits `max_children` (the
+  # notification supervisor has none; `NotificationPool` bounds it).
   @spec start(Raxol.AgentClientProtocol.Connection.t(), term(), Ctx.t(), pid() | nil) ::
           {:ok, Task.t()} | {:error, Exception.t()}
   def start(state, dispatchable, ctx, sup \\ nil) do

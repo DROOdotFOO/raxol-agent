@@ -40,6 +40,8 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
     [:raxol, :acp, :journal, :non_holder_turn_completed] => :operational,
     [:raxol, :acp, :late_response] => :peer,
     [:raxol, :acp, :malformed_response] => :peer,
+    # A notification waited for a handler slot (`queued` is the backlog depth).
+    [:raxol, :acp, :notification_queued] => :operational,
     [:raxol, :acp, :notification_shed] => :operational,
     # An out-of-turn update for a session outside the per-connection tracking cap
     # (too many sessions, or an id over 256 bytes).
