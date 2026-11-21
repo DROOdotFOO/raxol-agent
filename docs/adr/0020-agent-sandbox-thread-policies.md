@@ -20,7 +20,7 @@ durable, append-only record of what an agent did.
 - Three dimensions ship: `Sandbox.Shell` (`Directive.Shell`), `Sandbox.SendAgent`
   (`Directive.SendAgent`) and `Sandbox.Async` (`Directive.Async`). There is no filesystem,
   network or resource dimension.
-- An agent declares `sandbox/0`. When it is non-empty, `Raxol.Agent.SandboxHook` is appended to
+- An agent declares `sandbox/0`. When it is non-empty, `Raxol.Agent.SandboxHook` is prepended to
   the agent's `command_hooks/0` chain, so sandboxes run through the existing hook seam.
 - `Raxol.Agent.ThreadLog` is a behaviour for append-only `Raxol.Agent.ThreadEvent` storage,
   keyed by `{thread_id, sequence}`. The adapter assigns sequences. Adapters: `ThreadLog.Ets`
@@ -32,5 +32,6 @@ durable, append-only record of what an agent did.
 - Permissions are orthogonal: tightening shell access does not affect messaging or async work.
 - Sandboxing is opt-in per agent. An agent with no `sandbox/0` behaves as before.
 - ThreadLog adapters do not truncate on their own; retention is the operator's job.
-- `Policy.Grants.shell_allow/2` binds on the dispatcher context, which carries no `:jail`, so
+- `Policy.Grants.shell_allow/2` binds on the dispatcher context, which carries no `:jail` (the multi-tenant flag that
+  refuses the shell, see `Raxol.Agent.Policy.Grants`), so
   `SandboxHook` is the only gate in front of `Directive.Shell` in this repo.

@@ -14,28 +14,44 @@ REST API carries no licence obligation.
 
 ## Decision
 
-1. Build the read layer ourselves as `raxol_web3`. It depends on `raxol_core`, `raxol_mcp` and
+1. `Raxol.MCP.Aggregator`, which would re-serve an upstream MCP server's own tools, is not built.
+   Nothing in `raxol_web3` re-serves upstream tools.
+2. Build the read layer ourselves as `raxol_web3`. It depends on `raxol_core`, `raxol_mcp` and
    `mint`. `raxol_payments` takes it as an optional dependency, and `raxol_agent` exposes it
-   through an agent action.
-2. `Raxol.Web3.Backend` is the source contract: a `{module, state}` handle, `capabilities/1`, and
-   optional callbacks guarded by `function_exported?/3`. Three shapes are load-bearing:
+   through an agent action. The planned moves of `ChainReader`, `Poll` and `Pxe.Client` out of
+   `raxol_payments` have not happened.
+3. `Raxol.Web3.Backend` is the source contract: a `{module, state}` handle, `capabilities/1`, and
+   optional callbacks guarded by `function_exported?/3`. Its required set is amended by ADR-0039.
+   Three shapes are load-bearing:
    - `block_height/1` returns `{height, finalized_height, unit}`, where unit is `:block`,
      `:slot`, `:offset` or `:round`.
    - Accounts are opaque tagged references, not addresses (Canton has party IDs).
    - Pagination uses opaque cursors in both directions, never offsets.
-3. Chains are identified by CAIP-2 strings. `Raxol.Web3.Router` resolves a chain to an ordered
-   fallback list of backends, with health tracked by `Raxol.MCP.CircuitBreaker`.
+
+   Chains are identified by CAIP-2 strings. `Raxol.Web3.Router` resolves a chain to an ordered
+   fallback list of backends, with health tracked by `Raxol.MCP.CircuitBreaker`. Reference
+   implementations ship in `lib/`.
 4. The served surface is read-only. Every MCP tool is marked `readOnlyHint: true` and
    `sensitive: true`, so the server must have an authorizer. `raw_request/2` is limited to a
    compile-time allowlist of read methods in each backend. Writes stay behind the spend-gated
    actions in `raxol_payments`.
-5. Outbound requests are hardened (enforced by ADR-0038's guarded client): `https` only; every
-   resolved address is checked against loopback, link-local, private and mapped ranges; the
-   connection dials the vetted address; redirects are refused; and timeout, size and
-   concurrency are bounded. Credentials a caller supplies are held only for the request and
-   never logged, cached or stored. Upstream tool descriptions are treated as untrusted text.
-6. Free-tier limits go through `Raxol.Core.TokenBucket` keyed by upstream origin, and responses
-   are cached in `Raxol.Web3.Cache` (ETS).
+5. Chain coverage comes from free sources, each with a fallback: Blockscout REST for EVM, SQD Portal
+   and TronGrid/TronScan for Tron, SQD Portal and public RPC for Solana, aztecscan for Aztec, and
+   Splice Scan/ccscan for Canton.
+6. Reuse the existing primitives: `Raxol.MCP.Client`, `Raxol.MCP.CircuitBreaker`, and
+   `Raxol.Core.TokenBucket` keyed by upstream origin. The response cache is rebuilt as
+   `Raxol.Web3.Cache` (ETS).
+7. Security constraints on every outbound request (enforced by ADR-0038's guarded client):
+   1. `https` only.
+   2. Every resolved address, IP literals included, is checked against loopback, link-local,
+      private, unique-local, IPv4-mapped and `0.0.0.0/8` ranges.
+   3. The checked address is the address dialled.
+   4. Redirects are refused.
+   5. Timeout, size and concurrency are bounded per target.
+
+   Credentials a caller supplies are held only for the request and never logged, cached or
+   stored. Upstream errors are rebuilt from the status plus a redacted reason. Upstream tool
+   descriptions are treated as untrusted text.
 
 ## Consequences
 

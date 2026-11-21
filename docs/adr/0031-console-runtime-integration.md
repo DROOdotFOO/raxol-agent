@@ -9,9 +9,9 @@ memory.
 
 ## Context
 
-The Virtuals ACP Console provisions a managed agent runtime from a package (`soul.md`,
-`AGENTS.md`, `tasks.json`, `skills/<name>/SKILL.md`, `manifest.json`). Hermes and OpenClaw
-are the runtimes on offer. `raxol_earn` already generates these packages. Raxol can run the
+The Virtuals Agent Commerce Protocol (ACP) Console provisions a managed agent runtime from a package (`soul.md`,
+`AGENTS.md`, `tasks.json`, `skills/<name>/SKILL.md`, `manifest.json`). Hermes (Nous Research) and
+OpenClaw, two open-source agent runtimes, are the ones on offer. `raxol_earn` already generates these packages. Raxol can run the
 same packages as a third runtime, with ACP, settlement and spend gating built in rather than
 shelled out to a CLI.
 

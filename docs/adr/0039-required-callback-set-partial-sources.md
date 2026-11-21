@@ -2,11 +2,12 @@
 
 ## Status
 
-Accepted, 2026-09-14. Amends [ADR-0033](0033-web3-data-surface.md) decision 2.
+Accepted, 2026-09-14. Amends [ADR-0033](0033-web3-data-surface.md) decision 3.
 
 ## Context
 
-ADR-0033 required six backend callbacks. Several real sources cannot answer four of them. A raw
+ADR-0033 required six backend callbacks: `chain_info/1`, `block_height/1`, `get_transaction/2`,
+`account_info/2`, `list_transactions/3` and `token_balances/2`. Several real sources cannot answer four of them. A raw
 JSON-RPC node cannot list transactions by account. Aztec's public surface has no account
 resource. SQD Portal answers queries over block ranges, so it reports no current balance and
 cannot look up a Solana transaction by signature. If those callbacks stay required, a partial

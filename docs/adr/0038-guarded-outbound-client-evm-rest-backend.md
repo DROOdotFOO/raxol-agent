@@ -8,7 +8,7 @@ set and the `token_balances` cursor were changed by
 
 ## Context
 
-ADR-0033 §5 requires one guarded client for every outbound call: `https` only, a reject set for
+ADR-0033 §7 requires one guarded client for every outbound call: `https` only, a reject set for
 private addresses, the vetted address pinned for the dial, no redirects, and bounded size and
 time. Req and Finch resolve the hostname again at connect time (which allows DNS rebinding), and
 nothing below them bounds the header phase or the total size.
@@ -30,16 +30,16 @@ nothing below them bounds the header phase or the total size.
 6. Errors form a closed set: `{:blocked, _}`, `{:dns_failed, _}`, `{:rate_limited, ms}`,
    `{:breaker_open, _}`, `{:too_large, _}`, `{:timeout, _}`, `{:transport, _}`. Upstream bodies,
    query strings and caller-supplied hosts never appear in an error.
-7. Cursors are versioned and Base64url-encoded, bound to their origin and endpoint, and carry a
+7. The Blockscout EVM backend calls only paginated REST endpoints and declares what REST cannot
+   answer.
+8. Cursors are versioned and Base64url-encoded, bound to their origin and endpoint, and carry a
    MAC under `config :raxol_web3, :cursor_key`. A fleet must share a key of at least 32 bytes.
    A malformed key is a boot error. Decoded keys are also checked against a per-endpoint
    allowlist.
-8. Every request sends `User-Agent: raxol_web3/<version> (+https://raxol.io)`, and a caller
+9. Every request sends `User-Agent: raxol_web3/<version> (+https://raxol.io)`, and a caller
    cannot override it. A refusal counts as a health signal and leads to failover, never to a
    retry with a different UA.
-9. Dependencies: `mint` and `castore`, with no `req` or `finch`.
-10. The Blockscout EVM backend calls only paginated REST endpoints and declares what REST cannot
-    answer.
+10. Dependencies: `mint` and `castore`, with no `req` or `finch`.
 
 ## Consequences
 

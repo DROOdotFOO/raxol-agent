@@ -21,7 +21,7 @@ backends), decision 6's OMP RPC client, and decision 7's team and payment tools.
 
 Raxol had grown a full coding-agent harness: a TUI, a one-shot mode, foreign CLI drivers,
 memory, compaction, self-improvement and a dozen model backends. That market is crowded. OMP
-(<https://omp.sh>) already ships the harness and speaks MCP. No coding harness offers what Raxol
+(Oh My Pi, `omp`, <https://omp.sh>) already ships the harness and speaks MCP. No coding harness offers what Raxol
 already has: apps that agents operate through widget-derived MCP tools, supervised agents with
 durable journals and fail-closed spend limits, and every surface (terminal, LiveView, SSH, MCP,
 chat).
@@ -33,9 +33,12 @@ chat).
    asks and stops.
 2. Apps go into OMP first. Derived tools are named `<session>.<widget>.<action>`. The server sends
    `tools/list_changed`. A tool stays registered until its session stops, and resolves its
-   widget's live state when called. Authorization stays in Raxol, because OMP treats every MCP
-   tool as a write and auto-approves. `raxol mcp` serves the tools over stdio with no Elixir
-   toolchain required.
+   widget's live state when called. OMP treats every MCP tool as a write and auto-approves, so
+   the Raxol authorizer is the only gate. Over stdio the peer is the process that spawned the
+   server, so `raxol mcp` installs an authorizer that allows every registered tool, sensitive ones
+   included. A network deployment must configure a function `:mcp_authorizer`, because derived
+   names are dynamic and an exact-name allowlist cannot list them. `raxol mcp` needs no Elixir
+   toolchain.
 3. Delete the coding harness in one cutover: `Raxol.Agent.Code.*`, the native drivers and
    backends, shell, LSP, compaction, memory, self-improvement, the coding actions, and the
    `agent`, `code`, `p`, `login` and `setup` commands (about 25k lines). Kept: `Session`, `Team`,

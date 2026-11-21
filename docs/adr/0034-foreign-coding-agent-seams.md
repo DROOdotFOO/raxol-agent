@@ -8,7 +8,8 @@ backends and their drivers (`NativeHarness`, `Harness.*`, `AcpStreamAdapter`) ar
 ## Context
 
 A foreign coding agent such as Oh My Pi (`omp`) can be driven three ways: as an ACP server, as a
-native CLI backend that parses its JSON output, or as a Symphony runner. The native seam discarded
+native CLI backend that parses its JSON output, or as a Symphony runner (the
+tracker-driven orchestrator, now in its own repository). The native seam discarded
 reasoning and tool calls and bypassed authorization. Five registries also disagreed about which
 backends existed.
 
