@@ -53,6 +53,7 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
 
   require Logger
 
+  alias Raxol.Agent.Secret
   alias Raxol.Earn.{Agent, HookClient, ProviderAdapter}
   alias Raxol.Earn.Transport.SSE.Parser
   alias Raxol.Earn.Xochi.{IntentDeriver, Offering}
@@ -196,6 +197,12 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
 
   # Ignore anything we don't recognise.
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # The Xochi token and the provider's key and RPC URLs are `Secret`s, which
+  # `:sys.get_status` and an Erlang-formatted crash report print raw.
+  @impl GenServer
+  def format_status(status),
+    do: Secret.redact_status(status, [:provider, :xochi_config], failure: true)
 
   # -- Dispatch --
 

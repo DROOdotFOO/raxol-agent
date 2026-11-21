@@ -77,7 +77,8 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
   - `:chains` -- map of chain_id => RPC URL. Kept `Raxol.Agent.Secret`-wrapped:
     a provider URL embeds its API key.
-  - `:private_key` -- 32-byte raw private key.
+  - `:private_key` -- 32-byte raw private key. Raises `ArgumentError` when
+    it is not 32 bytes or the curve refuses it; the message never holds it.
 
   ## Optional
 
@@ -106,11 +107,25 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
       raise ArgumentError, "private_key must be a 32-byte binary"
     end
 
-    address = address_from_private_key(private_key)
+    private_key = Secret.new(private_key)
+
+    # Under `with_revealed/2`, so a raise in the NIF never reports the key.
+    address =
+      case Secret.with_revealed(private_key, &address_from_private_key/1) do
+        {:ok, address} ->
+          address
+
+        # A raise inside: a NIF that failed to load, not the key.
+        {:error, :secret_operation_crashed} ->
+          raise ArgumentError, "private_key: address derivation crashed (secp256k1/keccak NIF)"
+
+        {:error, _} ->
+          raise ArgumentError, "private_key is not a valid secp256k1 key"
+      end
 
     config = %{
       chains: Map.new(chains, fn {id, url} -> {id, Secret.new(url)} end),
-      private_key: Secret.new(private_key),
+      private_key: private_key,
       address: address,
       fee_overrides: Keyword.get(opts, :fee_overrides, %{}),
       nonce_server: Keyword.get(opts, :nonce_server, NonceServer),
@@ -375,10 +390,13 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
   # secp256k1: address = last 20 bytes of keccak256(uncompressed_public_key[1..])
   defp address_from_private_key(<<_::binary-size(32)>> = private_key) do
-    {:ok, public_key} = ExSecp256k1.create_public_key(private_key)
-    <<_prefix::8, payload::binary-size(64)>> = public_key
-    hash = ExKeccak.hash_256(payload)
-    <<_padding::binary-size(12), addr::binary-size(20)>> = hash
-    Hex.encode(addr)
+    case ExSecp256k1.create_public_key(private_key) do
+      {:ok, <<_prefix::8, payload::binary-size(64)>>} ->
+        <<_padding::binary-size(12), addr::binary-size(20)>> = ExKeccak.hash_256(payload)
+        {:ok, Hex.encode(addr)}
+
+      _ ->
+        {:error, :invalid_private_key}
+    end
   end
 end

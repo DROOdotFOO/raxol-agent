@@ -14,6 +14,16 @@ package formerly named `raxol_acp`; neither name has been on Hex before, so
 
 ### Added
 
+- `ProviderAdapter.JSONRPC.new/1` derives the address under
+  `Secret.with_revealed/2` and raises `ArgumentError` "private_key is not a
+  valid secp256k1 key" for a key the curve refuses (was a `MatchError`).
+- `mix raxol_earn.order` keeps `ORDER_XOCHI_TOKEN` and the RPC URLs wrapped
+  in its run config, which a `FunctionClauseError` in the task would print.
+- `ProviderAdapter.SCA.new/1` keeps `wallet_opts`' `:bundler_url` and
+  `:paymaster_url` wrapped (they embed the bundler's API key) and reveals
+  them per call.
+- `Xochi.SolverAgent` hides its provider and Xochi config from
+  `:sys.get_status` and crash reports (`format_status/1`).
 - The console bench runs a buyer-supplied agent package without credentials
   in its environment (`Raxol.Agent.ChildEnv`): raxol's own secrets,
   `RAXOL_ACP_AGENT_PRIVATE_KEY` and `XOCHI_AUTH_TOKEN` included, plus every

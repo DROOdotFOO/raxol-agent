@@ -159,6 +159,8 @@ defmodule Mix.Tasks.RaxolEarn.Order do
 
   use Mix.Task
 
+  alias Raxol.Agent.Secret
+
   alias Raxol.Earn.{
     Agent,
     Auth,
@@ -176,6 +178,7 @@ defmodule Mix.Tasks.RaxolEarn.Order do
   alias Raxol.Payments.Assets
   alias Raxol.Payments.Protocols.Permit2
   alias Raxol.Payments.Protocols.Xochi, as: XochiProtocol
+  alias Raxol.Payments.Xochi.Client, as: XochiClient
   alias Raxol.Payments.Xochi.{PullContracts, Schemas.QuoteRequest}
 
   # Nested wallet modules (defined below) -- alias so they resolve everywhere.
@@ -655,7 +658,7 @@ defmodule Mix.Tasks.RaxolEarn.Order do
   @transfer_topic "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 
   defp report_actuals(cfg, label, tx_hashes) do
-    client = Raxol.Earn.Onchain.RPC.client(url: cfg.rpc)
+    client = Raxol.Earn.Onchain.RPC.client(url: reveal(cfg.rpc))
 
     reads =
       tx_hashes
@@ -812,7 +815,7 @@ defmodule Mix.Tasks.RaxolEarn.Order do
           quote_resp.pull_authorization,
           signature,
           cfg.buyer,
-          rpc: RPC.client(url: cfg.rpc),
+          rpc: RPC.client(url: reveal(cfg.rpc)),
           expect_verifier: expected_verifier(quote_resp.payment_method, cfg)
         )
 
@@ -1055,7 +1058,7 @@ defmodule Mix.Tasks.RaxolEarn.Order do
       params: [%{to: cfg.core, data: data}, "latest"]
     }
 
-    case Req.post(cfg.acp_rpc, json: body) do
+    case Req.post(reveal(cfg.acp_rpc), json: body) do
       {:ok, %{status: 200, body: %{"result" => "0x" <> hex}}} when byte_size(hex) >= 8 * 64 ->
         raw = Base.decode16!(hex, case: :mixed)
 
@@ -1112,16 +1115,24 @@ defmodule Mix.Tasks.RaxolEarn.Order do
       dst_token: dst_token,
       fee_bps: Keyword.get(opts, :fee_bps, 8),
       signer: signer,
-      rpc: rpc,
-      acp_rpc: acp_rpc,
+      # Secrets in `cfg` stay wrapped: `cfg` is an argument of nearly every
+      # function this task calls, so a FunctionClauseError (see
+      # `expected_verifier/2`) prints it. RPC URLs embed provider keys.
+      rpc: Secret.new(rpc),
+      acp_rpc: Secret.new(acp_rpc),
       core: Chain.mainnet().acp_core_address,
       server_url: Chain.mainnet().acp_server_url,
-      xochi_config: %{
-        base_url: System.get_env("ORDER_XOCHI_URL", "https://api.xochi.fi"),
-        auth_token: System.get_env("ORDER_XOCHI_TOKEN", "")
-      }
+      xochi_config:
+        XochiClient.protect_config(%{
+          base_url: System.get_env("ORDER_XOCHI_URL", "https://api.xochi.fi"),
+          auth_token: System.get_env("ORDER_XOCHI_TOKEN", "")
+        })
     }
   end
+
+  # Raw or wrapped: `Secret.new/1` is idempotent, and the stage functions
+  # are also called with hand-built configs.
+  defp reveal(value), do: value |> Secret.new() |> Secret.reveal()
 
   # -- Signer backends --
 

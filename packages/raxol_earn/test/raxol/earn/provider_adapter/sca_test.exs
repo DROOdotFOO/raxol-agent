@@ -96,6 +96,13 @@ defmodule Raxol.Earn.ProviderAdapter.SCATest do
       assert ProviderAdapter.supported_chain_ids(adapter) == [@chain_id]
     end
 
+    test "keeps the bundler and paymaster URLs wrapped" do
+      %{config: config} = build_adapter()
+      assert %Raxol.Agent.Secret{} = config.wallet_opts[:bundler_url]
+      assert %Raxol.Agent.Secret{} = config.wallet_opts[:paymaster_url]
+      refute inspect(config) =~ "stub.invalid"
+    end
+
     test "raises when the wallet is not an SCA module" do
       assert_raise ArgumentError, fn ->
         SCA.new(wallet: __MODULE__, chains: %{@chain_id => @rpc_url})
