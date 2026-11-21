@@ -627,36 +627,26 @@ defmodule Raxol.Agent.StreamTest do
       assert info.content == "from-mock"
     end
 
-    test "falls back to :backend when the executor harness is unresolvable" do
+    test "an executor no backend serves is an error, even with :backend given" do
       cfg = Raxol.Agent.ExecutorConfig.new(harness: :codex)
 
-      text =
-        "hi"
-        |> AgentStream.run(
-          executor: cfg,
-          backend: EchoModelBackend,
-          backend_opts: [model: "fallback"],
-          stream: false
-        )
-        |> AgentStream.collect_text()
-
-      assert text == "model=\"fallback\""
+      assert [{:error, {:backend_unavailable, _reason}}] =
+               "hi"
+               |> AgentStream.run(executor: cfg, backend: EchoModelBackend, stream: false)
+               |> Enum.to_list()
     end
 
-    test "a backend id the catalog does not declare logs a warning and answers from Mock" do
+    test "a backend id the catalog does not declare is an error, not a mock answer" do
       cfg = Raxol.Agent.ExecutorConfig.new(backend: :claude_native)
 
-      {result, log} =
-        with_log(fn ->
-          "hi"
-          |> AgentStream.run(executor: cfg, stream: false)
-          |> AgentStream.collect_text()
-        end)
+      assert {:error, {:backend_unavailable, {:unknown_backend, :claude_native}}} =
+               "hi" |> AgentStream.run(executor: cfg, stream: false) |> AgentStream.collect()
+    end
 
-      assert result == "Mock response"
-      assert log =~ "[warning]"
-      assert log =~ "{:unknown_backend, :claude_native}"
-      assert log =~ "Raxol.Agent.Backend.Mock"
+    test "no executor and no :backend is {:error, :no_backend}" do
+      assert [{:error, :no_backend}] = "hi" |> AgentStream.run([]) |> Enum.to_list()
+      assert [{:error, :no_backend}] = "hi" |> AgentStream.react([]) |> Enum.to_list()
+      refute AgentStream.native_tool_loop?([])
     end
   end
 

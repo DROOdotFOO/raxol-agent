@@ -17,8 +17,8 @@ defmodule Raxol.Agent.Scheduler.Fire do
     * `:agent_opts` -- forwarded to `Raxol.Agent.Stream` (`:backend`,
       `:backend_opts`, `:executor`, `:provider`, `:model`, ...). When neither
       `:backend` nor `:executor` is pinned, `auto_provider: true` is added so the
-      executor resolves from the environment (Mock on failure), mirroring the
-      gateway agent handler.
+      executor resolves from the environment, mirroring the gateway agent
+      handler. When nothing resolves the fire returns `{:error, :no_backend}`.
     * `:actions` -- action modules the fire may call. When non-empty the fire
       runs the ReAct loop with `context[:in_cron]` set (so a scheduled agent
       cannot schedule more cron work); when empty the fire is one completion.
