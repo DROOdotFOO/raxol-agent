@@ -57,9 +57,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest.FaultConnection do
 end
 
 defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
-  # async: false -- defines a global `:telemetry` module below (D9) and
-  # drives real Connection/Paired processes, matching connection_test.exs's
-  # own precedent.
+  # async: false: attaches global :telemetry handlers (D9) and drives real
+  # Connection/Paired processes.
   use ExUnit.Case, async: false
   use Raxol.AgentClientProtocol.Test.InvariantSentinel
 
@@ -510,10 +509,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
   # [:raxol, :acp, :delivery] with %{session, turn, decision, buffered,
   # ordinal}, partitioning into :emit | :buffer | :gap | :fail (:gap is
   # unreachable in v1 -- nothing is coalescible; not asserted here, no
-  # such variant exists yet). `:telemetry` is a dev/test-only dependency
-  # (mix.exs) so the `Code.ensure_loaded?(:telemetry)` guards in `Connection`
-  # and `Raxol.AgentClientProtocol.Delivery` resolve true here while the
-  # published package keeps no runtime telemetry requirement.
+  # such variant exists yet). `:telemetry` is a dev/test-only dependency, so
+  # `Telemetry.execute/3` emits here while the published package does not
+  # require it.
   # ===========================================================================
 
   @doc false

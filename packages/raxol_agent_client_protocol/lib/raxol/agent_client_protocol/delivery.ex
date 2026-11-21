@@ -18,7 +18,7 @@ defmodule Raxol.AgentClientProtocol.Delivery do
   `Connection.async_request/6` (`reply_to = {:owner, owner, tag}`), the
   Connection sends `owner` three message shapes directly, ALL from the
   Connection process itself — the same single-sender operation
-  `deliver_outcome/2` already uses for the terminal result — so BEAM's
+  `Connection.Link.deliver/2` uses for the terminal result — so BEAM's
   per-sender-per-receiver FIFO guarantees the owner's mailbox order equals
   demux order equals wire order:
 

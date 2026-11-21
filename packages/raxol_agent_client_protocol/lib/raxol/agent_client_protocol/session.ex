@@ -37,7 +37,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   alias Raxol.AgentClientProtocol.Session.{SteerAdapter, Turn}
   alias Raxol.AgentClientProtocol.Telemetry
 
-  @default_permission_timeout 600_000
+  @default_permission_timeout_ms 600_000
   @default_cancel_backstop_ms 30_000
 
   # Idle reaping is off by default. Reaping never truncates the append-only
@@ -493,7 +493,7 @@ defmodule Raxol.AgentClientProtocol.Session do
     config = Map.new(config)
 
     %{
-      permission_timeout: Map.get(config, :permission_timeout, @default_permission_timeout),
+      permission_timeout: Map.get(config, :permission_timeout, @default_permission_timeout_ms),
       cancel_backstop_ms: Map.get(config, :cancel_backstop_ms, @default_cancel_backstop_ms),
       idle_timeout: Map.get(config, :idle_timeout, @default_idle_timeout)
     }

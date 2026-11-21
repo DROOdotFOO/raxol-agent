@@ -127,8 +127,7 @@ defmodule Raxol.AgentClientProtocol.Schema.Ext.ExtResponse do
   def new(data), do: %__MODULE__{data: data}
 
   @doc """
-  The canonical "no extension implemented" response — safe to return from
-  an un-overridden `ext_method/1` callback.
+  An `ExtResponse` with no data.
   """
   @spec empty() :: t()
   def empty, do: %__MODULE__{data: nil}

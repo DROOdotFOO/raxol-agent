@@ -4,7 +4,9 @@ defmodule Raxol.AgentClientProtocol.Session.Emitter.Journal do
   single-publisher `Ext.Journal.Writer`, which fans them out to reattachers.
 
     * `emit/2` appends a `"session_update"` record, then notifies the origin
-      connection directly. Ordering is the Writer's arrival order.
+      connection directly, so updates have two delivery sites (origin direct,
+      reattachers via the Writer); every delivered update is still durable.
+      Ordering is the Writer's arrival order.
     * `turn_started/3` appends `"turn_started"` (prompt recorded as `[]`) and
       takes the Writer's cross-connection turn latch.
     * `turn_completed/3` appends `"turn_completed"` from the rendered response

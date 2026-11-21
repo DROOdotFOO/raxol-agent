@@ -65,6 +65,16 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypesTest do
       refute Map.has_key?(json, "x")
     end
 
+    test "to_json/1 nests _meta under the wire \"_meta\" key" do
+      impl = %Implementation{name: "test", version: "1.0", _meta: %{"custom" => true}}
+
+      assert Implementation.to_json(impl) == %{
+               "name" => "test",
+               "version" => "1.0",
+               "_meta" => %{"custom" => true}
+             }
+    end
+
     test "a wire map with an explicit nested _meta object round-trips byte-faithfully" do
       wire = %{"name" => "test", "version" => "1.0", "_meta" => %{"custom" => true, "n" => 1}}
 

@@ -74,7 +74,8 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   @doc """
   Registers `subscriber` for `{:acp_session_update, session_id, update}`
-  broadcasts from `conn`. Not idempotent: each registration gets its own copy.
+  broadcasts from `conn`. Idempotent: subscribing the same pid twice registers
+  it once.
   """
   @spec subscribe(pid(), String.t(), pid()) :: :ok
   def subscribe(conn, session_id, subscriber \\ self())

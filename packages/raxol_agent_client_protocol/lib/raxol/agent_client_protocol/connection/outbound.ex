@@ -15,12 +15,12 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
   @type gate_error :: :connection_closed | :not_initialized
 
   @spec gate(state(), String.t()) :: :ok | {:error, gate_error()}
-  def gate(%{phase: phase}, _method) when phase in [:booting, :closed],
+  defp gate(%{phase: phase}, _method) when phase in [:booting, :closed],
     do: {:error, :connection_closed}
 
-  def gate(%{phase: :initialized}, _method), do: :ok
-  def gate(_state, "initialize"), do: :ok
-  def gate(_state, _method), do: {:error, :not_initialized}
+  defp gate(%{phase: :initialized}, _method), do: :ok
+  defp gate(_state, "initialize"), do: :ok
+  defp gate(_state, _method), do: {:error, :not_initialized}
 
   # Returns `{:parked, state}` when the request is pending (the caller waits for
   # its outcome) or `{:answered, answer, state}` when it was refused now.
