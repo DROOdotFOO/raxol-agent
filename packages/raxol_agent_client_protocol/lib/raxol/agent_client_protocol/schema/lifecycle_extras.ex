@@ -41,7 +41,7 @@ defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.CloseSessionRequest d
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId") do
+    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId", &is_binary/1) do
       {:ok, %__MODULE__{session_id: session_id, _meta: AgentTypes.extract_meta(map, @known_keys)}}
     end
   end
@@ -119,7 +119,7 @@ defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.DeleteSessionRequest 
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId") do
+    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId", &is_binary/1) do
       {:ok, %__MODULE__{session_id: session_id, _meta: AgentTypes.extract_meta(map, @known_keys)}}
     end
   end
