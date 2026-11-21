@@ -12,9 +12,10 @@ persists until the session stops.
 The coding harness was deleted on 2026-11-13, and the modules nothing called (`Raxol.Agent.Turn`,
 `Command`, `Policy`, `Cache`, `LlmPrices`) were deleted after it.
 
-Not built in this repository: decision 4's `omp_gateway` backend and catalog cut (the catalog
-still lists 11 backends), decision 6's OMP RPC client, and decision 7's agent tools in
-`raxol mcp`.
+Decision 7's agent tools ship as `Raxol.Agent.McpTools` (`agent_spawn`, `agent_list`,
+`agent_ask`, `agent_status`, `agent_stop`, and a journal resource). Not built in this
+repository: decision 4's `omp_gateway` backend and catalog cut (the catalog still lists 11
+backends), decision 6's OMP RPC client, and decision 7's team and payment tools.
 
 ## Context
 
