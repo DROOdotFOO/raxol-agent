@@ -115,7 +115,8 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
   defp protect_urls(opts),
     do:
       Enum.map(opts, fn
-        {k, v} when k in @url_opts -> {k, Secret.wrap(v)}
+        {k, v} when k in @url_opts and is_binary(v) -> {k, Secret.new(v)}
+        # `{:system, var}` names an env var the wallet resolves per call.
         kv -> kv
       end)
 

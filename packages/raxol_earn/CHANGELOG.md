@@ -19,9 +19,9 @@ package formerly named `raxol_acp`; neither name has been on Hex before, so
   valid secp256k1 key" for a key the curve refuses (was a `MatchError`).
 - `mix raxol_earn.order` keeps `ORDER_XOCHI_TOKEN` and the RPC URLs wrapped
   in its run config, which a `FunctionClauseError` in the task would print.
-- `ProviderAdapter.SCA.new/1` keeps `wallet_opts`' `:bundler_url` and
-  `:paymaster_url` wrapped (they embed the bundler's API key) and reveals
-  them per call.
+- `ProviderAdapter.SCA.new/1` keeps `wallet_opts`' string `:bundler_url`
+  and `:paymaster_url` wrapped (they embed the bundler's API key) and
+  reveals them per call; a `{:system, var}` value is passed on as is.
 - `Xochi.SolverAgent` hides its provider and Xochi config from
   `:sys.get_status` and crash reports (`format_status/1`).
 - The console bench runs a buyer-supplied agent package without credentials

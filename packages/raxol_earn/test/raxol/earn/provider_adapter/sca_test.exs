@@ -103,6 +103,17 @@ defmodule Raxol.Earn.ProviderAdapter.SCATest do
       refute inspect(config) =~ "stub.invalid"
     end
 
+    test "accepts a {:system, var} bundler URL as the wallet does" do
+      %{config: config} =
+        SCA.new(
+          wallet: SCAWallet,
+          chains: %{@chain_id => @rpc_url},
+          wallet_opts: [bundler_url: {:system, "ALCHEMY_BUNDLER_URL"}]
+        )
+
+      assert config.wallet_opts[:bundler_url] == {:system, "ALCHEMY_BUNDLER_URL"}
+    end
+
     test "raises when the wallet is not an SCA module" do
       assert_raise ArgumentError, fn ->
         SCA.new(wallet: __MODULE__, chains: %{@chain_id => @rpc_url})
