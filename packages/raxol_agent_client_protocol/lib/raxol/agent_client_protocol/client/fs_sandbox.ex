@@ -167,7 +167,7 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
         {:error, file_too_large(path, max)}
 
       {:ok, data} ->
-        read_chunks(fd, path, max, [acc | data], size + byte_size(data))
+        read_chunks(fd, path, max, [acc, data], size + byte_size(data))
 
       :eof ->
         {:ok, IO.iodata_to_binary(acc)}

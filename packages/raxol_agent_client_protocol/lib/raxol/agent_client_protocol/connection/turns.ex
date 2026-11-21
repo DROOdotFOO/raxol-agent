@@ -112,7 +112,11 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
 
   # Stamps a `session/update` and, when its session has an open turn, delivers
   # `{:acp_turn_update, tag, ordinal, notif}` to the owner.
-  @spec stamp_update(state(), %{session_id: String.t()}, non_neg_integer()) ::
+  @spec stamp_update(
+          state(),
+          %{:session_id => String.t(), optional(atom()) => term()},
+          non_neg_integer()
+        ) ::
           {Delivery.t(), state()}
   def stamp_update(state, %{session_id: session_id} = notif, rx_seq) do
     case Map.get(state.turns, session_id) do

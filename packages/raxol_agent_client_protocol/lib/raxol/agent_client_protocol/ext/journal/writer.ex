@@ -470,7 +470,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   defp clear_latch(%__MODULE__{turn: nil} = state), do: state
 
   defp clear_latch(%__MODULE__{turn: %{appender_ref: ref}} = state) do
-    if is_reference(ref), do: Process.demonitor(ref, [:flush])
+    Process.demonitor(ref, [:flush])
     %{state | turn: nil}
   end
 
