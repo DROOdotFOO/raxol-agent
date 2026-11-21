@@ -1860,6 +1860,25 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 21, "result" => %{"stopReason" => "end_turn"}} = ScriptedPeer.recv(peer)
     end
 
+    test "a peer cannot forge log lines through the method name" do
+      %{peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          ScriptedPeer.send_raw(peer, %{
+            "jsonrpc" => "2.0",
+            "id" => nil,
+            "method" => "session/new\n[error] FORGED"
+          })
+
+          _ = ScriptedPeer.recv(peer)
+        end)
+
+      assert log =~ ~S(session/new\n[error] FORGED)
+      refute log =~ "\n[error] FORGED"
+    end
+
     test "a malformed delegated reply is answered -32603 and the Connection survives" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()

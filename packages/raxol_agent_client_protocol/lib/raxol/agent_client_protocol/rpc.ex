@@ -17,6 +17,19 @@ defmodule Raxol.AgentClientProtocol.Rpc do
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
+
+  @max_printable 128
+
+  @doc """
+  A peer-supplied string made safe for logs and telemetry: control characters
+  are escaped (so a peer cannot forge log lines) and it is cut to
+  #{@max_printable} characters.
+  """
+  @spec printable(String.t()) :: String.t()
+  def printable(string) when is_binary(string) do
+    escaped = string |> String.slice(0, @max_printable) |> inspect()
+    binary_part(escaped, 1, byte_size(escaped) - 2)
+  end
 end
 
 defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
@@ -46,10 +59,11 @@ defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
   def from_json(id) when is_integer(id), do: id
   def from_json(id) when is_binary(id), do: id
 
+  @doc "The id for logs and telemetry; string ids go through `Rpc.printable/1`."
   @spec display(t()) :: String.t()
   def display(nil), do: "null"
   def display(id) when is_integer(id), do: Integer.to_string(id)
-  def display(id) when is_binary(id), do: id
+  def display(id) when is_binary(id), do: Raxol.AgentClientProtocol.Rpc.printable(id)
 end
 
 defmodule Raxol.AgentClientProtocol.Rpc.Request do

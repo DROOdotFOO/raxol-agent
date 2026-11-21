@@ -7,6 +7,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
 
   alias Raxol.AgentClientProtocol.Connection.{Dispatch, Turns}
   alias Raxol.AgentClientProtocol.{Router, Telemetry}
+  alias Raxol.AgentClientProtocol.Rpc
   alias Raxol.AgentClientProtocol.Rpc.{Notification, RequestId}
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.CancelNotification
   alias Raxol.AgentClientProtocol.Schema.LifecycleExtras.CancelRequestNotification
@@ -23,7 +24,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
 
   def handle(%{phase: phase} = state, %Notification{method: method}, _rx_seq)
       when phase != :initialized do
-    Logger.debug("ACP: notification #{method} dropped pre-handshake")
+    Logger.debug("ACP: notification #{Rpc.printable(method)} dropped pre-handshake")
     {:noreply, state}
   end
 
@@ -41,8 +42,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
   def handle(state, %Notification{method: method, params: params}, rx_seq) do
     case Router.decode(state.role, :notification, method, params) do
       {:error, _reason} ->
-        Logger.debug("ACP: unknown/invalid notification #{method} dropped")
-        Telemetry.execute([:raxol, :acp, :unknown_notification], %{method: method})
+        Logger.debug("ACP: unknown/invalid notification #{Rpc.printable(method)} dropped")
+        Telemetry.execute([:raxol, :acp, :unknown_notification], %{method: Rpc.printable(method)})
         {:noreply, state}
 
       # session/update is stamped and delivered to the turn owner from this
@@ -61,10 +62,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
     case Dispatch.start(state, dispatchable, %{Dispatch.ctx(state) | delivery_stamp: stamp}) do
       {:error, reason} ->
         Logger.warning(
-          "ACP: notification #{method} dropped — dispatch task_sup saturated (#{inspect(reason)})"
+          "ACP: notification #{Rpc.printable(method)} dropped — dispatch task_sup saturated (#{inspect(reason)})"
         )
 
-        Telemetry.execute([:raxol, :acp, :notification_shed], %{method: method})
+        Telemetry.execute([:raxol, :acp, :notification_shed], %{method: Rpc.printable(method)})
         {:noreply, state}
 
       {:ok, task} ->

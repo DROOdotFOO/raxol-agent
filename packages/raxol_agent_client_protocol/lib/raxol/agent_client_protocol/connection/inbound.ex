@@ -11,6 +11,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   alias Raxol.AgentClientProtocol.{Capabilities, Error, Router, Telemetry}
   alias Raxol.AgentClientProtocol.Connection.{Dispatch, Link, Notifications, Outbound, Wire}
+  alias Raxol.AgentClientProtocol.Rpc
   alias Raxol.AgentClientProtocol.Rpc.{Notification, Request, RequestId, Response}
 
   @type state :: Raxol.AgentClientProtocol.Connection.t()
@@ -49,9 +50,18 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   end
 
   def decode_error(state, reason) do
-    Telemetry.execute([:raxol, :acp, :parse_error], %{reason: inspect(reason)})
+    Telemetry.execute([:raxol, :acp, :parse_error], %{reason: reason_tag(reason)})
     Link.emit(state, Wire.response(nil, {:error, Error.parse_error()}))
   end
+
+  # Telemetry gets the kind of decode failure, never the peer's raw bytes.
+  defp reason_tag(%{__exception__: true, __struct__: mod}), do: mod
+  defp reason_tag({tag, n}) when is_atom(tag) and is_integer(n), do: {tag, n}
+  defp reason_tag(tag) when is_atom(tag), do: tag
+  defp reason_tag(_other), do: :unknown
+
+  defp loggable(id) when is_binary(id), do: Rpc.printable(id)
+  defp loggable(id), do: inspect(id, limit: 10, printable_limit: 128)
 
   defp decode_and(state, frame, decode, handle) do
     case decode.(frame) do
@@ -69,8 +79,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
       {:error, _reason} ->
         id = Map.get(frame, "id")
-        Logger.warning("ACP: malformed response frame dropped (id #{inspect(id)})")
-        Telemetry.execute([:raxol, :acp, :malformed_response], %{id: inspect(id)})
+        Logger.warning("ACP: malformed response frame dropped (id #{loggable(id)})")
+        Telemetry.execute([:raxol, :acp, :malformed_response], %{id: loggable(id)})
         {:noreply, state}
     end
   end
@@ -101,7 +111,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         {:reject, rejection}
 
       id == nil ->
-        Logger.warning("ACP: inbound request with null id (method #{method}) rejected -32600")
+        Logger.warning(
+          "ACP: inbound request with null id (method #{Rpc.printable(method)}) rejected -32600"
+        )
+
         {:reject, Wire.response(nil, {:error, Error.invalid_request()})}
 
       Map.has_key?(state.pending_in, id) ->
@@ -139,10 +152,13 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   defp handshake_rejection(_phase, _req), do: nil
 
   defp shed(id, method, why, data) do
-    Telemetry.execute([:raxol, :acp, :inbound_shed], %{id: RequestId.display(id), method: method})
+    Telemetry.execute([:raxol, :acp, :inbound_shed], %{
+      id: RequestId.display(id),
+      method: Rpc.printable(method)
+    })
 
     Logger.warning(
-      "ACP: inbound request #{method} (id #{RequestId.display(id)}) shed -32603: #{why}"
+      "ACP: inbound request #{Rpc.printable(method)} (id #{RequestId.display(id)}) shed -32603: #{why}"
     )
 
     Wire.error(id, Error.new(Error.internal_error_code(), "Server busy"), data)
@@ -258,7 +274,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
       :malformed ->
         Logger.error(
           "ACP: handler #{inspect(state.handler)} returned malformed value for " <>
-            "#{inspect(entry.method)}: #{inspect(result)}"
+            "#{Rpc.printable(entry.method)}: #{inspect(result, limit: 20)}"
         )
 
         {:error, Error.internal_error()}
@@ -287,8 +303,15 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   end
 
   defp notification_crash(state, method, reason) do
-    Logger.error("ACP: notification handler crashed (#{method}): #{inspect(reason)}")
-    Telemetry.execute([:raxol, :acp, :handler_crash], %{kind: :notification, method: method})
+    Logger.error(
+      "ACP: notification handler crashed (#{Rpc.printable(method)}): #{inspect(reason)}"
+    )
+
+    Telemetry.execute([:raxol, :acp, :handler_crash], %{
+      kind: :notification,
+      method: Rpc.printable(method)
+    })
+
     {:noreply, state}
   end
 
@@ -307,11 +330,15 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
       entry ->
         Logger.error(
-          "ACP: request handler crashed (#{inspect(entry.method)}, id #{RequestId.display(id)}): " <>
+          "ACP: request handler crashed (#{Rpc.printable(entry.method)}, id #{RequestId.display(id)}): " <>
             inspect(reason)
         )
 
-        Telemetry.execute([:raxol, :acp, :handler_crash], %{kind: :request, method: entry.method})
+        Telemetry.execute([:raxol, :acp, :handler_crash], %{
+          kind: :request,
+          method: Rpc.printable(entry.method)
+        })
+
         state |> Link.drop_pending_in(id, entry) |> internal_error(id)
     end
   end
