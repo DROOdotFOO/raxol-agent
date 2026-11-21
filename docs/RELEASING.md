@@ -27,9 +27,12 @@ git status --short    # must print nothing
 ## 2. Toolchain
 
 Use the Elixir and Erlang pinned in `mise.toml`, with the mise install's `bin` first in `PATH`
-(otherwise a Homebrew `mix` runs Hex):
+(otherwise a Homebrew `mix` runs Hex). With the versions in `mise.toml`:
 
 ```sh
+export PATH="$HOME/.local/share/mise/installs/elixir/<elixir>/bin:$HOME/.local/share/mise/installs/erlang/<erlang>/bin:$PATH"
+export MIX_HOME="$HOME/.local/share/mise/installs/elixir/<elixir>/.mix"
+export MIX_ARCHIVES="$MIX_HOME/archives"
 unset MIX_ENV RAXOL_PATH
 which mix               # the mise path
 mix hex.info            # Hex 2.7.0 or later
@@ -45,13 +48,6 @@ cd packages/<pkg>
 cp mix.lock /tmp/<pkg>.mix.lock
 HEX_BUILD=1 mix deps.get
 HEX_BUILD=1 mix hex.publish --dry-run
-git tag -a <pkg>-v<version> -m "<pkg> <version>"
-test "$(git rev-parse HEAD)" = "$(git rev-parse '<pkg>-v<version>^{commit}')"
-git push origin <pkg>-v<version>
-HEX_BUILD=1 mix hex.publish --wait
-cp /tmp/<pkg>.mix.lock mix.lock
-git status --short      # must print nothing
-cd ../..
 ```
 
 Check the dry run before tagging:
@@ -60,6 +56,18 @@ Check the dry run before tagging:
   Apache-2.0 and must never ship.
 - `raxol_agent`: every requirement must already be on Hex, and `raxol_agent_client_protocol` must
   be listed and not optional.
+
+Then:
+
+```sh
+git tag -a <pkg>-v<version> -m "<pkg> <version>"
+test "$(git rev-parse HEAD)" = "$(git rev-parse '<pkg>-v<version>^{commit}')"
+git push origin <pkg>-v<version>
+HEX_BUILD=1 mix hex.publish --wait
+cp /tmp/<pkg>.mix.lock mix.lock
+git status --short      # must print nothing
+cd ../..
+```
 
 A package's dry run cannot resolve until the package it requires shows on hex.pm. Push the tag
 before publishing, because the docs link source files at the tag. If hex.pm holds the release for

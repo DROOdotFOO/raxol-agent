@@ -96,9 +96,14 @@ Answer an ask with `approve/3`, `decline/3` or `close/3`. Approval re-reads the 
 re-runs the policy.
 
 - The executor's `:policy` replaces the caller's. Today's notional, the order rate and the review
-  warnings come from the journal, so decisions are serialized.
+  warnings come from the journal, so decisions are serialized. Every other context field
+  (`quotes`, `positions`, `portfolio_value`, `start_of_day_value`, `day_pnl`, `market_session`)
+  is trusted from the caller until #1185 sources it, so the drawdown, position-weight and
+  after-hours rules rest on caller data.
 - Review is mandatory. `Executor.Place` is the only module that names an order tool, and it
-  requires an HMAC review receipt under a key held only in the executor process.
+  requires an HMAC review receipt under a key held only in the executor process. This covers
+  public API paths only: code in the same VM that deliberately writes the executor's private
+  state (`Process.put`, `:sys.replace_state`) can bypass it.
 - Any review warning, or a review it cannot read, turns allow into ask.
 - Orders are idempotent per intent id, and each place call carries a `ref_id` derived from it. Give
   intents a stable `:id`.
@@ -127,10 +132,16 @@ On start the journal verifies its chain. A damaged journal answers every call wi
 An order counts toward `today_notional/1` and `orders_last_minute/1` from its `placing` record
 until a `:failed` response.
 
-A damaged journal cannot be repaired, because the chain exists so history cannot be edited. To
-recover: stop the broker, move the directory aside as evidence, run the replay below to find the
-first broken offset, and don't trade until the next exchange day (a new journal starts with empty
-counters).
+The chain has no key. It detects corruption and naive edits, but not someone who can rewrite the
+whole directory. A damaged journal cannot be repaired. To
+recover:
+
+1. Stop the broker and move the directory aside as evidence
+   (`mv ~/.raxol/broker/journal ~/.raxol/broker/journal.damaged-<date>`).
+2. Run `mix raxol.broker.replay --date <today> --journal <archived path>` to find the first broken
+   offset.
+3. Don't trade for 24 hours. A new journal starts with empty counters, and the daily cap is a
+   rolling 24-hour window.
 
 ```sh
 mix raxol.broker.replay --date 2026-10-02 [--journal PATH]
@@ -189,6 +200,8 @@ To refresh the capture:
 checks on a `127.0.0.1` callback. `Raxol.Broker.CredentialStore` writes the credential as an
 AES-256-GCM envelope to `~/.raxol/broker/robinhood.credential`. The key is kept in 1Password when
 `op` is installed, otherwise in the macOS keychain. On any other system the store refuses to write.
+Any process running as the same user can read the keychain item without a prompt: the keychain
+protects copies of `~/.raxol` that leave the machine, not the running account.
 
 `Raxol.Broker.MCP.Client` is the only path to the server. It refreshes the token before it expires,
 and on a 401 refreshes once and retries once. It calls only tools that Robinhood marks read-only.

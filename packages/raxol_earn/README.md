@@ -32,9 +32,18 @@ status. `apply_event/3` applies a status observed on-chain or over SSE.
 
 `JobSession.Provider` drives the seller side. It calls the offering handler, writes the hook call
 on-chain (the commit point: a failed write leaves the session unchanged), then mirrors the
-status. It writes the encoded deliverable to a `Raxol.Payments.Checkpoint` before signing, and
-`Raxol.Earn.Seller.Resync` re-drives interrupted jobs on boot or reconnect, so a restart resumes a
-job instead of submitting twice. Production should set `require_checkpoint: true`.
+status. With a checkpoint store configured, it writes the encoded deliverable to the store before
+signing, and `Raxol.Earn.Seller.Resync` re-drives interrupted jobs on boot or reconnect, so a
+restart resumes a job instead of submitting twice.
+
+```elixir
+config :raxol_earn,
+  checkpoint: {Raxol.Payments.Checkpoint.ContextStore, handle},  # default nil: no checkpointing
+  require_checkpoint: true                                       # refuse to sign without a store
+```
+
+`{:ets, name}` survives session crashes but not a BEAM restart, so pair it with `Resync`. With
+`require_checkpoint: true` and no store, the provider refuses `setBudget` and `submit`.
 
 ## Offerings
 

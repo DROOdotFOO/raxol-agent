@@ -47,7 +47,8 @@ config :raxol_agent, mcp_spawnable_apps: [MyApp.Agent]
 and call `Raxol.Agent.ClientProtocol.Serve.run(["--agent", "MyApp.Agent"])` from your project, as
 `bin/raxol-acp` does. Compile first, so stdout carries only the wire. The agent implements the
 [agent turn contract](AGENT_FRAMEWORK.md#agent-turn-contract). Only tool calls passed to
-`approver` are shown to the editor and, for `sensitive` actions, asked about.
+`approver` are shown to the editor and, for `sensitive` actions, asked about. An action the agent
+runs without `approver` is neither shown nor gated.
 
 ### Behaviour
 

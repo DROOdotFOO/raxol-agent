@@ -58,7 +58,9 @@ MAC and are bound to their scope.
 ## Surfaces
 
 - `Raxol.Web3.MCP.Tools`: thirteen typed read tools. They are `sensitive: true`, so the server
-  needs an authorizer. `raw_request` has no tool.
+  needs an authorizer. `raxol mcp`'s stdio authorizer allows them (see
+  [ADR-0042](../../docs/adr/0042-lean-on-omp.md)), so a network deployment must supply a
+  restrictive one. `raw_request` has no tool.
 - `Raxol.Web3.MCP.FXTools`: `web3_fx_stables`, `web3_fx_stable`, `web3_fx_corridors`.
 - The agent tool is `Raxol.Agent.Actions.Web3` in `raxol_agent`: one tool with an `operation`
   enum.

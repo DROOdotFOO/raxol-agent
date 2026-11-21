@@ -20,6 +20,14 @@ packages here take from Hex.
 | `raxol_cli` | The `raxol` binary and its npm wrapper |
 | `raxol_agent_client_protocol` | Agent Client Protocol codec and transports |
 
+## Docs
+
+- [Agent Framework](docs/features/AGENT_FRAMEWORK.md): agents, tools, backends, credentials
+- [Agentic Commerce](docs/features/AGENTIC_COMMERCE.md): wallets, protocols, spending limits
+- [Editor ACP](docs/features/EDITOR_ACP.md): serving an agent to an editor
+- [Skill Authoring](docs/guides/SKILL_AUTHORING.md)
+- [Architecture decisions](docs/adr/)
+
 ## Development
 
 The toolchain is pinned in `mise.toml`. Each package is its own Mix project:

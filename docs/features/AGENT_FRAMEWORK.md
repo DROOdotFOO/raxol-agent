@@ -134,8 +134,9 @@ runs, and the loop continues until the model answers in text or `:max_iterations
   |> Raxol.Agent.Stream.collect()
 ```
 
-`react/2` returns a lazy stream of `{:text_delta, _}`, `{:tool_use, _}`, `{:tool_result, _}` and
-`{:done, info}`. `collect/1` drains it to `{:ok, info}`. `:context` is passed to every tool call.
+`react/2` returns a lazy stream of `{:text_delta, _}`, `{:tool_use, _}`, `{:tool_result, _}`,
+`{:done, info}` and `{:error, reason}`. `collect/1` drains it to `{:ok, info}` or
+`{:error, reason}`. Reaching `:max_iterations` is `{:error, :max_iterations_reached}`. `:context` is passed to every tool call.
 The skill tools read their store from it (see [Skill Authoring](../guides/SKILL_AUTHORING.md)).
 
 ## Backends
@@ -166,7 +167,10 @@ as OpenAI-compatible.
 - **No provider.** The resolver walks the catalog and takes the first provider it can use.
   Providers billed in API credits, and the generic `AI_API_KEY` endpoint, are skipped unless
   `RAXOL_ALLOW_PAID_API` is `1`, `true`, `TRUE` or `yes`. If nothing is found, the result is
-  `:no_provider`, and `Stream` falls back to its `:backend` option (default `Backend.Mock`).
+  `:no_provider`.
+
+With `auto_provider: true`, any result other than a config (`{:no_key, _}` included) makes
+`Stream` fall back to its `:backend` option, by default `Backend.Mock`, without an error.
 
 The store is `~/.raxol/providers.json` (or `$RAXOL_PROVIDERS`). It holds `op://` references,
 never keys, and is written with mode 0600. A store that is not owned by this account, or that is

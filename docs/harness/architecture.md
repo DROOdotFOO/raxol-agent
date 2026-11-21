@@ -1,6 +1,10 @@
 # Harness Architecture
 
-The harness is the headless agent-session engine. Agent sessions started by `raxol acp --agent`
+The harness is the headless agent-session engine. It is unrelated to the deleted coding harness
+(ADR-0042) and to the `harness:` option of `ExecutorConfig`, which is an alias for `:backend`.
+`Raxol.Harness.*`, `Raxol.UI.Harness.*` and `raxol_journal` live in the
+[runtime repository](https://github.com/DROOdotFOO/raxol). This repository provides the agent side
+(`Raxol.Agent.Session`, `EmitBridge`, `SpendGate`). Agent sessions started by `raxol acp --agent`
 and by the `agent_*` MCP tools run on it. The core owns all durable state and emits typed events.
 Surfaces only subscribe: a surface's view is `Raxol.Harness.Projection.project/2` over the
 session's events, so restarting a surface loses nothing.
