@@ -5,6 +5,41 @@ All notable changes to `raxol_agent` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`Raxol.Agent.Secret`**, the one credential wrapper for this repository: it
+  renders as `#Raxol.Agent.Secret<redacted>`, has `reveal/1`,
+  `with_revealed/2` (a raise inside becomes `{:error,
+  :secret_operation_crashed}`) and `redact_status/2` for `format_status/1`.
+  `Raxol.Payments.Secret` and `Raxol.Earn.Secret` delegate to it.
+- **`Raxol.Agent.ChildEnv`**, `Raxol.Core.ChildEnv` widened for children that
+  run model- or third-party-chosen code.
+
+### Changed
+
+- **Directive shell commands no longer inherit provider API keys or any
+  other credential-named variable.** On top of `Raxol.Core.ChildEnv`'s list,
+  `Raxol.Agent.ChildEnv` unsets every variable whose name ends in `_KEY`,
+  `_KEY_ID`, `_TOKEN`, `_PRIVKEY`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`,
+  `_MNEMONIC` or `_CREDENTIALS` (case-insensitive), every `RPC_` name, the
+  `Backend.Catalog` key variables, `PROTON_UID` and the earn/order URLs. This
+  reverses 3.1.0's "provider API keys are not scrubbed": a command that needs
+  `GH_TOKEN` or AWS credentials now needs `config :raxol_core,
+  Raxol.Core.ChildEnv, pass: [...]` (global) or the directive's own `env`.
+- **Lumo keeps a refreshed Proton session in the node** (`:persistent_term`,
+  wrapped) instead of `System.put_env`, so children no longer inherit the
+  refreshed token. A failed refresh drops it.
+- `Raxol.Agent.Process` hides `backend_config` from `Inspect` and
+  `:sys.get_status`.
+
+### Release note
+
+- raxol_payments, raxol_earn and raxol_broker now call `Raxol.Agent.Secret`.
+  Their Hex requirement on raxol_agent (`~> 3.0`) must be raised to the
+  release that ships it before they are published.
+
 ## [3.1.0] - 2026-11-14
 
 ### Changed

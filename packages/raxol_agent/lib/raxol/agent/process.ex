@@ -23,6 +23,8 @@ defmodule Raxol.Agent.Process do
   @type status ::
           :initializing | :thinking | :acting | :waiting | :paused | :taken_over
 
+  # `backend_config` carries the backend's `:api_key` and auth headers.
+  @derive {Inspect, except: [:backend_config]}
   defstruct [
     :agent_id,
     :agent_module,
@@ -276,6 +278,10 @@ defmodule Raxol.Agent.Process do
   def handle_manager_call(_msg, _from, state) do
     {:reply, {:error, :unknown_call}, state}
   end
+
+  @impl GenServer
+  def format_status(status),
+    do: Raxol.Agent.Secret.redact_status(status, [:backend_config], failure: true)
 
   @impl GenServer
   def terminate(_reason, state) do
