@@ -1,6 +1,6 @@
 # Agentic Commerce
 
-Agents that can pay for things. `raxol_payments` gives any Raxol agent autonomous payment capabilities (wallet identity, quotes, transfers, spending limits) across chains and protocols.
+`raxol_payments` gives a Raxol agent a wallet, quotes, transfers and spending limits across chains and protocols. Agent internals are in the [Agent Framework](AGENT_FRAMEWORK.md).
 
 ## How it works
 
@@ -29,7 +29,7 @@ Ledger records the spend
 
 Two wallet implementations behind the `Raxol.Payments.Wallet` behaviour:
 
-- `Wallets.Env`: private key from an environment variable. Simple, good for dev and CI. In a deployed release it refuses to load (a plaintext key in an env var lands in process listings and crash dumps) unless the operator opts in with `RAXOL_ALLOW_ENV_WALLET=true` or `config :raxol_payments, :allow_env_wallet, true`. Use `Wallets.Op` in production.
+- `Wallets.Env`: private key from an environment variable. Simple, good for dev and CI. When `Raxol.Payments.Deployment.production?/0` is true (`RELEASE_NAME` is set, as `mix release` does, or `RAXOL_PAYMENTS_DEPLOYMENT=production`) it refuses to load (a plaintext key in an env var lands in process listings and crash dumps) unless the operator opts in with `RAXOL_ALLOW_ENV_WALLET=true` or `config :raxol_payments, :allow_env_wallet, true`. Use `Wallets.Op` in production.
 - `Wallets.Op`: private key fetched from 1Password via a GenServer. No plaintext key on disk. The key is fetched once at first use, wrapped in a `Secret`, and signed with locally, so signing does not round-trip 1Password per request.
 
 Both implement the `Raxol.Payments.Wallet` callbacks: `address/0`, `chain_id/0`, and three signing functions: `sign_message/1` (raw message), `sign_typed_data/3` (EIP-712 typed data), and `sign_hash/1` (precomputed 32-byte digest). The behaviour has no balance callback.
@@ -52,9 +52,9 @@ Stripe/Tempo's protocol for machine-to-machine payments. Same HTTP 402 flow, dif
 
 Intent-based cross-chain settlement. The agent says "I want to pay 10 USDC on Base to address X on Arbitrum," Xochi quotes a fee, the wallet signs the intent, and Riddler's solver network handles the actual cross-chain execution.
 
-The fee has three additive layers rather than a single tier percentage: a solver spread plus gas floor (Riddler, never discounted), a venue fee (Xochi), and a routing fee (Raxol, which funds the token buyback, so agent volume routed through raxol feeds the flywheel). Trust discounts carve down the venue and routing layers only, leaving the solver floor identical at every tier. Headline totals run 0.10-0.40% by tier and asset (stablecoins lower, volatile assets higher), from Standard at 0.22% stable / 0.40% volatile down to Institutional at 0.10% / 0.22%.
-
-The quote will carry an optional `fee_breakdown`: the per-layer split (solver, venue, routing), price impact, gas floor, total, and `surplus_share_pct` (the solver keeps 15% of positive-slippage surplus, the user keeps 85%). The routing line is raxol's own cut, worth surfacing to agents. It stays absent until Riddler emits it and the worker forwards it, and the `QuoteResponse` schema does not parse it yet, so treat it as a forthcoming field rather than something to read today.
+The fee is three layers: the solver's spread and gas floor (Riddler), a venue fee (Xochi) and a
+routing fee (Raxol). Trust discounts reduce only the venue and routing layers. `QuoteResponse`
+does not parse a per-layer `fee_breakdown`.
 
 Flow: `get_quote/2` -> `execute/4` (wallet signs EIP-712 intent) -> `poll_status/3`. Before signing, raxol checks the quote's EIP-712 intent against the `QuoteRequest` it sent (wallet, recipient, chains, tokens, amounts, settlement preference, deadline) and refuses a mismatch as `{:intent_mismatch, field}`.
 
@@ -64,9 +64,9 @@ For a storefront that settles on a buyer's behalf, the signing and the submissio
 - `execute_signed/2` (relay side) posts a pre-signed bundle to Xochi **without re-signing**, so the relay never holds the buyer's key.
 - `execute/4` is the two composed: `sign_intent` then `execute_signed`.
 
-The Xochi Cross-Chain Transfer ACP offering (in `raxol_earn`, see [ACP](ACP.md)) is built on this split: the buyer signs, raxol relays. `packages/raxol_earn/examples/buyer_signed_intent.exs` shows the buyer flow.
+The Xochi offerings in [`raxol_earn`](../../packages/raxol_earn/README.md) are built on this split: the buyer signs and raxol relays. `packages/raxol_earn/examples/buyer_signed_intent.exs` shows the buyer flow.
 
-Xochi is the default for cross-chain and privacy (stealth addresses, shielded transfers). It's cash-positive by design: the protocol takes a fee, the agent pays it, done.
+Xochi is the default for cross-chain and privacy (stealth addresses, shielded transfers).
 
 ## Trust and compliance (ZKSAR)
 
@@ -251,7 +251,3 @@ client = Req.new(base_url: "https://api.example.com")
 
 Standalone package at `packages/raxol_payments/`. Uses `raxol_agent` for the Action macro, the CommandHook behaviour and `Raxol.Agent.ContextStore`. As a Hex dependency `raxol_agent` is an ordinary dependency, so a release that depends on `raxol_payments` includes and starts `raxol_agent`, `raxol`, `raxol_mcp` and `raxol_journal`; set `RAXOL_MODE=minimal` (or `config :raxol, :startup_mode, :minimal`) to keep `raxol` to its error recovery, event manager and telemetry. In this repository the dependency is `runtime: false`, so the `raxol_earn` release loads the agent modules without starting the agent applications. Runtime deps: `raxol_agent`, `raxol_core`, `req`, `ex_secp256k1`, `ex_keccak`, `jason`, `decimal`.
 
-## See also
-
-- [Agent Framework](AGENT_FRAMEWORK.md): how agents work (TEA, sessions, teams, commands)
-- [Distributed Swarm](https://github.com/DROOdotFOO/raxol/blob/master/docs/features/DISTRIBUTED_SWARM.md): multi-node agent coordination
