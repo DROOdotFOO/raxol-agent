@@ -241,14 +241,6 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
       nil ->
         {:noreply, state}
 
-      # Cancelled after delegation: the adopter still replies (and the reply is
-      # suppressed), so keep the entry for it.
-      %{cancelled?: true, adopter: {_pid, _mon}} = entry when result == :deferred ->
-        {:noreply, put_in(state.pending_in[id], %{entry | task_ref: nil, task_pid: nil})}
-
-      %{cancelled?: true} = entry ->
-        {:noreply, Link.drop_pending_in(state, id, entry)}
-
       entry ->
         finish(state, id, entry, result)
     end
@@ -345,7 +337,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         entry = %{entry | task_ref: nil, task_pid: nil}
         {:noreply, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
 
-      %{cancelled?: cancelled?} = entry when cancelled? or reason == :normal ->
+      entry when reason == :normal ->
         {:noreply, Link.drop_pending_in(state, id, entry)}
 
       entry ->
@@ -372,7 +364,9 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         {:noreply, state}
 
       {id, %{cancelled?: true} = entry} ->
-        {:noreply, Link.drop_pending_in(state, id, entry)}
+        state
+        |> Link.drop_pending_in(id, entry)
+        |> Link.emit(Wire.response(id, {:error, Error.request_cancelled()}))
 
       {id, entry} ->
         Logger.error("ACP: reply adopter died for id #{RequestId.display(id)} — emitting -32603")
@@ -426,17 +420,14 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         Link.demonitor_adopter(entry)
         state = %{state | reply_refs: reply_refs, pending_in: pending_in}
 
-        if entry.cancelled?,
-          do: {:reply, :ok, state},
-          else:
-            send_response(
-              state,
-              id,
-              entry,
-              checked(state, entry, result),
-              &{:reply, :ok, &1},
-              &{:stop, :normal, :ok, &1}
-            )
+        send_response(
+          state,
+          id,
+          entry,
+          checked(state, entry, result),
+          &{:reply, :ok, &1},
+          &{:stop, :normal, :ok, &1}
+        )
     end
   end
 

@@ -5,7 +5,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
 
   require Logger
 
-  alias Raxol.AgentClientProtocol.Connection.{Dispatch, Turns}
+  alias Raxol.AgentClientProtocol.Connection.{Dispatch, Link, Turns, Wire}
+  alias Raxol.AgentClientProtocol.Error
   alias Raxol.AgentClientProtocol.{Router, Telemetry}
   alias Raxol.AgentClientProtocol.Rpc
   alias Raxol.AgentClientProtocol.Rpc.{Notification, RequestId}
@@ -17,7 +18,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
           {:noreply, Raxol.AgentClientProtocol.Connection.t()}
   def handle(state, %Notification{method: "$/cancel_request", params: params}, _rx_seq) do
     case CancelRequestNotification.from_json(params || %{}) do
-      {:ok, %{request_id: cancel_id}} -> {:noreply, cancel_inbound(state, cancel_id)}
+      {:ok, %{request_id: cancel_id}} -> cancel_inbound(state, cancel_id)
       {:error, _} -> {:noreply, state}
     end
   end
@@ -92,6 +93,9 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
   end
 
   # Marks the entry cancelled first, then stops its task or tells its adopter.
+  # The cancelled request is still answered, as the schema requires: an
+  # undelegated one at once with -32800; a delegated one by its adopter, which
+  # is told so it can wind down and reply (Session answers `cancelled`).
   defp cancel_inbound(state, cancel_id) do
     case Map.get(state.pending_in, cancel_id) do
       nil ->
@@ -99,22 +103,21 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
           "ACP: $/cancel_request for unknown/finished id #{RequestId.display(cancel_id)}"
         )
 
-        state
+        {:noreply, state}
+
+      %{adopter: {apid, _mon}, reply_ref: rref} = entry ->
+        send(apid, {:acp_reply_cancelled, rref})
+        {:noreply, put_in(state.pending_in[cancel_id], %{entry | cancelled?: true})}
 
       entry ->
-        pending_in = Map.put(state.pending_in, cancel_id, %{entry | cancelled?: true})
-        stop_cancelled(state, entry)
-        %{state | pending_in: pending_in}
+        if entry.task_pid, do: Task.Supervisor.terminate_child(state.task_sup, entry.task_pid)
+
+        state
+        |> Link.drop_pending_in(cancel_id, entry)
+        |> Map.update!(:task_index, &Map.delete(&1, entry.task_ref))
+        |> Link.emit(Wire.response(cancel_id, {:error, Error.request_cancelled()}))
     end
   end
-
-  defp stop_cancelled(_state, %{adopter: {apid, _mon}, reply_ref: rref}),
-    do: send(apid, {:acp_reply_cancelled, rref})
-
-  defp stop_cancelled(_state, %{task_pid: nil}), do: :ok
-
-  defp stop_cancelled(state, %{task_pid: pid}),
-    do: Task.Supervisor.terminate_child(state.task_sup, pid)
 
   defp lookup_session(session_id) do
     registry = Raxol.AgentClientProtocol.Session.registry()

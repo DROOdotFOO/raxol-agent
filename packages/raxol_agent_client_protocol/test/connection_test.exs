@@ -281,12 +281,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       ScriptedPeer.send_cancel_request(peer, 9)
 
-      # reason is whatever Task.Supervisor.terminate_child produces (observed:
-      # :shutdown, not the :killed the design's own §8.4 prose uses -- a
-      # diagram-wording nit, not a contract violation; the id-9 response
-      # suppression below is the actual invariant under test).
       assert_receive {:DOWN, ^task_ref, :process, ^task_pid, _reason}, 500
-      # *** no frame with id 9 is EVER emitted ***
+      # The cancelled request is still answered: -32800, exactly once.
+      assert %{"id" => 9, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 200)
       assert Process.alive?(conn)
     end
@@ -559,7 +556,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert normal["id"] == 100
       assert normal["result"]["sessionId"] == "s1"
 
-      # cancelled, undelegated -> exactly zero
+      # cancelled, undelegated -> exactly one -32800
       ScriptedPeer.send_request(peer, 101, "session/new", new_session_params())
 
       %{task_pid: t101} =
@@ -567,12 +564,11 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       ref101 = Process.monitor(t101)
       ScriptedPeer.send_cancel_request(peer, 101)
-      # reason is whatever Task.Supervisor.terminate_child produces (observed
-      # :shutdown, not the design prose's :killed -- see §8.4's note).
       assert_receive {:DOWN, ^ref101, :process, ^t101, _reason}, 500
+      assert %{"id" => 101, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
 
-      # cancelled, delegated -> exactly zero
+      # cancelled, delegated -> exactly one: the adopter's reply
       ScriptedPeer.send_request(peer, 102, "session/prompt", prompt_params("s1"))
 
       %{ctx: ctx102} =
@@ -591,7 +587,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert_receive :delegated_102, 500
       ScriptedPeer.send_cancel_request(peer, 102)
       assert_receive {:acp_reply_cancelled, reply_ref} when reply_ref == ctx102.reply_ref, 500
-      :ok = Connection.reply(conn, ctx102.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      :ok = Connection.reply(conn, ctx102.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      assert %{"id" => 102, "result" => %{"stopReason" => "cancelled"}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
     end
 
@@ -1140,7 +1137,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert :ok = Connection.reply(conn, c1.reply_ref, {:ok, PromptResponse.new(:end_turn)})
       ScriptedPeer.assert_no_frame(peer, 150)
 
-      # cancel then reply -> no frame, reply/3 still returns :ok
+      # cancel then reply -> the adopter's reply is the one frame
       ScriptedPeer.send_request(peer, 2, "session/prompt", prompt_params("s1"))
 
       %{ctx: c2} =
@@ -1156,7 +1153,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert_receive :delegated_2, 500
       ScriptedPeer.send_cancel_request(peer, 2)
       assert_receive {:acp_reply_cancelled, ref2} when ref2 == c2.reply_ref, 500
-      assert :ok = Connection.reply(conn, c2.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      assert :ok = Connection.reply(conn, c2.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      assert %{"id" => 2, "result" => _} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
     end
 
@@ -1455,7 +1453,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert frame["error"]["code"] == Raxol.AgentClientProtocol.Error.internal_error_code()
     end
 
-    test "row 30: adopter dies on a cancelled entry -> silent, zero frames" do
+    test "row 30: adopter dies on a cancelled entry -> one -32800 frame" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1480,6 +1478,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       end)
 
       Process.exit(adopter, :kill)
+      assert %{"id" => 81, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 200)
     end
 
@@ -1831,7 +1830,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 8, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
     end
 
-    test "no frame is sent when the peer cancels during delegation" do
+    test "a cancel before delegation answers -32800 once and refuses the delegation" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1854,11 +1853,12 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
         end
       end)
 
-      assert {:error, _} = Connection.delegate_reply(conn, ctx.reply_ref, self())
+      assert %{"id" => 20, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
+      assert {:error, :unknown_ref} = Connection.delegate_reply(conn, ctx.reply_ref, self())
       ScriptedPeer.assert_no_frame(peer, 150)
     end
 
-    test "a cancel between delegation and :deferred leaves the reply to the adopter" do
+    test "a cancel between delegation and :deferred: the adopter's reply is the one frame" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1879,6 +1879,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       wait_until(fn -> match?(%{22 => %{task_pid: nil}}, :sys.get_state(conn).pending_in) end)
       :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      assert %{"id" => 22, "result" => %{"stopReason" => "cancelled"}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
       assert :sys.get_state(conn).pending_in == %{}
     end

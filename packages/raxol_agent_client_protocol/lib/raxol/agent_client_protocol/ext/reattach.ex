@@ -611,8 +611,8 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   # Connection routes the cancel here as `{:acp_reply_cancelled, reply_ref}`. The
   # peer abandoned the request, so the live tail MUST stop — otherwise a granted
   # attach keeps streaming history-tail + the PERMANENT live tail to a client that
-  # no longer wants it. Unsubscribe from the Writer and terminate; emit NO frames
-  # (the id was abandoned — the Connection already suppresses the reply).
+  # no longer wants it. Unsubscribe from the Writer and terminate; the Connection
+  # answers the cancelled id -32800 when it sees this adopter exit.
   # Stopping also disarms the expiry timer with the process.
   def handle_info({:acp_reply_cancelled, rref}, %{reply_ref: rref} = state) do
     _ = unsubscribe(state, state.live)

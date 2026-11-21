@@ -14,7 +14,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
       or teardown.
     * Inbound: a handler crash answers `-32603`, echoing the id at its exact
       wire type. A notification crash is only logged. `$/cancel_request` and
-      `session/cancel` are handled by the Connection itself.
+      `session/cancel` are handled by the Connection itself; a cancelled
+      request is still answered once (-32800, or its adopter's reply).
     * Delegated replies: `delegate_reply/3`, `reply/3` and a `:deferred` handler
       return let `Session` decide when the `session/prompt` response goes out,
       on the same FIFO lane as its updates.
@@ -172,8 +173,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
   Connection then monitors. Must return before the handler returns `:deferred`.
   Returns `{:error, :cancelled}` when the peer already cancelled the request.
   If the peer cancels later, the adopter receives `{:acp_reply_cancelled, reply_ref}`
-  and must still call `reply/3` (nothing is sent) or exit; until then the request
-  holds an inbound slot.
+  and must still call `reply/3` (its reply is sent) or exit, which answers -32800;
+  until then the request holds an inbound slot.
   """
   @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref | :cancelled}
   def delegate_reply(conn, reply_ref, adopter)

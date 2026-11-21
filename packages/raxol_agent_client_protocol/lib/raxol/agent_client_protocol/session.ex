@@ -131,7 +131,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   session with a live turn returns a busy `{:error, %Error{}}` that the handler
   replies with. If the Connection no longer holds the request (the peer sent
   `$/cancel_request`, or it is gone), no turn starts and the result is
-  `{:error, Error.request_cancelled()}`; nothing is sent. A prompt wire-ordered
+  `{:error, Error.request_cancelled()}`; the Connection has already answered it
+  -32800. A prompt wire-ordered
   before a `session/cancel` is answered `stopReason: cancelled`.
   """
   @spec begin_prompt(GenServer.server(), struct(), reference(), non_neg_integer()) ::
@@ -456,8 +457,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   end
 
   # The one render feeds both the journal's `turn_completed` and the reply.
-  # `reply/3` is sent even when `respond?` is false: the Connection must release
-  # the entry, and it suppresses the frame for a cancelled id itself.
+  # After a `$/cancel_request` this reply (stopReason `cancelled`) is the one
+  # response the peer gets for the id.
   @spec finish(t(), Turn.t()) :: t()
   defp finish(state, t) do
     if t.backstop_timer, do: Process.cancel_timer(t.backstop_timer)
