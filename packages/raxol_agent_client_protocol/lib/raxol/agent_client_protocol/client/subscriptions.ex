@@ -21,12 +21,14 @@ defmodule Raxol.AgentClientProtocol.Client.Subscriptions do
   end
 
   @spec subscribe(pid(), String.t(), pid()) :: :ok
-  def subscribe(conn, session_id, subscriber),
-    do: GenServer.call(ensure_started(), {:subscribe, {conn, session_id}, subscriber})
+  def subscribe(conn, session_id, subscriber)
+      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber),
+      do: GenServer.call(ensure_started(), {:subscribe, {conn, session_id}, subscriber})
 
   @spec unsubscribe(pid(), String.t(), pid()) :: :ok
-  def unsubscribe(conn, session_id, subscriber),
-    do: GenServer.call(ensure_started(), {:unsubscribe, {conn, session_id}, subscriber})
+  def unsubscribe(conn, session_id, subscriber)
+      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber),
+      do: GenServer.call(ensure_started(), {:unsubscribe, {conn, session_id}, subscriber})
 
   @spec subscribers(pid(), String.t()) :: [pid()]
   def subscribers(conn, session_id) do

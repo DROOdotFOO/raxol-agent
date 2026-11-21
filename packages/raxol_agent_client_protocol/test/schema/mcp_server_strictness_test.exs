@@ -45,4 +45,11 @@ defmodule Raxol.AgentClientProtocol.Schema.McpServerStrictnessTest do
                "mcpServers" => [%{@stdio | "command" => 1}]
              })
   end
+
+  test "an unknown type is refused instead of decoding as a spawned process" do
+    assert {:error, {:invalid_mcp_server_type, "HTTP"}} =
+             McpServer.from_json(Map.put(@stdio, "type", "HTTP"))
+
+    assert {:ok, {:stdio, _}} = McpServer.from_json(Map.put(@stdio, "type", "stdio"))
+  end
 end

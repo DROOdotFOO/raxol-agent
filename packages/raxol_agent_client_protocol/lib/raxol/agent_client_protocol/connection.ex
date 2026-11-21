@@ -45,7 +45,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   # How long an adopter told of a `$/cancel_request` may take to reply before
   # the request is answered -32800 and its inbound slot freed.
-  @default_cancel_reply_timeout_ms 30_000
+  # Longer than Session's 30s cancel backstop, so a Session answers first.
+  @default_cancel_reply_timeout_ms 60_000
 
   defstruct role: :agent,
             transport_mod: nil,

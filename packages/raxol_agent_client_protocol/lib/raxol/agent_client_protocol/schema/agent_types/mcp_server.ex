@@ -28,8 +28,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServer do
   def to_json({:stdio, server}), do: McpServerStdio.to_json(server)
 
   @doc """
-  Dispatches on `"type"` (`http`/`sse`); anything else decodes as the untagged
-  `stdio` variant.
+  Dispatches on `"type"` (`http`/`sse`); a descriptor without one (or with
+  `"stdio"`) decodes as the stdio variant, and any other type is refused.
   """
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(%{"type" => "http"} = map) do
@@ -45,6 +45,11 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServer do
       error -> error
     end
   end
+
+  # stdio descriptors carry no "type"; any other type is refused rather than
+  # treated as a command to spawn.
+  def from_json(%{"type" => type}) when type != "stdio",
+    do: {:error, {:invalid_mcp_server_type, type}}
 
   def from_json(map) when is_map(map) do
     case McpServerStdio.from_json(Map.delete(map, "type")) do

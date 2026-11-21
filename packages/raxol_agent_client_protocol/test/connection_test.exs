@@ -2141,6 +2141,26 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert :sys.get_state(conn).timed_out_adopters == %{}
     end
 
+    test "a repeated cancel for a delegated id is a no-op" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 62, "session/prompt", prompt_params("s1"))
+
+      handle_next_invoke(:prompt, fn _req, ctx ->
+        :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+        send(test_pid, :delegated)
+        :deferred
+      end)
+
+      assert_receive :delegated
+      for _ <- 1..5, do: ScriptedPeer.send_cancel_request(peer, 62)
+
+      assert_receive {:acp_reply_cancelled, _ref}
+      refute_receive {:acp_reply_cancelled, _ref}, 150
+      _ = :sys.get_state(conn)
+    end
+
     test "the tombstone is dropped when the silent adopter exits" do
       test_pid = self()
       task_sup = start_supervised!({Task.Supervisor, []}, id: :cancel_timeout_sup2)

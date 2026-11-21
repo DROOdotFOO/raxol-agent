@@ -105,6 +105,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
 
         {:noreply, state}
 
+      # A repeated cancel for the same id changes nothing.
+      %{cancelled?: true} ->
+        {:noreply, state}
+
       %{adopter: {apid, _mon}, reply_ref: rref} = entry ->
         send(apid, {:acp_reply_cancelled, rref})
 
