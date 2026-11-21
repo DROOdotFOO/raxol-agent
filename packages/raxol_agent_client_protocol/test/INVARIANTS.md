@@ -45,21 +45,21 @@ the two new method-parity rows I18/I19 (see their entries). Moduledoc: the
 |----|--------------------|------------------------------|
 | I1 | **RESERVED**: no in-repo canonical statement (external design-spec ref); intentionally unfilled. | - |
 | I2 | A session resolves in the Registry (`:via` name minted) BEFORE `start_link/1` returns: register-before-respond by construction. | `session_test.exs:142` |
-| I3 | Every `session/update` frame of a turn precedes that turn's response frame (updates and reply share one FIFO lane). | `session_test.exs:164` |
-| I4 | The prompt response waits until every turn-group task is DOWN (hold-turn-open; drain fires at monitor-count zero). | `session_test.exs:198` |
-| I5 | A cancel landing after the root task is DOWN but before the last subagent is DOWN still yields `stopReason: cancelled` (cancel outranks a landed root result). | `session_test.exs:237` |
-| I6 | Cancel-of-idle emits NO frame: only the latch moves; a later prompt runs normally. | `session_test.exs:360` |
-| I7 | A mid-turn cancel yields exactly ONE cancelled reply; a double-cancel adds nothing. | `session_test.exs:269` |
-| I8 | Permission is fail-closed: ONLY a decoded `{:selected, _}` outcome yields allow; every other row denies. | `session_test.exs:449` |
-| I9 | A turn cancel aborts a parked permission ask promptly via the cancel path (deny), not by waiting out the backstop. | `session_test.exs:289` |
+| I3 | Every `session/update` frame of a turn precedes that turn's response frame (updates and reply share one FIFO lane). | `session_test.exs:183` |
+| I4 | The prompt response waits until every turn-group task is DOWN (hold-turn-open; drain fires at monitor-count zero). | `session_test.exs:217` |
+| I5 | A cancel landing after the root task is DOWN but before the last subagent is DOWN still yields `stopReason: cancelled` (cancel outranks a landed root result). | `session_test.exs:256` |
+| I6 | Cancel-of-idle emits NO frame: only the latch moves; a later prompt runs normally. | `session_test.exs:379` |
+| I7 | A mid-turn cancel yields exactly ONE cancelled reply; a double-cancel adds nothing. | `session_test.exs:288` |
+| I8 | Permission is fail-closed: ONLY a decoded `{:selected, _}` outcome yields allow; every other row denies. | `session_test.exs:468` |
+| I9 | A turn cancel aborts a parked permission ask promptly via the cancel path (deny), not by waiting out the backstop. | `session_test.exs:308` |
 | I10 | **RESERVED**: no in-repo canonical statement (external design-spec ref); intentionally unfilled. | - |
-| I11 | No stale registry entries: a dead session's key is pruned by the Registry monitor. | `session_test.exs:490` |
-| I12 | Busy-prompt isolation: a second prompt on a prompting session errors; the first is undisturbed. | `session_test.exs:501` |
-| I13 | Backstop: a runner that ignores `:acp_cancel` still resolves cancelled via kill; a stale backstop (wrong `turn_ref`) never touches the live turn. | `session_test.exs:524` |
-| I14 | No atom is created from session data: `session_id` churn does not grow the atom table. | `session_test.exs:639` |
-| I15 | Two sessions on one connection are independent: each session's updates precede its OWN response; turns don't interfere. | `session_test.exs:773` |
-| I16 | Wire-order commutation: a prompt wire-ordered before a latched cancel is born-cancelled; one ordered after (higher `rx_seq`) runs unaffected. | `session_test.exs:378` |
-| I17 | `$/cancel_request` on the prompt id: the drain STILL calls `reply/3` for the cancelled id (releases `pending_in`, S7). | `session_test.exs:672` |
+| I11 | No stale registry entries: a dead session's key is pruned by the Registry monitor. | `session_test.exs:509` |
+| I12 | Busy-prompt isolation: a second prompt on a prompting session errors; the first is undisturbed. | `session_test.exs:520` |
+| I13 | Backstop: a runner that ignores `:acp_cancel` still resolves cancelled via kill; a stale backstop (wrong `turn_ref`) never touches the live turn. | `session_test.exs:543` |
+| I14 | No atom is created from session data: `session_id` churn does not grow the atom table. | `session_test.exs:658` |
+| I15 | Two sessions on one connection are independent: each session's updates precede its OWN response; turns don't interfere. | `session_test.exs:792` |
+| I16 | Wire-order commutation: a prompt wire-ordered before a latched cancel is born-cancelled; one ordered after (higher `rx_seq`) runs unaffected. | `session_test.exs:397` |
+| I17 | `$/cancel_request` on the prompt id: the drain STILL calls `reply/3` for the cancelled id (releases `pending_in`, S7). | `session_test.exs:691` |
 | I18 | `session/resume` gates fail-closed on `session_capabilities.resume` AND dispatches (decode → `resume_session/2`). Capability-parity + dispatch-parity for the resume method. | gate: `capabilities_test.exs` describe `"I18 session/resume gates ..."`; dispatch: `router_test.exs` describe `"I18 session/resume decode + dispatch"` |
 | I19 | `session/set_config_option` decodes to `SetSessionConfigOptionRequest` AND dispatches to `set_session_config_option/2` (baseline method, no capability gate). | `router_test.exs` describe `"I19 session/set_config_option decode + dispatch"` |
 
@@ -73,27 +73,27 @@ Home: `test/connection_test.exs`, `describe "invariants"`. Moduledoc: the
 
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
-| Inv-1 | Exactly one answer per accepted outbound submission; ZERO after a peer `$/cancel_request`. | `connection_test.exs:389` |
-| Inv-2 | No stale `pending_out`/`out_tags` entry survives any exit path. | `connection_test.exs:444` |
-| Inv-3 | A timeout answers AND deletes atomically; a late response after it is a pure no-op. | `connection_test.exs:499` |
-| Inv-4 | **alias of IC-6**: the response-count invariant. Enforcing test renamed to lead with IC-6. | `connection_test.exs:542` (test `"IC-6 (Inv-4 alias): response-count invariant ..."`) |
-| Inv-5 | Notifications never produce a wire frame, incl. under decode failure and handler crash. | `connection_test.exs:594` |
-| Inv-6 | Response id echo is byte-exact across error classes, string and integer ids. | `connection_test.exs:619` |
-| Inv-7 | No atom is created from wire input (unknown methods, notifications, session ids). | `connection_test.exs:710` |
-| Inv-8 | A handler calling `Connection.request/4` back into the same Connection completes promptly (no self-deadlock). | `connection_test.exs:751` |
-| Inv-9 | `conn == self()` raises `ArgumentError` on every public API function. | `connection_test.exs:777` |
-| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:791`, `:814` |
-| Inv-11 | `caps` is written exactly once at handshake and never mutated after. | `connection_test.exs:834` |
-| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent). | `connection_test.exs:876` |
-| Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_test.exs:908` |
-| Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_test.exs:940` |
-| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1017` |
-| Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1051` |
-| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1064` |
-| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1098` |
-| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings. | `connection_test.exs:1116` |
-| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1156` |
-| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1189` |
+| Inv-1 | Exactly one answer per accepted outbound submission; ZERO after a peer `$/cancel_request`. | `connection_test.exs:393` |
+| Inv-2 | No stale `pending_out`/`out_tags` entry survives any exit path. | `connection_test.exs:448` |
+| Inv-3 | A timeout answers AND deletes atomically; a late response after it is a pure no-op. | `connection_test.exs:503` |
+| Inv-4 | **alias of IC-6**: the response-count invariant. Enforcing test renamed to lead with IC-6. | `connection_test.exs:546` (test `"IC-6 (Inv-4 alias): response-count invariant ..."`) |
+| Inv-5 | Notifications never produce a wire frame, incl. under decode failure and handler crash. | `connection_test.exs:598` |
+| Inv-6 | Response id echo is byte-exact across error classes, string and integer ids. | `connection_test.exs:623` |
+| Inv-7 | No atom is created from wire input (unknown methods, notifications, session ids). | `connection_test.exs:714` |
+| Inv-8 | A handler calling `Connection.request/4` back into the same Connection completes promptly (no self-deadlock). | `connection_test.exs:755` |
+| Inv-9 | `conn == self()` raises `ArgumentError` on every public API function. | `connection_test.exs:781` |
+| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:795`, `:814` |
+| Inv-11 | `caps` is written exactly once at handshake and never mutated after. | `connection_test.exs:838` |
+| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent). | `connection_test.exs:880` |
+| Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_test.exs:912` |
+| Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_test.exs:944` |
+| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1021` |
+| Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1055` |
+| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1068` |
+| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1102` |
+| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings. | `connection_test.exs:1120` |
+| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1160` |
+| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1193` |
 
 ## Family `IC`: shared Interface Contract (IC-1..IC-8)
 
@@ -107,12 +107,12 @@ enforcing test is cited.
 |----|--------------------|----------------------------------|
 | IC-1 | ONE GenServer per peer link is the sole correlation/dispatch authority: never blocks, never runs handler code in-process, never mints atoms from wire input. | `connection_test.exs` `describe "§8 sequence diagrams"` (`:192`) + Inv-7/Inv-8 |
 | IC-2 | `Connection.Ctx` is THE single per-dispatch struct handed to handler callbacks (`conn`, `reply_ref`, `rx_seq`); there is exactly one ctx concept. | `ctx_test.exs` (whole suite; moduledoc `:18`) |
-| IC-3 | `async_request/6` is THE outbound primitive (only it accepts `:infinity`); `request/4` is a caller-parking wrapper on the same `pending_out` table; Connection is the single timeout authority. | `ctx_test.exs:287`; `connection_test.exs` `describe "§8 sequence diagrams"` |
-| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_test.exs:1116` (Inv-19); `session_test.exs:672` (I17) |
-| IC-5 | (IC-5c) `rx_seq` latch: cancel and prompt commute by wire order, not scheduling order. | `session_test.exs:378` (I16) |
-| IC-6 | **Response-count invariant (canonical):** at most one response frame per inbound id; exactly one unless the peer `$/cancel_request`'d it first (then zero). `Inv-4` is its alias. | `connection_test.exs:542` |
-| IC-7 | The Connection never blocks: no `GenServer.call` to itself, no synchronous wait on tasks, no transport call that waits on peer progress. | `connection_test.exs:751` (Inv-8) |
-| IC-8 | Sibling supervision tree: `task_sup`/`session_sup` resolved from the parent supervisor by module/type heuristic (injectable in tests); Connection is `:temporary`. | `connection_test.exs:76`; `integration/end_to_end_test.exs:301` |
+| IC-3 | `async_request/6` is THE outbound primitive (only it accepts `:infinity`); `request/4` is a caller-parking wrapper on the same `pending_out` table; Connection is the single timeout authority. | `ctx_test.exs:302`; `connection_test.exs` `describe "§8 sequence diagrams"` |
+| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_test.exs:1120` (Inv-19); `session_test.exs:691` (I17) |
+| IC-5 | (IC-5c) `rx_seq` latch: cancel and prompt commute by wire order, not scheduling order. | `session_test.exs:397` (I16) |
+| IC-6 | **Response-count invariant (canonical):** at most one response frame per inbound id; exactly one unless the peer `$/cancel_request`'d it first (then zero). `Inv-4` is its alias. | `connection_test.exs:546` |
+| IC-7 | The Connection never blocks: no `GenServer.call` to itself, no synchronous wait on tasks, no transport call that waits on peer progress. | `connection_test.exs:755` (Inv-8) |
+| IC-8 | Sibling supervision tree: `task_sup`/`session_sup` resolved from the parent supervisor by module/type heuristic (injectable in tests); Connection is `:temporary`. | `connection_test.exs:80`; `integration/end_to_end_test.exs:301` |
 
 ## Family `F`: NDJSON framing / transport (F1..F8)
 
