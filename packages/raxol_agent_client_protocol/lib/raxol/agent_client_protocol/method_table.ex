@@ -193,6 +193,15 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
   check!.(duplicates.(Enum.map(@rows, &{&1.direction, &1.wire})), "duplicate {direction, wire}")
 
   check!.(
+    for(
+      %{kind: k, layer: l, wire: w} <- @rows,
+      k not in [:request, :notification] or l not in [:app, :protocol, :session_control],
+      do: w
+    ),
+    "unknown kind or layer"
+  )
+
+  check!.(
     for(%{kind: k, result: r, wire: w} <- @rows, k == :notification != is_nil(r), do: w),
     "notification/result mismatch"
   )

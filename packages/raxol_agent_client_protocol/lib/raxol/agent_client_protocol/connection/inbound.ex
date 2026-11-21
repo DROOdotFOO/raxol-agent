@@ -13,7 +13,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   alias Raxol.AgentClientProtocol.Connection.{Dispatch, Link, Notifications, Outbound, Wire}
   alias Raxol.AgentClientProtocol.Rpc.{Notification, Request, RequestId, Response}
 
-  @type state :: map()
+  @type state :: Raxol.AgentClientProtocol.Connection.t()
   @type result :: {:noreply, state()} | {:stop, :normal, state()}
 
   # -- Classification ---------------------------------------------------------
@@ -118,7 +118,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
          })}
 
       not Capabilities.negotiated?(state.caps, method) ->
-        {:reject, Wire.error(id, -32_601, "Method not found", method)}
+        {:reject, Wire.error(id, Error.method_not_found(), method)}
 
       true ->
         :accept
@@ -127,14 +127,14 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   defp handshake_rejection(:uninitialized, %Request{method: method, id: id})
        when method != "initialize" do
-    Wire.error(id, -32_600, "Invalid request", %{
+    Wire.error(id, Error.invalid_request(), %{
       "method" => method,
       "reason" => "initialize required"
     })
   end
 
   defp handshake_rejection(:initialized, %Request{method: "initialize", id: id}),
-    do: Wire.error(id, -32_600, "Invalid request", %{"reason" => "already initialized"})
+    do: Wire.error(id, Error.invalid_request(), %{"reason" => "already initialized"})
 
   defp handshake_rejection(_phase, _req), do: nil
 
@@ -145,16 +145,16 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
       "ACP: inbound request #{method} (id #{RequestId.display(id)}) shed -32603: #{why}"
     )
 
-    Wire.error(id, -32_603, "Server busy", data)
+    Wire.error(id, Error.new(Error.internal_error_code(), "Server busy"), data)
   end
 
   defp decode_request(state, %Request{id: id, method: method, params: params}, rx_seq) do
     case Router.decode(state.role, :request, method, params) do
       {:error, :method_not_found} ->
-        Link.emit(state, Wire.error(id, -32_601, "Method not found", method))
+        Link.emit(state, Wire.error(id, Error.method_not_found(), method))
 
       {:error, reason} ->
-        Link.emit(state, Wire.error(id, -32_602, "Invalid params", inspect(reason)))
+        Link.emit(state, Wire.error(id, Error.invalid_params(), inspect(reason)))
 
       {:ok, dispatchable} ->
         spawn_request(state, id, method, dispatchable, rx_seq)

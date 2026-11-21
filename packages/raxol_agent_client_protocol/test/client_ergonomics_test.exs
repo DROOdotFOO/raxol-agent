@@ -114,7 +114,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
   end
 
   # Drives the client-initiated `initialize` handshake (the client role
-  # sends the request; see `connection.ex`'s `maybe_stash_own_caps/3` --
+  # sends the request; see `Connection.Outbound`'s `stash_own_caps/3` --
   # `role: :client` stashes `own_caps` at OUTBOUND submit time). `client_caps`
   # becomes the negotiated-capability snapshot (`Capabilities.negotiated?/2`)
   # for the rest of the connection's lifetime -- pass `@fs_caps` for any test

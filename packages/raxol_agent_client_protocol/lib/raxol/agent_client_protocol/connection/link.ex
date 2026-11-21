@@ -8,7 +8,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
   alias Raxol.AgentClientProtocol.Connection.{Turns, Wire}
   alias Raxol.AgentClientProtocol.Rpc.{Notification, RequestId}
 
-  @type state :: map()
+  @type state :: Raxol.AgentClientProtocol.Connection.t()
   @type reply_to :: {:call, GenServer.from()} | {:owner, pid(), term()}
 
   @spec push(state(), map()) :: {:ok, state()} | {:down, term()}

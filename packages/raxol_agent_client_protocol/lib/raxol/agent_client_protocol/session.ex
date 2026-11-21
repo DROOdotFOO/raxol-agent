@@ -17,7 +17,11 @@ defmodule Raxol.AgentClientProtocol.Session do
     * Registration happens in `start_link/1`, before `init/1`, so the session
       is reachable before any response announces it.
 
-  Seams: `:conn_mod` (the Connection module), `:emitter` (`Session.Emitter`),
+  The root task receives `:acp_cancel` on cancel and may wind down itself;
+  otherwise the backstop kills it.
+
+  Seams: `:conn_mod` (the Connection module; must provide `delegate_reply/3`,
+  `reply/3`, `notify/3`, `async_request/6` and `cancel_request/2`), `:emitter` (`Session.Emitter`),
   `:steer_adapter` (`Session.SteerAdapter`). With a finite `:idle_timeout` in
   `:config`, an idle session stops itself and its emitter's Writer; the
   journal is kept, so a later `session/load` replays it.
@@ -48,12 +52,15 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   @registry Raxol.AgentClientProtocol.SessionRegistry
 
+  @type turn_runner ::
+          (pid(), struct() -> {:stop, atom()} | PromptResponse.t() | {:error, Error.t()})
+
   @type t :: %__MODULE__{
           session_id: String.t(),
           conn: pid(),
           conn_mod: module(),
           task_sup: pid() | atom(),
-          turn_runner: (pid(), struct() -> {:stop, atom()} | PromptResponse.t()),
+          turn_runner: turn_runner(),
           mode_state: SessionModeState.t() | nil,
           turn: :idle | {:prompting, Turn.t()} | {:cancelling, Turn.t()},
           last_cancel_seq: non_neg_integer(),

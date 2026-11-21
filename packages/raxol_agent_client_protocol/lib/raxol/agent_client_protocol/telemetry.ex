@@ -11,7 +11,7 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
   not an invariant. The test suite fails if `lib/` emits an event missing from
   `events/0`, or if `events/0` lists one nothing emits.
 
-  `:telemetry` is optional: `execute/3` is a no-op when it is not loaded.
+  `:telemetry` is optional: `execute/2,3` are no-ops when it is not loaded.
   """
 
   @compile {:no_warn_undefined, :telemetry}
@@ -67,9 +67,13 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
   @spec classify(event()) :: class() | nil
   def classify(event) when is_list(event), do: Map.get(@events, event)
 
+  @doc "Emits `event` with `%{count: 1}` measurements and `metadata`."
+  @spec execute(event(), map()) :: :ok
+  def execute(event, metadata), do: execute(event, %{count: 1}, metadata)
+
   @doc "Emits `event` via `:telemetry` when it is loaded; otherwise does nothing."
   @spec execute(event(), map(), map()) :: :ok
-  def execute(event, measurements \\ %{count: 1}, metadata) do
+  def execute(event, measurements, metadata) do
     if Code.ensure_loaded?(:telemetry), do: :telemetry.execute(event, measurements, metadata)
     :ok
   end

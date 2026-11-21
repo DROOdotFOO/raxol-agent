@@ -24,7 +24,6 @@
   ~r"agent_client_protocol/schema/unstable(/\w+)?\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/schema/version\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/session\.ex:\d+:contract_supertype",
-  ~r"agent_client_protocol/connection/\w+\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/telemetry\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/transport/reassembly\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/transport/framer\.ex:\d+:contract_supertype",

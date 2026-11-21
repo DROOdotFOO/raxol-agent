@@ -11,7 +11,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
   alias Raxol.AgentClientProtocol.Rpc.{Notification, Request, RequestId}
   alias Raxol.AgentClientProtocol.Telemetry
 
-  @type state :: map()
+  @type state :: Raxol.AgentClientProtocol.Connection.t()
   @type gate_error :: :connection_closed | :not_initialized
 
   @spec gate(state(), String.t()) :: :ok | {:error, gate_error()}

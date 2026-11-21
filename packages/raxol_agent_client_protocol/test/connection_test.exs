@@ -1611,7 +1611,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert frame["error"]["code"] == Raxol.AgentClientProtocol.Error.parse_error_code()
 
       # a decoded-but-non-object top-level array is the same "batch" shape
-      # the `is_list(frame)` clause of `handle_message/3` answers -32600
+      # the `is_list(frame)` clause of `Connection.Inbound.message/3` answers -32600
       # for over a pre-decoded-term transport (Paired); over a real
       # byte-level transport it arrives here as `{:not_an_object, list}`
       # instead -- this is the only way to reach that clause over Stdio.

@@ -22,9 +22,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
 
   def response(id, {:error, %Error{} = err}), do: frame(Response.error(id, err))
 
-  @spec error(RequestId.t(), integer(), String.t(), term()) :: map()
-  def error(id, code, message, data),
-    do: response(id, {:error, Error.with_data(Error.new(code, message), data)})
+  @spec error(RequestId.t(), Error.t(), term()) :: map()
+  def error(id, %Error{} = error, data), do: response(id, {:error, Error.with_data(error, data)})
 
   # Flattens a struct/map to a plain string-keyed map so in-process transports
   # hand the peer a decodable term. A non-JSON-safe value (pid, ref, tuple) is

@@ -5,7 +5,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Dispatch do
   alias Raxol.AgentClientProtocol.Connection.Ctx
   alias Raxol.AgentClientProtocol.Router
 
-  @spec ctx(map()) :: Ctx.t()
+  @spec ctx(Raxol.AgentClientProtocol.Connection.t()) :: Ctx.t()
   def ctx(state) do
     %Ctx{
       conn: self(),
@@ -18,7 +18,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Dispatch do
   end
 
   # `async_nolink` raises once the supervisor hits `max_children`.
-  @spec start(map(), term(), Ctx.t()) :: {:ok, Task.t()} | {:error, Exception.t()}
+  @spec start(Raxol.AgentClientProtocol.Connection.t(), term(), Ctx.t()) ::
+          {:ok, Task.t()} | {:error, Exception.t()}
   def start(state, dispatchable, ctx) do
     {:ok, Task.Supervisor.async_nolink(state.task_sup, fn -> run(state, dispatchable, ctx) end)}
   rescue

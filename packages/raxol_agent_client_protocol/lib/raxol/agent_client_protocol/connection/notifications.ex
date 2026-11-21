@@ -11,10 +11,9 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.CancelNotification
   alias Raxol.AgentClientProtocol.Schema.LifecycleExtras.CancelRequestNotification
 
-  @session_registry Raxol.AgentClientProtocol.SessionRegistry
-
   # `$/cancel_request` is protocol-layer and allowed before the handshake.
-  @spec handle(map(), Notification.t(), non_neg_integer()) :: {:noreply, map()}
+  @spec handle(Raxol.AgentClientProtocol.Connection.t(), Notification.t(), non_neg_integer()) ::
+          {:noreply, Raxol.AgentClientProtocol.Connection.t()}
   def handle(state, %Notification{method: "$/cancel_request", params: params}, _rx_seq) do
     case CancelRequestNotification.from_json(params || %{}) do
       {:ok, %{request_id: cancel_id}} -> {:noreply, cancel_inbound(state, cancel_id)}
@@ -100,9 +99,11 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
     do: Task.Supervisor.terminate_child(state.task_sup, pid)
 
   defp lookup_session(session_id) do
-    case Process.whereis(@session_registry) do
+    registry = Raxol.AgentClientProtocol.Session.registry()
+
+    case Process.whereis(registry) do
       nil -> []
-      _pid -> Registry.lookup(@session_registry, {self(), session_id})
+      _pid -> Registry.lookup(registry, {self(), session_id})
     end
   end
 end
