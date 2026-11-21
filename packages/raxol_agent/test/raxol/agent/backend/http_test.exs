@@ -2,32 +2,34 @@ defmodule Raxol.Agent.Backend.HTTPTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Agent.Backend.HTTP
+  alias Raxol.Agent.Backend.HTTP.Models
+  alias Raxol.Agent.Backend.HTTP.ToolCalls
 
-  describe "parse_models/2" do
+  describe "Models.parse/2" do
     test "OpenAI-compatible /v1/models: extracts data[].id" do
       body = %{
         "object" => "list",
         "data" => [%{"id" => "gpt-4o"}, %{"id" => "gpt-4o-mini"}]
       }
 
-      assert HTTP.parse_models(:openai, body) == ["gpt-4o", "gpt-4o-mini"]
+      assert Models.parse(:openai, body) == ["gpt-4o", "gpt-4o-mini"]
     end
 
     test "Ollama /api/tags: extracts models[].name" do
       body = %{"models" => [%{"name" => "llama3.2"}, %{"name" => "qwen2.5"}]}
-      assert HTTP.parse_models(:ollama, body) == ["llama3.2", "qwen2.5"]
+      assert Models.parse(:ollama, body) == ["llama3.2", "qwen2.5"]
     end
 
     test "skips non-string / malformed entries" do
-      assert HTTP.parse_models(:openai, %{
+      assert Models.parse(:openai, %{
                "data" => [%{"id" => 1}, %{"id" => "ok"}, %{}]
              }) ==
                ["ok"]
     end
 
     test "an unrecognized body shape yields an empty list, never a crash" do
-      assert HTTP.parse_models(:openai, %{"unexpected" => true}) == []
-      assert HTTP.parse_models(:ollama, "not a map") == []
+      assert Models.parse(:openai, %{"unexpected" => true}) == []
+      assert Models.parse(:ollama, "not a map") == []
     end
   end
 
@@ -335,7 +337,7 @@ defmodule Raxol.Agent.Backend.HTTPTest do
                    "new" => "b"
                  }
                }
-             ] = HTTP.accumulate_tool_calls(batches)
+             ] = ToolCalls.accumulate(batches)
     end
 
     test "a single full-message tool_call (name + whole args string in one chunk) also works" do
@@ -359,11 +361,11 @@ defmodule Raxol.Agent.Backend.HTTPTest do
                  "arguments" => %{"path" => "a.txt"}
                }
              ] =
-               HTTP.accumulate_tool_calls(batches)
+               ToolCalls.accumulate(batches)
     end
 
     test "no tool-call fragments -> empty list" do
-      assert [] = HTTP.accumulate_tool_calls([])
+      assert [] = ToolCalls.accumulate([])
     end
 
     test "two indexless complete single-call batches in separate chunks are NOT cross-merged" do
@@ -394,7 +396,7 @@ defmodule Raxol.Agent.Backend.HTTPTest do
         ]
       ]
 
-      result = HTTP.accumulate_tool_calls(batches)
+      result = ToolCalls.accumulate(batches)
 
       assert length(result) == 2
 
@@ -429,7 +431,7 @@ defmodule Raxol.Agent.Backend.HTTPTest do
                  "arguments" => %{"a" => 1}
                }
              ] =
-               HTTP.accumulate_tool_calls(batches)
+               ToolCalls.accumulate(batches)
     end
 
     test "undecodable accumulated arguments surface an honest marker, never a silently laundered %{}" do
@@ -447,7 +449,7 @@ defmodule Raxol.Agent.Backend.HTTPTest do
       ]
 
       assert [%{"id" => "c1", "name" => "edit_file", "arguments" => %{}} = call] =
-               HTTP.accumulate_tool_calls(batches)
+               ToolCalls.accumulate(batches)
 
       assert is_binary(call["arguments_error"])
       assert call["arguments_error"] =~ "undecodable"
@@ -486,7 +488,7 @@ defmodule Raxol.Agent.Backend.HTTPTest do
           ]
         ]
 
-        result = HTTP.accumulate_tool_calls(batches)
+        result = ToolCalls.accumulate(batches)
 
         # No crash; both distinct calls survive (resolved by id, not the
         # garbage index that would have cross-merged or blown up).
@@ -519,25 +521,25 @@ defmodule Raxol.Agent.Backend.HTTPTest do
         [%{"index" => 0, "function" => %{"arguments" => ""}}]
       ]
 
-      result = HTTP.accumulate_tool_calls(batches)
+      result = ToolCalls.accumulate(batches)
       assert length(result) == 2
     end
   end
 
-  describe "interpret_models_status/1" do
+  describe "Models.interpret_status/1" do
     test "a 2xx is valid" do
-      assert HTTP.interpret_models_status(200) == :valid
-      assert HTTP.interpret_models_status(204) == :valid
+      assert Models.interpret_status(200) == :valid
+      assert Models.interpret_status(204) == :valid
     end
 
     test "401/403 mean the key was rejected" do
-      assert HTTP.interpret_models_status(401) == {:rejected, 401}
-      assert HTTP.interpret_models_status(403) == {:rejected, 403}
+      assert Models.interpret_status(401) == {:rejected, 401}
+      assert Models.interpret_status(403) == {:rejected, 403}
     end
 
     test "another status is reachable-but-errored" do
-      assert HTTP.interpret_models_status(404) == {:reachable_error, 404}
-      assert HTTP.interpret_models_status(500) == {:reachable_error, 500}
+      assert Models.interpret_status(404) == {:reachable_error, 404}
+      assert Models.interpret_status(500) == {:reachable_error, 500}
     end
   end
 
