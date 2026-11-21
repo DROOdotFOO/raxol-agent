@@ -5,7 +5,7 @@ defmodule Raxol.Agent.McpToolsJournalTest do
   tagged `supervisor: true` runs under the supervisor, where a crash of one
   child restarts the ones after it.
   """
-  use Raxol.Agent.McpToolsCase, async: false
+  use Raxol.Agent.Test.McpToolsCase, async: false
 
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.McpTools

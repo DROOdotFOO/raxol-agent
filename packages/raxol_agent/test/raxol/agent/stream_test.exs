@@ -651,6 +651,12 @@ defmodule Raxol.Agent.StreamTest do
       refute inspect(events) =~ "sk-SECRET123"
     end
 
+    test "a :backend that is not a module is refused by shape" do
+      events = "hi" |> AgentStream.run(backend: "Raxol.Agent.Backend.HTTP") |> Enum.to_list()
+
+      assert [{:error, {:invalid_backend, :not_a_module}}] = events
+    end
+
     test "a boolean :backend is {:error, :no_backend}" do
       assert [{:error, :no_backend}] = "hi" |> AgentStream.run(backend: false) |> Enum.to_list()
     end

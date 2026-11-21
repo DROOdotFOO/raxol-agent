@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.CheckpointOracle do
+defmodule Raxol.Agent.Test.CheckpointOracle do
   @moduledoc """
   Test oracle for checkpoint pointer records.
 

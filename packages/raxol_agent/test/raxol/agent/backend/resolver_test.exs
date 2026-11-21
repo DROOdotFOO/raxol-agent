@@ -303,10 +303,9 @@ defmodule Raxol.Agent.Backend.ResolverTest do
     end
 
     test "probes op once for status, not once per provider", %{log: log} do
-      # Every provider carries a stored reference, so before the fix each one
-      # shelled out to `op read` on top of the single `op whoami` -- a serial
-      # storm that made `/inspect` take 12 to 22 seconds against a locked vault
-      # and raised one authorization prompt per provider.
+      # Every provider carries a stored reference. Reading each with `op read`
+      # on top of the single `op whoami` is a serial storm: seconds per
+      # provider against a locked vault, and one authorization prompt each.
       for var <- ~w(RAXOL_ANTHROPIC_OP RAXOL_OPENAI_OP RAXOL_KIMI_OP RAXOL_OPENROUTER_OP) do
         System.put_env(var, "op://vault/#{var}/credential")
       end

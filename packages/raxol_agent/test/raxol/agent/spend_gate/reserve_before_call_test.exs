@@ -9,7 +9,7 @@ defmodule Raxol.Agent.SpendGate.ReserveBeforeCallTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Agent.SpendGate
-  alias Raxol.Agent.SpendGateProbe, as: P
+  alias Raxol.Agent.Test.SpendGateProbe, as: P
 
   # Read at run time so `SPEND_GATE_SEED=...` works on an already compiled
   # suite; failure messages carry it.

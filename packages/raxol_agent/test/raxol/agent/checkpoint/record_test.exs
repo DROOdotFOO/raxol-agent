@@ -2,7 +2,7 @@ defmodule Raxol.Agent.Checkpoint.RecordTest do
   @moduledoc """
   Checkpoint pointer records (`Raxol.Agent.Journal.Records.Checkpoint`)
   through the real Writer and FileStore. Journal truth comes from the raw
-  decoder in `Raxol.Agent.CheckpointOracle`, never `FileStore.read/2`.
+  decoder in `Raxol.Agent.Test.CheckpointOracle`, never `FileStore.read/2`.
 
   A checkpoint takes one dense offset, writes its snapshot file before its
   record, restores to the same model as a full fold, may be tip-only, is
@@ -14,9 +14,9 @@ defmodule Raxol.Agent.Checkpoint.RecordTest do
 
   import ExUnit.CaptureLog
 
-  alias Raxol.Agent.CheckpointOracle, as: Oracle
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.Journal.Records.Checkpoint
+  alias Raxol.Agent.Test.CheckpointOracle, as: Oracle
 
   @moduletag :capture_log
 

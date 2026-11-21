@@ -28,7 +28,7 @@ defmodule Raxol.Agent.SessionStreamer do
 
   - `{:text_delta, text}` -- streaming text chunk
   - `{:tool_use, %{name, arguments, id}}` -- tool invocation
-  - `{:tool_result, %{name, result}}` -- tool result
+  - `{:tool_result, %{name, result, id}}` -- tool result answering `:tool_use` `id`
   - `{:state_change, %{from, to}}` -- agent status transition
   - `{:turn_complete, info}` -- end of one reasoning turn
   - `{:done, info}` -- session completed

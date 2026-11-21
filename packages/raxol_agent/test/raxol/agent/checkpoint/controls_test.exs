@@ -4,14 +4,14 @@ defmodule Raxol.Agent.Checkpoint.ControlsTest do
   a check must catch (a checkpoint id from a second counter, a non-
   conversational tip, a write past the turn boundary, a silent restore
   fallback, a record written before its file) and asserts
-  `Raxol.Agent.CheckpointOracle` tells it from the correct shape. Every
+  `Raxol.Agent.Test.CheckpointOracle` tells it from the correct shape. Every
   armed injector must fire (`CheckpointOracle.Counters`).
   """
   use ExUnit.Case, async: true
 
-  alias Raxol.Agent.CheckpointOracle, as: Oracle
-  alias Raxol.Agent.CheckpointOracle.Counters
   alias Raxol.Agent.Journal.FileStore
+  alias Raxol.Agent.Test.CheckpointOracle, as: Oracle
+  alias Raxol.Agent.Test.CheckpointOracle.Counters
 
   setup do
     base =

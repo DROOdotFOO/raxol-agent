@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.SpendGateProbe do
+defmodule Raxol.Agent.Test.SpendGateProbe do
   @moduledoc """
   Test harness for `Raxol.Agent.SpendGate.ReserveBeforeCallTest` and its
   controls.
@@ -315,7 +315,7 @@ defmodule Raxol.Agent.SpendGateProbe do
 
   defmodule SettleOnlyInjector do
     @moduledoc "Post-hoc accounting: settles without reserving. Fails the order check."
-    alias Raxol.Agent.SpendGateProbe, as: P
+    alias Raxol.Agent.Test.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, _estimate, call_fun) do
       P.fire(ctx.probe, :settle_only)
@@ -328,7 +328,7 @@ defmodule Raxol.Agent.SpendGateProbe do
 
   defmodule CallOnRefusedInjector do
     @moduledoc "Calls the provider on a refused reserve. Fails the fail-closed check."
-    alias Raxol.Agent.SpendGateProbe, as: P
+    alias Raxol.Agent.Test.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :call_on_refused)
@@ -358,7 +358,7 @@ defmodule Raxol.Agent.SpendGateProbe do
     atomic budget, so concurrent calls over-reserve past the cap. Fails the
     no-over-reserve check.
     """
-    alias Raxol.Agent.SpendGateProbe, as: P
+    alias Raxol.Agent.Test.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :dual_truth)
@@ -378,7 +378,7 @@ defmodule Raxol.Agent.SpendGateProbe do
     Fails the order check: `[:reserve, :reserve, :call, :settle]` is not a
     legal prefix of reserve → call → settle.
     """
-    alias Raxol.Agent.SpendGateProbe, as: P
+    alias Raxol.Agent.Test.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :duplicate_reserve)
@@ -402,7 +402,7 @@ defmodule Raxol.Agent.SpendGateProbe do
     refunds twice: money inflation (the budget ends up with more available
     capacity than the true accounting allows). Fails the double-settle check.
     """
-    alias Raxol.Agent.SpendGateProbe, as: P
+    alias Raxol.Agent.Test.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :double_settle)
@@ -425,7 +425,7 @@ defmodule Raxol.Agent.SpendGateProbe do
     journaled, so a crash before the call silently drops it. Fails the
     dangling-reserve-visible check.
     """
-    alias Raxol.Agent.SpendGateProbe, as: P
+    alias Raxol.Agent.Test.SpendGateProbe, as: P
 
     def reserve(ctx, cost_ref, estimate) do
       P.fire(ctx.probe, :crash_loses_reserve)

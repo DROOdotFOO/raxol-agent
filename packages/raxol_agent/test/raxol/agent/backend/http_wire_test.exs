@@ -487,9 +487,8 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
     end
 
     # Every HTTP-backed entry in the Selector table, built from the SAME
-    # defaults the CLI's `--backend` flag uses. `llm7` is the one that used to
-    # raise; the rest are here so a future keyless entry cannot regress
-    # silently.
+    # defaults the CLI's `--backend` flag uses, so a keyless entry (such as
+    # `llm7`) that raises while building its request fails here.
     test "every backend in the Selector table builds a request without raising" do
       for backend <- [
             :anthropic,

@@ -5,7 +5,7 @@ defmodule Raxol.Agent.McpToolsTest do
   the callback workers are the ones a client reaches. Spawning, asking,
   ownership, stopping and the journal resource.
   """
-  use Raxol.Agent.McpToolsCase, async: false
+  use Raxol.Agent.Test.McpToolsCase, async: false
 
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.Journal.Records.Checkpoint

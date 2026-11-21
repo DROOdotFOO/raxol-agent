@@ -59,6 +59,8 @@ defmodule Raxol.Agent.Stream do
   With neither an executor nor a `:backend`, the stream is the single event
   `{:error, :no_backend}`. An executor no backend can serve yields
   `{:error, {:backend_unavailable, reason}}`. Neither falls back to a mock.
+  An `:executor` or `:backend` of the wrong shape yields
+  `{:error, {:invalid_executor, _}}` or `{:error, {:invalid_backend, _}}`.
   - `:backend_opts` -- keyword list passed to backend (api_key, model, etc.);
     merged over the executor's resolved opts
   - `:model` -- per-request model override (wins over `:executor`/`:backend_opts`)
@@ -633,7 +635,9 @@ defmodule Raxol.Agent.Stream do
   defp explicit_backend(opts) do
     case Keyword.get(opts, :backend) do
       backend when is_atom(backend) and backend not in [nil, true, false] -> {:ok, backend, []}
-      _none -> {:error, :no_backend}
+      none when none in [nil, true, false] -> {:error, :no_backend}
+      # Named by shape only, like the executor.
+      _other -> {:error, {:invalid_backend, :not_a_module}}
     end
   end
 

@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.McpToolsCase do
+defmodule Raxol.Agent.Test.McpToolsCase do
   @moduledoc """
   Case template for the `Raxol.Agent.McpTools` suites. Each test gets its
   own `Raxol.MCP.Registry` and `Raxol.MCP.Server` (unless tagged
@@ -19,7 +19,7 @@ defmodule Raxol.Agent.McpToolsCase do
 
   using do
     quote do
-      import Raxol.Agent.McpToolsCase
+      import Raxol.Agent.Test.McpToolsCase
 
       @moduletag :capture_log
       @moduletag :unix_only

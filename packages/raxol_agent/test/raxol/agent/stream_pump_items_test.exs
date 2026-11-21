@@ -587,4 +587,34 @@ defmodule Raxol.Agent.StreamPumpItemsTest do
       end)
     end
   end
+
+  describe "tool_result call_id" do
+    defp tool_result_items(id) do
+      session_id = "contract-test-#{System.unique_integer([:positive])}"
+      :ok = SessionStreamer.subscribe(session_id)
+
+      stream = [
+        {:tool_use, %{name: "t", arguments: %{}, id: "c1"}},
+        {:tool_result, %{name: "t", result: %{ok: true}, id: id}},
+        {:done, %{content: "", usage: %{}}}
+      ]
+
+      assert {:ok, _} = StreamPump.pump(session_id, stream, prompt: "p")
+
+      for %Event{type: :item_completed, payload: %{item_type: :tool_result} = p} <-
+            drain_events(session_id),
+          do: p
+    end
+
+    test "a short string id is journaled as the result's call_id" do
+      assert [%{call_id: "c1"}] = tool_result_items("c1")
+    end
+
+    test "an oversized or non-string id is not journaled" do
+      for id <- [String.duplicate("x", 257), %{"nested" => [1, 2]}, nil] do
+        assert [payload] = tool_result_items(id)
+        refute Map.has_key?(payload, :call_id)
+      end
+    end
+  end
 end

@@ -8,9 +8,9 @@ defmodule Raxol.Agent.Checkpoint.RestoreHardeningTest do
 
   import ExUnit.CaptureLog
 
-  alias Raxol.Agent.CheckpointOracle, as: Oracle
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.Journal.Records.Checkpoint
+  alias Raxol.Agent.Test.CheckpointOracle, as: Oracle
 
   @moduletag :capture_log
 
@@ -47,7 +47,7 @@ defmodule Raxol.Agent.Checkpoint.RestoreHardeningTest do
         "reason" => "manual"
       })
 
-      # BEFORE the fix this reached `fold_step` and raised BadMapError; the
+      # Unchecked, this reaches `fold_step` and raises BadMapError; the
       # contract demands a typed reject with the journal left intact.
       assert {:error, :snapshot_corrupt} = Checkpoint.restore(j),
              "a non-map snapshot top-level must surface :snapshot_corrupt, never raise"
@@ -224,9 +224,9 @@ defmodule Raxol.Agent.Checkpoint.RestoreHardeningTest do
       {j, _session, dir} = Oracle.seed_conversation!(base)
       before_ids = Oracle.raw_ids(dir)
 
-      # A typical folded harness model: structs/tuples/pids everywhere. BEFORE
-      # the fix `dump/1` was `Jason.encode!/1` — an uncaught raise inside
-      # `stage_snapshot` crashing the caller.
+      # A typical folded harness model: structs/tuples/pids everywhere. An
+      # encoder that raises here would crash the caller inside
+      # `stage_snapshot`.
       model = %{"owner" => self(), "shape" => {:grid, 80, 24}}
 
       assert {:error, :surrogate_backend_unbound} =
@@ -306,8 +306,8 @@ defmodule Raxol.Agent.Checkpoint.RestoreHardeningTest do
       {j, _session, dir} = Oracle.seed_conversation!(base)
 
       # ~200 KB of bytes, ~100k levels of nesting: passes the 64 MiB size cap
-      # and the sha256 check, and BEFORE the fix reached `Jason.decode/1`,
-      # which materializes the entire term before any post-hoc depth walk.
+      # and the sha256 check, so only a depth bound ahead of `Jason.decode/1`
+      # (which materializes the whole term) stops it.
       deep =
         String.duplicate("[", 100_000) <> "1" <> String.duplicate("]", 100_000)
 
@@ -359,8 +359,8 @@ defmodule Raxol.Agent.Checkpoint.RestoreHardeningTest do
         %{"kind" => "checkpoint", "tip_offset" => 3}
       ]
 
-      # BEFORE the fix: Enum.max_by(&Map.fetch!(&1, "id")) → KeyError, crashing
-      # the GC admission check that exists to prevent orphaning.
+      # A record without an "id" must not crash the GC admission check that
+      # exists to prevent orphaning.
       assert Checkpoint.protected_floor(records) == {:offset, 1}
     end
 

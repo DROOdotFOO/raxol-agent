@@ -7,9 +7,9 @@ defmodule Raxol.Agent.SpendGate.ControlsTest do
   """
   use ExUnit.Case, async: true
 
-  alias Raxol.Agent.SpendGateProbe, as: P
+  alias Raxol.Agent.Test.SpendGateProbe, as: P
 
-  alias Raxol.Agent.SpendGateProbe.{
+  alias Raxol.Agent.Test.SpendGateProbe.{
     CallOnRefusedInjector,
     CrashLosesReserveInjector,
     DoubleSettleInjector,

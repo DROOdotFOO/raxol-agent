@@ -371,10 +371,9 @@ defmodule Raxol.Agent.Backend.HTTPTest do
     test "two indexless complete single-call batches in separate chunks are NOT cross-merged" do
       # No "index" key at all (a no-index provider) -- each batch is a
       # complete, standalone call (id + name + full arguments in one
-      # shot). Before the fix, the position-within-batch fallback (`pos`)
-      # restarts at 0 for every single-fragment batch, so the second
-      # call's fragment silently overwrote the first's slot and only one
-      # call survived.
+      # shot). A position-within-batch fallback restarts at 0 for every
+      # single-fragment batch, so it would put the second call in the
+      # first's slot and only one call would survive.
       batches = [
         [
           %{
@@ -460,10 +459,10 @@ defmodule Raxol.Agent.Backend.HTTPTest do
 
     test "a non-integer provider index is ignored, never crashes the turn (ArithmeticError DoS)" do
       # `index` is provider (network) controlled. A buggy/hostile
-      # OpenAI-compatible endpoint sending it as a string/float/map used to
-      # land it verbatim as an accumulator key, so `next_tool_call_index/1`
-      # later did `<non-number> + 1` and crashed the whole streaming turn.
-      # The bad index must be ignored and the call resolved by id/position.
+      # OpenAI-compatible endpoint can send it as a string/float/map; kept as
+      # an accumulator key it makes `next_tool_call_index/1` compute
+      # `<non-number> + 1` and crash the streaming turn. The bad index must
+      # be ignored and the call resolved by id/position.
       for bad_index <- ["0", 1.5, %{"x" => 1}, [1], true] do
         batches = [
           [

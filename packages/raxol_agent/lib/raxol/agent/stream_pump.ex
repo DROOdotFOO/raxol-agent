@@ -673,6 +673,15 @@ defmodule Raxol.Agent.StreamPump do
     %{"refs" => refs, "reason" => Atom.to_string(reason), "ref" => offset}
   end
 
+  # The answered tool_use's id. It comes from the provider, so only a short
+  # string is journaled.
+  @max_call_id_bytes 256
+
+  defp put_call_id(extra, id) when is_binary(id) and byte_size(id) <= @max_call_id_bytes,
+    do: Map.put(extra, :call_id, id)
+
+  defp put_call_id(extra, _id), do: extra
+
   # A tool result whose payload carries a before/after image of a file
   # is flattened so the surface renders it as a
   # foldable ± DIFF block, not an opaque tool row: `path`/`old`/`new`/
@@ -680,10 +689,6 @@ defmodule Raxol.Agent.StreamPump do
   # `Raxol.UI.Components.Harness.Block.extract_diff_content/1` reads them)
   # and a `diff: true` marker tells the projection's BlockBuilder to resolve
   # this block's kind to `:diff`. A non-diff result is unchanged.
-  # The answered tool_use's id, when the producer knows it.
-  defp put_call_id(extra, nil), do: extra
-  defp put_call_id(extra, id), do: Map.put(extra, :call_id, id)
-
   # The `extra` fields `complete_item/6` merges onto a tool_result item.
   # `item_id`/`item_type` are added by `complete_item` itself.
   defp tool_result_extra(name, %{path: path, old: old, new: new} = result)
