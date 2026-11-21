@@ -42,8 +42,6 @@ defmodule Raxol.Agent.Skills.Store do
           pinned: boolean()
         }
 
-  # -- Public API -------------------------------------------------------------
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -138,8 +136,6 @@ defmodule Raxol.Agent.Skills.Store do
   def primary_table(name) when is_atom(name), do: name
   @spec usage_table(atom()) :: atom()
   def usage_table(name) when is_atom(name), do: :"#{name}.Usage"
-
-  # -- BaseManager callbacks --------------------------------------------------
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
@@ -263,8 +259,6 @@ defmodule Raxol.Agent.Skills.Store do
     {:noreply, state}
   end
 
-  # -- disk scan + index ------------------------------------------------------
-
   defp scan(state) do
     managed = scan_root(state.root, :managed)
     external = Enum.flat_map(state.external, &scan_root(&1, :external))
@@ -287,8 +281,6 @@ defmodule Raxol.Agent.Skills.Store do
       end
     end)
   end
-
-  # -- create / patch / delete ------------------------------------------------
 
   defp do_create(state, attrs) do
     with {:ok, name} <- require_name(attrs),
@@ -387,8 +379,6 @@ defmodule Raxol.Agent.Skills.Store do
   defp skill_dir(state, %Skill{category: category, name: name}),
     do: Path.join([state.root, category, name])
 
-  # -- view reading -----------------------------------------------------------
-
   defp read_view(entry, nil), do: {:ok, entry.skill.body}
 
   defp read_view(entry, path) when is_binary(path) do
@@ -409,8 +399,6 @@ defmodule Raxol.Agent.Skills.Store do
   defp safe_relative?(path) do
     Path.type(path) == :relative and ".." not in Path.split(path)
   end
-
-  # -- usage telemetry --------------------------------------------------------
 
   defp default_usage do
     %{
@@ -480,8 +468,6 @@ defmodule Raxol.Agent.Skills.Store do
   defp replay_usage(usage_table, {name, usage}) do
     :ets.insert(usage_table, {name, usage})
   end
-
-  # -- helpers ----------------------------------------------------------------
 
   defp metadata(name, entry, usage) do
     %{

@@ -81,8 +81,6 @@ defmodule Raxol.Agent.ThreadLog.PostgrexTest do
     end
   end
 
-  # --- Live Postgres tests ---------------------------------------------------
-
   @moduletag :integration
 
   defp pg_conn_opts do

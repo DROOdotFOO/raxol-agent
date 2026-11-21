@@ -86,8 +86,6 @@ defmodule Raxol.MCP.AgentBridge do
   defp put_sensitive(tool, true), do: Map.put(tool, :annotations, %{sensitive: true})
   defp put_sensitive(tool, false), do: tool
 
-  # -- Private -----------------------------------------------------------------
-
   defp build_input_schema(schema) when is_list(schema) do
     {properties, required} =
       Enum.reduce(schema, {%{}, []}, fn {field, spec}, {props, req} ->

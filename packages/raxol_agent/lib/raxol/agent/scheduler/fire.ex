@@ -17,8 +17,8 @@ defmodule Raxol.Agent.Scheduler.Fire do
     * `:agent_opts` -- forwarded to `Raxol.Agent.Stream` (`:backend`,
       `:backend_opts`, `:executor`, `:provider`, `:model`, ...). When neither
       `:backend` nor `:executor` is pinned, `auto_provider: true` is added so the
-      executor resolves from the environment (Mock on failure), mirroring the
-      gateway agent handler.
+      executor resolves from the environment, mirroring the gateway agent
+      handler. When nothing resolves the fire returns `{:error, :no_backend}`.
     * `:actions` -- action modules the fire may call. When non-empty the fire
       runs the ReAct loop with `context[:in_cron]` set (so a scheduled agent
       cannot schedule more cron work); when empty the fire is one completion.
@@ -48,8 +48,6 @@ defmodule Raxol.Agent.Scheduler.Fire do
     |> Stream.collect()
     |> normalize()
   end
-
-  # -- turn -------------------------------------------------------------------
 
   # No tools: a single completion. The prompt string becomes a lone user turn --
   # no prior history is threaded in, which is what keeps fires independent.
@@ -97,8 +95,6 @@ defmodule Raxol.Agent.Scheduler.Fire do
   defp normalize({:ok, other}), do: {:error, {:unexpected_turn_result, other}}
   defp normalize({:error, reason}), do: {:error, reason}
 
-  # -- system prompt + skills -------------------------------------------------
-
   defp compose_system_prompt(job, opts) do
     [Keyword.get(opts, :system_prompt), skills_block(job, opts)]
     |> Enum.reject(&(&1 in [nil, ""]))
@@ -142,8 +138,6 @@ defmodule Raxol.Agent.Scheduler.Fire do
   catch
     :exit, reason -> {:error, {:exit, reason}}
   end
-
-  # -- opts helpers -----------------------------------------------------------
 
   # auto_provider only when nothing is pinned: a resolved environment executor
   # wins over :backend, so defaulting it unconditionally could hijack an

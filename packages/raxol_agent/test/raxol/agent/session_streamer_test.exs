@@ -271,9 +271,8 @@ defmodule Raxol.Agent.SessionStreamerTest do
       refute :agent_1 in sessions
     end
 
-    # Each subscribe used to add a monitor that nothing removed until the
-    # subscriber died, so a long-lived consumer cycling per-run sessions grew
-    # the streamer's monitor list without bound.
+    # A long-lived consumer cycling per-run sessions must not grow the
+    # streamer's monitor list: unsubscribe removes the subscribe's monitor.
     test "subscribe/unsubscribe cycles leave the monitor count bounded", %{
       streamer: streamer
     } do

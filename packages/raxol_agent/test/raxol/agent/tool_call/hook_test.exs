@@ -5,7 +5,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
   alias Raxol.Agent.Stream, as: AgentStream
   alias Raxol.Agent.ToolCall.Hook
 
-  # -- Probe action -----------------------------------------------------------
   # Sends a trace when run so tests can assert it was (or was NOT) executed.
 
   defmodule Probe do
@@ -102,8 +101,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
     @impl true
     def run(%{a: _a}, _context), do: {:error, :boom}
   end
-
-  # -- Test hooks ---------------------------------------------------------------
 
   defmodule Observer do
     @behaviour Raxol.Agent.ToolCall.Hook
@@ -324,8 +321,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
     def after_call(_call, _result, _context), do: throw(:after_thrown)
   end
 
-  # -- Sequence mock backend (per-call response queue) --------------------------
-
   defmodule SequenceMock do
     @behaviour Raxol.Agent.AIBackend
 
@@ -348,8 +343,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
     @impl true
     def capabilities, do: [:completion, :tool_use]
   end
-
-  # -- Helpers ------------------------------------------------------------------
 
   defp tool_call(id, name, args), do: %{"id" => id, "name" => name, "arguments" => args}
 
@@ -381,8 +374,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
       0 -> Enum.reverse(acc)
     end
   end
-
-  # -- dispatch_tool_call/3 with hooks ------------------------------------------
 
   describe "dispatch_tool_call/3 with hooks" do
     test "a no-op observer sees every call with parsed args before execution" do
@@ -630,8 +621,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
     end
   end
 
-  # -- Pipeline unit tests -------------------------------------------------------
-
   describe "run_before/3" do
     test "empty pipeline passes the call through" do
       call = %{action: Probe, name: "probe", params: %{a: 1}, call_id: nil}
@@ -646,8 +635,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
       assert Hook.from_context(nil) == []
     end
   end
-
-  # -- LLM-facing error redaction ------------------------------------------------
 
   describe "ToolConverter.public_error/2" do
     test "hook-supplied secret detail never reaches the LLM-facing string" do
@@ -688,8 +675,6 @@ defmodule Raxol.Agent.ToolCall.HookTest do
                "[Tool error for transfer]: denied (sensitive_tool)"
     end
   end
-
-  # -- React loop integration ----------------------------------------------------
 
   describe "Stream.react/2 with hooks" do
     test "a veto surfaces on the tool_result event and the loop continues" do

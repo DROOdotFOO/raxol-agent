@@ -192,7 +192,7 @@ if Code.ensure_loaded?(Raxol.AgentClientProtocol.Agent) do
       if Process.alive?(holder) do
         false
       else
-        Raxol.Agent.Session.await_free({:acp_starting, id})
+        Raxol.Agent.Session.Registration.await_free({:acp_starting, id})
         claim(id, false)
       end
     end

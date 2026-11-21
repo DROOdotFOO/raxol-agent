@@ -99,8 +99,6 @@ defmodule Raxol.Agent.Auth.OpenRouter do
     Setup.connect_key(provider, key, timeout_ms: @store_timeout)
   end
 
-  # -- default transport ------------------------------------------------------
-
   defp post_json(url, body, opts) do
     if Code.ensure_loaded?(Req) do
       timeout = Keyword.get(opts, :http_timeout, @default_timeout)

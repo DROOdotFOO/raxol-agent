@@ -170,8 +170,6 @@ defmodule Raxol.Agent.Auth.Flow do
     end
   end
 
-  # -- browser ----------------------------------------------------------------
-
   @doc """
   Open `url` in the user's default browser.
 
@@ -204,8 +202,6 @@ defmodule Raxol.Agent.Auth.Flow do
       {:unix, _} -> {"xdg-open", [url]}
     end
   end
-
-  # -- reporting --------------------------------------------------------------
 
   @doc "Render a `run/2` failure for a person, without leaking the URL's twin secret."
   @spec describe(term()) :: String.t()

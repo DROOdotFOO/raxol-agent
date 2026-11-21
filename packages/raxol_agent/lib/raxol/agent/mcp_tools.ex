@@ -98,35 +98,25 @@ defmodule Raxol.Agent.McpTools do
 
   require Logger
 
-  alias Raxol.Agent.Comm
   alias Raxol.Agent.EmitBridge
   alias Raxol.Agent.Journal.FileStore
+  alias Raxol.Agent.McpTools.Handlers
+  alias Raxol.Agent.McpTools.Ownership
+  alias Raxol.Agent.McpTools.ToolDefinitions
   alias Raxol.Agent.Session
+  alias Raxol.MCP.Registry, as: MCPRegistry
+  alias Raxol.MCP.Server, as: MCPServer
 
-  @table __MODULE__
   @registry Raxol.Agent.Registry
 
   # Lowercase only: an id is a directory name, and on a case-insensitive
   # volume `a` and `A` would be one journal.
   @id_format ~r/\A[a-z0-9][a-z0-9._-]{0,63}\z/
-  @id_rule "an id is 1-64 characters of a-z 0-9 . _ - and starts with a letter or digit"
   # What a journal URI may name: a spawned id, or an exposed agent's.
   @uri_id_format ~r/\A[A-Za-z0-9][A-Za-z0-9._-]{0,63}\z/
-  # Under the 30 s an MCP client gives a tool call by default, so the tool's
-  # own timeout answer reaches the client before the client gives up.
-  @max_timeout_ms 25_000
-  @journal_tail 200
   @uri_prefix "raxol://agent/"
   @uri_suffix "/journal"
   @not_running "agents are not running in this server"
-
-  @typep agent :: %{
-           kind: :owned | :exposed,
-           app: module(),
-           root: Path.t() | nil,
-           session_id: String.t(),
-           journal_opts: keyword()
-         }
 
   @typedoc "A started agent: `continued` is the number of events its journal already held."
   @type started :: %{
@@ -135,8 +125,6 @@ defmodule Raxol.Agent.McpTools do
           root: Path.t(),
           continued: non_neg_integer()
         }
-
-  # -- API ----------------------------------------------------------------------
 
   @doc """
   Start the server. `:registry` and `:server` name the `Raxol.MCP.Registry`
@@ -222,102 +210,11 @@ defmodule Raxol.Agent.McpTools do
 
   @doc "The tool definitions."
   @spec tools() :: [map()]
-  def tools, do: [spawn_def(), list_def(), ask_def(), status_def(), stop_def()]
-
-  defp spawn_def do
-    %{
-      name: "agent_spawn",
-      description:
-        "Starts an agent in this server under an id you choose. Spawning a " <>
-          "stopped id with the same app continues its journal; its state " <>
-          "starts fresh. agent_list names the apps.",
-      inputSchema: %{
-        type: "object",
-        required: ["app", "id"],
-        properties: %{
-          app: %{type: "string", description: "App name, from agent_list"},
-          id: %{type: "string", description: "Agent id: " <> @id_rule}
-        }
-      },
-      annotations: %{sensitive: true},
-      callback: &spawn_tool/1,
-      fault?: &fault?/1
-    }
-  end
-
-  defp list_def do
-    %{
-      name: "agent_list",
-      description:
-        "Lists the running agents this server started or exposes, and the " <>
-          "apps agent_spawn starts.",
-      inputSchema: %{type: "object", properties: %{}},
-      callback: &list_tool/1,
-      fault?: &fault?/1
-    }
-  end
-
-  defp ask_def do
-    %{
-      name: "agent_ask",
-      description: "Sends a message to an agent from agent_list and returns its reply.",
-      inputSchema: %{
-        type: "object",
-        required: ["id", "message"],
-        properties: %{
-          id: %{type: "string", description: "Agent id"},
-          message: %{type: "string", description: "The message"},
-          timeout_ms: %{
-            type: "integer",
-            minimum: 1,
-            maximum: @max_timeout_ms,
-            description: "How long to wait for the reply (default #{@max_timeout_ms})"
-          }
-        }
-      },
-      annotations: %{sensitive: true},
-      callback: &ask_tool/1,
-      fault?: &fault?/1
-    }
-  end
-
-  defp status_def do
-    %{
-      name: "agent_status",
-      description:
-        "Reports the app, state (running, restarting or stopped), journal " <>
-          "root, journal directory and journal size of an agent this server " <>
-          "started or exposes.",
-      inputSchema: id_schema(),
-      callback: &status_tool/1,
-      fault?: &fault?/1
-    }
-  end
-
-  defp stop_def do
-    %{
-      name: "agent_stop",
-      description: "Stops an agent from agent_list. Its journal stays readable.",
-      inputSchema: id_schema(),
-      annotations: %{sensitive: true},
-      callback: &stop_tool/1,
-      fault?: &fault?/1
-    }
-  end
-
-  defp id_schema do
-    %{
-      type: "object",
-      required: ["id"],
-      properties: %{id: %{type: "string", description: "Agent id"}}
-    }
-  end
-
-  # -- Server -------------------------------------------------------------------
+  defdelegate tools, to: ToolDefinitions
 
   @impl GenServer
   def init(opts) do
-    :ets.new(@table, [:set, :protected, :named_table, read_concurrency: true])
+    :ets.new(Ownership.table(), [:set, :protected, :named_table, read_concurrency: true])
 
     state = %{
       registry: Keyword.get(opts, :registry, Raxol.MCP.Registry),
@@ -328,10 +225,10 @@ defmodule Raxol.Agent.McpTools do
 
     # Agents this server started before a restart of this process are still
     # running, and still its own.
-    running = for {id, agent} <- owned_running(), do: remember(id, agent)
+    running = for {id, agent} <- Ownership.owned_running(), do: Ownership.remember(id, agent)
 
     state = register(state)
-    {:ok, Enum.reduce(running ++ exposed(), state, &publish_journal(&2, &1, false))}
+    {:ok, Enum.reduce(running ++ Ownership.exposed(), state, &publish_journal(&2, &1, false))}
   end
 
   @impl GenServer
@@ -343,10 +240,10 @@ defmodule Raxol.Agent.McpTools do
   end
 
   def handle_call({:stop, id}, _from, state) do
-    case stoppable(id) do
+    case Ownership.stoppable(id) do
       {:ok, agent} ->
         stop_tree(id, agent.session_id)
-        remember(id, agent)
+        Ownership.remember(id, agent)
         {:reply, :ok, state}
 
       {:error, _message} = refusal ->
@@ -358,7 +255,7 @@ defmodule Raxol.Agent.McpTools do
     with {:ok, module} <- admit(app, id),
          {:ok, root} <- project_root(),
          {:ok, owned} <- start(__MODULE__, module, id, root) do
-      remember(id, agent(id, owned))
+      Ownership.remember(id, Ownership.agent(id, owned))
       {:ok, started(id, owned)}
     end
   end
@@ -378,21 +275,19 @@ defmodule Raxol.Agent.McpTools do
   # id is free only then.
   defp stop_tree(id, session_id) do
     _ = Session.Supervisor.stop_session(session_id)
-    Session.await_free(id)
-    Session.await_free({:session_supervisor, session_id})
+    Session.Registration.await_free(id)
+    Session.Registration.await_free({:session_supervisor, session_id})
   end
-
-  # -- Registration -------------------------------------------------------------
 
   # `:registered?` decides whether a spawned agent's journal is published.
   defp register(state) do
     if register?(state.registry) and GenServer.whereis(state.registry) != nil do
       state.registry
-      |> Raxol.MCP.Registry.register_tools(tools(), owner: self())
+      |> MCPRegistry.register_tools(tools(), owner: self())
       |> warn_on_refused_tools()
 
       # A client that listed tools while this process was down has none of them.
-      Raxol.MCP.Server.notify(state.mcp_server, "notifications/tools/list_changed", %{})
+      MCPServer.notify(state.mcp_server, "notifications/tools/list_changed", %{})
       %{state | registered?: true}
     else
       state
@@ -456,10 +351,10 @@ defmodule Raxol.Agent.McpTools do
     if MapSet.member?(state.published, id) do
       state
     else
-      Raxol.MCP.Registry.register_resources(state.registry, [journal_resource(id)], owner: self())
+      MCPRegistry.register_resources(state.registry, [journal_resource(id)], owner: self())
 
       if notify?,
-        do: Raxol.MCP.Server.notify(state.mcp_server, "notifications/resources/list_changed", %{})
+        do: MCPServer.notify(state.mcp_server, "notifications/resources/list_changed", %{})
 
       %{state | published: MapSet.put(state.published, id)}
     end
@@ -471,25 +366,19 @@ defmodule Raxol.Agent.McpTools do
     %{
       uri: journal_uri(id),
       name: "Agent #{id} journal",
-      description: "The last #{@journal_tail} journal records of agent #{id}.",
-      callback: fn -> read_journal(id) end,
-      fault?: &fault?/1
+      description: "The last #{Handlers.journal_tail()} journal records of agent #{id}.",
+      callback: fn -> Handlers.read_journal(id) end,
+      fault?: &ToolDefinitions.fault?/1
     }
   end
 
-  # A refusal is an answer, not a fault of the tool: it must not open the
-  # registry's circuit breaker for every agent.
-  defp fault?(reason), do: not is_binary(reason)
-
-  # -- Spawn --------------------------------------------------------------------
-
   defp validate_id(id) do
-    if Regex.match?(@id_format, id), do: :ok, else: {:error, @id_rule}
+    if Regex.match?(@id_format, id), do: :ok, else: {:error, ToolDefinitions.id_rule()}
   end
 
   # An exposed id belongs to whoever exposed it, running or not.
   defp refuse_exposed(id) do
-    if id in exposed(),
+    if id in Ownership.exposed(),
       do: {:error, "id #{id} is reserved for an agent this server exposes; pick another id"},
       else: :ok
   end
@@ -518,7 +407,7 @@ defmodule Raxol.Agent.McpTools do
   end
 
   defp in_use(id) do
-    case team_of(id) do
+    case Ownership.team_of(id) do
       nil -> "id #{id} is in use; pick another id"
       team -> "id #{id} is in use (team #{team}); pick another id"
     end
@@ -623,258 +512,6 @@ defmodule Raxol.Agent.McpTools do
   defp start_refusal(id, _owned, reason) do
     Logger.warning("[Agent.McpTools] agent #{id} did not start: #{inspect(reason)}")
     "agent #{id} did not start; the server log has the reason"
-  end
-
-  # -- Ownership ----------------------------------------------------------------
-
-  # `{:running, agent}`, `{:stopped, agent}` or `:none`. Running is read from
-  # the agent registry on every call; only stopped agents come from the table.
-  @spec target(String.t()) :: {:running, agent()} | {:stopped, agent()} | :none
-  defp target(id) do
-    with :none <- running_owned(id),
-         :none <- running_exposed(id) do
-      stopped(id)
-    end
-  end
-
-  defp running_owned(id) do
-    case Session.Supervisor.owner(id) do
-      {:ok, {__MODULE__, owned}} -> {:running, agent(id, owned)}
-      _other -> :none
-    end
-  end
-
-  defp running_exposed(id) do
-    with true <- id in exposed(),
-         {session_id, meta} <- session_of(id) do
-      {:running,
-       %{
-         kind: :exposed,
-         app: meta.app_module,
-         root: nil,
-         session_id: session_id,
-         journal_opts: []
-       }}
-    else
-      _ -> :none
-    end
-  end
-
-  defp stopped(id) do
-    case :ets.lookup(@table, id) do
-      [{^id, agent}] -> if answers?(id, agent), do: {:stopped, agent}, else: :none
-      [] -> :none
-    end
-  rescue
-    ArgumentError -> :none
-  end
-
-  # A row is read only when nothing of this server's runs under the id. Any
-  # tree running under it now is another owner's, and the row would report
-  # that owner's agent and journal as this server's stopped one.
-  defp answers?(id, %{kind: :owned}), do: Session.Supervisor.owner(id) == :error
-  # An exposed agent's row answers only while its id is still exposed.
-  defp answers?(id, %{kind: :exposed}), do: id in exposed()
-
-  defp agent(id, %{app: app, root: root, base_dir: base_dir}),
-    do: %{kind: :owned, app: app, root: root, session_id: id, journal_opts: [base_dir: base_dir]}
-
-  defp owned_running do
-    for {id, {__MODULE__, owned}} <- Session.Supervisor.owners(), do: {id, agent(id, owned)}
-  end
-
-  # Runs in this process only: it owns the table.
-  defp remember(id, agent) do
-    :ets.insert(@table, {id, agent})
-    id
-  end
-
-  defp exposed do
-    for id <- Application.get_env(:raxol_agent, :mcp_exposed_agents, []), is_binary(id), do: id
-  end
-
-  defp sessions do
-    Registry.select(@registry, [{{{:session, :"$1"}, :_, :"$2"}, [], [{{:"$1", :"$2"}}]}])
-  rescue
-    ArgumentError -> []
-  end
-
-  defp session_of(id) do
-    Enum.find(sessions(), fn {_session_id, meta} -> Map.get(meta, :id) == id end)
-  end
-
-  defp team_of(id) do
-    case session_of(id) do
-      {_session_id, meta} -> Map.get(meta, :team_id)
-      nil -> nil
-    end
-  end
-
-  defp not_owned(id), do: "no agent #{id} was started by this server"
-  defp stopped_refusal(id), do: "agent #{id} is stopped; agent_spawn starts it again"
-
-  defp refuse_team_member(id, what) do
-    case team_of(id) do
-      nil -> :ok
-      team -> {:error, "#{id} belongs to team #{team} and is not #{what} from here"}
-    end
-  end
-
-  defp stoppable(id) do
-    case target(id) do
-      {:running, agent} -> with :ok <- refuse_team_member(id, "stopped"), do: {:ok, agent}
-      {:stopped, _agent} -> {:error, stopped_refusal(id)}
-      :none -> {:error, not_owned(id)}
-    end
-  end
-
-  # -- Tool callbacks (run in the MCP server's callback workers) ----------------
-
-  defp spawn_tool(%{"app" => app, "id" => id}) when is_binary(app) and is_binary(id) do
-    with {:ok, %{app: module, root: root, continued: continued}} <- spawn_agent(app, id) do
-      {:ok,
-       "started #{id} (#{inspect(module)}); journal root #{root}; #{journal_note(continued)}"}
-    end
-  end
-
-  defp spawn_tool(_arguments), do: {:error, "app and id are required strings"}
-
-  defp journal_note(0), do: "new journal"
-  defp journal_note(count), do: "continued #{count} events"
-
-  defp list_tool(_arguments) do
-    owned =
-      for {id, agent} <- owned_running(),
-          do: %{id: id, app: inspect(agent.app), root: agent.root, team: team_of(id)}
-
-    exposed =
-      for id <- exposed(),
-          {_session_id, meta} <- List.wrap(session_of(id)),
-          do: %{id: id, app: inspect(meta.app_module), root: nil, team: Map.get(meta, :team_id)}
-
-    {:ok, Jason.encode!(%{agents: owned ++ exposed, spawnable: spawnable()}, pretty: true)}
-  end
-
-  defp ask_tool(%{"id" => id, "message" => message} = arguments)
-       when is_binary(id) and is_binary(message) do
-    with {:ok, timeout_ms} <- timeout_ms(arguments),
-         :ok <- askable(id) do
-      ask(id, message, timeout_ms)
-    end
-  end
-
-  defp ask_tool(_arguments), do: {:error, "id and message are required strings"}
-
-  defp timeout_ms(%{"timeout_ms" => ms}) when is_integer(ms) and ms in 1..@max_timeout_ms,
-    do: {:ok, ms}
-
-  defp timeout_ms(%{"timeout_ms" => _other}),
-    do: {:error, "timeout_ms is an integer from 1 to #{@max_timeout_ms}"}
-
-  defp timeout_ms(_arguments), do: {:ok, @max_timeout_ms}
-
-  defp askable(id) do
-    case target(id) do
-      {:running, _agent} -> :ok
-      {:stopped, _agent} -> {:error, stopped_refusal(id)}
-      :none -> {:error, not_owned(id)}
-    end
-  end
-
-  defp ask(id, message, timeout_ms) do
-    case Comm.call(id, message, timeout_ms) do
-      {:ok, reply} when is_binary(reply) ->
-        {:ok, reply}
-
-      {:ok, reply} ->
-        {:ok, inspect(reply, pretty: true, limit: 100)}
-
-      {:error, :timeout} ->
-        {:error, "agent #{id} did not reply within #{timeout_ms} ms (timeout)"}
-
-      {:error, :agent_down} ->
-        {:error, "agent #{id} went down before it replied"}
-
-      {:error, :not_found} ->
-        {:error, "agent #{id} is restarting; ask again"}
-    end
-  end
-
-  defp status_tool(%{"id" => id}) when is_binary(id) do
-    with {:ok, state, agent} <- status_of(id, target(id)) do
-      {:ok,
-       Jason.encode!(
-         %{
-           id: id,
-           app: inspect(agent.app),
-           state: state,
-           root: agent.root,
-           journal: %{
-             uri: journal_uri(id),
-             dir: FileStore.session_dir(agent.session_id, agent.journal_opts),
-             events: events(agent)
-           }
-         },
-         pretty: true
-       )}
-    end
-  end
-
-  defp status_tool(_arguments), do: {:error, "id is a required string"}
-
-  defp status_of(id, {:running, agent}) do
-    with :ok <- refuse_team_member(id, "reported"), do: {:ok, live_state(agent), agent}
-  end
-
-  defp status_of(_id, {:stopped, agent}), do: {:ok, "stopped", agent}
-  defp status_of(id, :none), do: {:error, not_owned(id)}
-
-  # The session tree is up; its session process may be between restarts.
-  defp live_state(agent) do
-    if is_pid(Session.Supervisor.whereis(agent.session_id)),
-      do: "running",
-      else: "restarting"
-  end
-
-  defp events(agent) do
-    case FileStore.high_watermark(agent.session_id, agent.journal_opts) do
-      offset when is_integer(offset) -> offset
-      {:error, _reason} -> 0
-    end
-  end
-
-  defp stop_tool(%{"id" => id}) when is_binary(id) do
-    with :ok <- stop_agent(id), do: {:ok, "stopped #{id}; its journal stays readable"}
-  end
-
-  defp stop_tool(_arguments), do: {:error, "id is a required string"}
-
-  # The resource handler. Ownership is decided here, on every read, not by
-  # the fact that the resource is registered.
-  defp read_journal(id) do
-    case target(id) do
-      {_state, agent} -> journal(id, agent)
-      :none -> {:error, not_owned(id)}
-    end
-  end
-
-  defp journal(id, agent) do
-    case FileStore.read_records(agent.session_id, agent.journal_opts) do
-      {:ok, records} ->
-        {:ok,
-         %{
-           id: id,
-           root: agent.root,
-           events: length(records),
-           records: Enum.take(records, -@journal_tail)
-         }}
-
-      {:error, :damaged} ->
-        {:error, "journal #{id} is damaged"}
-
-      {:error, _reason} ->
-        {:error, "journal #{id} cannot be read"}
-    end
   end
 
   defp call(request) do

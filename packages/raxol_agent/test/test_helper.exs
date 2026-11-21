@@ -36,20 +36,13 @@ os_excludes =
     _ -> [:windows_only]
   end
 
-# :pending_unit — invariant skeletons, visible in the suite but never run.
 # :mutation — negative-control checklists, run on demand, never in regular CI.
-#
-# :harness_red — a suite written before the code it pins carries this tag and
-# stays out of regular runs until that code exists. No suite carries it at
-# present.
 ExUnit.start(
   exclude: [
     :slow,
     :integration,
     :docker,
-    :pending_unit,
     :mutation,
-    :harness_red,
     # :live_longcat hits the real LongCat API; run with
     # `LONGCAT_API_KEY=<key> mix test --only live_longcat`.
     :live_longcat

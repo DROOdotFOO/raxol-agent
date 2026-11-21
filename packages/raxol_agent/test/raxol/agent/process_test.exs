@@ -80,6 +80,18 @@ defmodule Raxol.Agent.ProcessTest do
       GenServer.stop(pid)
     end
 
+    test "a strategy without a backend refuses to start" do
+      Process.flag(:trap_exit, true)
+
+      assert {:error, {:missing_option, :backend}} =
+               AgentProcess.start_link(
+                 agent_id: :no_backend,
+                 agent_module: CounterAgent,
+                 strategy: Raxol.Agent.Strategy.Direct,
+                 tick_ms: 50_000
+               )
+    end
+
     test "restores context from ContextStore on restart" do
       saved_state = %{tick_count: 5, observations: [], actions: ["saved"]}
       ContextStore.save(:restore_test, saved_state)

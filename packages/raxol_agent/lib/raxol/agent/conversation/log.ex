@@ -37,10 +37,14 @@ defmodule Raxol.Agent.Conversation.Log do
 
   defstruct store: nil, subscribers: %{}, monitors: %{}
 
+  @type t :: %__MODULE__{
+          store: term(),
+          subscribers: %{optional(conversation_id()) => MapSet.t(pid())},
+          monitors: %{optional({pid(), conversation_id()}) => reference()}
+        }
+
   @type server :: GenServer.server()
   @type conversation_id :: binary()
-
-  # -- Public API -------------------------------------------------------------
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -87,8 +91,6 @@ defmodule Raxol.Agent.Conversation.Log do
   @doc "List known conversation ids."
   @spec list_conversations(server()) :: {:ok, [conversation_id()]}
   def list_conversations(server), do: GenServer.call(server, :list_conversations)
-
-  # -- GenServer --------------------------------------------------------------
 
   @impl true
   def init(opts) do
@@ -141,8 +143,6 @@ defmodule Raxol.Agent.Conversation.Log do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
-
-  # -- Subscriber bookkeeping -------------------------------------------------
 
   defp snapshot_opts(opts) do
     base = [limit: :all]

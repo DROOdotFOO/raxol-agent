@@ -193,8 +193,6 @@ defmodule Raxol.Agent.Scheduler.FireTest do
     end
   end
 
-  # -- helpers ----------------------------------------------------------------
-
   defp user_turns(messages), do: Enum.filter(messages, &(&1.role == :user))
 
   defp start_skills_store do

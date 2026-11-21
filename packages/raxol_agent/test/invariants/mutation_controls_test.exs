@@ -1,6 +1,6 @@
 defmodule Raxol.Agent.Invariants.MutationControlsTest do
   @moduledoc """
-  Meta-invariant m4 — negative controls: one production mutation per invariant
+  Negative controls: one production mutation per invariant
   must make its property fail within budget. This is a RUNNABLE-ON-DEMAND
   checklist, `@tag :mutation`, excluded from every regular run — a periodic CI
   job (or a human before trusting a refactor) runs:
@@ -28,7 +28,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
   @agent_lib Path.expand("../../lib/raxol/agent", __DIR__)
   @main_lib Path.join(Mix.Project.deps_paths()[:raxol], "lib/raxol")
 
-  test "m4/I1 — invert append-before-publish in EmitBridge" do
+  test "I1 — invert append-before-publish in EmitBridge" do
     assert_anchor!(
       Path.join(@agent_lib, "emit_bridge.ex"),
       "case append_durable(state, safe) do",
@@ -37,7 +37,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
     )
   end
 
-  test "m4/I1 — fabricate an id on append failure" do
+  test "I1 — fabricate an id on append failure" do
     assert_anchor!(
       Path.join(@agent_lib, "emit_bridge.ex"),
       "{:error, state, failure_reason, detail} ->",
@@ -46,7 +46,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
     )
   end
 
-  test "m4/I2 — journal the ephemeral tier" do
+  test "I2 — journal the ephemeral tier" do
     assert_anchor!(
       Path.join(@agent_lib, "emit_bridge.ex"),
       "{:emit_bus, session_id, %{tier: :durable} = neutral}",
@@ -55,7 +55,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
     )
   end
 
-  test "m4/I2 — stamp ephemeral ids from a fresh counter" do
+  test "I2 — stamp ephemeral ids from a fresh counter" do
     assert_anchor!(
       Path.join(@agent_lib, "emit_bridge.ex"),
       "event = map_event(neutral, state.last_offset, session_id)",
@@ -64,7 +64,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
     )
   end
 
-  test "m4/I3 — advance the watermark on failed appends" do
+  test "I3 — advance the watermark on failed appends" do
     assert_anchor!(
       Path.join(@agent_lib, "emit_bridge.ex"),
       "journal_failure_event(state, safe, failure_reason, detail)",
@@ -73,7 +73,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
     )
   end
 
-  test "m4/I4 — read turn_id at emit time instead of the dispatch snapshot" do
+  test "I4 — read turn_id at emit time instead of the dispatch snapshot" do
     assert_anchor!(
       Path.join(@main_lib, "core/runtime/events/dispatcher.ex"),
       "process_command_result(state, full_message, Map.get(meta, :turn_id))",
@@ -82,7 +82,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
     )
   end
 
-  test "m4/I9 — narrow a payload shape" do
+  test "I9 — narrow a payload shape" do
     assert_anchor!(
       Path.join(@agent_lib, "stream_pump.ex"),
       "item_type: :tool_use,",

@@ -4,27 +4,17 @@ defmodule Raxol.Agent.ToolCall.Hook do
   @moduledoc """
   Ordered interception pipeline around LLM tool-call execution.
 
-  Every LLM-initiated tool call passes through
-  `Raxol.Agent.Action.ToolConverter.dispatch_tool_call/3` (the react loop in
-  `Raxol.Agent.Stream`, `Raxol.Agent.Strategy.ReAct`, and the Vfs/Payments
-  helpers all funnel through it). This module is the hookable seam at that
-  chokepoint: an ordered list of hook modules runs immediately before the
-  Action is invoked, and each hook can observe, transform, or veto the call.
-  (The internal `Pipeline`/`Direct`/`run_action*` paths call `Action.call/2`
-  directly, but those are agent-internal and never LLM-reachable, so they
-  legitimately sit outside this seam.)
+  Every LLM-initiated tool call goes through
+  `Raxol.Agent.Action.ToolConverter.dispatch_tool_call/3` (the react loops in
+  `Raxol.Agent.Stream` and `Raxol.Agent.Strategy.ReAct`, and the Vfs/Payments
+  helpers). The hooks run just before the Action and can observe, transform
+  or veto the call; `Raxol.Agent.McpSpendHook` reserves budget this way. The
+  `Pipeline`/`Direct`/`run_action*` paths call `Action.call/2` directly, but
+  are never LLM-reachable.
 
-  A gate that must run before the call registers here rather than wrapping
-  the loop itself: `Raxol.Agent.McpSpendHook` reserves budget this way.
-
-  ## Scope: framework-managed ReAct only
-
-  This pipeline gates **only** the framework-managed ReAct/Stream.react loop.
-  A backend whose `handles_tools_internally?/0` returns `true` routes
-  through `native_react` and drives its own tool loop; those calls **bypass**
-  this seam entirely. Consequently `:tool_call_hooks` apply to
-  framework-driven tool calls, not to tool calls such a backend executes
-  internally.
+  Only the framework-managed ReAct loop is gated. A backend whose
+  `handles_tools_internally?/0` is true runs its own tool loop and bypasses
+  these hooks.
 
   ## Contract
 
@@ -37,108 +27,58 @@ defmodule Raxol.Agent.ToolCall.Hook do
         end
       end
 
-  - `before_call(call, context)` returns `{:cont, call}` to allow (the call
-    may be transformed -- later hooks and the final execution see the
-    modified call) or `{:halt, reason}` to veto.
-  - `after_call(call, result, context)` (optional) may transform the result.
-    It receives the final (possibly transformed) call and the full result
-    term (`{:ok, output}`, `{:ok, output, commands}`, or `{:error, reason}`).
+    * `before_call(call, context)` returns `{:cont, call}` (possibly
+      transformed; later hooks and the execution see the change) or
+      `{:halt, reason}`.
+    * `after_call(call, result, context)` (optional) may transform the
+      result: `{:ok, output}`, `{:ok, output, commands}` or `{:error, reason}`.
 
-  ## Registration
-
-  Hooks are an ordered list under the `:tool_call_hooks` key of the agent
-  context (the same context that carries `:tool_authorizer`):
+  Hooks are listed under `:tool_call_hooks` in the agent context, beside
+  `:tool_authorizer`:
 
       Raxol.Agent.Stream.react(prompt,
         actions: [MyAction],
         context: %{tool_call_hooks: [SpendGate, AuditHook]}
       )
 
-  Hooks run in declared order for both `before_call/2` and `after_call/3`
-  (this is a forward chain, not a stack unwind -- an `after_call` hook does
-  not "see" later hooks' `before_call` transforms in reverse; all hooks
-  observe the same final call and result, just in the order declared). The
-  first `{:halt, reason}` stops the `before_call` chain: the Action is
-  **not** executed and `{:error, {:vetoed, reason}}` flows back exactly like
-  a failed tool call -- the react loop emits a `{:tool_result, %{name: name,
-  result: {:error, {:vetoed, reason}}}}` event, the LLM sees a `[Tool error
-  for ...]` message, and the loop continues. No new event plumbing: the
-  existing tool-error path carries the veto reason.
-
-  With zero registered hooks the dispatch path is unchanged (fast path).
+  Both callbacks run in declared order, and every `after_call` sees the same
+  final call and result. The first `{:halt, reason}` stops the chain: the
+  Action does not run and `{:error, {:vetoed, reason}}` flows back as a failed
+  tool call, so the LLM sees a tool error and the loop continues. With no
+  hooks the dispatch path is unchanged.
 
   ## Failure containment
 
-  A hook that escapes `before_call/2` by any means is treated as a veto, not a
-  pipeline escape. All escape kinds are contained so nothing propagates into
-  the (untrapped) react loop:
+  A `before_call/2` that raises, throws or exits vetoes the call with
+  `{:hook_raised | :hook_threw | :hook_exited, hook_module, detail}`. An exit,
+  the shape of a downed dependency such as a spend ledger, is also logged at
+  `:error` and emitted as `[:raxol, :agent, :tool_call_hook, :exit]`.
 
-    * `raise` halts with `{:halt, {:hook_raised, hook_module, message}}`
-    * `throw/1` halts with `{:halt, {:hook_threw, hook_module, value}}`
-    * `exit/1` halts with `{:halt, {:hook_exited, hook_module, reason}}`
-      (also logged at `:error` and emitted as
-      `[:raxol, :agent, :tool_call_hook, :exit]` telemetry -- a hook exit is
-      the shape a downed dependency, e.g. a spend ledger `GenServer`, takes,
-      so it is contained like a veto but made observable, not silent)
+  Any other return, or a `{:cont, call}` whose `:action` is not an atom, is a
+  contract violation, not a veto: `dispatch_tool_call/3` returns
+  `{:error, {:hook_error, {:invalid_hook_return, hook_module, value}}}` and
+  logs it, so a broken hook is never mistaken for a policy denial. Required
+  keys a returned call omits are backfilled from the call before the hook.
 
-  Each becomes `{:error, {:vetoed, {:hook_raised | :hook_threw | :hook_exited,
-  hook_module, detail}}}`.
+  The Action has already run when `after_call/3` fails, so the untransformed
+  result passes through.
 
-  A `before_call/2` return that is neither `{:cont, call}` nor `{:halt,
-  reason}` is a **hook contract violation**, distinct from a veto: it halts
-  the chain with `{:error, {:invalid_hook_return, hook_module, value}}`,
-  which `dispatch_tool_call/3` surfaces as `{:error, {:hook_error, reason}}`
-  (logged at `:error`) rather than `{:error, {:vetoed, reason}}` -- a
-  misbehaving hook must not be indistinguishable from an intentional policy
-  denial. A `{:cont, %{action: action, ...}}` whose `action` is not an atom
-  is likewise an `:invalid_hook_return` contract violation (a non-atom
-  `:action` would otherwise crash `action.call/2` uncontained once
-  execution reached it). A `{:cont, returned_call}` that omits one of the
-  four required keys (e.g. a hook builds a fresh map and forgets `:call_id`)
-  is *not* a violation: the missing keys are backfilled from the pre-hook
-  call, so only the keys a hook actually sets take effect. Note that a
-  syntactically valid atom for `:action` is not sufficient for the call to
-  execute: `Raxol.Agent.Action.ToolConverter.dispatch_tool_call/3` also
-  verifies the module both is in the declared toolset and exports `call/2`
-  before invoking it (see "Re-authorization of transformed calls" below).
+  ## Re-authorization
 
-  A `raise`/`throw`/`exit` inside `after_call/3` is likewise contained -- and
-  because the Action has *already run* by that point, the un-transformed
-  result passes through unchanged (an after-hook failure never turns a
-  successful call into a veto). The react loop never crashes because of a
-  misbehaving hook.
+  When a hook changes `call.action` or `call.params`, `dispatch_tool_call/3`
+  re-runs the tool authorizer (`Raxol.Agent.ToolPolicy` or the context's
+  `:tool_authorizer`) on the pair about to execute, so a param-aware
+  authorizer sees an escalated amount. A swapped action must be in the
+  declared toolset and export `call/2`, or the call fails with
+  `{:error, {:tool_not_in_toolset, module}}` before the authorizer runs. A
+  hook therefore cannot smuggle a fund-mover, a larger amount or an
+  out-of-band tool past the policy that guarded the original call.
 
-  ## Re-authorization of transformed calls
+  ## Related
 
-  A `before_call/2` hook may rewrite `call.action` and/or `call.params`.
-  `dispatch_tool_call/3` re-runs the tool authorizer (`Raxol.Agent.ToolPolicy`
-  or the context's `:tool_authorizer`) against whatever `(action, params)`
-  pair is actually about to execute, unless that pair is byte-identical to
-  what was already authorized before the hook pipeline ran. This closes a
-  same-action param-escalation gap: a hook that keeps `call.action` unchanged
-  but rewrites e.g. a transfer amount is re-authorized against the *new*
-  amount, not cheap-skipped on action identity alone -- a param-aware
-  `:tool_authorizer` (e.g. a spend-limit gate) sees the value it is actually
-  about to approve. If the hook rewrites `call.action` to a different module,
-  that module must also be a member of the `action_modules` list passed to
-  `dispatch_tool_call/3`; a swap to a module outside the declared toolset is
-  rejected with `{:error, {:tool_not_in_toolset, module}}` before the
-  authorizer runs. Together these mean a hook cannot smuggle a `sensitive:
-  true` fund-mover, an escalated amount, or an out-of-band tool past the
-  policy that guarded the original call. When neither the action nor the
-  params change (the common case), no re-authorization runs.
-
-  ## Relationship to existing hook machinery
-
-  - `Raxol.Agent.CommandHook` wraps *Directive* execution (`Async`/`Shell`/
-    `SendAgent` commands returned from `update/2`). Different subject and
-    lifecycle; this module mirrors its idiom (module-based hooks, ordered
-    list, first denial short-circuits, optional post callback) on the
-    tool-call path.
-  - `Raxol.Agent.ToolPolicy` is the boolean allow/deny authorizer on the same
-    dispatch path. It runs *before* this pipeline and cannot transform calls;
-    use it for static policy, use a `ToolCall.Hook` for stateful gates
-    (reservations, approvals) and call rewriting.
+  `Raxol.Agent.CommandHook` wraps Directive execution with the same idiom.
+  `Raxol.Agent.ToolPolicy` is the static allow/deny authorizer; it runs before
+  these hooks and cannot transform calls.
   """
 
   @typedoc "A tool call about to be executed."

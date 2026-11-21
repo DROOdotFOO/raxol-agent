@@ -86,8 +86,6 @@ defmodule Raxol.Agent.Action.Schema do
     }
   end
 
-  # -- Field validation --------------------------------------------------------
-
   defp validate_field(field, spec, params, errors) do
     required = Keyword.get(spec, :required, false)
     default = Keyword.get(spec, :default)
@@ -163,8 +161,6 @@ defmodule Raxol.Agent.Action.Schema do
   defp type_matches?(:map, v), do: is_map(v)
   defp type_matches?(:list, v), do: is_list(v)
   defp type_matches?(_, _), do: false
-
-  # -- JSON Schema conversion --------------------------------------------------
 
   defp field_to_json_schema(spec) do
     type = Keyword.get(spec, :type)

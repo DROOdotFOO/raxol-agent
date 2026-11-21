@@ -80,6 +80,7 @@ defmodule Raxol.Agent.Action do
       @__action_sensitive__ unquote(sensitive)
 
       @doc false
+      @spec __action_meta__() :: map()
       def __action_meta__ do
         %{
           name: @__action_name__,
@@ -95,11 +96,14 @@ defmodule Raxol.Agent.Action do
 
       Returns `{:ok, result}`, `{:ok, result, commands}`, or `{:error, reason}`.
       """
+      @spec call(Raxol.Agent.Action.params(), Raxol.Agent.Action.context()) ::
+              Raxol.Agent.Action.result()
       def call(params, context \\ %{}) do
         Raxol.Agent.Action.__call__(__MODULE__, params, context)
       end
 
       @doc "Generate an LLM tool definition for this action."
+      @spec to_tool_definition() :: map()
       def to_tool_definition do
         Raxol.Agent.Action.Schema.to_json_schema(
           @__action_input_schema__,

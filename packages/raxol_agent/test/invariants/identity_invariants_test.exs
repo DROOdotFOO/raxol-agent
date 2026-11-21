@@ -1,6 +1,6 @@
 defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
   @moduledoc """
-  Tier-1 identity invariants I1–I3 (see the `raxol_journal` README, "The
+  Identity invariants I1–I3 (see the `raxol_journal` README, "The
   journal", for the durable-journal model).
 
     * I1 — id authority under failure/crash: under generated fault schedules
@@ -16,12 +16,12 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
       first sees durable id N, an independent raw-file read already returns a
       complete record with that id.
 
-  Oracles (m6): journal truth = `FaultJournal.raw_*` (raw `File.read!` + the
+  Oracles: journal truth = `FaultJournal.raw_*` (raw `File.read!` + the
   harness's own decoder — never the Writer's in-memory state); live truth =
   this test process as a SessionStreamer subscriber — never a publisher return
-  value. Fault sites carry fire counters; every armed site must fire (m1);
+  value. Fault sites carry fire counters; every armed site must fire;
   schedules are StreamData-generated, so failures print the shrunk schedule and
-  are seed-reproducible (m2).
+  are seed-reproducible.
   """
   use ExUnit.Case, async: false
   use ExUnitProperties
@@ -58,9 +58,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     {:ok, base: base}
   end
 
-  # ===========================================================================
   # I1 — id authority under failure/crash
-  # ===========================================================================
 
   describe "I1 — id authority under generated fault schedules" do
     property "journal dense 1..n, live ids never fabricated, HEAD ≤ n, replay == journal" do
@@ -101,9 +99,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # I2 — the ephemeral/durable wall
-  # ===========================================================================
 
   describe "I2 — ephemeral/durable wall" do
     property "journal is durable-only; ephemeral ids ride the last durable offset; byte-identity post-stamp" do
@@ -115,7 +111,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
               raw_steps <- list_of(step, min_length: 5, max_length: 25),
               max_runs: 25
             ) do
-        # m5 required pattern: MIXED tiers — force at least one of each.
+        # MIXED tiers — force at least one of each.
         steps = [:durable, :ephemeral | raw_steps]
         schedule = Enum.with_index(steps, fn s, i -> {s, i} end)
 
@@ -180,9 +176,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # I3 — journal-before-publish observability
-  # ===========================================================================
 
   describe "I3 — journal-before-publish" do
     # NOTE: run_step/await_durable! asserts I3 on EVERY durable receipt in
@@ -203,9 +197,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # driver
-  # ===========================================================================
 
   # Per-run context: a fresh session dir, an anonymous streamer, a bridge, and
   # book-keeping for the expected journal/live id sequences.
@@ -255,8 +247,6 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     :ok
   end
 
-  # --- steps -----------------------------------------------------------------
-
   defp run_step(ctx, {:durable, tag}) do
     publish(ctx, :app_update, :durable, %{tag: inspect(tag)})
     expected = ctx.next_id + 1
@@ -281,7 +271,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
   end
 
   # :append_fail — dead fd swapped into the live Writer; the durable published
-  # under it must be dropped loudly. m3 branch probe: the SPECIFIC observables
+  # under it must be dropped loudly. the SPECIFIC observables
   # are (a) an ephemeral :error event with reason :journal_append_failed pinned
   # to the unchanged watermark, (b) the journal bytes untouched, (c) the next
   # successful durable takes the very next offset — no gap, no fabrication.
@@ -400,8 +390,6 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     %{ctx | live: ctx.live ++ [err]}
   end
 
-  # --- end-of-run verification (the I1 assertions) ----------------------------
-
   defp verify_run!(ctx, schedule) do
     n = ctx.next_id
 
@@ -436,11 +424,9 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     assert records == FaultJournal.raw_records!(ctx.dir)
     :ok = FileStore.close(j)
 
-    # m1: every armed fault site fired at least once — else the run was hollow.
+    # every armed fault site fired at least once — else the run was hollow.
     FaultJournal.assert_all_fired!(ctx.harness, schedule)
   end
-
-  # --- oracle helpers ----------------------------------------------------------
 
   defp publish(ctx, type, tier, payload) do
     EmitBus.publish(EmitBus.build(ctx.session_id, type, tier, payload, turn_id: "t1"))
@@ -571,13 +557,12 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     base
   end
 
-  # --- schedule generator (m5: required trace patterns) ------------------------
   #
   # Every schedule front-loads two durables (fault sites need a live journal),
   # guarantees at least one ephemeral (mixed tiers), and interleaves EVERY
   # required fault site at a generated position (a 10k-run sample can therefore
-  # never lack the required patterns — they are present by construction, and m1
-  # verifies each actually fired).
+  # never lack the required patterns — they are present by construction, and the fire
+  # counters verify each actually fired).
   defp schedule_gen do
     step =
       frequency([

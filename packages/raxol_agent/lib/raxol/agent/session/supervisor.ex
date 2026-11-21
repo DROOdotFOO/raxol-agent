@@ -76,11 +76,10 @@ defmodule Raxol.Agent.Session.Supervisor do
 
   alias Raxol.Agent.EmitBridge
   alias Raxol.Agent.Session
+  alias Raxol.Core.Defaults
 
   @registry Raxol.Agent.Registry
   @dynsup Raxol.Agent.DynSup
-
-  # --- public API --------------------------------------------------------------
 
   @doc """
   Start a session as one supervised subtree under `Raxol.Agent.DynSup`.
@@ -222,7 +221,7 @@ defmodule Raxol.Agent.Session.Supervisor do
 
   defp flush_barrier(_), do: :ok
 
-  defp drain_timeout, do: Raxol.Core.Defaults.shutdown_timeout_ms()
+  defp drain_timeout, do: Defaults.shutdown_timeout_ms()
 
   @doc """
   Resolve `session_id` to the live `Raxol.Agent.Session` pid, or `nil`.
@@ -269,8 +268,6 @@ defmodule Raxol.Agent.Session.Supervisor do
     ArgumentError -> []
   end
 
-  # --- supervisor --------------------------------------------------------------
-
   @doc false
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
@@ -310,7 +307,7 @@ defmodule Raxol.Agent.Session.Supervisor do
         restart: :permanent,
         shutdown: 5_000
       },
-      Session.lifecycle_child_spec(opts),
+      Session.Companions.lifecycle_child_spec(opts),
       %{
         id: :session,
         start: {Session, :start_link, [session_opts]},
@@ -318,11 +315,9 @@ defmodule Raxol.Agent.Session.Supervisor do
       }
     ]
 
-    # Restarts are made deterministic (each via-named child waits for its dead
-    # predecessor's Registry key to clear before re-registering — see
-    # `start_bridge/2`, `Session.start_supervised_lifecycle/1`,
-    # `Session.start_link/1`), so `max_restarts` no longer has to absorb a lost
-    # cleanup race. Keep a small budget purely as a genuine crash-loop backstop.
+    # Each via-named child waits for its dead predecessor's Registry key to
+    # clear before registering, so restarts do not race cleanup; this budget
+    # only stops a crash loop.
     Supervisor.init(children,
       strategy: :rest_for_one,
       max_restarts: 5,
@@ -337,16 +332,14 @@ defmodule Raxol.Agent.Session.Supervisor do
   # race against Registry's async cleanup.
   @spec start_bridge(term(), keyword()) :: GenServer.on_start()
   def start_bridge(session_id, bridge_opts) do
-    Session.await_free({:emit_bridge, session_id})
+    Session.Registration.await_free({:emit_bridge, session_id})
     EmitBridge.start_link(bridge_opts)
   end
-
-  # --- helpers -----------------------------------------------------------------
 
   defp normalize_opts(app_module, opts) do
     session_id =
       Keyword.get(opts, :session_id) ||
-        Session.derive_session_id(Keyword.get(opts, :id, app_module))
+        Session.Registration.derive_session_id(Keyword.get(opts, :id, app_module))
 
     opts
     |> Keyword.put(:app_module, app_module)

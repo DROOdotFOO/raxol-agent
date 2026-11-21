@@ -92,8 +92,6 @@ defmodule Raxol.Agent.Setup do
     end
   end
 
-  # -- validation -------------------------------------------------------------
-
   defp validate(provider, opts) do
     validator = Keyword.get(opts, :validator, &default_validate/1)
     validator.(provider)
@@ -127,8 +125,6 @@ defmodule Raxol.Agent.Setup do
       {:error, _reason} -> :unsupported
     end
   end
-
-  # -- helpers ----------------------------------------------------------------
 
   defp resolve_harness(harness) when is_atom(harness), do: {:ok, harness}
 

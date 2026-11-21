@@ -1,37 +1,24 @@
-defmodule Raxol.Agent.Red.CheckpointRed do
+defmodule Raxol.Agent.Test.CheckpointOracle do
   @moduledoc """
-  Support for the U9-R red suite (checkpoint pointer records, AD-10/AD-3a).
+  Test oracle for checkpoint pointer records.
 
-  Two jobs:
+  Journal truth comes from `File.read!` and this module's own framed-line
+  decoder (`raw_records/1`), never `FileStore.read/2` or the Writer's
+  offset. The tip predicate, record density, tip validity, the
+  turn-boundary rule, `sha256_hex/1` and a deterministic fold (`fold/1`,
+  standing in for a snapshot codec) are reimplemented here, so assertions
+  check the production code against code it shares nothing with.
 
-    1. **Independent oracles (meta-inv 6).** Journal truth here comes from a raw
-       `File.read!` + this module's OWN framed-line decoder (`raw_records/1`),
-       never `FileStore.read/2` and never the Writer's in-memory offset. The
-       frozen tip predicate (`conversational?/1`, `tip/1`), the record-layer
-       density check (`dense_ids?/1`), tip validity (`valid_tip?/2`), the
-       turn-boundary rule (`at_turn_boundary?/1`), `sha256_hex/1`, snapshot
-       presence, and a toy deterministic fold (`fold/1`) are all reimplemented
-       here so the red assertions cross-check the production seam against an
-       oracle that shares no code with it.
-
-    2. **Dead-injectors (meta-inv 1/2).** Fabricators that forge the exact broken
-       on-disk / return shapes each negative contour must catch, plus mutant
-       predicate/restore functions. The controls suite runs each injector and
-       asserts the matching oracle flags it — proving the red is not vacuous. A
-       `Counters` fired-counter harness (generic over atoms) records that every
-       armed injector fired.
-
-  NOTE (blocked dependency): the freeze wires P-JS4's round-trip against the
-  **real MS `Snapshot` codec** (`dump/load/persistent_slice`). That codec is not
-  merged on `master`, so `fold/1`/`dump/1`/`load/1` here are a local surrogate
-  standing in for it — the round-trip *equation* is exact, but the concrete fold
-  must be re-bound to the real MS fold when U9/MS land. Flagged in the suite.
+  Injectors forge the broken disk and return shapes each negative control
+  must catch, and `Counters` records that every armed injector fired.
   """
 
-  alias Raxol.Agent.Journal.FileStore
+  import ExUnit.Assertions
 
-  # The frozen CONVERSATIONAL whitelist (JS-FREEZE §1.1 — the closure rule: this
-  # whitelist is the ONLY door into the tip).
+  alias Raxol.Agent.Journal.FileStore
+  alias Raxol.Agent.Journal.Records.Checkpoint
+
+  # The only record types that can be the journal tip.
   @conversational ~w(
     turn_started item_started item_completed
     turn_completed turn_canceled error approval_requested
@@ -39,18 +26,65 @@ defmodule Raxol.Agent.Red.CheckpointRed do
 
   @schema_version "1.0.0"
 
-  @doc "The frozen CONVERSATIONAL type whitelist (string forms)."
+  @doc "The conversational type whitelist (string forms)."
   def conversational_types, do: @conversational
 
-  # ---------------------------------------------------------------------------
-  # Session / seeding — the REAL Writer/FileStore path
-  # ---------------------------------------------------------------------------
+  # Session and seeding through the real Writer and FileStore.
 
   @doc "Open a fresh real FileStore journal under `base`. Returns `{handle, session, dir}`."
   def open!(base, opts \\ []) do
-    session = "u9r-#{System.unique_integer([:positive])}"
+    session = "checkpoint-#{System.unique_integer([:positive])}"
     {:ok, j} = FileStore.open(session, Keyword.put(opts, :base_dir, base))
     {j, session, Path.join(base, session)}
+  end
+
+  @doc """
+  A journal ending at a turn boundary, with a trailing non-conversational
+  record so the tip is never the last physical record.
+  """
+  def seed_conversation!(base) do
+    {j, session, dir} = open!(base)
+
+    append_all!(j, [
+      loop_event("turn_started"),
+      loop_event("item_completed", %{"text" => "hi"}),
+      loop_event("turn_completed"),
+      meta_event("idle")
+    ])
+
+    {j, session, dir}
+  end
+
+  @doc """
+  Two healthy snapshot checkpoints with distinct models, so their snapshot
+  files differ. Returns the handle, the session dir and both raw records,
+  older first.
+  """
+  def two_checkpoints!(base) do
+    {j, _session, dir} = seed_conversation!(base)
+
+    assert {:ok, _off} =
+             Checkpoint.write(j, fold(raw_records(dir)), reason: "manual")
+
+    append_all!(j, [
+      loop_event("turn_started"),
+      loop_event("item_completed", %{"text" => "more"}),
+      loop_event("turn_completed")
+    ])
+
+    assert {:ok, _off} =
+             Checkpoint.write(j, fold(raw_records(dir)), reason: "manual")
+
+    [older, newer] =
+      dir |> raw_records() |> Enum.filter(&(&1["kind"] == "checkpoint"))
+
+    {j, dir, older, newer}
+  end
+
+  @doc "Append bytes to a snapshot file so its hash no longer matches."
+  def corrupt_snapshot!(dir, ref) do
+    path = Path.join(dir, ref)
+    File.write!(path, File.read!(path) <> "corruption")
   end
 
   @doc """
@@ -87,9 +121,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     end)
   end
 
-  # ---------------------------------------------------------------------------
-  # Independent raw decoder (m6) — never FileStore.read
-  # ---------------------------------------------------------------------------
+  # Raw decoder, independent of FileStore.read.
 
   @segment_re ~r/^\d{6}\.jsonl$/
 
@@ -123,17 +155,15 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # Oracles
-  # ---------------------------------------------------------------------------
 
-  @doc "Record-layer density (P-JS1 / N-JS6): ids are dense `1..n`, in order."
+  @doc "Record density: ids are dense `1..n`, in order."
   def dense_ids?(dir) do
     ids = raw_ids(dir)
     ids == Enum.to_list(1..length(ids)//1)
   end
 
-  @doc "The frozen tip predicate (JS-FREEZE §1.1) over a single raw record map."
+  @doc "The tip predicate over a single raw record map."
   def conversational?(record) do
     kind = Map.get(record, "kind", "event")
     family = Map.get(record, "family")
@@ -153,7 +183,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
 
   def tip_of(dir), do: dir |> raw_records() |> tip()
 
-  @doc "Tip validity (N-JS1): the record named by `tip_offset` exists and is CONVERSATIONAL."
+  @doc "Tip validity: the record named by `tip_offset` exists and is CONVERSATIONAL."
   def valid_tip?(records, tip_offset) when is_list(records) do
     case Enum.find(records, &(&1["id"] == tip_offset)) do
       nil -> false
@@ -162,13 +192,10 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   end
 
   @doc """
-  Turn-boundary rule (N-JS2): `true` iff no turn is open (every `turn_started`
+  Turn-boundary rule: `true` iff no turn is open (every `turn_started`
   is matched by a later close) and no spend-gate reserve is open.
-
-  NOTE: the spend-gate reserve/terminal vocabulary is not yet frozen in the
-  landed contract; `reserve`/`settle`/`release` here are provisional markers so
-  the mid-reserve contour is authorable. Re-bind to the real vocabulary when the
-  spend gate lands.
+  `reserve` opens a reserve; `settle` or `release` closes it, as in
+  `Raxol.Agent.Journal.Records.Checkpoint.FileBackend`.
   """
   def at_turn_boundary?(records) when is_list(records) do
     balance =
@@ -194,7 +221,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     balance.turn == 0 and balance.reserve == 0
   end
 
-  @doc "Lowercase-hex sha256 of `bytes` (the frozen `snapshot_hash` recipe)."
+  @doc "Lowercase-hex sha256 of `bytes` (the `snapshot_hash` recipe)."
   def sha256_hex(bytes),
     do: :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
 
@@ -204,9 +231,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   def snapshot_present?(dir, ref) when is_binary(ref),
     do: File.exists?(Path.join(dir, ref))
 
-  # --- toy deterministic fold (surrogate for the real MS codec) --------------
-
-  @doc "Fold the event records (offset order) into a toy model. Surrogate for MS fold."
+  @doc "Fold the event records (offset order) into a deterministic model."
   def fold(records) when is_list(records) do
     records
     |> Enum.filter(&(Map.get(&1, "kind", "event") == "event"))
@@ -224,15 +249,15 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     Map.update(model, "applied", [record["id"]], &(&1 ++ [record["id"]]))
   end
 
-  @doc "Snapshot dump (surrogate for MS `dump/1`): canonical JSON bytes of the folded model."
+  @doc "Snapshot dump: canonical JSON bytes of the folded model."
   def dump(model), do: Jason.encode!(model)
 
-  @doc "Snapshot load (surrogate for MS `load/1`)."
+  @doc "Snapshot load."
   def load(bytes), do: Jason.decode!(bytes)
 
   @doc """
   Write a content-addressed snapshot file for `model` under `dir/snapshots`,
-  file-BEFORE-record (FI-8 spirit). Returns `{ref, hash}` for a checkpoint
+  file before record. Returns `{ref, hash}` for a checkpoint
   record to point at. Used to stage restore contours; NOT the production writer.
   """
   def stage_snapshot!(dir, model) do
@@ -244,9 +269,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     {ref, hash}
   end
 
-  # ---------------------------------------------------------------------------
   # Dead-injectors (fabricate the broken shapes; controls assert the oracle catches)
-  # ---------------------------------------------------------------------------
 
   @doc """
   Raw-append `record` (already carrying an `"id"`) to the newest segment,
@@ -259,7 +282,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   end
 
   @doc """
-  N-JS6 injector: append a checkpoint whose `id` came from a SECOND counter
+  Density injector: append a checkpoint whose `id` came from a SECOND counter
   (here: reuse the previous offset, breaking `prev+1`). The single-counter law
   says every kind consumes the same counter, so this leaves the record layer
   non-dense — `dense_ids?/1` must return `false`.
@@ -282,7 +305,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   end
 
   @doc """
-  N-JS6 control's positive arm: append a checkpoint stamped from the SINGLE
+  The density control's positive arm: append a checkpoint stamped from the SINGLE
   counter (id = last + 1). `dense_ids?/1` must stay `true`.
   """
   def inject_single_counter_checkpoint!(dir, cp \\ %{}) do
@@ -303,7 +326,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   end
 
   @doc """
-  Record-before-file ordering injector (N-JS3 / crash-window control): append a
+  Record-before-file injector: append a
   checkpoint record naming a snapshot that was NEVER written — the illegal
   order. `snapshot_present?/2` must be `false` for the referenced ref.
   """
@@ -326,23 +349,19 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     ref
   end
 
-  @doc "Mutant tip validator (N-JS1 dead injector): accepts ANY positive integer as a tip."
+  @doc "Mutant tip validator: accepts ANY positive integer as a tip."
   def mutant_accept_any_tip?(_records, tip_offset),
     do: is_integer(tip_offset) and tip_offset > 0
 
   @doc """
-  Mutant restorer (N-JS3 dead injector): on a missing snapshot, silently folds
+  Mutant restorer: on a missing snapshot, silently folds
   the whole journal instead of surfacing the typed error. Returns `{:ok, model}`.
   """
   def mutant_restore_silent_fallback(dir, _ref),
     do: {:ok, fold(raw_records(dir))}
 
-  # ---------------------------------------------------------------------------
-  # Fired-counter harness (meta-inv 1/2) — generic over atoms
-  # ---------------------------------------------------------------------------
-
   defmodule Counters do
-    @moduledoc "Generic armed-site fire counter for the U9-R controls (meta-inv 1)."
+    @moduledoc "Armed-site fire counter for the checkpoint controls."
 
     @doc "Start a fresh counter harness."
     def new do
@@ -370,7 +389,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     @doc "Per-site fire counts."
     def fired(harness), do: Agent.get(harness, & &1.fired)
 
-    @doc "Fail if any armed site never fired (dead injector). `schedule` dumped on failure (m2)."
+    @doc "Fail if any armed site never fired (dead injector). `schedule` is included on failure."
     def assert_all_fired!(harness, schedule \\ nil) do
       %{armed: armed, fired: fired} = Agent.get(harness, & &1)
       dead = Enum.filter(armed, fn site -> Map.get(fired, site, 0) == 0 end)

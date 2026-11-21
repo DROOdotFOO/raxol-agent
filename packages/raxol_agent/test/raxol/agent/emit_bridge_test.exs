@@ -93,10 +93,6 @@ defmodule Raxol.Agent.EmitBridgeTest do
     end
   end
 
-  # ===========================================================================
-  # Adversarial fix (🔴): producer-seam stamping is not spoofable
-  # ===========================================================================
-
   describe "producer-seam stamping is not spoofable (actor/branch_id)" do
     setup do
       ensure_registry(EmitBus.registry_name())
@@ -217,10 +213,6 @@ defmodule Raxol.Agent.EmitBridgeTest do
     end
   end
 
-  # ===========================================================================
-  # Round-2 fix (🔴): write-generation provenance seam (taint-absorbing meet)
-  # ===========================================================================
-
   describe "write-generation provenance seam (taint-absorbing meet)" do
     setup do
       ensure_registry(EmitBus.registry_name())
@@ -328,8 +320,7 @@ defmodule Raxol.Agent.EmitBridgeTest do
 
       {:ok, [record]} = FileStore.read(journal)
 
-      # Anti-tautology guard: the seam must not disturb the grandfather clause —
-      # a default event's on-disk bytes stay byte-identical to pre-U11 (I2).
+      # A default event's on-disk record omits provenance.
       refute Map.has_key?(record, "provenance"),
              "a default provenance must stay implicit on disk"
 
@@ -337,9 +328,7 @@ defmodule Raxol.Agent.EmitBridgeTest do
     end
   end
 
-  # ===========================================================================
   # Adjacent fix: approval_requested / woken are forced durable
-  # ===========================================================================
 
   describe "approval_requested is forced durable (resume-bracket)" do
     setup do

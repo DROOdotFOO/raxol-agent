@@ -58,9 +58,7 @@ defmodule Raxol.Agent.AcpLoopbackTest do
   @request_ms 15_000
   @turn_ms 30_000
 
-  # ==========================================================================
   # WireTap -- the byte-level observer (see the moduledoc)
-  # ==========================================================================
 
   defmodule WireTap do
     @moduledoc """
@@ -323,9 +321,7 @@ defmodule Raxol.Agent.AcpLoopbackTest do
     end
   end
 
-  # ==========================================================================
   # Helpers
-  # ==========================================================================
 
   defp spawn_peer(tmp, args) do
     handle =

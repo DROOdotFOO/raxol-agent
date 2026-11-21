@@ -259,8 +259,6 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
     end
   end
 
-  # --- SQL builders ---------------------------------------------------------
-
   @doc """
   Returns the `CREATE TABLE IF NOT EXISTS` + secondary index SQL.
   Run once as part of the consumer's migration step.
@@ -286,6 +284,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec insert_sql(String.t()) :: String.t()
   def insert_sql(table) do
     table = quote_identifier!(table)
 
@@ -301,6 +300,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec select_latest_sql(String.t()) :: String.t()
   def select_latest_sql(table) do
     table = quote_identifier!(table)
 
@@ -314,6 +314,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec truncate_sql(String.t()) :: String.t()
   def truncate_sql(table) do
     table = quote_identifier!(table)
     "DELETE FROM #{table} WHERE thread_id = $1 AND sequence < $2\n"
@@ -351,8 +352,6 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
 
   defp limit_to_int(:all), do: 1_000_000
   defp limit_to_int(n) when is_integer(n) and n > 0, do: n
-
-  # --- Helpers --------------------------------------------------------------
 
   defp conn_and_table(config) do
     conn = Map.fetch!(config, :conn)

@@ -170,7 +170,8 @@ as OpenAI-compatible.
   `:no_provider`.
 
 With `auto_provider: true`, any result other than a config (`{:no_key, _}` included) makes
-`Stream` fall back to its `:backend` option, by default `Backend.Mock`, without an error.
+`Stream` use its `:backend` option. Without one, the stream is the single event
+`{:error, :no_backend}`; there is no mock fallback.
 
 The store is `~/.raxol/providers.json` (or `$RAXOL_PROVIDERS`). It holds `op://` references,
 never keys, and is written with mode 0600. A store that is not owned by this account, or that is

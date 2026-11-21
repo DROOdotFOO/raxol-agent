@@ -11,6 +11,10 @@ defmodule Raxol.Agent.Process do
 
   On crash, the DynamicSupervisor restarts the process. The new instance
   calls `ContextStore.load/1` then `restore_context/1` to resume.
+
+  A `:strategy` runs Action calls through the `:backend` AIBackend module
+  (with `:backend_config` as its opts), so a strategy without a backend
+  refuses to start with `{:missing_option, :backend}`.
   """
 
   use Raxol.Core.Behaviours.BaseManager
@@ -19,6 +23,7 @@ defmodule Raxol.Agent.Process do
 
   alias Raxol.Agent.ContextStore
   alias Raxol.Agent.Protocol
+  alias Raxol.Agent.Secret
 
   @type status ::
           :initializing | :thinking | :acting | :waiting | :paused | :taken_over
@@ -43,7 +48,7 @@ defmodule Raxol.Agent.Process do
           agent_id: atom(),
           agent_module: module(),
           agent_state: map(),
-          backend: module(),
+          backend: module() | nil,
           backend_config: keyword(),
           tick_ms: pos_integer(),
           tick_ref: reference() | nil,
@@ -55,8 +60,6 @@ defmodule Raxol.Agent.Process do
 
   @default_tick_ms 1_000
   @max_event_buffer 100
-
-  # -- Client API --------------------------------------------------------------
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -144,17 +147,24 @@ defmodule Raxol.Agent.Process do
     end
   end
 
-  # -- Server ------------------------------------------------------------------
-
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
     agent_id = Keyword.fetch!(opts, :agent_id)
     agent_module = Keyword.fetch!(opts, :agent_module)
-    backend = Keyword.get(opts, :backend, Raxol.Agent.Backend.Mock)
+    backend = Keyword.get(opts, :backend)
+    strategy = Keyword.get(opts, :strategy)
+
+    if strategy && is_nil(backend) do
+      {:stop, {:missing_option, :backend}}
+    else
+      start_loop(opts, agent_id, agent_module, backend, strategy)
+    end
+  end
+
+  defp start_loop(opts, agent_id, agent_module, backend, strategy) do
     backend_config = Keyword.get(opts, :backend_config, [])
     tick_ms = Keyword.get(opts, :tick_ms, @default_tick_ms)
     pane_id = Keyword.get(opts, :pane_id)
-    strategy = Keyword.get(opts, :strategy)
 
     unless has_process_behaviour?(agent_module) do
       Logger.debug(
@@ -281,15 +291,13 @@ defmodule Raxol.Agent.Process do
 
   @impl GenServer
   def format_status(status),
-    do: Raxol.Agent.Secret.redact_status(status, [:backend_config], failure: true)
+    do: Secret.redact_status(status, [:backend_config], failure: true)
 
   @impl GenServer
   def terminate(_reason, state) do
     save_context(state)
     :ok
   end
-
-  # -- Private: observe/think/act loop -----------------------------------------
 
   defp run_cycle(state) do
     state = %{state | status: :thinking}

@@ -36,7 +36,8 @@ defmodule Raxol.Agent.Stream do
     (Anthropic thinking blocks, OpenAI reasoning); distinct from the
     answer text so the contract can seal it as its own reasoning block
   - `{:tool_use, %{name, arguments, id}}` -- LLM requesting a tool call
-  - `{:tool_result, %{name, result}}` -- result from executing a tool
+  - `{:tool_result, %{name, result, id}}` -- result from executing a tool;
+    `id` is the `:tool_use` id it answers
   - `{:turn_complete, %{content, usage, iteration}}` -- end of one ReAct turn
   - `{:done, %{content, tool_results, usage}}` -- final answer (from `react/2`,
     also `messages`: the conversation the loop built, tool exchanges included)
@@ -48,14 +49,18 @@ defmodule Raxol.Agent.Stream do
 
   - `:executor` -- `Raxol.Agent.ExecutorConfig` selecting backend + model + auth
     (takes precedence over `:backend`)
-  - `:backend` -- AIBackend module (default: `Raxol.Agent.Backend.Mock`); ignored
-    when `:executor` is given
+  - `:backend` -- AIBackend module; ignored when `:executor` is given, even
+    when no backend can serve that executor
   - `:auto_provider` -- when `true` and no `:executor` is given, resolve one from
     the environment via `Raxol.Agent.Backend.Resolver` (op-ref ->
-    provider-env -> `AI_API_KEY`). An optional `:provider` pins a specific one. Falls through to
-    `:backend`/Mock when nothing resolves, so it never crashes an unconfigured
-    caller. This is how a headless/embedded agent surface gets the same
-    credential story without hand-rolling a resolver call.
+    provider-env -> `AI_API_KEY`). An optional `:provider` pins a specific
+    one. When nothing resolves, `:backend` is used.
+
+  With neither an executor nor a `:backend`, the stream is the single event
+  `{:error, :no_backend}`. An executor no backend can serve yields
+  `{:error, {:backend_unavailable, reason}}`. Neither falls back to a mock.
+  An `:executor` or `:backend` of the wrong shape yields
+  `{:error, {:invalid_executor, _}}` or `{:error, {:invalid_backend, _}}`.
   - `:backend_opts` -- keyword list passed to backend (api_key, model, etc.);
     merged over the executor's resolved opts
   - `:model` -- per-request model override (wins over `:executor`/`:backend_opts`)
@@ -75,6 +80,10 @@ defmodule Raxol.Agent.Stream do
   """
 
   alias Raxol.Agent.Action.ToolConverter
+  alias Raxol.Agent.AIBackend
+  alias Raxol.Agent.Backend.Resolver
+  alias Raxol.Agent.Backend.Selector
+  alias Raxol.Agent.ExecutorConfig
 
   @type event ::
           {:text_delta, String.t()}
@@ -86,7 +95,11 @@ defmodule Raxol.Agent.Stream do
           | {:error, term()}
 
   @type tool_use :: %{name: String.t(), arguments: map(), id: String.t() | nil}
-  @type tool_result :: %{name: String.t(), result: map() | {:error, term()}}
+  @type tool_result :: %{
+          required(:name) => String.t(),
+          required(:result) => map() | {:error, term()},
+          optional(:id) => String.t() | nil
+        }
   @type turn_info :: %{
           content: String.t(),
           usage: map(),
@@ -110,8 +123,6 @@ defmodule Raxol.Agent.Stream do
   # Shape: %{backend: module, opts: keyword, actions: [module],
   #          context: map, max_iterations: pos_integer, caller: pid, ref: reference}
 
-  # -- Public API --------------------------------------------------------------
-
   @doc """
   Stream a single LLM completion.
 
@@ -128,8 +139,11 @@ defmodule Raxol.Agent.Stream do
   @spec run(String.t() | [map()], keyword()) :: Enumerable.t()
   def run(prompt_or_messages, opts \\ []) do
     messages = build_messages(prompt_or_messages, opts)
-    {backend, backend_opts} = resolve_backend(opts)
-    do_completion(backend, messages, backend_opts, opts)
+
+    case resolve_backend(opts) do
+      {:ok, backend, backend_opts} -> do_completion(backend, messages, backend_opts, opts)
+      {:error, reason} -> [{:error, reason}]
+    end
   end
 
   defp do_completion(backend, messages, backend_opts, opts) do
@@ -162,12 +176,15 @@ defmodule Raxol.Agent.Stream do
   @spec react(String.t() | [map()], keyword()) :: Enumerable.t()
   def react(prompt_or_messages, opts \\ []) do
     messages = build_messages(prompt_or_messages, opts)
-    {backend, backend_opts} = resolve_backend(opts)
 
-    if Raxol.Agent.AIBackend.handles_tools_internally?(backend) do
-      native_react(messages, backend, backend_opts, opts)
-    else
-      framework_react(messages, backend, backend_opts, opts)
+    case resolve_backend(opts) do
+      {:ok, backend, backend_opts} ->
+        if AIBackend.handles_tools_internally?(backend),
+          do: native_react(messages, backend, backend_opts, opts),
+          else: framework_react(messages, backend, backend_opts, opts)
+
+      {:error, reason} ->
+        [{:error, reason}]
     end
   end
 
@@ -185,8 +202,10 @@ defmodule Raxol.Agent.Stream do
   """
   @spec native_tool_loop?(keyword()) :: boolean()
   def native_tool_loop?(opts) do
-    {backend, _backend_opts} = resolve_backend(opts)
-    Raxol.Agent.AIBackend.handles_tools_internally?(backend)
+    case resolve_backend(opts) do
+      {:ok, backend, _backend_opts} -> AIBackend.handles_tools_internally?(backend)
+      {:error, _reason} -> false
+    end
   end
 
   # A backend that owns its tool loop runs the tools itself, so the framework
@@ -230,8 +249,6 @@ defmodule Raxol.Agent.Stream do
       end
     )
   end
-
-  # -- Filter Helpers ----------------------------------------------------------
 
   @doc "Filter stream to only text delta events, unwrapping the text."
   @spec text_deltas(Enumerable.t()) :: Enumerable.t()
@@ -291,8 +308,6 @@ defmodule Raxol.Agent.Stream do
       _ -> text
     end
   end
-
-  # -- Private: Single Completion Stream --------------------------------------
 
   defp stream_completion(backend, messages, backend_opts) do
     case backend.stream(messages, backend_opts) do
@@ -407,8 +422,6 @@ defmodule Raxol.Agent.Stream do
     )
   end
 
-  # -- Private: Stream.resource next_fun for react ----------------------------
-
   defp receive_react_event(%{done: true} = state), do: {:halt, state}
 
   defp receive_react_event(%{ref: ref} = state) do
@@ -426,8 +439,6 @@ defmodule Raxol.Agent.Stream do
       @react_timeout_ms -> {[{:error, :timeout}], %{state | done: true}}
     end
   end
-
-  # -- Private: ReAct Loop (runs in spawned process) --------------------------
 
   defp react_loop(_messages, iteration, %{max_iterations: max} = config)
        when iteration >= max do
@@ -517,13 +528,11 @@ defmodule Raxol.Agent.Stream do
     send(caller, {:react_event, ref, event})
   end
 
-  # -- Private: Tool Execution ------------------------------------------------
-
   defp execute_tools(tool_calls, config) do
     Enum.map(tool_calls, fn tc ->
       name = Map.get(tc, "name")
       {result_map, msg} = dispatch_tool(name, tc, config)
-      emit(config, {:tool_result, result_map})
+      emit(config, {:tool_result, Map.put(result_map, :id, Map.get(tc, "id"))})
       msg
     end)
   end
@@ -556,8 +565,6 @@ defmodule Raxol.Agent.Stream do
      }}
   end
 
-  # -- Private: Extract results from message history --------------------------
-
   @tool_result_pattern ~r/\[Tool result for (.+?)\]: (.+)/
 
   defp extract_tool_results(messages) do
@@ -583,32 +590,25 @@ defmodule Raxol.Agent.Stream do
 
   defp parse_tool_result_message(_), do: []
 
-  # -- Private: Backend Resolution --------------------------------------------
-
-  # Resolves the backend module + options from the caller's opts.
-  #
-  # Precedence: an `:executor` (ExecutorConfig) selects the backend + base opts;
-  # otherwise `:backend` (default Mock) is used. Explicit `:backend_opts`
-  # override the executor's resolved opts, and a top-level `:model` overrides
-  # everything (the substrate for a `/model` mid-session switch).
+  # An `:executor` (or one resolved by `:auto_provider`) selects the backend
+  # and base opts; otherwise `:backend`. `:backend_opts` override those, and
+  # a top-level `:model` overrides everything (a mid-session `/model` switch).
   defp resolve_backend(opts) do
-    {backend, base_opts} = backend_from_opts(opts)
+    with {:ok, backend, base_opts} <- backend_from_opts(opts) do
+      backend_opts =
+        base_opts
+        |> Keyword.merge(Keyword.get(opts, :backend_opts, []))
+        |> maybe_override_model(Keyword.get(opts, :model))
+        |> maybe_inject_actions(backend, opts)
 
-    backend_opts =
-      base_opts
-      |> Keyword.merge(Keyword.get(opts, :backend_opts, []))
-      |> maybe_override_model(Keyword.get(opts, :model))
-      |> maybe_inject_actions(backend, opts)
-
-    {backend, backend_opts}
+      {:ok, backend, backend_opts}
+    end
   end
 
-  # A backend that owns its tool loop needs the Action modules in its opts to
-  # expose them as tools.
+  # A backend that owns its tool loop needs the Action modules in its opts.
   defp maybe_inject_actions(backend_opts, backend, opts) do
-    with true <- Raxol.Agent.AIBackend.handles_tools_internally?(backend),
-         actions when is_list(actions) and actions != [] <-
-           Keyword.get(opts, :actions) do
+    with true <- AIBackend.handles_tools_internally?(backend),
+         actions when is_list(actions) and actions != [] <- Keyword.get(opts, :actions) do
       Keyword.put_new(backend_opts, :actions, actions)
     else
       _ -> backend_opts
@@ -617,36 +617,35 @@ defmodule Raxol.Agent.Stream do
 
   defp backend_from_opts(opts) do
     case Keyword.get(opts, :executor) || resolve_executor(opts) do
-      %Raxol.Agent.ExecutorConfig{} = executor ->
-        case Raxol.Agent.Backend.Selector.select(executor) do
-          {:ok, backend, executor_opts} ->
-            {backend, executor_opts}
-
-          {:error, reason} ->
-            fallback = fallback_backend(opts)
-
-            Logger.warning(
-              "executor backend not selectable (#{inspect(reason)}); " <>
-                "answering from #{inspect(fallback)}"
-            )
-
-            {fallback, []}
+      %ExecutorConfig{} = executor ->
+        case Selector.select(executor) do
+          {:ok, backend, executor_opts} -> {:ok, backend, executor_opts}
+          {:error, reason} -> {:error, {:backend_unavailable, reason}}
         end
 
-      _ ->
-        {fallback_backend(opts), []}
+      nil ->
+        explicit_backend(opts)
+
+      # Named by shape only: the value may carry credentials.
+      _other ->
+        {:error, {:invalid_executor, :not_an_executor_config}}
+    end
+  end
+
+  defp explicit_backend(opts) do
+    case Keyword.get(opts, :backend) do
+      backend when is_atom(backend) and backend not in [nil, true, false] -> {:ok, backend, []}
+      none when none in [nil, true, false] -> {:error, :no_backend}
+      # Named by shape only, like the executor.
+      _other -> {:error, {:invalid_backend, :not_a_module}}
     end
   end
 
   @doc false
-  # Opt-in environment/1Password onboarding for any programmatic agent surface.
-  # With `auto_provider: true` and no explicit `:executor`, resolve one through
-  # the shared `Raxol.Agent.Backend.Resolver` — op-ref -> provider-env
-  # (`ANTHROPIC_API_KEY`, ...) -> `AI_API_KEY`/`AI_BASE_URL` — so a surface
-  # gets the same credential story
-  # for free instead of hand-rolling a resolver call. A resolution that finds no
-  # credential returns `nil`, so `backend_from_opts/1` falls through to
-  # `:backend`/Mock and the opt never crashes a caller with no provider set up.
+  # `auto_provider: true` without an `:executor` resolves one through
+  # `Raxol.Agent.Backend.Resolver` (op-ref -> provider env -> `AI_API_KEY`).
+  # Nil when nothing resolves.
+  @spec resolve_executor(keyword()) :: ExecutorConfig.t() | nil
   def resolve_executor(opts) do
     if Keyword.get(opts, :auto_provider, false) do
       resolver_opts =
@@ -658,23 +657,17 @@ defmodule Raxol.Agent.Stream do
         ]
         |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-      case Raxol.Agent.Backend.Resolver.resolve(resolver_opts) do
+      case Resolver.resolve(resolver_opts) do
         {:ok, executor, _source} -> executor
         _ -> nil
       end
     end
   end
 
-  defp fallback_backend(opts) do
-    Keyword.get(opts, :backend, Raxol.Agent.Backend.Mock)
-  end
-
   defp maybe_override_model(backend_opts, nil), do: backend_opts
 
   defp maybe_override_model(backend_opts, model),
     do: Keyword.put(backend_opts, :model, model)
-
-  # -- Private: Message Building ----------------------------------------------
 
   defp build_messages(prompt, opts) when is_binary(prompt) do
     case Keyword.get(opts, :messages) do

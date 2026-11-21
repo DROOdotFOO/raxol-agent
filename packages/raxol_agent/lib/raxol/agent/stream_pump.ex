@@ -181,7 +181,9 @@ defmodule Raxol.Agent.StreamPump do
           counter,
           acc,
           :tool_result,
-          tool_result_extra(name, Map.get(tool_result, :result))
+          name
+          |> tool_result_extra(Map.get(tool_result, :result))
+          |> put_call_id(Map.get(tool_result, :id))
         )
 
       # A consequential tool is holding for a keyboard answer. Emitted
@@ -354,15 +356,12 @@ defmodule Raxol.Agent.StreamPump do
     end
   end
 
-  # -- item lifecycle bookkeeping -------------------------------------------
-
   # Turn-scoped item ids, mirroring the fixture corpus ("i1", "i2", …).
   # Uniqueness only matters within the turn: the projection keys its
   # live tail by `{turn_id, item_id}`.
   defp next_item_id(acc),
     do: {"i#{acc.item_seq + 1}", %{acc | item_seq: acc.item_seq + 1}}
 
-  # -- message item lifecycle -------------------------------------------------
   #
   # The answer mirrors the reasoning lifecycle below, with the same
   # deliberate laziness: the item is opened at the first NON-BLANK
@@ -452,7 +451,6 @@ defmodule Raxol.Agent.StreamPump do
     %{acc | journal: [ev | acc.journal], msg_item: nil, msg_chunks: []}
   end
 
-  # -- reasoning item lifecycle ---------------------------------------------
   #
   # Reasoning mirrors the message lifecycle with one deliberate difference:
   # the item is opened LAZILY at the first NON-BLANK thought — a
@@ -674,6 +672,15 @@ defmodule Raxol.Agent.StreamPump do
   defp evidence_rejected_detail(refs, {reason, offset}) when is_atom(reason) do
     %{"refs" => refs, "reason" => Atom.to_string(reason), "ref" => offset}
   end
+
+  # The answered tool_use's id. It comes from the provider, so only a short
+  # string is journaled.
+  @max_call_id_bytes 256
+
+  defp put_call_id(extra, id) when is_binary(id) and byte_size(id) <= @max_call_id_bytes,
+    do: Map.put(extra, :call_id, id)
+
+  defp put_call_id(extra, _id), do: extra
 
   # A tool result whose payload carries a before/after image of a file
   # is flattened so the surface renders it as a

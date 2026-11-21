@@ -5,14 +5,13 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
 
   alias Raxol.Agent.Backend.Anthropic.Wire
   alias Raxol.Agent.Backend.HTTP
+  alias Raxol.Agent.Backend.HTTP.SSE
 
   # This file pins the LongCat / reasoning-model wire defects: a raw response
   # map rendered as assistant prose (honesty violation), the non-standard
   # LongCat shape (message-object chunk, `finishreason`, `reasoning_content`),
   # the separate reasoning channel, and length-truncation honesty + the
   # raised/configurable max_tokens ceiling.
-
-  # -- helpers ----------------------------------------------------------------
 
   # Stub the transport so `complete/2` runs the real request/parse pipeline
   # against a canned response body -- exercising `parse_response/2` end to end.
@@ -80,8 +79,6 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
     refute text =~ "=>", "content must not contain map arrows: #{inspect(text)}"
     text
   end
-
-  # -- non-streaming (complete/2) shape ---------------------------------------
 
   describe "LongCat non-streaming (complete/2) shape" do
     test "extracts message.content as text, reasoning_content as :reasoning, no raw map" do
@@ -280,16 +277,14 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
     end
   end
 
-  # -- streaming (:openai SSE) shape ------------------------------------------
-
   # parse_sse emits {:reasoning_delta, _} for the reasoning channel; stream_next
   # maps it to the backend-stream {:reasoning, _} event (verified separately).
-  describe "parse_sse/2 :openai reasoning + message-object chunks" do
+  describe "SSE.parse/2 :openai reasoning + message-object chunks" do
     test "a full-message chunk (message, not delta) streams content + reasoning" do
       raw =
         ~s(data: {"choices":[{"delta":null,"message":{"content":"hi there","reasoning_content":"pondering"}}]}\n\n)
 
-      {events, buffer} = HTTP.parse_sse(raw, :openai)
+      {events, buffer} = SSE.parse(raw, :openai)
 
       assert {:reasoning_delta, "pondering"} in events
       assert {:text_delta, "hi there"} in events
@@ -298,19 +293,19 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
 
     test "standard OpenAI delta.content still parses (no regression)" do
       raw = ~s(data: {"choices":[{"delta":{"content":"tok"}}]}\n\n)
-      {events, _} = HTTP.parse_sse(raw, :openai)
+      {events, _} = SSE.parse(raw, :openai)
       assert events == [{:text_delta, "tok"}]
     end
 
     test "delta.reasoning_content streams on the reasoning channel" do
       raw = ~s(data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}\n\n)
-      {events, _} = HTTP.parse_sse(raw, :openai)
+      {events, _} = SSE.parse(raw, :openai)
       assert events == [{:reasoning_delta, "hmm"}]
     end
 
     test "delta.reasoning (OpenRouter variant) also streams on the reasoning channel" do
       raw = ~s(data: {"choices":[{"delta":{"reasoning":"or"}}]}\n\n)
-      {events, _} = HTTP.parse_sse(raw, :openai)
+      {events, _} = SSE.parse(raw, :openai)
       assert events == [{:reasoning_delta, "or"}]
     end
 
@@ -318,32 +313,32 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
       raw =
         ~s(data: {"choices":[{"delta":{"content":""},"finishreason":"length"}]}\n\n)
 
-      {events, _} = HTTP.parse_sse(raw, :openai)
+      {events, _} = SSE.parse(raw, :openai)
       assert {:marker, marker} = Enum.find(events, &match?({:marker, _}, &1))
       assert marker =~ "truncated"
       no_raw_map!(marker)
     end
 
     test "[DONE] is a usage sentinel; role-only openers are skipped" do
-      assert {[{:usage, %{}}], ""} = HTTP.parse_sse("data: [DONE]\n\n", :openai)
+      assert {[{:usage, %{}}], ""} = SSE.parse("data: [DONE]\n\n", :openai)
 
       assert {[], ""} =
-               HTTP.parse_sse(~s(data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n), :openai)
+               SSE.parse(~s(data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n), :openai)
     end
 
     test "an unparseable data line is an honest marker, not a silent drop or a dump" do
-      {events, _} = HTTP.parse_sse("data: {not valid json\n\n", :openai)
+      {events, _} = SSE.parse("data: {not valid json\n\n", :openai)
       assert [{:marker, marker}] = events
       assert marker =~ "unparseable"
       no_raw_map!(marker)
     end
 
     test "SSE comments / keep-alives are skipped (no marker)" do
-      assert {[], _} = HTTP.parse_sse(": keep-alive\n\n", :openai)
+      assert {[], _} = SSE.parse(": keep-alive\n\n", :openai)
     end
   end
 
-  describe "parse_sse/2 CRLF line endings (real CRLF-speaking providers/proxies)" do
+  describe "SSE.parse/2 CRLF line endings (real CRLF-speaking providers/proxies)" do
     test "a data: [DONE] line terminated with \\r completes normally, no spurious unparseable marker" do
       # The isolated defect: a "data: [DONE]" content line terminated with
       # \r\n, followed by the record's blank-line separator. Before the
@@ -354,7 +349,7 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
       # CRLF-speaking provider (a NEW regression, never a clean [DONE]).
       raw = "data: [DONE]\r\n\n"
 
-      {events, buffer} = HTTP.parse_sse(raw, :openai)
+      {events, buffer} = SSE.parse(raw, :openai)
 
       assert events == [{:usage, %{}}]
       assert buffer == ""
@@ -371,33 +366,32 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
         "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\n\r\n" <>
           "data: [DONE]\r\n\r\n"
 
-      {events, buffer} = HTTP.parse_sse(raw, :openai)
+      {events, buffer} = SSE.parse(raw, :openai)
 
       assert events == [{:text_delta, "hi"}, {:usage, %{}}]
       assert buffer == ""
     end
   end
 
-  describe "parse_sse/2 no-regression for other providers" do
+  describe "SSE.parse/2 no-regression for other providers" do
     test "anthropic content_block_delta still yields text" do
       raw = ~s(data: {"type":"content_block_delta","delta":{"text":"a"}}\n\n)
-      assert {[{:text_delta, "a"}], _} = HTTP.parse_sse(raw, :anthropic)
+      assert {[{:text_delta, "a"}], _} = SSE.parse(raw, :anthropic)
     end
 
     test "ollama NDJSON message.content still yields text" do
       raw = ~s({"message":{"content":"o"}}\n)
-      {events, _} = HTTP.parse_sse(raw, :ollama)
+      {events, _} = SSE.parse(raw, :ollama)
       assert events == [{:text_delta, "o"}]
     end
   end
 
   describe "blocking tool_calls honesty (parity with streaming)" do
-    test "undecodable arguments surface an honest marker, never a silent %{} (#652)" do
+    test "undecodable arguments surface an honest marker, never a silent %{}" do
       # The blocking parse must match the streaming path: a tool_call whose
       # arguments string is not valid JSON keeps a map-shaped `%{}` but rides
       # an `arguments_error` alongside, so the tool is never invoked under
-      # silently-empty args. Previously the blocking path coerced to `%{}`
-      # with no trace.
+      # silently empty args.
       body = %{
         "choices" => [
           %{
@@ -493,9 +487,8 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
     end
 
     # Every HTTP-backed entry in the Selector table, built from the SAME
-    # defaults the CLI's `--backend` flag uses. `llm7` is the one that used to
-    # raise; the rest are here so a future keyless entry cannot regress
-    # silently.
+    # defaults the CLI's `--backend` flag uses, so a keyless entry (such as
+    # `llm7`) that raises while building its request fails here.
     test "every backend in the Selector table builds a request without raising" do
       for backend <- [
             :anthropic,

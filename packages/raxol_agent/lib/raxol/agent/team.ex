@@ -21,6 +21,7 @@ defmodule Raxol.Agent.Team do
     * `:workers` - List of `{module, opts}` for worker agents.
     * `:strategy` - Supervisor strategy (default `:rest_for_one`).
   """
+  @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
     team_id = Keyword.fetch!(opts, :team_id)
     Supervisor.start_link(__MODULE__, opts, name: :"agent_team_#{team_id}")
