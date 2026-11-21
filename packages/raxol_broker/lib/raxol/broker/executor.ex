@@ -204,6 +204,7 @@ defmodule Raxol.Broker.Executor do
   alias Raxol.Broker.{Intent, Journal, Plain, Policy, PolicyFile}
   alias Raxol.Broker.Policy.Context
   alias Raxol.Broker.Tools.Catalog
+  import Raxol.Broker.Redact, only: [collapse: 1, shape: 1]
 
   @default_timeout 30_000
   @default_reconnect_ms 1_000
@@ -594,11 +595,6 @@ defmodule Raxol.Broker.Executor do
     {:noreply, state}
   end
 
-  defp shape(message) when is_tuple(message) and tuple_size(message) > 0,
-    do: "{#{inspect(elem(message, 0), structs: false)}, ...}"
-
-  defp shape(_message), do: "term"
-
   @impl GenServer
   def terminate(_reason, %{port: nil}), do: :ok
   def terminate(_reason, state), do: Port.stop(state.port)
@@ -673,29 +669,6 @@ defmodule Raxol.Broker.Executor do
         backoff: min(state.backoff * 2, @max_backoff)
     }
   end
-
-  # A failure reason with any argument-carrying term removed: nested
-  # `{atom, inner}` tags are kept (to a bounded depth), and the innermost
-  # reason becomes an atom, an HTTP status or a module; anything else
-  # becomes `:error`. Public for its tests.
-  @doc false
-  @spec collapse(term()) :: term()
-  def collapse(reason), do: collapse(reason, 4)
-
-  defp collapse(reason, _depth) when is_atom(reason), do: reason
-  defp collapse({:http, status}, _depth) when is_integer(status), do: {:http, status}
-  defp collapse(%{__exception__: true, __struct__: module}, _depth), do: module
-
-  defp collapse({%{__exception__: true, __struct__: module}, stack}, _depth) when is_list(stack),
-    do: module
-
-  defp collapse({reason, stack}, _depth) when is_atom(reason) and is_list(stack), do: reason
-
-  defp collapse({tag, inner}, depth) when is_atom(tag) and depth > 0,
-    do: {tag, collapse(inner, depth - 1)}
-
-  defp collapse(%{__struct__: module}, _depth), do: module
-  defp collapse(_reason, _depth), do: :error
 
   # The receipt key and the session spec (bearer header, stdio env) never
   # reach a crash report or `:sys.get_status`; neither do the failure terms

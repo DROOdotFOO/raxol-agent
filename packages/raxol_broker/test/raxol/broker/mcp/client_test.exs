@@ -605,4 +605,21 @@ defmodule Raxol.Broker.MCP.ClientTest do
       end
     end
   end
+
+  describe "format_status/1" do
+    test "empties the sys debug log and collapses the reason" do
+      spec = [headers: [{"authorization", "Bearer leak"}]]
+
+      status =
+        Client.format_status(%{
+          log: [{:in, {:token, "Bearer leak"}}],
+          message: :tick,
+          reason: {:start, {:badarg, [{M, :f, [spec], []}]}}
+        })
+
+      assert status.log == []
+      assert status.reason == {:start, :badarg}
+      refute inspect(status) =~ "leak"
+    end
+  end
 end
