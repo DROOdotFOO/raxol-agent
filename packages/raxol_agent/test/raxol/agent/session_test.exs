@@ -185,6 +185,23 @@ defmodule Raxol.Agent.SessionTest do
       GenServer.stop(pid)
     end
 
+    test "the lifecycle it starts is monitored, not linked" do
+      {:ok, pid} =
+        Session.start_link(
+          app_module: CounterAgent,
+          id: :lifecycle_unlinked,
+          session_id: "unlinked"
+        )
+
+      [{lifecycle, _}] = Registry.lookup(Raxol.Agent.Registry, {:lifecycle, "unlinked"})
+      {:links, links} = Process.info(pid, :links)
+      refute lifecycle in links
+      {:monitors, monitors} = Process.info(pid, :monitors)
+      assert {:process, lifecycle} in monitors
+
+      GenServer.stop(pid)
+    end
+
     test "duplicate ids fail to start" do
       {:ok, pid} = Session.start_link(app_module: CounterAgent, id: :lifecycle_dup)
 

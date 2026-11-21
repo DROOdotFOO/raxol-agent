@@ -378,8 +378,8 @@ defmodule Raxol.Agent.McpTools do
   # id is free only then.
   defp stop_tree(id, session_id) do
     _ = Session.Supervisor.stop_session(session_id)
-    Session.await_free(id)
-    Session.await_free({:session_supervisor, session_id})
+    Session.Registration.await_free(id)
+    Session.Registration.await_free({:session_supervisor, session_id})
   end
 
   # -- Registration -------------------------------------------------------------
