@@ -198,29 +198,40 @@ defmodule Raxol.AgentClientProtocol.Connection do
     Process.flag(:trap_exit, true)
     handler = Keyword.fetch!(opts, :handler)
 
-    case handler.init(Keyword.get(opts, :handler_arg)) do
-      {:ok, handler_state} ->
-        {mod, handle} = Keyword.fetch!(opts, :transport)
+    with {:ok, max_in} <- max_inbound(opts),
+         {:ok, handler_state} <- init_handler(handler, Keyword.get(opts, :handler_arg)) do
+      {mod, handle} = Keyword.fetch!(opts, :transport)
 
-        state = %__MODULE__{
-          role: Keyword.get(opts, :role, :agent),
-          transport_mod: mod,
-          transport_state: handle,
-          parent_sup: Keyword.get(opts, :parent_sup),
-          session_sup: Keyword.get(opts, :session_sup),
-          task_sup: Keyword.get(opts, :task_sup),
-          handler: handler,
-          handler_state: handler_state,
-          max_in: Keyword.get(opts, :max_inbound, @default_max_inbound)
-        }
+      state = %__MODULE__{
+        role: Keyword.get(opts, :role, :agent),
+        transport_mod: mod,
+        transport_state: handle,
+        parent_sup: Keyword.get(opts, :parent_sup),
+        session_sup: Keyword.get(opts, :session_sup),
+        task_sup: Keyword.get(opts, :task_sup),
+        handler: handler,
+        handler_state: handler_state,
+        max_in: max_in
+      }
 
-        {:ok, state, {:continue, :boot}}
+      {:ok, state, {:continue, :boot}}
+    end
+  end
 
-      {:stop, reason} ->
-        {:stop, reason}
+  # A non-integer cap would compare greater than any map size and silently
+  # disable the flood guard, so it is refused.
+  defp max_inbound(opts) do
+    case Keyword.get(opts, :max_inbound, @default_max_inbound) do
+      n when is_integer(n) and n > 0 -> {:ok, n}
+      other -> {:stop, {:invalid_option, :max_inbound, other}}
+    end
+  end
 
-      other ->
-        {:stop, {:bad_handler_init, other}}
+  defp init_handler(handler, arg) do
+    case handler.init(arg) do
+      {:ok, handler_state} -> {:ok, handler_state}
+      {:stop, reason} -> {:stop, reason}
+      other -> {:stop, {:bad_handler_init, other}}
     end
   end
 

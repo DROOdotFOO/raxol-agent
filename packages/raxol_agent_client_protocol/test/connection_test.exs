@@ -1768,5 +1768,22 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert map_size(:sys.get_state(conn).reply_refs) == cap
       assert Process.alive?(conn)
     end
+
+    test "a non-positive-integer :max_inbound refuses to start (the guard fails closed)" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      for bad <- [:infinity, nil, 0, -1, 1.5] do
+        assert {:error, {:invalid_option, :max_inbound, ^bad}} =
+                 Connection.start_link(
+                   role: :agent,
+                   transport: {Paired, conn_handle},
+                   handler: ScriptAgent,
+                   handler_arg: self(),
+                   task_sup: self(),
+                   max_inbound: bad
+                 )
+      end
+    end
   end
 end
