@@ -30,7 +30,7 @@ defmodule RaxolBroker.MixProject do
 
   defp deps do
     [
-      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", []),
+      raxol_dep(:raxol_agent, "~> 3.2", "../raxol_agent", []),
       runtime_dep(:raxol_journal, "~> 2.8", "packages/raxol_journal"),
       runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp"),
       # Floor: below 3.1.2, `Decimal.round/3` allocates in proportion to

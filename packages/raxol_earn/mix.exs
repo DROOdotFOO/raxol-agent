@@ -15,9 +15,8 @@ defmodule RaxolEarn.MixProject do
       deps: deps(),
       releases: releases(),
       dialyzer: [
-        # raxol_agent reaches this app through raxol_payments, where it is
-        # `runtime: false`, so it is not in the derived application tree.
-        # Earn calls it directly (`Raxol.Agent.Secret`, `Raxol.Agent.ChildEnv`).
+        # raxol_agent is a `runtime: false` dependency (see deps/0), so it is
+        # not in the derived application tree; earn calls it directly.
         plt_add_apps: [:raxol_agent],
         ignore_warnings: ".dialyzer_ignore.exs"
       ],
@@ -72,7 +71,11 @@ defmodule RaxolEarn.MixProject do
 
   defp deps do
     [
-      raxol_dep(:raxol_payments, "~> 0.3", "../raxol_payments", []),
+      raxol_dep(:raxol_payments, "~> 0.4", "../raxol_payments", []),
+      # Called directly (`Raxol.Agent.Secret`, `Raxol.Agent.ChildEnv`), so
+      # required directly. `runtime: false` as in raxol_payments: the agent
+      # modules ship loaded, the agent tree does not start.
+      raxol_dep(:raxol_agent, "~> 3.2", "../raxol_agent", runtime: false),
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
       runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp", runtime: false),
       {:req, "~> 0.5"},
@@ -89,9 +92,11 @@ defmodule RaxolEarn.MixProject do
     ]
   end
 
+  # The Hex form drops `:runtime`: a consumer compiles this mix.exs, and
+  # `runtime: false` would leave the dependency out of its release.
   defp raxol_dep(name, version, path, opts) do
     if hex_package?() do
-      {name, version, opts}
+      {name, version, Keyword.delete(opts, :runtime)}
     else
       {name, version, [path: path] ++ opts}
     end

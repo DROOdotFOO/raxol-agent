@@ -5,7 +5,7 @@ All notable changes to `raxol_agent` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.2.0] - Unreleased
 
 ### Added
 
@@ -19,26 +19,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Directive shell commands no longer inherit provider API keys or any
-  other credential-named variable.** On top of `Raxol.Core.ChildEnv`'s list,
-  `Raxol.Agent.ChildEnv` unsets every variable whose name ends in `_KEY`,
-  `_KEY_ID`, `_TOKEN`, `_PRIVKEY`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`,
-  `_MNEMONIC` or `_CREDENTIALS` (case-insensitive), every `RPC_` name, the
-  `Backend.Catalog` key variables, `PROTON_UID` and the earn/order URLs. This
-  reverses 3.1.0's "provider API keys are not scrubbed": a command that needs
-  `GH_TOKEN` or AWS credentials now needs `config :raxol_core,
-  Raxol.Core.ChildEnv, pass: [...]` (global) or the directive's own `env`.
+- **Breaking: directive shell commands no longer inherit provider API keys
+  or any other credential-named variable.** On top of `Raxol.Core.ChildEnv`'s
+  list, `Raxol.Agent.ChildEnv` unsets every variable whose name ends in
+  `_KEY`, `_KEY_ID`, `_APIKEY`, `_TOKEN`, `_PRIVKEY`, `_SECRET`, `_PASSWORD`,
+  `_PASS`, `_PASSPHRASE`, `_MNEMONIC`, `_SEED_PHRASE`, `_CREDENTIALS`, `_DSN` or
+  `_RPC` (case-insensitive), every `RPC_` name, `MNEMONIC`, `SEED_PHRASE`,
+  `SSH_AUTH_SOCK` and `OP_SESSION_*`, the `Backend.Catalog` key variables, `PROTON_UID` and the
+  earn/order URLs. This reverses 3.0.0's "provider API keys are not
+  scrubbed". It ships in a minor release because it removes access rather
+  than changing an API, and the old behaviour exposed every key to a
+  prompt-injected command. `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` and
+  the AWS credentials are unset on purpose; a command
+  that needs one gets it through the directive's own `env`
+  (`Directive.shell(cmd, env: [{"GH_TOKEN", token}])`, that command only) or,
+  node-wide, `config :raxol_core, Raxol.Core.ChildEnv, pass: ["GH_TOKEN"]`.
 - **Lumo keeps a refreshed Proton session in the node** (`:persistent_term`,
   wrapped) instead of `System.put_env`, so children no longer inherit the
-  refreshed token. A failed refresh drops it.
+  refreshed token. A failed refresh of that same session drops it.
 - `Raxol.Agent.Process` hides `backend_config` from `Inspect` and
-  `:sys.get_status`.
-
-### Release note
-
-- raxol_payments, raxol_earn and raxol_broker now call `Raxol.Agent.Secret`.
-  Their Hex requirement on raxol_agent (`~> 3.0`) must be raised to the
-  release that ships it before they are published.
+  `:sys.get_status`, and reduces a crash's `:reason` and last `:message` in
+  crash reports (`redact_status(status, keys, failure: true)`).
+- `Directive.Shell` renders its `env` names but not their values.
+- Requires `raxol_agent_client_protocol ~> 0.2.0`, whose stdio transport
+  scrubs a spawned agent's environment the same way.
 
 ## [3.1.0] - 2026-11-14
 

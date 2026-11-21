@@ -10,10 +10,10 @@ defmodule Raxol.Payments.Secret do
 
   @type t :: Raxol.Agent.Secret.t()
 
-  @doc deprecated: "Use Raxol.Agent.Secret.new/1"
+  @deprecated "Use Raxol.Agent.Secret.new/1"
   defdelegate new(bytes), to: Raxol.Agent.Secret
-  @doc deprecated: "Use Raxol.Agent.Secret.reveal/1"
+  @deprecated "Use Raxol.Agent.Secret.reveal/1"
   defdelegate reveal(secret), to: Raxol.Agent.Secret
-  @doc deprecated: "Use Raxol.Agent.Secret.with_revealed/2"
+  @deprecated "Use Raxol.Agent.Secret.with_revealed/2"
   defdelegate with_revealed(secret, fun), to: Raxol.Agent.Secret
 end

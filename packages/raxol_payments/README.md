@@ -8,7 +8,7 @@ lifetime spending limits. The design is in
 ## Install
 
 ```elixir
-{:raxol_payments, "~> 0.3"}
+{:raxol_payments, "~> 0.4"}
 ```
 
 0.3 requires `raxol_agent` 3.0 and `raxol_core` 2.8.

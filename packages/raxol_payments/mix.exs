@@ -1,7 +1,7 @@
 defmodule RaxolPayments.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/DROOdotFOO/raxol-agent"
   @source_ref "raxol_payments-v#{@version}"
 
@@ -45,7 +45,7 @@ defmodule RaxolPayments.MixProject do
       # release ships the agent modules loaded without starting the agent
       # tree. `raxol_dep/4` drops it from the Hex form: a consumer compiles
       # this mix.exs, and the flag would leave raxol_agent out of its release.
-      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", runtime: false),
+      raxol_dep(:raxol_agent, "~> 3.2", "../raxol_agent", runtime: false),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
       # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.

@@ -5,17 +5,22 @@ All notable changes to `raxol_agent_client_protocol` are documented in this file
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - Unreleased
 
 ### Changed
 
-- **`Transport.Stdio.start_spawn/3` no longer hands a spawned agent the
-  node's credentials.** Variables whose name ends in `_KEY`, `_KEY_ID`,
-  `_TOKEN`, `_PRIVKEY`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_MNEMONIC` or
-  `_CREDENTIALS` (case-insensitive), and every `RPC_` name, are unset unless
-  named in `:env`. An agent that reads its own provider key from the
-  environment needs it passed in `:env`, or `scrub_env: false` for the old
-  behaviour. Breaking for such agents; release as 0.2.0.
+- **Breaking: `Transport.Stdio.start_spawn/3` no longer hands a spawned
+  agent the node's credentials.** Variables whose name ends in
+  `_KEY`, `_KEY_ID`, `_APIKEY`, `_TOKEN`, `_PRIVKEY`, `_SECRET`, `_PASSWORD`,
+  `_PASS`, `_PASSPHRASE`, `_MNEMONIC`, `_SEED_PHRASE`, `_CREDENTIALS`, `_DSN` or
+  `_RPC` (case-insensitive), every `RPC_` name, `MNEMONIC`, `SEED_PHRASE`,
+  `SSH_AUTH_SOCK` and `OP_SESSION_*` are unset unless named in `:env`;
+  `:unset_env` adds names of the caller's own. An agent that reads its own
+  provider key from the environment needs it passed in `:env`, or
+  `scrub_env: false` for the old behaviour. Breaking for such agents, hence
+  0.2.0.
+- Also ships the connection, delivery, journal writer and attach-policy
+  robustness and security fixes merged in #27.
 
 ## [0.1.0] - 2026-11-14
 
