@@ -21,14 +21,18 @@ defmodule Raxol.AgentClientProtocol.Rpc do
   @max_printable 128
 
   @doc """
-  A peer-supplied string made safe for logs and telemetry: control characters
-  are escaped (so a peer cannot forge log lines) and it is cut to
-  #{@max_printable} characters.
+  A peer-supplied string made safe for logs and telemetry: cut to
+  #{@max_printable} characters, then control characters escaped (so a peer
+  cannot forge log lines). Invalid UTF-8 becomes `"<binary>"`.
   """
-  @spec printable(String.t()) :: String.t()
+  @spec printable(binary()) :: String.t()
   def printable(string) when is_binary(string) do
-    escaped = string |> String.slice(0, @max_printable) |> inspect()
-    binary_part(escaped, 1, byte_size(escaped) - 2)
+    if String.valid?(string) do
+      escaped = string |> String.slice(0, @max_printable) |> inspect()
+      binary_part(escaped, 1, byte_size(escaped) - 2)
+    else
+      "<binary>"
+    end
   end
 end
 

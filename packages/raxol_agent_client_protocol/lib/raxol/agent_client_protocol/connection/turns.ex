@@ -24,7 +24,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
   @moduledoc false
   # Turn bookkeeping over the Connection state's `turns` (session_id =>
   # TurnState), `turn_ids` (out_id => session_id) and `oot_seq` (session_id =>
-  # out-of-turn update count; monotone while the connection is open).
+  # out-of-turn update count; monotone while the connection is open, for at
+  # most `max_oot_sessions/0` sessions).
   #
   # Only an async `session/prompt` (reply_to `{:owner, ...}`) opens a turn: a
   # sync caller is parked in `GenServer.call` and cannot receive deliveries, so

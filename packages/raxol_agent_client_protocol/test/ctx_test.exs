@@ -38,8 +38,9 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
   directly from the test process (via `Task.async` since `request/4`
   blocks); `request_permission/3` and `post_update/2` need a live `Session`
   turn, so those tests start a real `Session` on top of the same
-  Connection (via `AdoptingConn`, no `FakeConnection` double — this is
-  meant to prove the Ctx <-> Connection <-> Session wiring end to end).
+  Connection. Only `delegate_reply/3` is stubbed (`AdoptingConn`), because
+  these tests fabricate `reply_ref`s; delegation is covered in
+  `connection_test.exs`.
   """
   use ExUnit.Case, async: false
   use Raxol.AgentClientProtocol.Test.InvariantSentinel

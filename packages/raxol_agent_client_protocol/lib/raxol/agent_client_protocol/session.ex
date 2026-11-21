@@ -127,8 +127,9 @@ defmodule Raxol.AgentClientProtocol.Session do
   @doc """
   Begins a prompt turn; called from the `session/prompt` handler task. Adopts the
   reply obligation and returns `:ok` (the handler then returns `:deferred`). A
-  session with a live turn, or a request the peer already cancelled, returns
-  `{:error, %Error{}}` without starting a turn, and the handler replies with it.
+  session with a live turn returns a busy `{:error, %Error{}}` that the handler
+  replies with. A request the peer already cancelled starts no turn and returns
+  `{:error, Error.request_cancelled()}`; the Connection sends nothing for it.
   """
   @spec begin_prompt(GenServer.server(), struct(), reference(), non_neg_integer()) ::
           :ok | {:error, Error.t()}
@@ -217,10 +218,10 @@ defmodule Raxol.AgentClientProtocol.Session do
       :ok ->
         {:reply, :ok, start_turn(state, req, reply_ref, rx_seq)}
 
-      {:error, reason} ->
-        {:reply,
-         {:error, Error.with_data(Error.new(-32_800, "Request cancelled"), inspect(reason))},
-         arm_idle(state)}
+      # The Connection discards whatever the handler returns for a cancelled or
+      # vanished request; the error only keeps the handler's return well formed.
+      {:error, _cancelled_or_unknown} ->
+        {:reply, {:error, Error.request_cancelled()}, arm_idle(state)}
     end
   end
 

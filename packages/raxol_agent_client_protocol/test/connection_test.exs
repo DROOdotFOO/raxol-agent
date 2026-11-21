@@ -1815,7 +1815,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 8, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
     end
 
-    test "delegating a request the peer already cancelled fails" do
+    test "delegating after the peer cancelled fails (the entry is gone or cancelled)" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1892,9 +1892,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
           :deferred
         end)
 
-      for bad <- [{:error, :not_an_error_struct}] do
-        assert :ok = Connection.reply(conn, ctx.reply_ref, bad)
-      end
+      assert :ok = Connection.reply(conn, ctx.reply_ref, {:error, :not_an_error_struct})
 
       assert %{"id" => 9, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
       assert Process.alive?(conn)

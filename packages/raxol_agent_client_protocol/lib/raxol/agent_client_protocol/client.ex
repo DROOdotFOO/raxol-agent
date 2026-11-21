@@ -148,7 +148,8 @@ defmodule Raxol.AgentClientProtocol.Client do
   @doc """
   Sends `session/prompt` and returns `{:ok, {updates, response}}` with the
   turn's updates oldest first, or `{:error, reason}` (timeout, transport, decode
-  failure, or `{:delivery_gap, %{delivered: n, expected: m}}`).
+  failure, `{:delivery_gap, %{delivered: n, expected: m}}`, or `:connection_closed`
+  when the Connection dies mid-turn).
   """
   @spec prompt(pid(), struct(), pos_integer()) ::
           {:ok, {[update()], prompt_result()}} | {:error, term()}

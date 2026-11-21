@@ -14,6 +14,7 @@ defmodule Raxol.AgentClientProtocol.Error do
 
     * `-32000` — authentication required
     * `-32002` — resource not found
+    * `-32800` — request cancelled (LSP's `RequestCancelled`)
 
   Decoding is total: `from_json/1` never raises. Unknown fields on the wire
   object are preserved in `_meta` and re-emitted on encode (forward-compat
@@ -57,6 +58,9 @@ defmodule Raxol.AgentClientProtocol.Error do
   @spec resource_not_found_code() :: integer()
   def resource_not_found_code, do: -32_002
 
+  @spec request_cancelled_code() :: integer()
+  def request_cancelled_code, do: -32_800
+
   # -- Convenience constructors ----------------------------------------------
 
   @spec parse_error() :: t()
@@ -76,6 +80,9 @@ defmodule Raxol.AgentClientProtocol.Error do
 
   @spec auth_required() :: t()
   def auth_required, do: %__MODULE__{code: -32_000, message: "Authentication required"}
+
+  @spec request_cancelled() :: t()
+  def request_cancelled, do: %__MODULE__{code: -32_800, message: "Request cancelled"}
 
   @spec resource_not_found(String.t() | nil) :: t()
   def resource_not_found(uri \\ nil)
@@ -103,6 +110,7 @@ defmodule Raxol.AgentClientProtocol.Error do
   def code_name(-32_603), do: :internal_error
   def code_name(-32_000), do: :auth_required
   def code_name(-32_002), do: :resource_not_found
+  def code_name(-32_800), do: :request_cancelled
   def code_name(code) when is_integer(code), do: {:other, code}
 
   @spec to_json(t()) :: map()

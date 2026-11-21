@@ -56,8 +56,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
     end
   end
 
-  # Handler return values are untrusted. Table methods must return their result
-  # struct; extension methods (no decode marker) may return any map.
+  # Handler return values are untrusted. Table methods must return a struct;
+  # extension methods (no decode marker) may return any map.
   @spec handler_result(term(), String.t()) :: {:ok, result()} | :malformed
   def handler_result({:ok, %_{}} = ok, _method), do: {:ok, ok}
   def handler_result({:error, %Error{}} = err, _method), do: {:ok, err}

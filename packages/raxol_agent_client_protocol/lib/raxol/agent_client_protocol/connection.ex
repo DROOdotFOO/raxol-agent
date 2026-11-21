@@ -104,8 +104,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   @doc """
   Starts a Connection. Options: `:role`, `:transport` (`{mod, handle}`),
-  `:handler`, `:handler_arg`, `:max_inbound` (default #{@default_max_inbound}),
-  and either `:parent_sup` or `:task_sup`/`:session_sup`.
+  `:handler`, `:handler_arg`, `:max_inbound` (a positive integer, default
+  #{@default_max_inbound}; anything else stops with
+  `{:invalid_option, :max_inbound, value}`), and either `:parent_sup` or
+  `:task_sup`/`:session_sup`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
@@ -162,9 +164,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   @doc """
   Discharges a delegated reply. An unknown, consumed or cancelled `reply_ref` is
-  a no-op that emits `[:raxol, :acp, :dup_reply]`.
+  a no-op that emits `[:raxol, :acp, :dup_reply]`. A malformed result is
+  answered `-32603`; extension methods may reply with a plain map.
   """
-  @spec reply(pid(), reference(), {:ok, struct()} | {:error, Error.t()}) :: :ok
+  @spec reply(pid(), reference(), {:ok, map()} | {:error, Error.t()} | term()) :: :ok
   def reply(conn, reply_ref, result_or_error) when is_pid(conn) and is_reference(reply_ref) do
     call(conn, {:reply, reply_ref, result_or_error})
   end
@@ -176,7 +179,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
   @doc """
   Returns the current delivery watermark for `session_id`. Serialized with the
   point that assigns ordinals, so a caller that subscribes and then calls this
-  knows every later stamp reaches it. `turn: nil` means no open turn.
+  knows every later stamp reaches it. `turn: nil` means no open turn. Sessions
+  beyond the out-of-turn tracking cap (10,000 per connection) report `0`.
   """
   @spec update_watermark(pid(), String.t()) ::
           {:ok, %{turn: reference() | nil, ordinal: non_neg_integer()}}

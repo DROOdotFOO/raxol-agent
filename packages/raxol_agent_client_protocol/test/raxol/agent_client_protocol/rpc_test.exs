@@ -12,6 +12,7 @@ defmodule Raxol.AgentClientProtocol.RpcTest do
     assert RequestId.display("abc") == "abc"
     assert RequestId.display("a\n[error] forged") == ~S(a\n[error] forged)
     assert "abc" |> String.duplicate(100) |> RequestId.display() |> String.length() == 128
+    assert RequestId.display(<<97, 98, 255, 10>>) == "<binary>"
   end
 
   test "RequestId round-trip" do

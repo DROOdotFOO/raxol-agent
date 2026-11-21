@@ -11,6 +11,7 @@ defmodule Raxol.AgentClientProtocol.Schema.IdStrictnessTest do
   alias Raxol.AgentClientProtocol.Schema.Unstable.{
     ForkSessionRequest,
     ResumeSessionRequest,
+    SetSessionConfigOptionRequest,
     SetSessionModelRequest
   }
 
@@ -39,5 +40,17 @@ defmodule Raxol.AgentClientProtocol.Schema.IdStrictnessTest do
       assert {:error, {:invalid_field, "cwd", 1}} =
                mod.from_json(%{"sessionId" => "s", "cwd" => 1})
     end
+  end
+
+  test "modelId and configId must be strings" do
+    assert {:error, {:invalid_field, "modelId", 7}} =
+             SetSessionModelRequest.from_json(%{"sessionId" => "s", "modelId" => 7})
+
+    assert {:error, {:invalid_field, "configId", 7}} =
+             SetSessionConfigOptionRequest.from_json(%{
+               "sessionId" => "s",
+               "configId" => 7,
+               "value" => "v"
+             })
   end
 end
