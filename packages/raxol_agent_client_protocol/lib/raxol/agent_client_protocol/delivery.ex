@@ -69,19 +69,12 @@ defmodule Raxol.AgentClientProtocol.Delivery do
   end
 
   @doc """
-  Emit the `[:raxol, :acp, :delivery]` telemetry event when
-  `:telemetry` is loaded; a silent no-op otherwise (this package does not
-  depend on `:telemetry`, matching `Connection`'s own optional-telemetry
-  guard). `metadata` should include `:decision` — one of
-  `:emit | :buffer | :gap | :fail` — plus whichever of `:session`, `:turn`,
-  `:buffered`, `:ordinal` apply at the call site.
+  Emits `[:raxol, :acp, :delivery]`. `metadata` carries `:decision`
+  (`:emit | :buffer | :gap | :fail`) plus any of `:session`, `:turn`,
+  `:buffered`, `:ordinal`.
   """
   @spec emit(map()) :: :ok
   def emit(metadata) when is_map(metadata) do
-    if Code.ensure_loaded?(:telemetry) and function_exported?(:telemetry, :execute, 3) do
-      apply(:telemetry, :execute, [[:raxol, :acp, :delivery], %{count: 1}, metadata])
-    end
-
-    :ok
+    Raxol.AgentClientProtocol.Telemetry.execute([:raxol, :acp, :delivery], metadata)
   end
 end

@@ -1001,15 +1001,8 @@ defmodule Raxol.AgentClientProtocol.Session do
     end
   end
 
-  # Telemetry is optional (not a package dependency); Logger always carries
-  # the signal regardless (mirrors Connection's `emit_telemetry/2`).
-  defp emit_telemetry(event, metadata) do
-    if Code.ensure_loaded?(:telemetry) and function_exported?(:telemetry, :execute, 3) do
-      apply(:telemetry, :execute, [event, %{count: 1}, metadata])
-    end
-
-    :ok
-  end
+  defp emit_telemetry(event, metadata),
+    do: Raxol.AgentClientProtocol.Telemetry.execute(event, metadata)
 end
 
 defmodule Raxol.AgentClientProtocol.Session.Emitter do

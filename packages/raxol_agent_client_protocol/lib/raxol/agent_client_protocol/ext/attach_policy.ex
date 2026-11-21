@@ -266,16 +266,8 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
     deny
   end
 
-  # Emit telemetry only when :telemetry is available; apply/3 keeps it an
-  # optional, un-declared dependency (no compile-time reference).
-  @spec telemetry([atom()], map(), map()) :: :ok
-  defp telemetry(event, measurements, metadata) do
-    if Code.ensure_loaded?(:telemetry) do
-      apply(:telemetry, :execute, [event, measurements, metadata])
-    end
-
-    :ok
-  end
+  defp telemetry(event, measurements, metadata),
+    do: Raxol.AgentClientProtocol.Telemetry.execute(event, measurements, metadata)
 
   @spec supervisor() :: GenServer.server()
   defp supervisor do
