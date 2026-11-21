@@ -67,18 +67,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   say). A shell directive then answers `%{exit_status: :error, output:
   message}` instead of running.
 - `Backend.HTTP.stream/2` ends with `{:error, message}` when a response
-  passes 16 MiB in total (counted as it arrives, so the cap holds while the
-  stream is not being read), its unframed remainder passes 1 MiB, its
+  passes 128 MiB of wire bytes in total (every redirect hop included,
+  counted as it arrives, so the cap holds while the stream is not being
+  read), its unframed remainder passes 1 MiB, its
   streamed tool-call arguments pass 1 MiB, or it streams more than 128 tool
   calls (`:max_stream_bytes`, `:max_sse_buffer_bytes`,
   `:max_tool_call_bytes`, `:max_tool_calls`). A halted stream now kills its
   request process and drops what it sent; it used to keep reading the
-  response into the caller's mailbox. A process other than the caller that
-  halts the stream asks the request to stop instead of killing it.
+  response into the caller's mailbox. Only a 2xx body is streamed, so a
+  redirect's or an error's body no longer surfaces as model output.
+  Enumerating the stream outside the process that called `stream/2` (which
+  never received anything) now raises `ArgumentError` and stops the request.
 - `Backend.Credentials.create_item/3` writes its 1Password template in a
-  fresh 0700 directory under `$XDG_RUNTIME_DIR` (else the system temp
-  directory) with a random name, removes it whatever happens, and sweeps
-  directories a killed VM left behind once they are ten minutes old.
+  fresh, randomly named 0700 directory under `$XDG_RUNTIME_DIR`, else the
+  system temp directory, using either only when it is ours and 0700 or
+  sticky; it removes the directory whatever happens, and sweeps ones a
+  killed VM left behind once they are older than the op timeout plus a
+  minute (at least ten minutes).
 
 ## [3.1.0] - 2026-11-14
 

@@ -38,15 +38,21 @@ defmodule Raxol.Agent.Backend.HTTP do
   ## Streaming limits
 
   `stream/2` ends with `{:error, message}` when the whole response passes
-  `:max_stream_bytes` (default 16 MiB, counted as it arrives, whether or not
-  the stream is being read), when its unframed remainder passes
+  `:max_stream_bytes` (default 128 MiB of wire bytes, every redirect hop
+  included, counted as it arrives whether or not the stream is being read;
+  a token of an OpenAI-style stream costs a few hundred bytes of JSON), when
+  its unframed remainder passes
   `:max_sse_buffer_bytes` (default 1 MiB), when streamed tool-call arguments
   together pass `:max_tool_call_bytes` (default 1 MiB), or when it streams
   more than `:max_tool_calls` (default 128) calls. Each is an option to
   `stream/2`.
 
+  Only a 2xx response's body is streamed: a redirect's or an error's body
+  is counted but never surfaces as model output.
+
   The stream's events are delivered to the process that called `stream/2`,
-  which must also be the one that reads it.
+  so that process must read it: enumerating it anywhere else raises
+  `ArgumentError` and stops the request.
   """
 
   @behaviour Raxol.Agent.AIBackend
@@ -67,7 +73,7 @@ defmodule Raxol.Agent.Backend.HTTP do
   # never sends an event boundary, or streams tool-call fragments without
   # end, would otherwise grow the caller's memory without bound.
   @max_sse_buffer_bytes 1_048_576
-  @max_stream_bytes 16_777_216
+  @max_stream_bytes 134_217_728
   @max_tool_call_bytes 1_048_576
   @max_tool_calls 128
 
@@ -151,6 +157,12 @@ defmodule Raxol.Agent.Backend.HTTP do
   @impl true
   def capabilities, do: [:completion, :streaming, :tool_use]
 
+  @doc """
+  Stream a completion. Besides the configuration options, takes
+  `:max_stream_bytes`, `:max_sse_buffer_bytes`, `:max_tool_call_bytes` and
+  `:max_tool_calls` (see "Streaming limits"). The stream must be read by the
+  calling process.
+  """
   @impl true
   def stream(messages, opts \\ []) do
     if available?() do
@@ -170,9 +182,15 @@ defmodule Raxol.Agent.Backend.HTTP do
       stream =
         Stream.resource(
           fn ->
+            unless self() == caller do
+              send(task_pid, {:sse_stop, ref})
+
+              raise ArgumentError,
+                    "an HTTP backend stream must be read by the process that called stream/2"
+            end
+
             %{
               ref: ref,
-              owner: caller,
               task_pid: task_pid,
               buffer: "",
               provider: provider,
@@ -219,22 +237,30 @@ defmodule Raxol.Agent.Backend.HTTP do
     e -> send(caller, {:sse_error, ref, Exception.message(e)})
   end
 
-  # The total is counted here, in the request process, so the cap holds while
-  # nobody reads the stream: the caller's mailbox never holds more than it.
-  # A `:sse_stop` from a reader that is not the owner ends the request too.
+  # The total is counted here, in the request process (which exists for this
+  # one request, so its dictionary holds the count across redirect hops and
+  # retries), so the cap holds while nobody reads the stream: the caller's
+  # mailbox never holds more than it. Only a 2xx body is forwarded. A
+  # `:sse_stop` (a reader that is not the owner) ends the request.
   defp forward({:data, data}, {req, resp}, caller, ref, max_bytes) do
-    total = Req.Response.get_private(resp, :raxol_stream_bytes, 0) + byte_size(data)
+    total = Process.get({:raxol_stream_bytes, ref}, 0) + byte_size(data)
+    Process.put({:raxol_stream_bytes, ref}, total)
 
     receive do
       {:sse_stop, ^ref} -> {:halt, {req, resp}}
     after
       0 ->
-        if total > max_bytes do
-          send(caller, {:sse_error, ref, "streamed response exceeded #{max_bytes} bytes"})
-          {:halt, {req, resp}}
-        else
-          send(caller, {:sse_data, ref, data})
-          {:cont, {req, Req.Response.put_private(resp, :raxol_stream_bytes, total)}}
+        cond do
+          total > max_bytes ->
+            send(caller, {:sse_error, ref, "streamed response exceeded #{max_bytes} bytes"})
+            {:halt, {req, resp}}
+
+          resp.status in 200..299 ->
+            send(caller, {:sse_data, ref, data})
+            {:cont, {req, resp}}
+
+          true ->
+            {:cont, {req, resp}}
         end
     end
   end
@@ -281,12 +307,11 @@ defmodule Raxol.Agent.Backend.HTTP do
   end
 
   # `:normal` would not stop the linked request process, which then keeps
-  # reading the response into the owner's mailbox. The owner unlinks first
-  # so the kill does not come back to it, waits for the process to be gone,
-  # then drops what it sent. Another process halting the stream holds no
-  # link to undo, and killing would take the owner down over it, so it asks
-  # the request to stop instead.
-  defp stop_request(%{owner: owner, task_pid: pid, ref: ref}) when owner == self() do
+  # reading the response into the owner's mailbox. The owner (the only
+  # process the start function lets read the stream) unlinks first so the
+  # kill does not come back to it, waits for the process to be gone, then
+  # drops what it sent.
+  defp stop_request(%{task_pid: pid, ref: ref}) do
     monitor = Process.monitor(pid)
     Process.unlink(pid)
     Process.exit(pid, :kill)
@@ -299,8 +324,6 @@ defmodule Raxol.Agent.Backend.HTTP do
 
     flush_request(ref)
   end
-
-  defp stop_request(%{task_pid: pid, ref: ref}), do: send(pid, {:sse_stop, ref})
 
   defp flush_request(ref) do
     receive do

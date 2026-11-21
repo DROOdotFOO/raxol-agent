@@ -359,6 +359,7 @@ defmodule Raxol.Agent.Backend.CredentialsTest do
   describe "template_dir/0" do
     setup do
       base = tmp_dir("raxol-runtime")
+      File.chmod!(base, 0o700)
       prev = System.get_env("XDG_RUNTIME_DIR")
       System.put_env("XDG_RUNTIME_DIR", base)
 
@@ -383,6 +384,26 @@ defmodule Raxol.Agent.Backend.CredentialsTest do
       assert dir != other
       assert {:ok, %File.Stat{mode: mode}} = File.stat(dir)
       assert Bitwise.band(mode, 0o777) == 0o700
+    end
+
+    @tag :unix_only
+    test "a runtime dir others may write is passed over for the temp dir", %{base: base} do
+      File.chmod!(base, 0o777)
+
+      assert {:ok, dir} = Credentials.template_dir()
+      assert Path.dirname(dir) == Path.expand(System.tmp_dir!())
+      File.rm_rf!(dir)
+    end
+
+    @tag :unix_only
+    test "a leftover younger than the op timeout is kept", %{base: base} do
+      live = Path.join(base, "raxol-op-live")
+      File.mkdir_p!(live)
+      File.chmod!(live, 0o700)
+      File.touch!(live, System.os_time(:second) - 1_200)
+
+      assert {:ok, _dir} = Credentials.template_dir(3_600_000)
+      assert File.exists?(live)
     end
 
     @tag :unix_only

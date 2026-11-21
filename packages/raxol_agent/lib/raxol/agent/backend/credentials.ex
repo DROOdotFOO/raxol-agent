@@ -421,7 +421,7 @@ defmodule Raxol.Agent.Backend.Credentials do
 
     template = op_template(harness, key)
 
-    with {:ok, dir} <- template_dir() do
+    with {:ok, dir} <- template_dir(Keyword.get(opts, :timeout_ms)) do
       try do
         path = Path.join(dir, "op.json")
 
@@ -448,16 +448,55 @@ defmodule Raxol.Agent.Backend.Credentials do
 
   @doc false
   # A fresh `raxol-op-<random>` directory (0700, ours, created exclusively)
-  # for one template, under `$XDG_RUNTIME_DIR` when it is set (per-user,
-  # tmpfs) and the system temp directory otherwise: both are cleared at
-  # boot and kept out of backups, unlike `~/.raxol`, which also holds the
-  # ciphertext a broker wrapping key protects. `op` reads the template from
-  # a path, its stdin being `/dev/null`. Directories a killed VM left behind
-  # are removed once they are ten minutes old.
-  @spec template_dir() :: {:ok, String.t()} | {:error, term()}
-  def template_dir do
-    base = template_base()
-    sweep_stale_templates(base)
+  # for one template, under `$XDG_RUNTIME_DIR` (per-user, usually tmpfs) or
+  # else the system temp directory, never `~/.raxol`, which is backed up and
+  # holds the ciphertext a broker wrapping key protects. A base is used only
+  # when it is ours and 0700, or sticky (`/tmp`), so nobody else can rename
+  # entries in it; one that is not, or where the directory cannot be made,
+  # falls through to the next. `op` reads the template from a path, its
+  # stdin being `/dev/null`.
+  #
+  # Directories a killed VM left behind are removed once older than the op
+  # timeout plus a minute (at least ten minutes), so a call still waiting on
+  # an approval prompt keeps its own.
+  @spec template_dir(pos_integer() | nil) :: {:ok, String.t()} | {:error, term()}
+  def template_dir(timeout_ms \\ nil) do
+    stale_s = max(@stale_template_s, div(timeout_ms || op_timeout_ms(), 1000) + 60)
+
+    template_bases()
+    |> Enum.filter(&usable_base?/1)
+    |> Enum.reduce_while({:error, {:template_dir, :no_usable_base}}, fn base, _error ->
+      sweep_stale_templates(base, stale_s)
+
+      case make_template_dir(base) do
+        {:ok, dir} -> {:halt, {:ok, dir}}
+        {:error, _} = next_error -> {:cont, next_error}
+      end
+    end)
+  end
+
+  defp template_bases do
+    xdg =
+      case System.get_env("XDG_RUNTIME_DIR") do
+        "/" <> _ = dir -> [dir]
+        _ -> []
+      end
+
+    Enum.uniq(xdg ++ [System.tmp_dir!()])
+  end
+
+  defp usable_base?(base) do
+    case File.stat(base) do
+      {:ok, %File.Stat{type: :directory} = stat} ->
+        match?({:win32, _}, :os.type()) or Bitwise.band(stat.mode, 0o1000) != 0 or
+          (OperatorFile.owned_unshared(stat) == :ok and Bitwise.band(stat.mode, 0o077) == 0)
+
+      _ ->
+        false
+    end
+  end
+
+  defp make_template_dir(base) do
     name = "raxol-op-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
     dir = Path.join(base, name)
 
@@ -472,15 +511,8 @@ defmodule Raxol.Agent.Backend.Credentials do
     end
   end
 
-  defp template_base do
-    case System.get_env("XDG_RUNTIME_DIR") do
-      "/" <> _ = dir -> if File.dir?(dir), do: dir, else: System.tmp_dir!()
-      _ -> System.tmp_dir!()
-    end
-  end
-
-  defp sweep_stale_templates(base) do
-    cutoff = System.os_time(:second) - @stale_template_s
+  defp sweep_stale_templates(base, stale_s) do
+    cutoff = System.os_time(:second) - stale_s
 
     for dir <- Path.wildcard(Path.join(base, "raxol-op-*")),
         {:ok, %File.Stat{type: :directory, mtime: mtime} = stat} <- [

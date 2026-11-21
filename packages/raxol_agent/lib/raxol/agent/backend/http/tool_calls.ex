@@ -40,10 +40,14 @@ defmodule Raxol.Agent.Backend.HTTP.ToolCalls do
       cur = Map.get(acc, idx, %{"id" => nil, "name" => nil, "args" => ""})
       fun = frag["function"] || %{}
 
+      args = merge_args(cur["args"], fun["arguments"])
+
+      # The size is taken once here, so `check_size/3` per chunk is a sum.
       Map.put(acc, idx, %{
         "id" => frag["id"] || cur["id"],
         "name" => fun["name"] || cur["name"],
-        "args" => merge_args(cur["args"], fun["arguments"])
+        "args" => args,
+        "bytes" => args_size(args)
       })
     end)
   end
@@ -74,13 +78,16 @@ defmodule Raxol.Agent.Backend.HTTP.ToolCalls do
 
   @doc """
   `:ok` while `acc` holds at most `max_calls` calls whose arguments (string
-  bytes, or a map's external size) total at most `max_bytes`, else an error naming the limit. A streamed
-  response is network input, and its fragments otherwise accumulate without
-  bound.
+  bytes, or a map's external size) total at most `max_bytes`, else an error
+  naming the limit. A streamed response is network input, and its fragments
+  otherwise accumulate without bound.
   """
   @spec check_size(acc(), pos_integer(), pos_integer()) :: :ok | {:error, String.t()}
   def check_size(acc, max_bytes, max_calls) do
-    bytes = for {_idx, %{"args" => a}} <- acc, reduce: 0, do: (n -> n + args_size(a))
+    bytes =
+      for {_idx, call} <- acc,
+          reduce: 0,
+          do: (n -> n + Map.get_lazy(call, "bytes", fn -> args_size(call["args"]) end))
 
     cond do
       map_size(acc) > max_calls ->

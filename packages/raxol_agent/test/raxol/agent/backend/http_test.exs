@@ -205,12 +205,81 @@ defmodule Raxol.Agent.Backend.HTTPTest do
     end
 
     test "a halted stream stops its request process and leaves no messages" do
-      body = "data: " <> String.duplicate("x", 200)
-      [{:error, _}] = stream_body(body, max_sse_buffer_bytes: 100)
+      test_pid = self()
+
+      plugin = fn req ->
+        Req.merge(req,
+          plug: fn conn ->
+            send(test_pid, {:request_pid, self()})
+            Plug.Conn.send_resp(conn, 200, "data: " <> String.duplicate("x", 200))
+          end,
+          retry: false
+        )
+      end
+
+      {:ok, stream} =
+        HTTP.stream([%{role: :user, content: "hi"}],
+          provider: :openai,
+          api_key: "t",
+          base_url: "http://stub",
+          req_plugins: [plugin],
+          max_sse_buffer_bytes: 100
+        )
+
+      assert [{:error, _}] = Enum.to_list(stream)
+      assert_received {:request_pid, request_pid}
+      refute Process.alive?(request_pid)
 
       refute_received {:sse_data, _, _}
       refute_received {:sse_done, _}
       refute_received {:sse_error, _, _}
+    end
+
+    test "a redirect's body is counted toward the total but never streamed" do
+      plugin = fn req ->
+        Req.merge(req,
+          plug: fn
+            %{request_path: "/landed"} = conn ->
+              Plug.Conn.send_resp(conn, 200, "data: [DONE]\n\n")
+
+            conn ->
+              conn
+              |> Plug.Conn.put_resp_header("location", "/landed")
+              |> Plug.Conn.send_resp(
+                307,
+                "data: " <>
+                  Jason.encode!(%{"choices" => [%{"delta" => %{"content" => "injected"}}]}) <>
+                  "\n\n"
+              )
+          end,
+          retry: false
+        )
+      end
+
+      {:ok, stream} =
+        HTTP.stream([%{role: :user, content: "hi"}],
+          provider: :openai,
+          api_key: "t",
+          base_url: "http://stub",
+          req_plugins: [plugin]
+        )
+
+      events = Enum.to_list(stream)
+      refute {:chunk, "injected"} in events
+      assert {:done, %{content: ""}} = List.last(events)
+    end
+
+    test "a stream read by another process raises instead of hanging" do
+      {:ok, stream} =
+        HTTP.stream([%{role: :user, content: "hi"}],
+          provider: :openai,
+          api_key: "t",
+          base_url: "http://127.0.0.1:9",
+          req_plugins: [&Req.merge(&1, retry: false)]
+        )
+
+      task = Task.async(fn -> catch_error(Enum.take(stream, 1)) end)
+      assert %ArgumentError{} = Task.await(task)
     end
 
     test "a response within the limits completes" do
