@@ -51,5 +51,6 @@ defmodule Raxol.AgentClientProtocol.Schema.McpServerStrictnessTest do
              McpServer.from_json(Map.put(@stdio, "type", "HTTP"))
 
     assert {:ok, {:stdio, _}} = McpServer.from_json(Map.put(@stdio, "type", "stdio"))
+    assert {:ok, {:stdio, %{args: []}}} = McpServer.from_json(%{@stdio | "args" => nil})
   end
 end

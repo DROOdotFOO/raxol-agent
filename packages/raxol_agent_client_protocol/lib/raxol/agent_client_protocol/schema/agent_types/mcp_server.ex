@@ -257,6 +257,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServerStdio do
 
   # These fields end up in a spawned command line, so anything but a list of
   # strings is refused.
+  defp decode_args(nil), do: {:ok, []}
+
   defp decode_args(args) when is_list(args) do
     if Enum.all?(args, &is_binary/1),
       do: {:ok, args},

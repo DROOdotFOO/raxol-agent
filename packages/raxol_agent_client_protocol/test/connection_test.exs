@@ -50,6 +50,17 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest.ScriptClient do
   def read_text_file(req, ctx), do: Rendezvous.invoke(:read_text_file, req, ctx)
 end
 
+defmodule Raxol.AgentClientProtocol.ConnectionTest.FastClient do
+  @moduledoc false
+  use Raxol.AgentClientProtocol.Client
+
+  @impl true
+  def session_update(note, ctx) do
+    send(ctx.handler_state, {:fast_update, note})
+    :ok
+  end
+end
+
 defmodule Raxol.AgentClientProtocol.ConnectionTest do
   # async: false -- several tests use `:erlang.system_info(:atom_count)`
   # (node-wide) and the package-level named `SessionRegistry` singleton
@@ -2023,6 +2034,48 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       wait_until(fn -> :sys.get_state(conn).notif_tasks == 0 end)
     end
 
+    test "a backlog of fast notifications is not shed by the cap" do
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :notif_backlog_sup)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :client,
+            transport: {Paired, conn_handle},
+            handler: Raxol.AgentClientProtocol.ConnectionTest.FastClient,
+            handler_arg: self(),
+            task_sup: task_sup,
+            max_notification_tasks: 2
+          )
+        )
+
+      init =
+        Task.async(fn ->
+          Connection.request(conn, "initialize", %{"protocolVersion" => 1}, 2000)
+        end)
+
+      frame = ScriptedPeer.recv(peer)
+      ScriptedPeer.send_result(peer, frame["id"], %{"protocolVersion" => 1})
+      {:ok, _} = Task.await(init)
+
+      # Queue the frames while the Connection is suspended, so their handlers'
+      # results land behind the backlog.
+      :sys.suspend(conn)
+
+      for i <- 1..10,
+          do:
+            ScriptedPeer.send_notification(
+              peer,
+              "session/update",
+              session_update_params("s1", "m#{i}")
+            )
+
+      :sys.resume(conn)
+
+      for _ <- 1..10, do: assert_receive({:fast_update, _}, 1_000)
+    end
+
     test "a non-positive :max_notification_tasks refuses to start" do
       Process.flag(:trap_exit, true)
       {conn_handle, _peer} = ScriptedPeer.new()
@@ -2057,6 +2110,63 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
         )
 
       %{conn: conn, peer: peer}
+    end
+
+    test "outbound requests fail at once when the peer closes, while inbound drains" do
+      %{conn: conn, peer: peer} = start_drain_conn(:infinity)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 89, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      :ok =
+        Connection.async_request(
+          conn,
+          "session/request_permission",
+          %{"sessionId" => "s"},
+          self(),
+          :perm,
+          60_000
+        )
+
+      _ = ScriptedPeer.recv(peer)
+      send(conn, {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, :eof}})
+
+      assert_receive {:acp_result, :perm, {:error, :connection_closed}}, 500
+      assert %{draining?: true, pending_out: out} = :sys.get_state(conn)
+      assert out == %{}
+    end
+
+    test "the peer's answer to a request this side cancelled is dropped quietly" do
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      :telemetry.attach(
+        "late-resp",
+        [:raxol, :acp, :late_response],
+        &__MODULE__.forward_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("late-resp") end)
+
+      :ok =
+        Connection.async_request(
+          conn,
+          "session/request_permission",
+          %{"sessionId" => "s"},
+          self(),
+          :t,
+          60_000
+        )
+
+      %{"id" => id} = ScriptedPeer.recv(peer)
+      :ok = Connection.cancel_request(conn, :t)
+      assert %{"method" => "$/cancel_request"} = ScriptedPeer.recv(peer)
+
+      ScriptedPeer.send_error(peer, id, %{"code" => -32_800, "message" => "Request cancelled"})
+      _ = :sys.get_state(conn)
+      refute_receive {:telemetry, [:raxol, :acp, :late_response], _}, 100
+      assert :sys.get_state(conn).abandoned_out == %{}
     end
 
     test ":close_drain_ms bounds how long a closed connection waits" do

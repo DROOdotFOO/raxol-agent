@@ -7,7 +7,7 @@ defmodule Raxol.AgentClientProtocol.InvariantsCitationsTest do
   # Rows that deliberately cite a comment or moduledoc line, with text that
   # line must contain.
   @comment_citations %{
-    "connection_test.exs:80" => "IC-8 pins Connection",
+    "connection_test.exs:91" => "IC-8 pins Connection",
     "integration/end_to_end_test.exs:301" => "IC-8",
     "integration/end_to_end_test.exs:21" => "P-JS5",
     "attach_policy_test.exs:2" => "P-BUS4",

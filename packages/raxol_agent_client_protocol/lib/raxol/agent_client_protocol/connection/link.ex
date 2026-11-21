@@ -76,10 +76,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
   def down(%{phase: :closed} = state), do: state
 
   def down(state) do
-    Enum.each(state.pending_out, fn {_id, %{reply_to: rt, timer_ref: timer}} ->
-      if timer, do: Process.cancel_timer(timer)
-      deliver(rt, {:error, :connection_closed})
-    end)
+    state = fail_outbound(state)
 
     Enum.each(state.pending_in, fn {_id, entry} -> stop_inbound(state, entry) end)
 
@@ -97,6 +94,18 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         timed_out_adopters: %{},
         phase: :closed
     })
+  end
+
+  # Every pending outbound request fails with `:connection_closed`: once the
+  # peer has closed, no response can arrive.
+  @spec fail_outbound(state()) :: state()
+  def fail_outbound(state) do
+    Enum.each(state.pending_out, fn {_id, %{reply_to: rt, timer_ref: timer}} ->
+      if timer, do: Process.cancel_timer(timer)
+      deliver(rt, {:error, :connection_closed})
+    end)
+
+    %{state | pending_out: %{}, out_tags: %{}, abandoned_out: %{}}
   end
 
   defp stop_inbound(_state, %{adopter: {_apid, mon}}), do: Process.demonitor(mon, [:flush])

@@ -75,6 +75,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
             draining?: false,
             cancel_reply_timeout_ms: @default_cancel_reply_timeout_ms,
             timed_out_adopters: %{},
+            abandoned_out: %{},
             turns: %{},
             turn_ids: %{},
             oot_seq: %{}
@@ -110,6 +111,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
           draining?: boolean(),
           cancel_reply_timeout_ms: pos_integer() | :infinity,
           timed_out_adopters: %{reference() => reference()},
+          abandoned_out: %{Raxol.AgentClientProtocol.Rpc.RequestId.t() => true},
           turns: %{String.t() => TurnState.t()},
           turn_ids: map(),
           oot_seq: %{String.t() => non_neg_integer()}
@@ -418,7 +420,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
       if state.close_drain_ms != :infinity,
         do: Process.send_after(self(), {:acp_close_drained, reason}, state.close_drain_ms)
 
-      {:noreply, %{state | draining?: true}}
+      {:noreply, %{Link.fail_outbound(state) | draining?: true}}
     else
       {:stop, :normal, Link.down(state)}
     end

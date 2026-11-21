@@ -88,7 +88,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
         {entry, pending_out} = Map.pop(state.pending_out, id)
         if entry && entry.timer_ref, do: Process.cancel_timer(entry.timer_ref)
         Link.cancel_notify(state, id)
-        Turns.pop_silent(%{state | pending_out: pending_out, out_tags: out_tags}, id)
+
+        %{state | pending_out: pending_out, out_tags: out_tags}
+        |> abandon(id)
+        |> Turns.pop_silent(id)
     end
   end
 
@@ -102,7 +105,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
         state = Turns.close(state, id)
         Link.deliver(rt, {:error, :timeout})
         Link.cancel_notify(state, id)
-        %{state | pending_out: pending_out, out_tags: drop_tag(state.out_tags, rt)}
+        abandon(%{state | pending_out: pending_out, out_tags: drop_tag(state.out_tags, rt)}, id)
     end
   end
 
@@ -111,6 +114,9 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
     id = elem(resp, 1)
 
     case Map.pop(state.pending_out, id) do
+      {nil, _} when is_map_key(state.abandoned_out, id) ->
+        %{state | abandoned_out: Map.delete(state.abandoned_out, id)}
+
       {nil, _} ->
         Logger.warning("ACP: late/unknown response id #{RequestId.display(id)} dropped")
         Telemetry.execute([:raxol, :acp, :late_response], %{id: RequestId.display(id)})
@@ -151,6 +157,14 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
   # session/new and session/fork results name a session this side now owns.
   defp track_result(state, {:ok, result}), do: Turns.track(state, result)
   defp track_result(state, _outcome), do: state
+
+  # Ids this side cancelled or timed out; the peer still answers them (it must),
+  # and that answer is expected, not late. Bounded so a peer that never answers
+  # cannot grow it.
+  @max_abandoned 1_024
+
+  defp abandon(state, _id) when map_size(state.abandoned_out) >= @max_abandoned, do: state
+  defp abandon(state, id), do: %{state | abandoned_out: Map.put(state.abandoned_out, id, true)}
 
   defp arm_timer(_id, :infinity), do: nil
 

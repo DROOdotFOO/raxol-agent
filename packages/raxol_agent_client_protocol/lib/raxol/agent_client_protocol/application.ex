@@ -101,6 +101,8 @@ defmodule RaxolAgentClientProtocol.Application do
   @spec children() :: [Supervisor.child_spec() | {module(), term()}]
   def children do
     [
+      # owner of the Client.subscribe/3 table; first, so it stops last.
+      Raxol.AgentClientProtocol.Client.Subscriptions,
       # (1) the ONE package-level Session registry.
       {Registry, keys: :unique, name: @session_registry},
       # (2) the journal single-publisher Writers.
@@ -110,9 +112,7 @@ defmodule RaxolAgentClientProtocol.Application do
       #     (without it every attach denies :policy_infra).
       {Task.Supervisor, name: @attach_task_supervisor},
       # standalone-mode connection host.
-      {DynamicSupervisor, name: @connections_supervisor, strategy: :one_for_one},
-      # owner of the Client.subscribe/3 table.
-      Raxol.AgentClientProtocol.Client.Subscriptions
+      {DynamicSupervisor, name: @connections_supervisor, strategy: :one_for_one}
     ]
   end
 

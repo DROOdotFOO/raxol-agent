@@ -65,11 +65,16 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
   defp spawn_notification(
          %{notif_tasks: n, max_notification_tasks: max} = state,
          method,
-         _dispatchable,
-         _stamp
+         dispatchable,
+         stamp
        )
-       when n >= max,
-       do: shed(state, method, "#{max} notification handlers already running")
+       when n >= max do
+    state = reap_finished(state)
+
+    if state.notif_tasks >= max,
+      do: shed(state, method, "#{max} notification handlers already running"),
+      else: spawn_notification(state, method, dispatchable, stamp)
+  end
 
   defp spawn_notification(state, method, dispatchable, stamp) do
     case Dispatch.start(state, dispatchable, %{Dispatch.ctx(state) | delivery_stamp: stamp}) do
@@ -85,6 +90,34 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
          }}
     end
   end
+
+  # A finished handler's result can still sit behind queued frames; count those
+  # as done before deciding the pool is full.
+  defp reap_finished(%{task_index: index} = state) do
+    receive do
+      {ref, _result}
+      when is_reference(ref) and is_map_key(index, ref) and
+             elem(:erlang.map_get(ref, index), 0) == :notification ->
+        Process.demonitor(ref, [:flush])
+        state |> forget_task(ref) |> reap_finished()
+
+      {:DOWN, ref, :process, _pid, reason}
+      when is_map_key(index, ref) and elem(:erlang.map_get(ref, index), 0) == :notification ->
+        if reason != :normal,
+          do: Logger.error("ACP: notification handler crashed: #{inspect(reason)}")
+
+        state |> forget_task(ref) |> reap_finished()
+    after
+      0 -> state
+    end
+  end
+
+  defp forget_task(state, ref),
+    do: %{
+      state
+      | task_index: Map.delete(state.task_index, ref),
+        notif_tasks: state.notif_tasks - 1
+    }
 
   defp shed(state, method, why) do
     Logger.warning("ACP: notification #{Rpc.printable(method)} dropped: #{why}")
