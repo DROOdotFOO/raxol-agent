@@ -1815,7 +1815,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 8, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
     end
 
-    test "delegating after the peer cancelled fails (the entry is gone or cancelled)" do
+    test "no frame is sent when the peer cancels during delegation" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)

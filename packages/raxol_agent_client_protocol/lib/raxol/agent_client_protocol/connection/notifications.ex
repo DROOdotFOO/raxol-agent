@@ -35,9 +35,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
           GenServer.cast(spid, {:acp_session_cancel, rx_seq})
 
         [] ->
-          Logger.debug(
-            "ACP: session/cancel for unknown session #{Raxol.AgentClientProtocol.Rpc.loggable(session_id)}"
-          )
+          Logger.debug("ACP: session/cancel for unknown session #{Rpc.loggable(session_id)}")
       end
     end
 

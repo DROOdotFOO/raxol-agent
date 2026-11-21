@@ -90,6 +90,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   alias Raxol.AgentClientProtocol.Ext.AttachPolicy
   alias Raxol.AgentClientProtocol.Ext.Journal
   alias Raxol.AgentClientProtocol.Ext.Journal.Writer
+  alias Raxol.AgentClientProtocol.Rpc
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.LoadSessionResponse
 
   @vendor "raxol.io"
@@ -353,9 +354,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
       %{session_id: sid, surface: surface, reason: reason}
     )
 
-    Logger.debug(
-      "acp reattach: attach denied for #{Raxol.AgentClientProtocol.Rpc.loggable(sid)} (#{inspect(reason)})"
-    )
+    Logger.debug("acp reattach: attach denied for #{Rpc.loggable(sid)} (#{inspect(reason)})")
 
     :ok
   end

@@ -93,6 +93,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   require Logger
 
   alias Raxol.AgentClientProtocol.Ext.Journal.Record
+  alias Raxol.AgentClientProtocol.Rpc
 
   @registry Raxol.AgentClientProtocol.Ext.Journal.WriterRegistry
 
@@ -413,7 +414,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
     # (which go through `persist` as the holder / the Writer itself) are unaffected.
     Logger.warning(
       "acp journal: turn_completed by a non-holder for turn #{inspect(turn_id)} " <>
-        "on session #{Raxol.AgentClientProtocol.Rpc.loggable(state.session_id)}; durable append REFUSED"
+        "on session #{Rpc.loggable(state.session_id)}; durable append REFUSED"
     )
 
     emit_non_holder_rejected(state, turn_id)
@@ -460,7 +461,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   @spec orphan_repair(t()) :: t()
   defp orphan_repair(%__MODULE__{turn: %{turn_id: turn_id}} = state) do
     Logger.debug(
-      "acp journal: orphan-repairing dangling turn #{inspect(turn_id)} for session #{Raxol.AgentClientProtocol.Rpc.loggable(state.session_id)}"
+      "acp journal: orphan-repairing dangling turn #{inspect(turn_id)} for session #{Rpc.loggable(state.session_id)}"
     )
 
     append_orphan(state, turn_id)

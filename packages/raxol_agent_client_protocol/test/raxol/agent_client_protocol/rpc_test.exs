@@ -13,6 +13,8 @@ defmodule Raxol.AgentClientProtocol.RpcTest do
     assert RequestId.display("a\n[error] forged") == ~S(a\n[error] forged)
     assert "abc" |> String.duplicate(100) |> RequestId.display() |> String.length() == 128
     assert RequestId.display(<<97, 98, 255, 10>>) == "<binary>"
+    assert RequestId.display("a\0b") == ~S(a\0b)
+    assert RequestId.display("x\x1F\x7F") == ~S(x\x1F\d)
     combining = "a" <> String.duplicate("\u0301", 5_000)
     assert byte_size(RequestId.display(combining)) <= 600
   end

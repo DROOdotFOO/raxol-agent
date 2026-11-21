@@ -167,7 +167,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
   a no-op that emits `[:raxol, :acp, :dup_reply]`. A malformed result is
   answered `-32603`; extension methods may reply with a plain map.
   """
-  @spec reply(pid(), reference(), {:ok, map()} | {:error, Error.t()} | term()) :: :ok
+  @spec reply(pid(), reference(), {:ok, map()} | {:error, Error.t()}) :: :ok
   def reply(conn, reply_ref, result_or_error) when is_pid(conn) and is_reference(reply_ref) do
     call(conn, {:reply, reply_ref, result_or_error})
   end
@@ -180,7 +180,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
   Returns the current delivery watermark for `session_id`. Serialized with the
   point that assigns ordinals, so a caller that subscribes and then calls this
   knows every later stamp reaches it. `turn: nil` means no open turn. Sessions
-  beyond the out-of-turn tracking cap (10,000 per connection) report `0`.
+  outside the out-of-turn tracking cap (`Connection.Turns.max_oot_sessions/0`
+  sessions, ids of at most 256 bytes) report `0`.
   """
   @spec update_watermark(pid(), String.t()) ::
           {:ok, %{turn: reference() | nil, ordinal: non_neg_integer()}}

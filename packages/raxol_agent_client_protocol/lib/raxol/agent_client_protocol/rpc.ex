@@ -23,8 +23,9 @@ defmodule Raxol.AgentClientProtocol.Rpc do
 
   @doc """
   A peer-supplied string made safe for logs and telemetry: cut to
-  #{@max_printable} characters and #{@max_printable_bytes} bytes, then control characters escaped (so a peer
-  cannot forge log lines). Invalid UTF-8 becomes `"<binary>"`.
+  #{@max_printable} characters and #{@max_printable_bytes} bytes, then escaped as in a
+  string literal (so a peer cannot forge log lines). Invalid UTF-8 becomes
+  `"<binary>"`.
   """
   @spec printable(binary()) :: String.t()
   def printable(string) when is_binary(string) do
@@ -33,7 +34,7 @@ defmodule Raxol.AgentClientProtocol.Rpc do
         string
         |> String.slice(0, @max_printable)
         |> cap_bytes()
-        |> inspect()
+        |> inspect(binaries: :as_strings)
 
       binary_part(escaped, 1, byte_size(escaped) - 2)
     else
@@ -57,6 +58,8 @@ defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
   JSON-RPC request id: `null | integer | string`. Wire type is preserved
   exactly (no coercion between string and integer ids).
   """
+
+  alias Raxol.AgentClientProtocol.Rpc
 
   @type t :: nil | integer() | String.t()
 
@@ -82,8 +85,8 @@ defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
   @doc "The id for logs and telemetry; string ids go through `Rpc.printable/1`."
   @spec display(t()) :: String.t()
   def display(nil), do: "null"
-  def display(id) when is_integer(id), do: id |> Integer.to_string() |> String.slice(0, 128)
-  def display(id) when is_binary(id), do: Raxol.AgentClientProtocol.Rpc.printable(id)
+  def display(id) when is_integer(id), do: id |> Integer.to_string() |> Rpc.printable()
+  def display(id) when is_binary(id), do: Rpc.printable(id)
 end
 
 defmodule Raxol.AgentClientProtocol.Rpc.Request do
