@@ -50,6 +50,29 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest.ScriptClient do
   def read_text_file(req, ctx), do: Rendezvous.invoke(:read_text_file, req, ctx)
 end
 
+defmodule Raxol.AgentClientProtocol.ConnectionTest.FastClient do
+  @moduledoc false
+  use Raxol.AgentClientProtocol.Client
+
+  # Reports; a "hold" mode update then waits to be released, so a test controls
+  # when it finishes.
+  @impl true
+  def session_update(note, ctx) do
+    send(ctx.handler_state, {:fast_update, note, self()})
+    {:current_mode_update, %{current_mode_id: mode}} = note.update
+
+    if String.starts_with?(mode, "hold") do
+      receive do
+        :go -> :ok
+      after
+        1_000 -> :ok
+      end
+    end
+
+    :ok
+  end
+end
+
 defmodule Raxol.AgentClientProtocol.ConnectionTest do
   # async: false -- several tests use `:erlang.system_info(:atom_count)`
   # (node-wide) and the package-level named `SessionRegistry` singleton
@@ -281,12 +304,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       ScriptedPeer.send_cancel_request(peer, 9)
 
-      # reason is whatever Task.Supervisor.terminate_child produces (observed:
-      # :shutdown, not the :killed the design's own §8.4 prose uses -- a
-      # diagram-wording nit, not a contract violation; the id-9 response
-      # suppression below is the actual invariant under test).
       assert_receive {:DOWN, ^task_ref, :process, ^task_pid, _reason}, 500
-      # *** no frame with id 9 is EVER emitted ***
+      # The cancelled request is still answered: -32800, exactly once.
+      assert %{"id" => 9, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 200)
       assert Process.alive?(conn)
     end
@@ -559,7 +579,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert normal["id"] == 100
       assert normal["result"]["sessionId"] == "s1"
 
-      # cancelled, undelegated -> exactly zero
+      # cancelled, undelegated -> exactly one -32800
       ScriptedPeer.send_request(peer, 101, "session/new", new_session_params())
 
       %{task_pid: t101} =
@@ -567,12 +587,11 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       ref101 = Process.monitor(t101)
       ScriptedPeer.send_cancel_request(peer, 101)
-      # reason is whatever Task.Supervisor.terminate_child produces (observed
-      # :shutdown, not the design prose's :killed -- see §8.4's note).
       assert_receive {:DOWN, ^ref101, :process, ^t101, _reason}, 500
+      assert %{"id" => 101, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
 
-      # cancelled, delegated -> exactly zero
+      # cancelled, delegated -> exactly one: the adopter's reply
       ScriptedPeer.send_request(peer, 102, "session/prompt", prompt_params("s1"))
 
       %{ctx: ctx102} =
@@ -591,7 +610,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert_receive :delegated_102, 500
       ScriptedPeer.send_cancel_request(peer, 102)
       assert_receive {:acp_reply_cancelled, reply_ref} when reply_ref == ctx102.reply_ref, 500
-      :ok = Connection.reply(conn, ctx102.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      :ok = Connection.reply(conn, ctx102.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      assert %{"id" => 102, "result" => %{"stopReason" => "cancelled"}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
     end
 
@@ -1005,6 +1025,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       frame = ScriptedPeer.recv(peer)
       assert frame["id"] == 77
       assert frame["result"]["sessionId"] == "/held"
+
+      # Nothing left in flight: the Connection stops right away.
+      assert_receive {:DOWN, ^cmon, :process, ^conn, :normal}, 500
     end
 
     test "a closed read side with nothing in flight still stops at once" do
@@ -1137,7 +1160,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert :ok = Connection.reply(conn, c1.reply_ref, {:ok, PromptResponse.new(:end_turn)})
       ScriptedPeer.assert_no_frame(peer, 150)
 
-      # cancel then reply -> no frame, reply/3 still returns :ok
+      # cancel then reply -> the adopter's reply is the one frame
       ScriptedPeer.send_request(peer, 2, "session/prompt", prompt_params("s1"))
 
       %{ctx: c2} =
@@ -1153,7 +1176,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert_receive :delegated_2, 500
       ScriptedPeer.send_cancel_request(peer, 2)
       assert_receive {:acp_reply_cancelled, ref2} when ref2 == c2.reply_ref, 500
-      assert :ok = Connection.reply(conn, c2.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      assert :ok = Connection.reply(conn, c2.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      assert %{"id" => 2, "result" => _} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
     end
 
@@ -1452,7 +1476,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert frame["error"]["code"] == Raxol.AgentClientProtocol.Error.internal_error_code()
     end
 
-    test "row 30: adopter dies on a cancelled entry -> silent, zero frames" do
+    test "row 30: adopter dies on a cancelled entry -> one -32800 frame" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1477,6 +1501,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       end)
 
       Process.exit(adopter, :kill)
+      assert %{"id" => 81, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 200)
     end
 
@@ -1828,7 +1853,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 8, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
     end
 
-    test "no frame is sent when the peer cancels during delegation" do
+    test "a cancel before delegation answers -32800 once and refuses the delegation" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1851,11 +1876,12 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
         end
       end)
 
-      assert {:error, _} = Connection.delegate_reply(conn, ctx.reply_ref, self())
+      assert %{"id" => 20, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
+      assert {:error, :unknown_ref} = Connection.delegate_reply(conn, ctx.reply_ref, self())
       ScriptedPeer.assert_no_frame(peer, 150)
     end
 
-    test "a cancel between delegation and :deferred leaves the reply to the adopter" do
+    test "a cancel between delegation and :deferred: the adopter's reply is the one frame" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1876,6 +1902,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       wait_until(fn -> match?(%{22 => %{task_pid: nil}}, :sys.get_state(conn).pending_in) end)
       :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      assert %{"id" => 22, "result" => %{"stopReason" => "cancelled"}} = ScriptedPeer.recv(peer)
       ScriptedPeer.assert_no_frame(peer, 150)
       assert :sys.get_state(conn).pending_in == %{}
     end
@@ -1969,4 +1996,431 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert Process.alive?(conn)
     end
   end
+
+  describe "notification task cap" do
+    test "notifications beyond :max_notification_tasks are dropped, requests unaffected" do
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :notif_cap_sup)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :client,
+            transport: {Paired, conn_handle},
+            handler: ScriptClient,
+            handler_arg: self(),
+            task_sup: task_sup,
+            max_notification_tasks: 2
+          )
+        )
+
+      init =
+        Task.async(fn ->
+          Connection.request(conn, "initialize", %{"protocolVersion" => 1}, 2000)
+        end)
+
+      frame = ScriptedPeer.recv(peer)
+      ScriptedPeer.send_result(peer, frame["id"], %{"protocolVersion" => 1})
+      {:ok, _} = Task.await(init)
+
+      :telemetry.attach(
+        "notif-cap-test",
+        [:raxol, :acp, :notification_shed],
+        &__MODULE__.forward_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("notif-cap-test") end)
+
+      for m <- ["m1", "m2", "m3"] do
+        ScriptedPeer.send_notification(peer, "session/update", session_update_params("s1", m))
+      end
+
+      # Two handlers park in the rendezvous; the third notification is shed.
+      assert_receive {:handler_invoke, :session_update, _, _, t1, r1}
+      assert_receive {:handler_invoke, :session_update, _, _, t2, r2}
+      assert_receive {:telemetry, [:raxol, :acp, :notification_shed], %{method: "session/update"}}
+      refute_receive {:handler_invoke, :session_update, _, _, _, _}, 100
+
+      for {t, r} <- [{t1, r1}, {t2, r2}], do: send(t, {:handler_run, r, fn _n, _c -> :ok end})
+      wait_until(fn -> Task.Supervisor.children(:sys.get_state(conn).notif_sup) == [] end)
+    end
+
+    test "a backlog of fast notifications is not shed by the cap" do
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :notif_backlog_sup)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :client,
+            transport: {Paired, conn_handle},
+            handler: Raxol.AgentClientProtocol.ConnectionTest.FastClient,
+            handler_arg: self(),
+            task_sup: task_sup,
+            max_notification_tasks: 2
+          )
+        )
+
+      init =
+        Task.async(fn ->
+          Connection.request(conn, "initialize", %{"protocolVersion" => 1}, 2000)
+        end)
+
+      frame = ScriptedPeer.recv(peer)
+      ScriptedPeer.send_result(peer, frame["id"], %{"protocolVersion" => 1})
+      {:ok, _} = Task.await(init)
+
+      send_update = fn i ->
+        ScriptedPeer.send_notification(
+          peer,
+          "session/update",
+          session_update_params("s1", "m#{i}")
+        )
+      end
+
+      # Two handlers run and park at the cap.
+      for i <- 1..2, do: send_update.(i)
+
+      parked =
+        for _ <- 1..2 do
+          assert_receive {:fast_update, _, pid}
+          pid
+        end
+
+      # Eight more frames queue, then the two handlers finish: their results
+      # land in the Connection's mailbox behind the queued frames.
+      :sys.suspend(conn)
+      for i <- 3..10, do: send_update.("m#{i}")
+
+      wait_until(fn ->
+        {:message_queue_len, n} = Process.info(conn, :message_queue_len)
+        n >= 8
+      end)
+
+      for pid <- parked, do: send(pid, :go)
+      wait_until(fn -> Enum.all?(parked, &(not Process.alive?(&1))) end)
+      :sys.resume(conn)
+
+      # The pool knows they finished, so none of the eight is shed.
+      for _ <- 3..10, do: assert_receive({:fast_update, _, _pid}, 1_000)
+    end
+
+    test "a non-positive :max_notification_tasks refuses to start" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      assert {:error, {:invalid_option, :max_notification_tasks, 0}} =
+               Connection.start_link(
+                 role: :client,
+                 transport: {Paired, conn_handle},
+                 handler: ScriptClient,
+                 handler_arg: self(),
+                 task_sup: self(),
+                 max_notification_tasks: 0
+               )
+    end
+  end
+
+  describe "close drain bound" do
+    defp start_drain_conn(close_drain_ms) do
+      task_sup = start_supervised!({Task.Supervisor, []}, id: {:drain_sup, make_ref()})
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :agent,
+            transport: {Paired, conn_handle},
+            handler: ScriptAgent,
+            handler_arg: self(),
+            task_sup: task_sup,
+            close_drain_ms: close_drain_ms
+          )
+        )
+
+      %{conn: conn, peer: peer}
+    end
+
+    test "outbound requests fail at once when the peer closes, while inbound drains" do
+      %{conn: conn, peer: peer} = start_drain_conn(:infinity)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 89, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      :ok =
+        Connection.async_request(
+          conn,
+          "session/request_permission",
+          %{"sessionId" => "s"},
+          self(),
+          :perm,
+          60_000
+        )
+
+      _ = ScriptedPeer.recv(peer)
+      send(conn, {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, :eof}})
+
+      assert_receive {:acp_result, :perm, {:error, :connection_closed}}, 500
+      assert %{draining?: true, pending_out: out} = :sys.get_state(conn)
+      assert out == %{}
+    end
+
+    test "the peer's answer to a request this side cancelled is dropped quietly" do
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      :telemetry.attach(
+        "late-resp",
+        [:raxol, :acp, :late_response],
+        &__MODULE__.forward_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("late-resp") end)
+
+      :ok =
+        Connection.async_request(
+          conn,
+          "session/request_permission",
+          %{"sessionId" => "s"},
+          self(),
+          :t,
+          60_000
+        )
+
+      %{"id" => id} = ScriptedPeer.recv(peer)
+      :ok = Connection.cancel_request(conn, :t)
+      assert %{"method" => "$/cancel_request"} = ScriptedPeer.recv(peer)
+
+      ScriptedPeer.send_error(peer, id, %{"code" => -32_800, "message" => "Request cancelled"})
+      _ = :sys.get_state(conn)
+      refute_receive {:telemetry, [:raxol, :acp, :late_response], _}, 100
+      assert :sys.get_state(conn).abandoned_out == %{}
+    end
+
+    test "while draining, new requests are refused but notifications still go out" do
+      %{conn: conn, peer: peer} = start_drain_conn(:infinity)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 90, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      send(conn, {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, :eof}})
+
+      assert {:error, :connection_closed} =
+               Connection.async_request(
+                 conn,
+                 "session/request_permission",
+                 %{"sessionId" => "s"},
+                 self(),
+                 :p,
+                 60_000
+               )
+
+      :ok = Connection.notify(conn, "session/update", session_update_params("s1"))
+      assert %{"method" => "session/update"} = ScriptedPeer.recv(peer)
+    end
+
+    test "a peer that is gone entirely is not drained" do
+      %{conn: conn, peer: peer} = start_drain_conn(:infinity)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 91, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      cmon = Process.monitor(conn)
+
+      send(
+        conn,
+        {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, {:exit_status, 1}}}
+      )
+
+      assert_receive {:DOWN, ^cmon, :process, ^conn, :normal}, 500
+    end
+
+    test ":close_drain_ms bounds how long a closed connection waits" do
+      %{conn: conn, peer: peer} = start_drain_conn(100)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 88, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      cmon = Process.monitor(conn)
+      send(conn, {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, :eof}})
+      assert_receive {:DOWN, ^cmon, :process, ^conn, :normal}, 1_000
+    end
+
+    test "an invalid :close_drain_ms refuses to start" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      for bad <- [0, nil, "5s"] do
+        assert {:error, {:invalid_option, :close_drain_ms, ^bad}} =
+                 Connection.start_link(
+                   role: :agent,
+                   transport: {Paired, conn_handle},
+                   handler: ScriptAgent,
+                   handler_arg: self(),
+                   task_sup: self(),
+                   close_drain_ms: bad
+                 )
+      end
+    end
+  end
+
+  describe "cancel reply timeout" do
+    test "an adopter that never replies after a cancel: -32800 after the timeout, slot freed, late reply quiet" do
+      test_pid = self()
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :cancel_timeout_sup)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :agent,
+            transport: {Paired, conn_handle},
+            handler: ScriptAgent,
+            handler_arg: self(),
+            task_sup: task_sup,
+            cancel_reply_timeout_ms: 100
+          )
+        )
+
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 60, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          send(test_pid, :delegated)
+          :deferred
+        end)
+
+      assert_receive :delegated
+      ScriptedPeer.send_cancel_request(peer, 60)
+      assert_receive {:acp_reply_cancelled, _ref}
+
+      assert %{"id" => 60, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
+      assert :sys.get_state(conn).pending_in == %{}
+
+      assert map_size(:sys.get_state(conn).timed_out_adopters) == 1
+
+      # A late reply is a quiet no-op: no dup_reply, no second frame.
+      :telemetry.attach(
+        "late-reply",
+        [:raxol, :acp, :dup_reply],
+        &__MODULE__.forward_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("late-reply") end)
+
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      ScriptedPeer.assert_no_frame(peer, 150)
+      refute_receive {:telemetry, [:raxol, :acp, :dup_reply], _}
+      assert :sys.get_state(conn).timed_out_adopters == %{}
+    end
+
+    test "a repeated cancel for a delegated id is a no-op" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 62, "session/prompt", prompt_params("s1"))
+
+      handle_next_invoke(:prompt, fn _req, ctx ->
+        :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+        send(test_pid, :delegated)
+        :deferred
+      end)
+
+      assert_receive :delegated
+      for _ <- 1..5, do: ScriptedPeer.send_cancel_request(peer, 62)
+
+      assert_receive {:acp_reply_cancelled, _ref}
+      refute_receive {:acp_reply_cancelled, _ref}, 150
+      assert %{62 => %{cancelled?: true}} = :sys.get_state(conn).pending_in
+    end
+
+    test "the tombstone is dropped when the silent adopter exits" do
+      test_pid = self()
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :cancel_timeout_sup2)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :agent,
+            transport: {Paired, conn_handle},
+            handler: ScriptAgent,
+            handler_arg: self(),
+            task_sup: task_sup,
+            cancel_reply_timeout_ms: 50
+          )
+        )
+
+      complete_handshake(peer)
+      adopter = spawn(fn -> receive do: (:stop -> :ok) end)
+      ScriptedPeer.send_request(peer, 61, "session/prompt", prompt_params("s1"))
+
+      handle_next_invoke(:prompt, fn _req, ctx ->
+        :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, adopter)
+        send(test_pid, :delegated)
+        :deferred
+      end)
+
+      assert_receive :delegated
+      ScriptedPeer.send_cancel_request(peer, 61)
+      assert %{"id" => 61, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
+
+      send(adopter, :stop)
+
+      wait_until(fn ->
+        match?(
+          %{timed_out_adopters: e, reply_refs: r} when e == %{} and r == %{},
+          :sys.get_state(conn)
+        )
+      end)
+
+      ScriptedPeer.assert_no_frame(peer, 100)
+    end
+
+    test "an invalid :cancel_reply_timeout_ms refuses to start" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      for bad <- [-1, 0, nil, "5s"] do
+        assert {:error, {:invalid_option, :cancel_reply_timeout_ms, ^bad}} =
+                 Connection.start_link(
+                   role: :agent,
+                   transport: {Paired, conn_handle},
+                   handler: ScriptAgent,
+                   handler_arg: self(),
+                   task_sup: self(),
+                   cancel_reply_timeout_ms: bad
+                 )
+      end
+    end
+
+    test ":infinity is accepted for both timeout options" do
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      assert {:ok, conn} =
+               Connection.start_link(
+                 role: :agent,
+                 transport: {Paired, conn_handle},
+                 handler: ScriptAgent,
+                 handler_arg: self(),
+                 task_sup: self(),
+                 close_drain_ms: :infinity,
+                 cancel_reply_timeout_ms: :infinity
+               )
+
+      assert %{close_drain_ms: :infinity, cancel_reply_timeout_ms: :infinity} =
+               :sys.get_state(conn)
+
+      :ok = Connection.close(conn)
+    end
+  end
+
+  @doc false
+  def forward_telemetry(event, _measurements, metadata, pid),
+    do: send(pid, {:telemetry, event, metadata})
 end

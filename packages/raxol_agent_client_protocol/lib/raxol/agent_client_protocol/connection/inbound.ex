@@ -3,8 +3,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   # Inbound frame classification, request dispatch, and the reply obligations
   # handler tasks (or their adopters) discharge.
   #
-  # At most one response frame is sent per inbound id: exactly one, unless the
-  # peer cancelled it with `$/cancel_request` (then none). Malformed frames
+  # Exactly one response frame is sent per inbound id; a cancelled request is
+  # answered -32800, or by its adopter's reply when delegated. Malformed frames
   # never tear the connection down.
 
   require Logger
@@ -194,6 +194,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
           task_pid: task.pid,
           method: method,
           cancelled?: false,
+          cancel_timer: nil,
           reply_ref: reply_ref,
           adopter: nil
         }
@@ -240,14 +241,6 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
     case own_entry(state, id, ref) do
       nil ->
         {:noreply, state}
-
-      # Cancelled after delegation: the adopter still replies (and the reply is
-      # suppressed), so keep the entry for it.
-      %{cancelled?: true, adopter: {_pid, _mon}} = entry when result == :deferred ->
-        {:noreply, put_in(state.pending_in[id], %{entry | task_ref: nil, task_pid: nil})}
-
-      %{cancelled?: true} = entry ->
-        {:noreply, Link.drop_pending_in(state, id, entry)}
 
       entry ->
         finish(state, id, entry, result)
@@ -343,7 +336,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         entry = %{entry | task_ref: nil, task_pid: nil}
         {:noreply, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
 
-      %{cancelled?: cancelled?} = entry when cancelled? or reason == :normal ->
+      entry when reason == :normal ->
         {:noreply, Link.drop_pending_in(state, id, entry)}
 
       entry ->
@@ -364,13 +357,23 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
     })
   end
 
+  defp adopter_down(%{timed_out_adopters: expired} = state, mon_ref)
+       when is_map_key(expired, mon_ref) do
+    {rref, expired} = Map.pop(expired, mon_ref)
+
+    {:noreply,
+     %{state | timed_out_adopters: expired, reply_refs: Map.delete(state.reply_refs, rref)}}
+  end
+
   defp adopter_down(state, mon_ref) do
     case find_adopter(state.pending_in, mon_ref) do
       nil ->
         {:noreply, state}
 
       {id, %{cancelled?: true} = entry} ->
-        {:noreply, Link.drop_pending_in(state, id, entry)}
+        state
+        |> Link.drop_pending_in(id, entry)
+        |> Link.emit(Wire.response(id, {:error, Error.request_cancelled()}))
 
       {id, entry} ->
         Logger.error("ACP: reply adopter died for id #{RequestId.display(id)} — emitting -32603")
@@ -397,6 +400,9 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
       nil ->
         {:error, :unknown_ref}
 
+      {:expired, _mon} ->
+        {:error, :cancelled}
+
       id ->
         case Map.fetch!(state.pending_in, id) do
           # The peer already cancelled it; the would-be adopter must not run it.
@@ -410,6 +416,31 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
     end
   end
 
+  # The adopter of a cancelled request did not reply in time: answer -32800 and
+  # free the slot. Its ref is kept (until it replies or exits) so a late reply
+  # is a quiet no-op rather than a dup_reply.
+  @spec cancel_reply_timeout(state(), RequestId.t(), reference()) :: result()
+  def cancel_reply_timeout(state, id, reply_ref) do
+    case Map.get(state.pending_in, id) do
+      %{cancelled?: true, reply_ref: ^reply_ref, adopter: {_pid, mon}} ->
+        Logger.warning(
+          "ACP: adopter of cancelled id #{RequestId.display(id)} did not reply; answering -32800"
+        )
+
+        state = %{
+          state
+          | pending_in: Map.delete(state.pending_in, id),
+            reply_refs: Map.put(state.reply_refs, reply_ref, {:expired, mon}),
+            timed_out_adopters: Map.put(state.timed_out_adopters, mon, reply_ref)
+        }
+
+        Link.emit(state, Wire.response(id, {:error, Error.request_cancelled()}))
+
+      _answered ->
+        {:noreply, state}
+    end
+  end
+
   # An unknown or already-consumed `reply_ref` is a suppressed no-op.
   @spec reply(state(), reference(), Wire.result()) ::
           {:reply, :ok, state()} | {:stop, :normal, :ok, state()}
@@ -419,22 +450,31 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         Telemetry.execute([:raxol, :acp, :dup_reply], %{reply_ref: reply_ref})
         {:reply, :ok, state}
 
+      # Too late: the cancelled request was already answered -32800.
+      {{:expired, mon}, reply_refs} ->
+        Process.demonitor(mon, [:flush])
+
+        {:reply, :ok,
+         %{
+           state
+           | reply_refs: reply_refs,
+             timed_out_adopters: Map.delete(state.timed_out_adopters, mon)
+         }}
+
       {id, reply_refs} ->
         {entry, pending_in} = Map.pop(state.pending_in, id)
         Link.demonitor_adopter(entry)
+        Link.cancel_reply_timer(entry)
         state = %{state | reply_refs: reply_refs, pending_in: pending_in}
 
-        if entry.cancelled?,
-          do: {:reply, :ok, state},
-          else:
-            send_response(
-              state,
-              id,
-              entry,
-              checked(state, entry, result),
-              &{:reply, :ok, &1},
-              &{:stop, :normal, :ok, &1}
-            )
+        send_response(
+          state,
+          id,
+          entry,
+          checked(state, entry, result),
+          &{:reply, :ok, &1},
+          &{:stop, :normal, :ok, &1}
+        )
     end
   end
 

@@ -54,6 +54,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
   @spec drop_pending_in(state(), RequestId.t(), map()) :: state()
   def drop_pending_in(state, id, entry) do
     demonitor_adopter(entry)
+    cancel_reply_timer(entry)
 
     %{
       state
@@ -61,6 +62,14 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         reply_refs: Map.delete(state.reply_refs, entry.reply_ref)
     }
   end
+
+  @spec cancel_reply_timer(map()) :: :ok
+  def cancel_reply_timer(%{cancel_timer: ref}) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    :ok
+  end
+
+  def cancel_reply_timer(_entry), do: :ok
 
   @spec demonitor_adopter(map()) :: :ok
   def demonitor_adopter(%{adopter: {_pid, mon}}) do
@@ -76,14 +85,12 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
   def down(%{phase: :closed} = state), do: state
 
   def down(state) do
-    Enum.each(state.pending_out, fn {_id, %{reply_to: rt, timer_ref: timer}} ->
-      if timer, do: Process.cancel_timer(timer)
-      deliver(rt, {:error, :connection_closed})
-    end)
+    state = fail_outbound(state)
 
     Enum.each(state.pending_in, fn {_id, entry} -> stop_inbound(state, entry) end)
 
     if state.transport_monitor, do: Process.demonitor(state.transport_monitor, [:flush])
+    Enum.each(state.timed_out_adopters, fn {mon, _rref} -> Process.demonitor(mon, [:flush]) end)
 
     Turns.reset(%{
       state
@@ -92,8 +99,21 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         pending_in: %{},
         task_index: %{},
         reply_refs: %{},
+        timed_out_adopters: %{},
         phase: :closed
     })
+  end
+
+  # Every pending outbound request fails with `:connection_closed`: once the
+  # peer has closed, no response can arrive.
+  @spec fail_outbound(state()) :: state()
+  def fail_outbound(state) do
+    Enum.each(state.pending_out, fn {_id, %{reply_to: rt, timer_ref: timer}} ->
+      if timer, do: Process.cancel_timer(timer)
+      deliver(rt, {:error, :connection_closed})
+    end)
+
+    %{state | pending_out: %{}, out_tags: %{}, abandoned_out: %{}}
   end
 
   defp stop_inbound(_state, %{adopter: {_apid, mon}}), do: Process.demonitor(mon, [:flush])

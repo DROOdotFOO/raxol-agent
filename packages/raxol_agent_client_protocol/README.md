@@ -160,8 +160,9 @@ is a complete example.
 ## Invariants
 
 - The Connection never blocks on a peer, never runs handler code in its own
-  process, never creates atoms from wire input, and sends at most one response
-  per inbound id.
+  process, never creates atoms from wire input, and sends exactly one response
+  per inbound request, including a cancelled one (-32800, or the agent's
+  `cancelled` result for a delegated prompt).
 - Every attach is decided by one fail-closed funnel, and a reattacher
   subscribes before reading the high watermark.
 - A disk-backed journal store must create files `0600` and directories `0700`.

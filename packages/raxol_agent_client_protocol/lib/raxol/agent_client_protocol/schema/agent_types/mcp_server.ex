@@ -28,8 +28,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServer do
   def to_json({:stdio, server}), do: McpServerStdio.to_json(server)
 
   @doc """
-  Dispatches on `"type"` (`http`/`sse`); anything else decodes as the untagged
-  `stdio` variant.
+  Dispatches on `"type"` (`http`/`sse`); a descriptor without one (or with
+  `"stdio"`) decodes as the stdio variant, and any other type is refused.
   """
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(%{"type" => "http"} = map) do
@@ -45,6 +45,11 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServer do
       error -> error
     end
   end
+
+  # stdio descriptors carry no "type"; any other type is refused rather than
+  # treated as a command to spawn.
+  def from_json(%{"type" => type}) when type != "stdio",
+    do: {:error, {:invalid_mcp_server_type, type}}
 
   def from_json(map) when is_map(map) do
     case McpServerStdio.from_json(Map.delete(map, "type")) do
@@ -91,8 +96,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServerHttp do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, name} <- AgentTypes.fetch(map, "name"),
-         {:ok, url} <- AgentTypes.fetch(map, "url"),
+    with {:ok, name} <- AgentTypes.fetch(map, "name", &is_binary/1),
+         {:ok, url} <- AgentTypes.fetch(map, "url", &is_binary/1),
          {:ok, headers} <-
            AgentTypes.decode_list(
              Map.get(map, "headers", []),
@@ -158,8 +163,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServerSse do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, name} <- AgentTypes.fetch(map, "name"),
-         {:ok, url} <- AgentTypes.fetch(map, "url"),
+    with {:ok, name} <- AgentTypes.fetch(map, "name", &is_binary/1),
+         {:ok, url} <- AgentTypes.fetch(map, "url", &is_binary/1),
          {:ok, headers} <-
            AgentTypes.decode_list(
              Map.get(map, "headers", []),
@@ -229,8 +234,9 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServerStdio do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, name} <- AgentTypes.fetch(map, "name"),
-         {:ok, command} <- AgentTypes.fetch(map, "command"),
+    with {:ok, name} <- AgentTypes.fetch(map, "name", &is_binary/1),
+         {:ok, command} <- AgentTypes.fetch(map, "command", &is_binary/1),
+         {:ok, args} <- decode_args(Map.get(map, "args", [])),
          {:ok, env} <-
            AgentTypes.decode_list(
              Map.get(map, "env", []),
@@ -240,7 +246,7 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServerStdio do
        %__MODULE__{
          name: name,
          command: command,
-         args: Map.get(map, "args", []),
+         args: args,
          env: env,
          _meta: AgentTypes.extract_meta(map, @known_keys)
        }}
@@ -248,6 +254,18 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServerStdio do
   end
 
   def from_json(other), do: {:error, {:invalid_mcp_server_stdio, other}}
+
+  # These fields end up in a spawned command line, so anything but a list of
+  # strings is refused.
+  defp decode_args(nil), do: {:ok, []}
+
+  defp decode_args(args) when is_list(args) do
+    if Enum.all?(args, &is_binary/1),
+      do: {:ok, args},
+      else: {:error, {:invalid_field, "args", args}}
+  end
+
+  defp decode_args(other), do: {:error, {:invalid_field, "args", other}}
 end
 
 defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.EnvVariable do
@@ -274,8 +292,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.EnvVariable do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, name} <- AgentTypes.fetch(map, "name"),
-         {:ok, value} <- AgentTypes.fetch(map, "value") do
+    with {:ok, name} <- AgentTypes.fetch(map, "name", &is_binary/1),
+         {:ok, value} <- AgentTypes.fetch(map, "value", &is_binary/1) do
       {:ok,
        %__MODULE__{
          name: name,
@@ -312,8 +330,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.HttpHeader do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, name} <- AgentTypes.fetch(map, "name"),
-         {:ok, value} <- AgentTypes.fetch(map, "value") do
+    with {:ok, name} <- AgentTypes.fetch(map, "name", &is_binary/1),
+         {:ok, value} <- AgentTypes.fetch(map, "value", &is_binary/1) do
       {:ok,
        %__MODULE__{
          name: name,

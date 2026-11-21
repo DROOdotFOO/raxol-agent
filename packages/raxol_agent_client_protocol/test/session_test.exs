@@ -690,13 +690,8 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
 
   describe "I17 / S7 $/cancel_request on the prompt id" do
     test "the drain STILL calls reply/3 for the cancelled id (releases pending_in, S7)", ctx do
-      # S7: before the fix, `finish/2` skipped `reply/3` when `respond? == false`, so
-      # a $/cancel_request'd delegated prompt never signalled the Connection to pop
-      # its `pending_in`/`reply_refs` entry — the id stayed occupied and the adopter
-      # monitor leaked for the Session's whole life. The fix deletes that guard: the
-      # Session always calls `reply/3`; the Connection suppresses the wire frame for a
-      # cancelled entry (that wire-zero-frames invariant is Connection-side). So at
-      # this seam the observable is: reply/3 IS invoked for the cancelled id.
+      # After a $/cancel_request the Session still calls `reply/3`: that
+      # `cancelled` reply is the id's one response and releases the entry.
       conn = new_conn()
 
       runner = fn _s, _req ->

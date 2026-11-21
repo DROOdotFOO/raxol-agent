@@ -131,7 +131,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   session with a live turn returns a busy `{:error, %Error{}}` that the handler
   replies with. If the Connection no longer holds the request (the peer sent
   `$/cancel_request`, or it is gone), no turn starts and the result is
-  `{:error, Error.request_cancelled()}`; nothing is sent. A prompt wire-ordered
+  `{:error, Error.request_cancelled()}`; the Connection has already answered it
+  -32800. A prompt wire-ordered
   before a `session/cancel` is answered `stopReason: cancelled`.
   """
   @spec begin_prompt(GenServer.server(), struct(), reference(), non_neg_integer()) ::
@@ -317,24 +318,18 @@ defmodule Raxol.AgentClientProtocol.Session do
   end
 
   def handle_cast({:acp_session_cancel, _seq}, %{turn: {:prompting, t}} = state),
-    do: {:noreply, begin_cancel(state, t, true)}
+    do: {:noreply, begin_cancel(state, t)}
 
   def handle_cast({:acp_session_cancel, _seq}, state), do: {:noreply, state}
 
-  # The peer abandoned the prompt id with `$/cancel_request`: cancel, and send
-  # no response frame.
+  # The peer cancelled the prompt id with `$/cancel_request`: cancel; the
+  # drain's `cancelled` reply is the id's one response.
   @impl true
   def handle_info(
         {:acp_reply_cancelled, rref},
         %{turn: {:prompting, %{reply_ref: rref} = t}} = state
       ),
-      do: {:noreply, begin_cancel(state, t, false)}
-
-  def handle_info(
-        {:acp_reply_cancelled, rref},
-        %{turn: {:cancelling, %{reply_ref: rref} = t}} = state
-      ),
-      do: {:noreply, %{state | turn: {:cancelling, %{t | respond?: false}}}}
+      do: {:noreply, begin_cancel(state, t)}
 
   def handle_info({:acp_reply_cancelled, _rref}, state), do: {:noreply, state}
 
@@ -420,8 +415,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   # Overwrites the outcome with `cancelled`, denies open asks, interrupts the
   # root task and arms the turn-ref-guarded backstop. Clearing the steer token
   # makes steers during cancellation reject with `:no_live_turn`.
-  @spec begin_cancel(t(), Turn.t(), boolean()) :: t()
-  defp begin_cancel(state, t, respond?) do
+  @spec begin_cancel(t(), Turn.t()) :: t()
+  defp begin_cancel(state, t) do
     abort_pending_perms(state, t)
     if t.root_pid, do: send(t.root_pid, :acp_cancel)
 
@@ -432,7 +427,6 @@ defmodule Raxol.AgentClientProtocol.Session do
       t
       | outcome: {:stop, :cancelled},
         pending_perms: %{},
-        respond?: respond?,
         backstop_timer: timer
     }
 
@@ -456,8 +450,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   end
 
   # The one render feeds both the journal's `turn_completed` and the reply.
-  # `reply/3` is sent even when `respond?` is false: the Connection must release
-  # the entry, and it suppresses the frame for a cancelled id itself.
+  # After a `$/cancel_request` this reply (stopReason `cancelled`) is the one
+  # response the peer gets for the id.
   @spec finish(t(), Turn.t()) :: t()
   defp finish(state, t) do
     if t.backstop_timer, do: Process.cancel_timer(t.backstop_timer)
