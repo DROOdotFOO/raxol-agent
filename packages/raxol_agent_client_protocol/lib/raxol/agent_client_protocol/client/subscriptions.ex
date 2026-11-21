@@ -6,7 +6,8 @@ defmodule Raxol.AgentClientProtocol.Client.Subscriptions do
   #
   # Started by the application; when the application is not running (this
   # package's own test env, or an embedder that has not spliced it in) the first
-  # subscriber starts an unsupervised instance.
+  # subscriber starts an unsupervised instance, which the application then
+  # leaves in place (its child returns :ignore).
 
   use GenServer
 

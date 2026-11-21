@@ -28,6 +28,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
           {:parked, state()} | {:answered, {:error, term()}, state()}
   def submit(state, method, params, timeout_ms, reply_to) do
     with :ok <- gate(state, method),
+         :ok <- not_draining(state),
          {:ok, wire_params} <- Wire.to_wire(params) do
       state
       |> stash_own_caps(method, params)
@@ -160,11 +161,16 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
 
   # Ids this side cancelled or timed out; the peer still answers them (it must),
   # and that answer is expected, not late. Bounded so a peer that never answers
-  # cannot grow it.
+  # cannot grow it; once full, further answers are reported as late responses.
   @max_abandoned 1_024
 
   defp abandon(state, _id) when map_size(state.abandoned_out) >= @max_abandoned, do: state
   defp abandon(state, id), do: %{state | abandoned_out: Map.put(state.abandoned_out, id, true)}
+
+  # The peer has closed its write side, so a new request could never be answered.
+  # Notifications still go out: the peer may be reading.
+  defp not_draining(%{draining?: true}), do: {:error, :connection_closed}
+  defp not_draining(_state), do: :ok
 
   defp arm_timer(_id, :infinity), do: nil
 

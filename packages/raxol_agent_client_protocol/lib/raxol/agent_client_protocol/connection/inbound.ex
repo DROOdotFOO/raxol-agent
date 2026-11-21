@@ -194,6 +194,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
           task_pid: task.pid,
           method: method,
           cancelled?: false,
+          cancel_timer: nil,
           reply_ref: reply_ref,
           adopter: nil
         }
@@ -222,7 +223,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
         case tag do
           {:request, id} -> request_result(state, id, ref, result)
-          {:notification, _method} -> {:noreply, notification_done(state)}
+          {:notification, _method} -> {:noreply, state}
         end
     end
   end
@@ -303,14 +304,12 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         adopter_down(state, ref)
 
       {{:notification, method}, task_index} ->
-        notification_crash(notification_done(%{state | task_index: task_index}), method, reason)
+        notification_crash(%{state | task_index: task_index}, method, reason)
 
       {{:request, id}, task_index} ->
         request_crash(%{state | task_index: task_index}, id, ref, reason)
     end
   end
-
-  defp notification_done(state), do: %{state | notif_tasks: max(state.notif_tasks - 1, 0)}
 
   defp notification_crash(state, method, reason) do
     Logger.error(
@@ -465,6 +464,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
       {id, reply_refs} ->
         {entry, pending_in} = Map.pop(state.pending_in, id)
         Link.demonitor_adopter(entry)
+        Link.cancel_reply_timer(entry)
         state = %{state | reply_refs: reply_refs, pending_in: pending_in}
 
         send_response(

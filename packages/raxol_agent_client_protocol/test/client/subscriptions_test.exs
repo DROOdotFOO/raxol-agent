@@ -14,12 +14,11 @@ defmodule Raxol.AgentClientProtocol.Client.SubscriptionsTest do
     end
   end
 
-  test "the table survives the short-lived process that first used it" do
+  test "a subscription made from a short-lived process outlives it" do
     conn = sleeper()
-    task = Task.async(fn -> Client.broadcast_update(conn, "s", :u) end)
-    Task.await(task)
+    me = self()
+    Task.async(fn -> Client.subscribe(conn, "s", me) end) |> Task.await()
 
-    :ok = Client.subscribe(conn, "s")
     Client.broadcast_update(conn, "s", :u)
     assert_receive {:acp_session_update, "s", :u}
   end

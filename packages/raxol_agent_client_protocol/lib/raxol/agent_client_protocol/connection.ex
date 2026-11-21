@@ -70,7 +70,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
             task_sup: nil,
             max_in: @default_max_inbound,
             max_notification_tasks: @default_max_notification_tasks,
-            notif_tasks: 0,
+            notif_sup: nil,
             close_drain_ms: @default_close_drain_ms,
             draining?: false,
             cancel_reply_timeout_ms: @default_cancel_reply_timeout_ms,
@@ -99,14 +99,16 @@ defmodule Raxol.AgentClientProtocol.Connection do
           pending_out: map(),
           out_tags: map(),
           pending_in: map(),
-          reply_refs: map(),
+          reply_refs: %{
+            reference() => Raxol.AgentClientProtocol.Rpc.RequestId.t() | {:expired, reference()}
+          },
           task_index: map(),
           handler: module() | nil,
           handler_state: term(),
           task_sup: GenServer.server() | nil,
           max_in: pos_integer(),
           max_notification_tasks: pos_integer(),
-          notif_tasks: non_neg_integer(),
+          notif_sup: pid() | nil,
           close_drain_ms: pos_integer() | :infinity,
           draining?: boolean(),
           cancel_reply_timeout_ms: pos_integer() | :infinity,
@@ -300,10 +302,15 @@ defmodule Raxol.AgentClientProtocol.Connection do
     if function_exported?(state.transport_mod, :set_owner, 2),
       do: state.transport_mod.set_owner(state.transport_state, self())
 
+    # Notification handlers get their own pool, so they cannot use up the
+    # capacity requests need; its child count is the exact number running.
+    {:ok, notif_sup} = Task.Supervisor.start_link(max_children: state.max_notification_tasks)
+
     {:noreply,
      %{
        state
        | task_sup: task_sup,
+         notif_sup: notif_sup,
          session_sup: session_sup,
          transport_ref: carrier,
          transport_monitor: carrier && Process.monitor(carrier),
@@ -416,7 +423,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # A peer that sends its requests and closes its write side still gets its
   # answers: the Connection drains (see `drain_check/1`) instead of stopping.
   defp on_info({:acp_transport, _ref, {:closed, reason}}, state) do
-    if state.phase != :closed and map_size(state.pending_in) > 0 do
+    # Only an :eof leaves a peer that may still read; :peer_closed and
+    # {:exit_status, _} mean it is gone.
+    if reason == :eof and state.phase != :closed and map_size(state.pending_in) > 0 do
       if state.close_drain_ms != :infinity,
         do: Process.send_after(self(), {:acp_close_drained, reason}, state.close_drain_ms)
 

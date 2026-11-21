@@ -54,6 +54,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
   @spec drop_pending_in(state(), RequestId.t(), map()) :: state()
   def drop_pending_in(state, id, entry) do
     demonitor_adopter(entry)
+    cancel_reply_timer(entry)
 
     %{
       state
@@ -61,6 +62,14 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         reply_refs: Map.delete(state.reply_refs, entry.reply_ref)
     }
   end
+
+  @spec cancel_reply_timer(map()) :: :ok
+  def cancel_reply_timer(%{cancel_timer: ref}) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    :ok
+  end
+
+  def cancel_reply_timer(_entry), do: :ok
 
   @spec demonitor_adopter(map()) :: :ok
   def demonitor_adopter(%{adopter: {_pid, mon}}) do
@@ -89,7 +98,6 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         out_tags: %{},
         pending_in: %{},
         task_index: %{},
-        notif_tasks: 0,
         reply_refs: %{},
         timed_out_adopters: %{},
         phase: :closed

@@ -54,9 +54,21 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest.FastClient do
   @moduledoc false
   use Raxol.AgentClientProtocol.Client
 
+  # Reports; a "hold" mode update then waits to be released, so a test controls
+  # when it finishes.
   @impl true
   def session_update(note, ctx) do
-    send(ctx.handler_state, {:fast_update, note})
+    send(ctx.handler_state, {:fast_update, note, self()})
+    {:current_mode_update, %{current_mode_id: mode}} = note.update
+
+    if String.starts_with?(mode, "hold") do
+      receive do
+        :go -> :ok
+      after
+        1_000 -> :ok
+      end
+    end
+
     :ok
   end
 end
@@ -2031,7 +2043,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       refute_receive {:handler_invoke, :session_update, _, _, _, _}, 100
 
       for {t, r} <- [{t1, r1}, {t2, r2}], do: send(t, {:handler_run, r, fn _n, _c -> :ok end})
-      wait_until(fn -> :sys.get_state(conn).notif_tasks == 0 end)
+      wait_until(fn -> Task.Supervisor.children(:sys.get_state(conn).notif_sup) == [] end)
     end
 
     test "a backlog of fast notifications is not shed by the cap" do
@@ -2059,21 +2071,39 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       ScriptedPeer.send_result(peer, frame["id"], %{"protocolVersion" => 1})
       {:ok, _} = Task.await(init)
 
-      # Queue the frames while the Connection is suspended, so their handlers'
-      # results land behind the backlog.
+      send_update = fn i ->
+        ScriptedPeer.send_notification(
+          peer,
+          "session/update",
+          session_update_params("s1", "m#{i}")
+        )
+      end
+
+      # Two handlers run and park at the cap.
+      for i <- 1..2, do: send_update.(i)
+
+      parked =
+        for _ <- 1..2 do
+          assert_receive {:fast_update, _, pid}
+          pid
+        end
+
+      # Eight more frames queue, then the two handlers finish: their results
+      # land in the Connection's mailbox behind the queued frames.
       :sys.suspend(conn)
+      for i <- 3..10, do: send_update.("m#{i}")
 
-      for i <- 1..10,
-          do:
-            ScriptedPeer.send_notification(
-              peer,
-              "session/update",
-              session_update_params("s1", "m#{i}")
-            )
+      wait_until(fn ->
+        {:message_queue_len, n} = Process.info(conn, :message_queue_len)
+        n >= 8
+      end)
 
+      for pid <- parked, do: send(pid, :go)
+      wait_until(fn -> Enum.all?(parked, &(not Process.alive?(&1))) end)
       :sys.resume(conn)
 
-      for _ <- 1..10, do: assert_receive({:fast_update, _}, 1_000)
+      # The pool knows they finished, so none of the eight is shed.
+      for _ <- 3..10, do: assert_receive({:fast_update, _, _pid}, 1_000)
     end
 
     test "a non-positive :max_notification_tasks refuses to start" do
@@ -2167,6 +2197,44 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       _ = :sys.get_state(conn)
       refute_receive {:telemetry, [:raxol, :acp, :late_response], _}, 100
       assert :sys.get_state(conn).abandoned_out == %{}
+    end
+
+    test "while draining, new requests are refused but notifications still go out" do
+      %{conn: conn, peer: peer} = start_drain_conn(:infinity)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 90, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      send(conn, {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, :eof}})
+
+      assert {:error, :connection_closed} =
+               Connection.async_request(
+                 conn,
+                 "session/request_permission",
+                 %{"sessionId" => "s"},
+                 self(),
+                 :p,
+                 60_000
+               )
+
+      :ok = Connection.notify(conn, "session/update", session_update_params("s1"))
+      assert %{"method" => "session/update"} = ScriptedPeer.recv(peer)
+    end
+
+    test "a peer that is gone entirely is not drained" do
+      %{conn: conn, peer: peer} = start_drain_conn(:infinity)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 91, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      cmon = Process.monitor(conn)
+
+      send(
+        conn,
+        {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, {:exit_status, 1}}}
+      )
+
+      assert_receive {:DOWN, ^cmon, :process, ^conn, :normal}, 500
     end
 
     test ":close_drain_ms bounds how long a closed connection waits" do
@@ -2268,7 +2336,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       assert_receive {:acp_reply_cancelled, _ref}
       refute_receive {:acp_reply_cancelled, _ref}, 150
-      _ = :sys.get_state(conn)
+      assert %{62 => %{cancelled?: true}} = :sys.get_state(conn).pending_in
     end
 
     test "the tombstone is dropped when the silent adopter exits" do

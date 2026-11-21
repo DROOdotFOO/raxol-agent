@@ -73,27 +73,27 @@ Home: `test/connection_test.exs`, `describe "invariants"`. Moduledoc: the
 
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
-| Inv-1 | Exactly one answer per accepted outbound submission; ZERO after a peer `$/cancel_request`. | `connection_test.exs:401` |
-| Inv-2 | No stale `pending_out`/`out_tags` entry survives any exit path. | `connection_test.exs:456` |
-| Inv-3 | A timeout answers AND deletes atomically; a late response after it is a pure no-op. | `connection_test.exs:511` |
-| Inv-4 | **alias of IC-6**: the response-count invariant. Enforcing test renamed to lead with IC-6. | `connection_test.exs:554` (test `"IC-6 (Inv-4 alias): response-count invariant ..."`) |
-| Inv-5 | Notifications never produce a wire frame, incl. under decode failure and handler crash. | `connection_test.exs:606` |
-| Inv-6 | Response id echo is byte-exact across error classes, string and integer ids. | `connection_test.exs:631` |
-| Inv-7 | No atom is created from wire input (unknown methods, notifications, session ids). | `connection_test.exs:722` |
-| Inv-8 | A handler calling `Connection.request/4` back into the same Connection completes promptly (no self-deadlock). | `connection_test.exs:763` |
-| Inv-9 | `conn == self()` raises `ArgumentError` on every public API function. | `connection_test.exs:789` |
-| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:803`, `:815` |
-| Inv-11 | `caps` is written exactly once at handshake and never mutated after. | `connection_test.exs:846` |
-| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent: the transport is gone, so nothing can be answered). | `connection_test.exs:888` |
-| Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_test.exs:920` |
-| Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_test.exs:952` |
-| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1032` |
-| Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1066` |
-| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1079` |
-| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1113` |
-| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings; a reply after a cancel is the id's one frame. | `connection_test.exs:1131` |
-| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1172` |
-| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1205` |
+| Inv-1 | Exactly one answer per accepted outbound submission; ZERO deliveries after the owner's own `cancel_request/2`. | `connection_test.exs:413` |
+| Inv-2 | No stale `pending_out`/`out_tags` entry survives any exit path. | `connection_test.exs:468` |
+| Inv-3 | A timeout answers AND deletes atomically; a late response after it is a pure no-op. | `connection_test.exs:523` |
+| Inv-4 | **alias of IC-6**: the response-count invariant. Enforcing test renamed to lead with IC-6. | `connection_test.exs:566` (test `"IC-6 (Inv-4 alias): response-count invariant ..."`) |
+| Inv-5 | Notifications never produce a wire frame, incl. under decode failure and handler crash. | `connection_test.exs:618` |
+| Inv-6 | Response id echo is byte-exact across error classes, string and integer ids. | `connection_test.exs:643` |
+| Inv-7 | No atom is created from wire input (unknown methods, notifications, session ids). | `connection_test.exs:734` |
+| Inv-8 | A handler calling `Connection.request/4` back into the same Connection completes promptly (no self-deadlock). | `connection_test.exs:775` |
+| Inv-9 | `conn == self()` raises `ArgumentError` on every public API function. | `connection_test.exs:801` |
+| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:815`, `:815` |
+| Inv-11 | `caps` is written exactly once at handshake and never mutated after. | `connection_test.exs:858` |
+| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent: the transport is gone, so nothing can be answered). | `connection_test.exs:900` |
+| Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_test.exs:932` |
+| Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_test.exs:964` |
+| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1044` |
+| Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1078` |
+| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1091` |
+| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1125` |
+| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings; a reply after a cancel is the id's one frame. | `connection_test.exs:1143` |
+| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1184` |
+| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1217` |
 
 ## Family `IC`: shared Interface Contract (IC-1..IC-8)
 
@@ -108,11 +108,11 @@ enforcing test is cited.
 | IC-1 | ONE GenServer per peer link is the sole correlation/dispatch authority: never blocks, never runs handler code in-process, never mints atoms from wire input. | `connection_test.exs` `describe "§8 sequence diagrams"` (`:192`) + Inv-7/Inv-8 |
 | IC-2 | `Connection.Ctx` is THE single per-dispatch struct handed to handler callbacks (`conn`, `reply_ref`, `rx_seq`); there is exactly one ctx concept. | `ctx_test.exs` (whole suite; moduledoc `:18`) |
 | IC-3 | `async_request/6` is THE outbound primitive (only it accepts `:infinity`); `request/4` is a caller-parking wrapper on the same `pending_out` table; Connection is the single timeout authority. | `ctx_test.exs:303`; `connection_test.exs` `describe "§8 sequence diagrams"` |
-| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_test.exs:1131` (Inv-19); `session_test.exs:691` (I17) |
+| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_test.exs:1143` (Inv-19); `session_test.exs:691` (I17) |
 | IC-5 | (IC-5c) `rx_seq` latch: cancel and prompt commute by wire order, not scheduling order. | `session_test.exs:397` (I16) |
-| IC-6 | **Response-count invariant (canonical):** exactly one response frame per inbound id; after a peer `$/cancel_request` it is -32800, or the adopter's reply when the request was delegated. `Inv-4` is its alias. | `connection_test.exs:554` |
-| IC-7 | The Connection never blocks: no `GenServer.call` to itself, no synchronous wait on tasks, no transport call that waits on peer progress. | `connection_test.exs:763` (Inv-8) |
-| IC-8 | Sibling supervision tree: `task_sup`/`session_sup` resolved from the parent supervisor by module/type heuristic (injectable in tests); Connection is `:temporary`. | `connection_test.exs:91`; `integration/end_to_end_test.exs:301` |
+| IC-6 | **Response-count invariant (canonical):** exactly one response frame per inbound id; after a peer `$/cancel_request` it is -32800, or the adopter's reply when the request was delegated. `Inv-4` is its alias. | `connection_test.exs:566` |
+| IC-7 | The Connection never blocks: no `GenServer.call` to itself, no synchronous wait on tasks, no transport call that waits on peer progress. | `connection_test.exs:775` (Inv-8) |
+| IC-8 | Sibling supervision tree: `task_sup`/`session_sup` resolved from the parent supervisor by module/type heuristic (injectable in tests); Connection is `:temporary`. | `connection_test.exs:103`; `integration/end_to_end_test.exs:301` |
 
 ## Family `F`: NDJSON framing / transport (F1..F8)
 

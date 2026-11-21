@@ -18,14 +18,16 @@ defmodule Raxol.AgentClientProtocol.Connection.Dispatch do
   end
 
   # `async_nolink` raises once the supervisor hits `max_children`.
-  @spec start(Raxol.AgentClientProtocol.Connection.t(), term(), Ctx.t()) ::
+  @spec start(Raxol.AgentClientProtocol.Connection.t(), term(), Ctx.t(), pid() | nil) ::
           {:ok, Task.t()} | {:error, Exception.t()}
-  def start(state, dispatchable, ctx) do
+  def start(state, dispatchable, ctx, sup \\ nil) do
     # Capture only what the task needs, not the whole Connection state.
     %{role: role, handler: handler} = state
 
     {:ok,
-     Task.Supervisor.async_nolink(state.task_sup, fn -> run(role, handler, dispatchable, ctx) end)}
+     Task.Supervisor.async_nolink(sup || state.task_sup, fn ->
+       run(role, handler, dispatchable, ctx)
+     end)}
   rescue
     e -> {:error, e}
   end
