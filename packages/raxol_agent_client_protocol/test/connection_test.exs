@@ -50,15 +50,15 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest.ScriptClient do
   def read_text_file(req, ctx), do: Rendezvous.invoke(:read_text_file, req, ctx)
 end
 
-defmodule Raxol.AgentClientProtocol.ConnectionTest.FastClient do
+defmodule Raxol.AgentClientProtocol.ConnectionTest.BacklogClient do
   @moduledoc false
   use Raxol.AgentClientProtocol.Client
 
-  # Reports; a "hold" mode update then waits to be released, so a test controls
-  # when it finishes.
+  # Reports, then a "hold" mode update waits to be released, so a test controls
+  # when it finishes; any other update takes a few milliseconds.
   @impl true
   def session_update(note, ctx) do
-    send(ctx.handler_state, {:fast_update, note, self()})
+    send(ctx.handler_state, {:backlog_update, note, self()})
     {:current_mode_update, %{current_mode_id: mode}} = note.update
 
     if String.starts_with?(mode, "hold") do
@@ -67,6 +67,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest.FastClient do
       after
         1_000 -> :ok
       end
+    else
+      Process.sleep(10)
     end
 
     :ok
@@ -1998,7 +2000,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
   end
 
   describe "notification task cap" do
-    test "notifications beyond :max_notification_tasks are dropped, requests unaffected" do
+    test "notifications beyond the cap wait in the backlog; beyond that they are dropped" do
       task_sup = start_supervised!({Task.Supervisor, []}, id: :notif_cap_sup)
       {conn_handle, peer} = ScriptedPeer.new()
 
@@ -2010,7 +2012,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
             handler: ScriptClient,
             handler_arg: self(),
             task_sup: task_sup,
-            max_notification_tasks: 2
+            max_notification_tasks: 2,
+            max_queued_notifications: 1
           )
         )
 
@@ -2032,21 +2035,33 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       on_exit(fn -> :telemetry.detach("notif-cap-test") end)
 
-      for m <- ["m1", "m2", "m3"] do
+      for m <- ["m1", "m2", "m3", "m4"] do
         ScriptedPeer.send_notification(peer, "session/update", session_update_params("s1", m))
       end
 
-      # Two handlers park in the rendezvous; the third notification is shed.
+      # Two handlers park in the rendezvous, the third notification waits and
+      # the fourth is shed.
       assert_receive {:handler_invoke, :session_update, _, _, t1, r1}
       assert_receive {:handler_invoke, :session_update, _, _, t2, r2}
       assert_receive {:telemetry, [:raxol, :acp, :notification_shed], %{method: "session/update"}}
       refute_receive {:handler_invoke, :session_update, _, _, _, _}, 100
+      assert :sys.get_state(conn).notifications.queued == 1
 
-      for {t, r} <- [{t1, r1}, {t2, r2}], do: send(t, {:handler_run, r, fn _n, _c -> :ok end})
-      wait_until(fn -> Task.Supervisor.children(:sys.get_state(conn).notif_sup) == [] end)
+      # A finished handler's slot goes to the waiting notification.
+      send(t1, {:handler_run, r1, fn _n, _c -> :ok end})
+      assert_receive {:handler_invoke, :session_update, note3, _, t3, r3}
+      assert {:current_mode_update, %{current_mode_id: "m3"}} = note3.update
+      refute_receive {:handler_invoke, :session_update, _, _, _, _}, 100
+
+      for {t, r} <- [{t2, r2}, {t3, r3}], do: send(t, {:handler_run, r, fn _n, _c -> :ok end})
+      wait_until(fn -> :sys.get_state(conn).notifications.running == 0 end)
+      wait_until(fn -> Task.Supervisor.children(:sys.get_state(conn).notifications.sup) == [] end)
     end
 
-    test "a backlog of fast notifications is not shed by the cap" do
+    # Eight frames queue behind the parked handlers' results; each then starts
+    # while the one before it still runs, so they must wait for a slot.
+    test "a backlog of notifications waits for the cap instead of being shed" do
+      cap = 2
       task_sup = start_supervised!({Task.Supervisor, []}, id: :notif_backlog_sup)
       {conn_handle, peer} = ScriptedPeer.new()
 
@@ -2055,10 +2070,10 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
           connection_child_spec(
             role: :client,
             transport: {Paired, conn_handle},
-            handler: Raxol.AgentClientProtocol.ConnectionTest.FastClient,
+            handler: Raxol.AgentClientProtocol.ConnectionTest.BacklogClient,
             handler_arg: self(),
             task_sup: task_sup,
-            max_notification_tasks: 2
+            max_notification_tasks: cap
           )
         )
 
@@ -2071,39 +2086,47 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       ScriptedPeer.send_result(peer, frame["id"], %{"protocolVersion" => 1})
       {:ok, _} = Task.await(init)
 
-      send_update = fn i ->
-        ScriptedPeer.send_notification(
-          peer,
-          "session/update",
-          session_update_params("s1", "m#{i}")
-        )
+      :telemetry.attach(
+        "notif-backlog-test",
+        [:raxol, :acp, :notification_shed],
+        &__MODULE__.forward_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("notif-backlog-test") end)
+
+      send_update = fn mode ->
+        ScriptedPeer.send_notification(peer, "session/update", session_update_params("s1", mode))
       end
 
-      # Two handlers run and park at the cap.
-      for i <- 1..2, do: send_update.(i)
-
-      parked =
-        for _ <- 1..2 do
-          assert_receive {:fast_update, _, pid}
-          pid
-        end
-
-      # Eight more frames queue, then the two handlers finish: their results
-      # land in the Connection's mailbox behind the queued frames.
-      :sys.suspend(conn)
-      for i <- 3..10, do: send_update.("m#{i}")
-
-      wait_until(fn ->
+      queued = fn ->
         {:message_queue_len, n} = Process.info(conn, :message_queue_len)
-        n >= 8
-      end)
+        n
+      end
 
-      for pid <- parked, do: send(pid, :go)
-      wait_until(fn -> Enum.all?(parked, &(not Process.alive?(&1))) end)
-      :sys.resume(conn)
+      for round <- 1..3 do
+        # Handlers fill the cap and park.
+        for i <- 1..cap, do: send_update.("hold-#{round}-#{i}")
 
-      # The pool knows they finished, so none of the eight is shed.
-      for _ <- 3..10, do: assert_receive({:fast_update, _, _pid}, 1_000)
+        parked =
+          for _ <- 1..cap do
+            assert_receive {:backlog_update, _, pid}
+            pid
+          end
+
+        # Eight frames queue, then the parked handlers finish: their results
+        # land in the Connection's mailbox behind the frames.
+        :sys.suspend(conn)
+        for i <- 1..8, do: send_update.("m-#{round}-#{i}")
+        wait_until(fn -> queued.() >= 8 end)
+        for pid <- parked, do: send(pid, :go)
+        wait_until(fn -> queued.() >= 8 + cap end)
+        :sys.resume(conn)
+
+        for _ <- 1..8, do: assert_receive({:backlog_update, _, _pid}, 1_000)
+        refute_received {:telemetry, [:raxol, :acp, :notification_shed], _}
+        wait_until(fn -> map_size(:sys.get_state(conn).task_index) == 0 end)
+      end
     end
 
     test "a non-positive :max_notification_tasks refuses to start" do
@@ -2119,6 +2142,24 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
                  task_sup: self(),
                  max_notification_tasks: 0
                )
+    end
+
+    test "a non-positive or non-integer :max_queued_notifications refuses to start" do
+      Process.flag(:trap_exit, true)
+
+      for bad <- [0, -1, 1.5, :infinity] do
+        {conn_handle, _peer} = ScriptedPeer.new()
+
+        assert {:error, {:invalid_option, :max_queued_notifications, ^bad}} =
+                 Connection.start_link(
+                   role: :client,
+                   transport: {Paired, conn_handle},
+                   handler: ScriptClient,
+                   handler_arg: self(),
+                   task_sup: self(),
+                   max_queued_notifications: bad
+                 )
+      end
     end
   end
 

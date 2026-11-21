@@ -43,9 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Connection` options `:max_notification_tasks` (default 500: notification
-  handlers run in their own task pool of that size, so they cannot use up the
-  capacity requests need), `:close_drain_ms` and `:cancel_reply_timeout_ms`
+- `Connection` options `:max_notification_tasks` (default 500: at most that
+  many notification handlers run at once, in their own task pool, so they cannot
+  use up the capacity requests need), `:max_queued_notifications` (default
+  10_000: notifications arriving at that cap wait in order for a free handler,
+  and only those arriving with the backlog full are dropped with
+  `[:raxol, :acp, :notification_shed]`), `:close_drain_ms` and `:cancel_reply_timeout_ms`
   (default 60_000, longer than `Session`'s 30s cancel backstop). Like
   `:max_inbound`, invalid values stop the Connection at start.
 - The application starts a sixth child, `Client.Subscriptions`.

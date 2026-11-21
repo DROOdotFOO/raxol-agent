@@ -29,15 +29,24 @@ defmodule Raxol.AgentClientProtocol.Connection do
   use GenServer
   require Logger
 
-  alias Raxol.AgentClientProtocol.Connection.{Inbound, Link, Outbound, Turns, TurnState}
+  alias Raxol.AgentClientProtocol.Connection.{
+    Inbound,
+    Link,
+    NotificationPool,
+    Outbound,
+    Turns,
+    TurnState
+  }
+
   alias Raxol.AgentClientProtocol.Error
 
   # Concurrent inbound-request cap; excess requests are shed with -32603.
   @default_max_inbound 1_000
 
-  # Concurrent notification-handler cap; excess notifications are dropped so
-  # they cannot use up the task capacity requests need.
+  # Concurrent notification-handler cap; notifications beyond it wait in a
+  # backlog of this many, and are dropped once that is full.
   @default_max_notification_tasks 500
+  @default_max_queued_notifications 10_000
 
   # After the peer closes its write side, the Connection stops once every
   # in-flight inbound request is answered, or after this bound.
@@ -69,8 +78,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
             handler_state: nil,
             task_sup: nil,
             max_in: @default_max_inbound,
-            max_notification_tasks: @default_max_notification_tasks,
-            notif_sup: nil,
+            notifications: nil,
             close_drain_ms: @default_close_drain_ms,
             draining?: false,
             cancel_reply_timeout_ms: @default_cancel_reply_timeout_ms,
@@ -107,8 +115,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
           handler_state: term(),
           task_sup: GenServer.server() | nil,
           max_in: pos_integer(),
-          max_notification_tasks: pos_integer(),
-          notif_sup: pid() | nil,
+          notifications: NotificationPool.t() | nil,
           close_drain_ms: pos_integer() | :infinity,
           draining?: boolean(),
           cancel_reply_timeout_ms: pos_integer() | :infinity,
@@ -133,11 +140,15 @@ defmodule Raxol.AgentClientProtocol.Connection do
   Starts a Connection. Options: `:role`, `:transport` (`{mod, handle}`),
   `:handler`, `:handler_arg`, `:max_inbound` (a positive integer, default
   #{@default_max_inbound}; anything else stops with
-  `{:invalid_option, :max_inbound, value}`), `:max_notification_tasks` (likewise,
-  default #{@default_max_notification_tasks}), `:close_drain_ms` (how long, after the
-  peer closes, in-flight requests may still be answered; a positive integer or
-  `:infinity`, default #{@default_close_drain_ms}), `:cancel_reply_timeout_ms` (how long
-  an adopter told of a cancel may take to reply, likewise, default
+  `{:invalid_option, :max_inbound, value}`), `:max_notification_tasks` (how many
+  notification handlers run at once; likewise, default
+  #{@default_max_notification_tasks}), `:max_queued_notifications` (how many more
+  notifications may wait for a handler, in order, before further ones are
+  dropped; likewise, default #{@default_max_queued_notifications}),
+  `:close_drain_ms` (how long, after the peer closes, in-flight requests may
+  still be answered; a positive integer or `:infinity`, default
+  #{@default_close_drain_ms}), `:cancel_reply_timeout_ms` (how long an adopter
+  told of a cancel may take to reply, likewise, default
   #{@default_cancel_reply_timeout_ms}), and either `:parent_sup` or
   `:task_sup`/`:session_sup`.
   """
@@ -246,6 +257,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
     with {:ok, max_in} <- positive_option(opts, :max_inbound, @default_max_inbound),
          {:ok, max_notification_tasks} <-
            positive_option(opts, :max_notification_tasks, @default_max_notification_tasks),
+         {:ok, max_queued_notifications} <-
+           positive_option(
+             opts,
+             :max_queued_notifications,
+             @default_max_queued_notifications
+           ),
          {:ok, close_drain_ms} <- timeout_option(opts, :close_drain_ms, @default_close_drain_ms),
          {:ok, cancel_reply_timeout_ms} <-
            timeout_option(opts, :cancel_reply_timeout_ms, @default_cancel_reply_timeout_ms),
@@ -262,7 +279,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
         handler: handler,
         handler_state: handler_state,
         max_in: max_in,
-        max_notification_tasks: max_notification_tasks,
+        notifications: NotificationPool.new(max_notification_tasks, max_queued_notifications),
         close_drain_ms: close_drain_ms,
         cancel_reply_timeout_ms: cancel_reply_timeout_ms
       }
@@ -302,15 +319,16 @@ defmodule Raxol.AgentClientProtocol.Connection do
     if function_exported?(state.transport_mod, :set_owner, 2),
       do: state.transport_mod.set_owner(state.transport_state, self())
 
-    # Notification handlers get their own pool, so they cannot use up the
-    # capacity requests need; its child count is the exact number running.
-    {:ok, notif_sup} = Task.Supervisor.start_link(max_children: state.max_notification_tasks)
+    # Notification handlers get their own task supervisor, so they cannot use
+    # up the capacity requests need. It has no `max_children`: NotificationPool
+    # bounds it, and a supervisor's count lags behind handlers that just ended.
+    {:ok, notif_sup} = Task.Supervisor.start_link()
 
     {:noreply,
      %{
        state
        | task_sup: task_sup,
-         notif_sup: notif_sup,
+         notifications: %{state.notifications | sup: notif_sup},
          session_sup: session_sup,
          transport_ref: carrier,
          transport_monitor: carrier && Process.monitor(carrier),

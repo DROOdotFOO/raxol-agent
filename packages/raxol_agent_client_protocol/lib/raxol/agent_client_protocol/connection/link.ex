@@ -5,7 +5,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
 
   require Logger
 
-  alias Raxol.AgentClientProtocol.Connection.{Turns, Wire}
+  alias Raxol.AgentClientProtocol.Connection.{NotificationPool, Turns, Wire}
   alias Raxol.AgentClientProtocol.Rpc.{Notification, RequestId}
 
   @type state :: Raxol.AgentClientProtocol.Connection.t()
@@ -98,6 +98,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         out_tags: %{},
         pending_in: %{},
         task_index: %{},
+        notifications: NotificationPool.reset(state.notifications),
         reply_refs: %{},
         timed_out_adopters: %{},
         phase: :closed
