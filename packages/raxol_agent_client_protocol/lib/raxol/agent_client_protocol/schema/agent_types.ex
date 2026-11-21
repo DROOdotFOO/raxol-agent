@@ -8,7 +8,7 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes do
   contents of an explicit `"_meta"` object are folded into it on decode and
   re-emitted under `"_meta"` on encode, so round trips never lose data.
   `from_json/1` never raises. Load-bearing string fields (`cwd`, `sessionId`,
-  `modeId`, `methodId`) are type-checked, so a wrong-typed value fails decode
+  `modeId`, `methodId`, `modelId`, `configId`) are type-checked, so a wrong-typed value fails decode
   with `{:invalid_field, key, value}` (JSON-RPC `-32602`).
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.

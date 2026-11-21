@@ -31,6 +31,7 @@ defmodule Raxol.AgentClientProtocol.Session do
   require Logger
 
   alias Raxol.AgentClientProtocol.Error
+  alias Raxol.AgentClientProtocol.Rpc
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.PromptResponse
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.SessionModeState
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.SetSessionModeResponse
@@ -127,8 +128,11 @@ defmodule Raxol.AgentClientProtocol.Session do
   @doc """
   Begins a prompt turn; called from the `session/prompt` handler task. Adopts the
   reply obligation and returns `:ok` (the handler then returns `:deferred`). A
-  session with a live turn returns `{:error, %Error{}}` without adopting, and the
-  handler replies with it.
+  session with a live turn returns a busy `{:error, %Error{}}` that the handler
+  replies with. If the Connection no longer holds the request (the peer sent
+  `$/cancel_request`, or it is gone), no turn starts and the result is
+  `{:error, Error.request_cancelled()}`; nothing is sent. A prompt wire-ordered
+  before a `session/cancel` is answered `stopReason: cancelled`.
   """
   @spec begin_prompt(GenServer.server(), struct(), reference(), non_neg_integer()) ::
           :ok | {:error, Error.t()}
@@ -208,13 +212,19 @@ defmodule Raxol.AgentClientProtocol.Session do
   @impl true
   def handle_call({:begin_prompt, req, reply_ref, rx_seq}, _from, %{turn: :idle} = state) do
     # Adopt first: the call returns before the handler can return :deferred.
-    _ = state.conn_mod.delegate_reply(state.conn, reply_ref, self())
+    # If the peer already cancelled (or the request is gone), run nothing.
+    case state.conn_mod.delegate_reply(state.conn, reply_ref, self()) do
+      :ok when rx_seq < state.last_cancel_seq ->
+        _ = state.conn_mod.reply(state.conn, reply_ref, {:ok, PromptResponse.new(:cancelled)})
+        {:reply, :ok, arm_idle(state)}
 
-    if rx_seq < state.last_cancel_seq do
-      _ = state.conn_mod.reply(state.conn, reply_ref, {:ok, PromptResponse.new(:cancelled)})
-      {:reply, :ok, arm_idle(state)}
-    else
-      {:reply, :ok, start_turn(state, req, reply_ref, rx_seq)}
+      :ok ->
+        {:reply, :ok, start_turn(state, req, reply_ref, rx_seq)}
+
+      # The Connection discards whatever the handler returns for a cancelled or
+      # vanished request; the error only keeps the handler's return well formed.
+      {:error, _cancelled_or_unknown} ->
+        {:reply, {:error, Error.request_cancelled()}, arm_idle(state)}
     end
   end
 
@@ -233,8 +243,14 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   def handle_call({:post_update, notification}, _from, %{turn: {ts, t}} = state) do
     if Turn.empty_chunk?(notification) do
-      Logger.debug("ACP: rejected empty session/update chunk for #{inspect(state.session_id)}")
-      Telemetry.execute([:raxol, :acp, :empty_chunk_rejected], %{session_id: state.session_id})
+      Logger.debug(
+        "ACP: rejected empty session/update chunk for #{Rpc.loggable(state.session_id)}"
+      )
+
+      Telemetry.execute([:raxol, :acp, :empty_chunk_rejected], %{
+        session_id: Rpc.printable(state.session_id)
+      })
+
       {:reply, {:error, :empty_chunk}, state}
     else
       _ = state.emitter.emit(state, notification)
@@ -293,7 +309,10 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   @impl true
   def handle_cast({:acp_session_cancel, seq}, %{turn: :idle} = state) do
-    Logger.debug("acp session cancel of idle session #{inspect(state.session_id)} (latch #{seq})")
+    Logger.debug(
+      "acp session cancel of idle session #{Rpc.loggable(state.session_id)} (latch #{seq})"
+    )
+
     {:noreply, %{state | last_cancel_seq: max(state.last_cancel_seq, seq)}}
   end
 
@@ -322,7 +341,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   def handle_info({:acp_result, tag, result}, %{turn: {ts, t}} = state) do
     case Map.pop(t.pending_perms, tag) do
       {nil, _} ->
-        Logger.debug("dropping stale permission result for #{inspect(state.session_id)}")
+        Logger.debug("dropping stale permission result for #{Rpc.loggable(state.session_id)}")
+
         {:noreply, state}
 
       {%{from: from}, rest} ->
@@ -355,8 +375,12 @@ defmodule Raxol.AgentClientProtocol.Session do
 
   # The epoch match proves no activity re-armed the timer since.
   def handle_info({:acp_idle_reap, epoch}, %{turn: :idle, idle_epoch: epoch} = state) do
-    Logger.debug("acp: idle-reaping session #{inspect(state.session_id)} after idle timeout")
-    Telemetry.execute([:raxol, :acp, :session_idle_reaped], %{session_id: state.session_id})
+    Logger.debug("acp: idle-reaping session #{Rpc.loggable(state.session_id)} after idle timeout")
+
+    Telemetry.execute([:raxol, :acp, :session_idle_reaped], %{
+      session_id: Rpc.printable(state.session_id)
+    })
+
     if function_exported?(state.emitter, :reap, 1), do: state.emitter.reap(state)
     {:stop, :normal, %{state | idle_timer: nil}}
   end
@@ -459,13 +483,13 @@ defmodule Raxol.AgentClientProtocol.Session do
 
       reason ->
         Logger.warning(
-          "ACP: turn for session #{inspect(state.session_id)} completed " <>
+          "ACP: turn for session #{Rpc.loggable(state.session_id)} completed " <>
             "(stopReason: #{inspect(reason)}) with zero session/update notifications " <>
             "for a non-empty prompt"
         )
 
         Telemetry.execute([:raxol, :acp, :zero_updates_turn], %{
-          session_id: state.session_id,
+          session_id: Rpc.printable(state.session_id),
           stop_reason: reason
         })
     end

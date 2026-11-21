@@ -133,6 +133,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
   require Logger
 
   alias Raxol.AgentClientProtocol.Ext.AttachPolicy.Grant
+  alias Raxol.AgentClientProtocol.Rpc
 
   @default_timeout_ms 5_000
   @default_supervisor Raxol.AgentClientProtocol.Ext.AttachPolicy.TaskSupervisor
@@ -237,7 +238,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
       [:raxol, :acp, :attach, :granted],
       %{},
       %{
-        session_id: ctx[:session_id],
+        session_id: Rpc.safe(ctx[:session_id]),
         surface: ctx[:surface],
         via: grant.via
       }
@@ -250,14 +251,14 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
     # Reason to telemetry + Logger (stderr) ONLY — never to the wire (anti-oracle).
     Logger.warning(
       "acp attach denied: #{inspect(reason)} " <>
-        "session=#{inspect(ctx[:session_id])} surface=#{inspect(ctx[:surface])}"
+        "session=#{Rpc.loggable(ctx[:session_id])} surface=#{inspect(ctx[:surface])}"
     )
 
     telemetry(
       [:raxol, :acp, :attach, :denied],
       %{},
       %{
-        session_id: ctx[:session_id],
+        session_id: Rpc.safe(ctx[:session_id]),
         surface: ctx[:surface],
         reason: reason
       }

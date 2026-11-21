@@ -104,8 +104,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   @doc """
   Starts a Connection. Options: `:role`, `:transport` (`{mod, handle}`),
-  `:handler`, `:handler_arg`, `:max_inbound` (default #{@default_max_inbound}),
-  and either `:parent_sup` or `:task_sup`/`:session_sup`.
+  `:handler`, `:handler_arg`, `:max_inbound` (a positive integer, default
+  #{@default_max_inbound}; anything else stops with
+  `{:invalid_option, :max_inbound, value}`), and either `:parent_sup` or
+  `:task_sup`/`:session_sup`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) when is_list(opts) do
@@ -152,8 +154,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
   @doc """
   Transfers an inbound request's reply obligation to `adopter`, which the
   Connection then monitors. Must return before the handler returns `:deferred`.
+  Returns `{:error, :cancelled}` when the peer already cancelled the request.
+  If the peer cancels later, the adopter receives `{:acp_reply_cancelled, reply_ref}`
+  and must still call `reply/3` (nothing is sent) or exit; until then the request
+  holds an inbound slot.
   """
-  @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref}
+  @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref | :cancelled}
   def delegate_reply(conn, reply_ref, adopter)
       when is_pid(conn) and is_reference(reply_ref) and is_pid(adopter) do
     call(conn, {:delegate_reply, reply_ref, adopter})
@@ -161,9 +167,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   @doc """
   Discharges a delegated reply. An unknown, consumed or cancelled `reply_ref` is
-  a no-op that emits `[:raxol, :acp, :dup_reply]`.
+  a no-op that emits `[:raxol, :acp, :dup_reply]`. A malformed result is
+  answered `-32603`; extension methods may reply with a plain map.
   """
-  @spec reply(pid(), reference(), {:ok, struct()} | {:error, Error.t()}) :: :ok
+  @spec reply(pid(), reference(), {:ok, map()} | {:error, Error.t()}) :: :ok
   def reply(conn, reply_ref, result_or_error) when is_pid(conn) and is_reference(reply_ref) do
     call(conn, {:reply, reply_ref, result_or_error})
   end
@@ -175,7 +182,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   @doc """
   Returns the current delivery watermark for `session_id`. Serialized with the
   point that assigns ordinals, so a caller that subscribes and then calls this
-  knows every later stamp reaches it. `turn: nil` means no open turn.
+  knows every later stamp reaches it. `turn: nil` means no open turn. Sessions
+  outside the out-of-turn tracking cap (`Connection.Turns.max_oot_sessions/0`
+  sessions, ids of at most 256 bytes) report `0`.
   """
   @spec update_watermark(pid(), String.t()) ::
           {:ok, %{turn: reference() | nil, ordinal: non_neg_integer()}}
@@ -198,29 +207,40 @@ defmodule Raxol.AgentClientProtocol.Connection do
     Process.flag(:trap_exit, true)
     handler = Keyword.fetch!(opts, :handler)
 
-    case handler.init(Keyword.get(opts, :handler_arg)) do
-      {:ok, handler_state} ->
-        {mod, handle} = Keyword.fetch!(opts, :transport)
+    with {:ok, max_in} <- max_inbound(opts),
+         {:ok, handler_state} <- init_handler(handler, Keyword.get(opts, :handler_arg)) do
+      {mod, handle} = Keyword.fetch!(opts, :transport)
 
-        state = %__MODULE__{
-          role: Keyword.get(opts, :role, :agent),
-          transport_mod: mod,
-          transport_state: handle,
-          parent_sup: Keyword.get(opts, :parent_sup),
-          session_sup: Keyword.get(opts, :session_sup),
-          task_sup: Keyword.get(opts, :task_sup),
-          handler: handler,
-          handler_state: handler_state,
-          max_in: Keyword.get(opts, :max_inbound, @default_max_inbound)
-        }
+      state = %__MODULE__{
+        role: Keyword.get(opts, :role, :agent),
+        transport_mod: mod,
+        transport_state: handle,
+        parent_sup: Keyword.get(opts, :parent_sup),
+        session_sup: Keyword.get(opts, :session_sup),
+        task_sup: Keyword.get(opts, :task_sup),
+        handler: handler,
+        handler_state: handler_state,
+        max_in: max_in
+      }
 
-        {:ok, state, {:continue, :boot}}
+      {:ok, state, {:continue, :boot}}
+    end
+  end
 
-      {:stop, reason} ->
-        {:stop, reason}
+  # A non-integer cap would compare greater than any map size and silently
+  # disable the flood guard, so it is refused.
+  defp max_inbound(opts) do
+    case Keyword.get(opts, :max_inbound, @default_max_inbound) do
+      n when is_integer(n) and n > 0 -> {:ok, n}
+      other -> {:stop, {:invalid_option, :max_inbound, other}}
+    end
+  end
 
-      other ->
-        {:stop, {:bad_handler_init, other}}
+  defp init_handler(handler, arg) do
+    case handler.init(arg) do
+      {:ok, handler_state} -> {:ok, handler_state}
+      {:stop, reason} -> {:stop, reason}
+      other -> {:stop, {:bad_handler_init, other}}
     end
   end
 

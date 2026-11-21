@@ -59,7 +59,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
             out_tags: add_tag(state.out_tags, reply_to, id)
         }
 
-        {:parked, Turns.maybe_open(state, method, reply_to, params, id)}
+        state = state |> Turns.track(params) |> Turns.maybe_open(method, reply_to, params, id)
+        {:parked, state}
     end
   end
 
@@ -123,6 +124,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
 
         %{state | pending_out: pending_out, out_tags: drop_tag(state.out_tags, rt)}
         |> client_initialized(method, outcome)
+        |> track_result(outcome)
     end
   end
 
@@ -145,6 +147,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Outbound do
        do: %{state | phase: :initialized, caps: state.own_caps}
 
   defp client_initialized(state, _method, _outcome), do: state
+
+  # session/new and session/fork results name a session this side now owns.
+  defp track_result(state, {:ok, result}), do: Turns.track(state, result)
+  defp track_result(state, _outcome), do: state
 
   defp arm_timer(_id, :infinity), do: nil
 

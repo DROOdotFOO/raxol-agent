@@ -90,6 +90,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   alias Raxol.AgentClientProtocol.Ext.AttachPolicy
   alias Raxol.AgentClientProtocol.Ext.Journal
   alias Raxol.AgentClientProtocol.Ext.Journal.Writer
+  alias Raxol.AgentClientProtocol.Rpc
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.LoadSessionResponse
 
   @vendor "raxol.io"
@@ -295,8 +296,18 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
     # Transfer the load-request reply obligation to the subscriber BEFORE
     # it replies (so its reply discharges a delegated ref, no double response).
-    _ = conn_mod.delegate_reply(conn, reply_ref, sub)
+    # A request the peer already cancelled gets no subscriber.
+    case conn_mod.delegate_reply(conn, reply_ref, sub) do
+      :ok ->
+        run_subscriber(sub)
 
+      {:error, _cancelled_or_unknown} ->
+        GenServer.stop(sub, :normal)
+        {:error, Error.request_cancelled()}
+    end
+  end
+
+  defp run_subscriber(sub) do
     # Run the NORMATIVE algorithm synchronously (subscribe → h → history → reply);
     # any live record that arrives during it queues in the subscriber mailbox and
     # is first evaluated against the gate afterward (the gate-arm invariant).
@@ -350,10 +361,10 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
     Raxol.AgentClientProtocol.Telemetry.execute(
       [:raxol, :acp, :attach, :denied],
-      %{session_id: sid, surface: surface, reason: reason}
+      %{session_id: Rpc.safe(sid), surface: surface, reason: reason}
     )
 
-    Logger.debug("acp reattach: attach denied for #{inspect(sid)} (#{inspect(reason)})")
+    Logger.debug("acp reattach: attach denied for #{Rpc.loggable(sid)} (#{inspect(reason)})")
 
     :ok
   end

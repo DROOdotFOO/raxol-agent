@@ -174,6 +174,18 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
                ["m1", "m2"]
     end
 
+    test "returns {:error, :connection_closed} when the Connection is killed mid-turn" do
+      %{conn: conn, peer: peer} = start_client_conn(EchoClient)
+      :ok = complete_handshake(conn, peer)
+
+      request = PromptRequest.new("sess-killed", [ContentBlock.from_string("hi")])
+      caller = Task.async(fn -> Client.prompt(conn, request, 60_000) end)
+      assert %{"method" => "session/prompt"} = ScriptedPeer.recv(peer)
+
+      Process.exit(conn, :kill)
+      assert {:error, :connection_closed} = Task.await(caller, 2_000)
+    end
+
     test "unsubscribes even on an error outcome (timeout)" do
       %{conn: conn, peer: peer} = start_client_conn(EchoClient)
       :ok = complete_handshake(conn, peer)

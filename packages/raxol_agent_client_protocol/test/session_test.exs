@@ -161,6 +161,25 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
   # I3 ordering, I4 hold-open
   # ---------------------------------------------------------------------------
 
+  describe "begin_prompt when delegation fails" do
+    for result <- [{:error, :cancelled}, {:error, :unknown_ref}] do
+      test "delegate_reply #{inspect(result)} runs no turn and sends no reply", ctx do
+        conn = new_conn(delegate_result: unquote(Macro.escape(result)))
+        test_pid = self()
+
+        {session, _} =
+          start_session(ctx, conn,
+            turn_runner: fn _s, _r -> send(test_pid, :ran) && {:stop, :end_turn} end
+          )
+
+        assert {{:error, %Error{code: -32_800, data: nil}}, _ref} = begin(session)
+        refute_receive :ran, 100
+        assert turn_state(session) == :idle
+        assert FakeConnection.count(conn, :reply) == 0
+      end
+    end
+  end
+
   describe "I3 update/response ordering" do
     test "every update frame precedes the turn's response frame", ctx do
       conn = new_conn()

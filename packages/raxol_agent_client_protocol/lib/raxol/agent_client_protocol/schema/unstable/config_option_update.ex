@@ -39,8 +39,8 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable.SetSessionConfigOptionReques
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId"),
-         {:ok, config_id} <- AgentTypes.fetch(map, "configId"),
+    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId", &is_binary/1),
+         {:ok, config_id} <- AgentTypes.fetch(map, "configId", &is_binary/1),
          {:ok, value} <- AgentTypes.fetch(map, "value") do
       {:ok,
        %__MODULE__{

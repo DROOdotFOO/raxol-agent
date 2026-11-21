@@ -33,6 +33,8 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable.SessionInfo do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
+    # List items stay presence-checked: a wrong-typed entry must not fail the
+    # enclosing response.
     with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId"),
          {:ok, cwd} <- AgentTypes.fetch(map, "cwd") do
       {:ok,

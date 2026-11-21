@@ -1233,4 +1233,36 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
     @impl true
     def authorize_attach(_ctx), do: {:error, :denied_by_test}
   end
+
+  describe "attach on a request the peer already cancelled" do
+    test "stops the subscriber and sends nothing" do
+      {sid, j, _w} = start_writer([])
+      {:ok, conn} = FakeConnection.start_link(delegate_result: {:error, :cancelled})
+      test = self()
+
+      result =
+        Reattach.attach(%{
+          conn: conn,
+          conn_mod: FakeConnection,
+          session_id: sid,
+          reply_ref: make_ref(),
+          journal: {Mem, j},
+          from_offset: 0,
+          history_policy: :from_offset,
+          offset_aware?: true,
+          authorize: granting(),
+          start_subscriber: fn o ->
+            {:ok, p} = Reattach.start_link(o)
+            send(test, {:sub, p})
+            {:ok, p}
+          end
+        })
+
+      assert {:error, %Error{code: -32_800}} = result
+      assert_receive {:sub, sub}
+      refute Process.alive?(sub)
+      assert FakeConnection.count(conn, :notify) == 0
+      assert FakeConnection.count(conn, :reply) == 0
+    end
+  end
 end

@@ -31,6 +31,10 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest.ScriptAgent do
 
   @impl true
   def prompt(req, ctx), do: Rendezvous.invoke(:prompt, req, ctx)
+
+  @impl true
+  def handle_ext_request(wire, params, ctx),
+    do: Rendezvous.invoke(:ext_request, {wire, params}, ctx)
 end
 
 defmodule Raxol.AgentClientProtocol.ConnectionTest.ScriptClient do
@@ -1766,6 +1770,202 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
 
       assert map_size(:sys.get_state(conn).pending_in) == cap
       assert map_size(:sys.get_state(conn).reply_refs) == cap
+      assert Process.alive?(conn)
+    end
+
+    test "a non-positive-integer :max_inbound refuses to start (the guard fails closed)" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      for bad <- [:infinity, nil, 0, -1, 1.5] do
+        assert {:error, {:invalid_option, :max_inbound, ^bad}} =
+                 Connection.start_link(
+                   role: :agent,
+                   transport: {Paired, conn_handle},
+                   handler: ScriptAgent,
+                   handler_arg: self(),
+                   task_sup: self(),
+                   max_inbound: bad
+                 )
+      end
+    end
+  end
+
+  describe "handler and adopter result validation" do
+    test "an extension request may answer with a plain map" do
+      %{peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 7, "_vendor/echo", %{"x" => 1})
+
+      handle_next_invoke(:ext_request, fn {"_vendor/echo", _params}, _ctx ->
+        {:ok, %{"echo" => true}}
+      end)
+
+      assert %{"id" => 7, "result" => %{"echo" => true}} = ScriptedPeer.recv(peer)
+    end
+
+    test "an extension result Jason cannot encode is -32603, not a crash" do
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      for {id, bad} <- [{70, %{{1, 2} => 1}}, {71, %{"a" => [1 | 2]}}] do
+        ScriptedPeer.send_request(peer, id, "_vendor/echo", %{})
+        handle_next_invoke(:ext_request, fn _wire_params, _ctx -> {:ok, bad} end)
+        assert %{"id" => ^id, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
+      end
+
+      assert Process.alive?(conn)
+    end
+
+    test "a table method answering with a plain map is -32603" do
+      %{peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 8, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> {:ok, %{"sessionId" => "s"}} end)
+
+      assert %{"id" => 8, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
+    end
+
+    test "no frame is sent when the peer cancels during delegation" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 20, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, _ctx ->
+          send(test_pid, :blocked)
+          receive do: (:never -> :ok)
+        end)
+
+      assert_receive :blocked
+      ScriptedPeer.send_cancel_request(peer, 20)
+
+      wait_until(fn ->
+        case :sys.get_state(conn).pending_in do
+          %{20 => %{cancelled?: false}} -> false
+          _ -> true
+        end
+      end)
+
+      assert {:error, _} = Connection.delegate_reply(conn, ctx.reply_ref, self())
+      ScriptedPeer.assert_no_frame(peer, 150)
+    end
+
+    test "a cancel between delegation and :deferred leaves the reply to the adopter" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 22, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx, task_pid: task} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          send(test_pid, :delegated)
+          receive do: (:go -> :deferred)
+        end)
+
+      assert_receive :delegated
+      ScriptedPeer.send_cancel_request(peer, 22)
+      assert_receive {:acp_reply_cancelled, _ref}
+      send(task, :go)
+
+      wait_until(fn -> match?(%{22 => %{task_pid: nil}}, :sys.get_state(conn).pending_in) end)
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      ScriptedPeer.assert_no_frame(peer, 150)
+      assert :sys.get_state(conn).pending_in == %{}
+    end
+
+    test "a stale handler result does not touch a newer request that reused its id" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 30, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx, task_pid: old_task} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          send(test_pid, :delegated)
+          receive do: (:go -> :deferred)
+        end)
+
+      assert_receive :delegated
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      assert %{"id" => 30, "result" => _} = ScriptedPeer.recv(peer)
+
+      ScriptedPeer.send_request(peer, 30, "session/new", new_session_params())
+
+      %{task_pid: new_task} =
+        handle_next_invoke(:new_session, fn _req, _ctx ->
+          receive do: (:go ->
+                         {:ok,
+                          Raxol.AgentClientProtocol.Schema.AgentTypes.NewSessionResponse.new("s2")})
+        end)
+
+      send(old_task, :go)
+      ScriptedPeer.assert_no_frame(peer, 150)
+      send(new_task, :go)
+      assert %{"id" => 30, "result" => %{"sessionId" => "s2"}} = ScriptedPeer.recv(peer)
+    end
+
+    test "a handler crash after delegating leaves the reply to the adopter" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 21, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          exit(:boom)
+        end)
+
+      ScriptedPeer.assert_no_frame(peer, 150)
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      assert %{"id" => 21, "result" => %{"stopReason" => "end_turn"}} = ScriptedPeer.recv(peer)
+    end
+
+    test "a peer cannot forge log lines through the method name" do
+      %{peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          ScriptedPeer.send_raw(peer, %{
+            "jsonrpc" => "2.0",
+            "id" => nil,
+            "method" => "session/new\n[error] FORGED"
+          })
+
+          _ = ScriptedPeer.recv(peer)
+        end)
+
+      assert log =~ ~S(session/new\n[error] FORGED)
+      refute log =~ "\n[error] FORGED"
+    end
+
+    test "a malformed delegated reply is answered -32603 and the Connection survives" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 9, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          :deferred
+        end)
+
+      assert :ok = Connection.reply(conn, ctx.reply_ref, {:error, :not_an_error_struct})
+
+      assert %{"id" => 9, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
       assert Process.alive?(conn)
     end
   end

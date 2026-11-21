@@ -33,8 +33,8 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable.ForkSessionRequest do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId"),
-         {:ok, cwd} <- AgentTypes.fetch(map, "cwd"),
+    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId", &is_binary/1),
+         {:ok, cwd} <- AgentTypes.fetch(map, "cwd", &is_binary/1),
          {:ok, mcp_servers} <-
            AgentTypes.decode_list(
              Map.get(map, "mcpServers", []),
@@ -103,7 +103,7 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable.ForkSessionResponse do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId"),
+    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId", &is_binary/1),
          {:ok, state} <- SessionState.decode(map) do
       {:ok,
        Map.merge(
@@ -150,8 +150,8 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable.ResumeSessionRequest do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId"),
-         {:ok, cwd} <- AgentTypes.fetch(map, "cwd"),
+    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId", &is_binary/1),
+         {:ok, cwd} <- AgentTypes.fetch(map, "cwd", &is_binary/1),
          {:ok, mcp_servers} <-
            AgentTypes.decode_list(
              Map.get(map, "mcpServers", []),

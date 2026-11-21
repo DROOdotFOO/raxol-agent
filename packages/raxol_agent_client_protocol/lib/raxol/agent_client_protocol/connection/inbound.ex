@@ -11,6 +11,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   alias Raxol.AgentClientProtocol.{Capabilities, Error, Router, Telemetry}
   alias Raxol.AgentClientProtocol.Connection.{Dispatch, Link, Notifications, Outbound, Wire}
+  alias Raxol.AgentClientProtocol.Rpc
   alias Raxol.AgentClientProtocol.Rpc.{Notification, Request, RequestId, Response}
 
   @type state :: Raxol.AgentClientProtocol.Connection.t()
@@ -49,9 +50,15 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   end
 
   def decode_error(state, reason) do
-    Telemetry.execute([:raxol, :acp, :parse_error], %{reason: inspect(reason)})
+    Telemetry.execute([:raxol, :acp, :parse_error], %{reason: reason_tag(reason)})
     Link.emit(state, Wire.response(nil, {:error, Error.parse_error()}))
   end
+
+  # Telemetry gets the kind of decode failure, never the peer's raw bytes.
+  defp reason_tag(%{__exception__: true, __struct__: mod}), do: mod
+  defp reason_tag({tag, n}) when is_atom(tag) and is_integer(n), do: {tag, n}
+  defp reason_tag(tag) when is_atom(tag), do: tag
+  defp reason_tag(_other), do: :unknown
 
   defp decode_and(state, frame, decode, handle) do
     case decode.(frame) do
@@ -69,8 +76,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
       {:error, _reason} ->
         id = Map.get(frame, "id")
-        Logger.warning("ACP: malformed response frame dropped (id #{inspect(id)})")
-        Telemetry.execute([:raxol, :acp, :malformed_response], %{id: inspect(id)})
+        Logger.warning("ACP: malformed response frame dropped (id #{Rpc.loggable(id)})")
+        Telemetry.execute([:raxol, :acp, :malformed_response], %{id: Rpc.loggable(id)})
         {:noreply, state}
     end
   end
@@ -101,7 +108,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         {:reject, rejection}
 
       id == nil ->
-        Logger.warning("ACP: inbound request with null id (method #{method}) rejected -32600")
+        Logger.warning(
+          "ACP: inbound request with null id (method #{Rpc.printable(method)}) rejected -32600"
+        )
+
         {:reject, Wire.response(nil, {:error, Error.invalid_request()})}
 
       Map.has_key?(state.pending_in, id) ->
@@ -139,10 +149,13 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   defp handshake_rejection(_phase, _req), do: nil
 
   defp shed(id, method, why, data) do
-    Telemetry.execute([:raxol, :acp, :inbound_shed], %{id: RequestId.display(id), method: method})
+    Telemetry.execute([:raxol, :acp, :inbound_shed], %{
+      id: RequestId.display(id),
+      method: Rpc.printable(method)
+    })
 
     Logger.warning(
-      "ACP: inbound request #{method} (id #{RequestId.display(id)}) shed -32603: #{why}"
+      "ACP: inbound request #{Rpc.printable(method)} (id #{RequestId.display(id)}) shed -32603: #{why}"
     )
 
     Wire.error(id, Error.new(Error.internal_error_code(), "Server busy"), data)
@@ -208,17 +221,36 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         state = %{state | task_index: Map.delete(state.task_index, ref)}
 
         case tag do
-          {:request, id} -> request_result(state, id, result)
+          {:request, id} -> request_result(state, id, ref, result)
           {:notification, _method} -> {:noreply, state}
         end
     end
   end
 
-  defp request_result(state, id, result) do
+  # The entry for `id` only if it still belongs to the task `ref`: once replied
+  # to, the id can be reused by a new request the stale task must not touch.
+  defp own_entry(state, id, ref) do
     case Map.get(state.pending_in, id) do
-      nil -> {:noreply, state}
-      %{cancelled?: true} = entry -> {:noreply, Link.drop_pending_in(state, id, entry)}
-      entry -> finish(state, id, entry, result)
+      %{task_ref: ^ref} = entry -> entry
+      _other -> nil
+    end
+  end
+
+  defp request_result(state, id, ref, result) do
+    case own_entry(state, id, ref) do
+      nil ->
+        {:noreply, state}
+
+      # Cancelled after delegation: the adopter still replies (and the reply is
+      # suppressed), so keep the entry for it.
+      %{cancelled?: true, adopter: {_pid, _mon}} = entry when result == :deferred ->
+        {:noreply, put_in(state.pending_in[id], %{entry | task_ref: nil, task_pid: nil})}
+
+      %{cancelled?: true} = entry ->
+        {:noreply, Link.drop_pending_in(state, id, entry)}
+
+      entry ->
+        finish(state, id, entry, result)
     end
   end
 
@@ -237,18 +269,31 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   end
 
   defp finish(state, id, entry, result) do
-    state = Link.drop_pending_in(state, id, entry)
+    state
+    |> Link.drop_pending_in(id, entry)
+    |> send_response(
+      id,
+      entry,
+      checked(state, entry, result),
+      &{:noreply, &1},
+      &{:stop, :normal, &1}
+    )
+  end
 
-    case Wire.handler_result(result) do
+  # A malformed result from a handler or an adopter is answered -32603 rather
+  # than crashing the Connection.
+  defp checked(state, entry, result) do
+    case Wire.handler_result(result, entry.method) do
       {:ok, response} ->
-        send_response(state, id, entry, response, &{:noreply, &1}, &{:stop, :normal, &1})
+        response
 
       :malformed ->
         Logger.error(
-          "ACP: handler #{inspect(state.handler)} returned malformed value for #{entry.method}: #{inspect(result)}"
+          "ACP: handler #{inspect(state.handler)} returned malformed value for " <>
+            "#{Rpc.printable(entry.method)}: #{inspect(result, limit: 20)}"
         )
 
-        internal_error(state, id)
+        {:error, Error.internal_error()}
     end
   end
 
@@ -269,43 +314,54 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         notification_crash(%{state | task_index: task_index}, method, reason)
 
       {{:request, id}, task_index} ->
-        request_crash(%{state | task_index: task_index}, id, reason)
+        request_crash(%{state | task_index: task_index}, id, ref, reason)
     end
   end
 
   defp notification_crash(state, method, reason) do
-    Logger.error("ACP: notification handler crashed (#{method}): #{inspect(reason)}")
-    Telemetry.execute([:raxol, :acp, :handler_crash], %{kind: :notification, method: method})
+    Logger.error(
+      "ACP: notification handler crashed (#{Rpc.printable(method)}): #{inspect(reason)}"
+    )
+
+    Telemetry.execute([:raxol, :acp, :handler_crash], %{
+      kind: :notification,
+      method: Rpc.printable(method)
+    })
+
     {:noreply, state}
   end
 
-  defp request_crash(state, id, reason) do
-    case Map.pop(state.pending_in, id) do
-      {nil, _} ->
+  defp request_crash(state, id, ref, reason) do
+    case own_entry(state, id, ref) do
+      nil ->
         {:noreply, state}
 
-      {entry, pending_in} ->
-        state = %{
-          state
-          | pending_in: pending_in,
-            reply_refs: Map.delete(state.reply_refs, entry.reply_ref)
-        }
+      # The adopter owns the reply now; it answers (or its DOWN does). The
+      # entry holds an inbound slot until then.
+      %{adopter: {_pid, _mon}} = entry ->
+        if reason != :normal, do: report_crash(entry, id, reason)
+        entry = %{entry | task_ref: nil, task_pid: nil}
+        {:noreply, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
 
-        if entry.cancelled? or reason == :normal do
-          {:noreply, state}
-        else
-          Logger.error(
-            "ACP: request handler crashed (#{entry.method}, id #{RequestId.display(id)}): #{inspect(reason)}"
-          )
+      %{cancelled?: cancelled?} = entry when cancelled? or reason == :normal ->
+        {:noreply, Link.drop_pending_in(state, id, entry)}
 
-          Telemetry.execute([:raxol, :acp, :handler_crash], %{
-            kind: :request,
-            method: entry.method
-          })
-
-          internal_error(state, id)
-        end
+      entry ->
+        report_crash(entry, id, reason)
+        state |> Link.drop_pending_in(id, entry) |> internal_error(id)
     end
+  end
+
+  defp report_crash(entry, id, reason) do
+    Logger.error(
+      "ACP: request handler crashed (#{Rpc.printable(entry.method)}, id #{RequestId.display(id)}): " <>
+        inspect(reason)
+    )
+
+    Telemetry.execute([:raxol, :acp, :handler_crash], %{
+      kind: :request,
+      method: Rpc.printable(entry.method)
+    })
   end
 
   defp adopter_down(state, mon_ref) do
@@ -334,15 +390,23 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   # -- Delegated replies ------------------------------------------------------
 
-  @spec delegate(state(), reference(), pid()) :: {:ok, state()} | {:error, :unknown_ref}
+  @spec delegate(state(), reference(), pid()) ::
+          {:ok, state()} | {:error, :unknown_ref | :cancelled}
   def delegate(state, reply_ref, adopter) do
     case Map.get(state.reply_refs, reply_ref) do
       nil ->
         {:error, :unknown_ref}
 
       id ->
-        entry = %{Map.fetch!(state.pending_in, id) | adopter: {adopter, Process.monitor(adopter)}}
-        {:ok, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
+        case Map.fetch!(state.pending_in, id) do
+          # The peer already cancelled it; the would-be adopter must not run it.
+          %{cancelled?: true} ->
+            {:error, :cancelled}
+
+          entry ->
+            entry = %{entry | adopter: {adopter, Process.monitor(adopter)}}
+            {:ok, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
+        end
     end
   end
 
@@ -367,7 +431,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
               state,
               id,
               entry,
-              result,
+              checked(state, entry, result),
               &{:reply, :ok, &1},
               &{:stop, :normal, :ok, &1}
             )

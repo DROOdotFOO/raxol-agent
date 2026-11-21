@@ -95,7 +95,7 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.NewSessionResponse do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId"),
+    with {:ok, session_id} <- AgentTypes.fetch(map, "sessionId", &is_binary/1),
          {:ok, state} <- SessionState.decode(map) do
       {:ok,
        Map.merge(

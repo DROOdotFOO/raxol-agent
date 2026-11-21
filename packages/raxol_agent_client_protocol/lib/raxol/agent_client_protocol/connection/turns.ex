@@ -24,14 +24,22 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
   @moduledoc false
   # Turn bookkeeping over the Connection state's `turns` (session_id =>
   # TurnState), `turn_ids` (out_id => session_id) and `oot_seq` (session_id =>
-  # out-of-turn update count; monotone while the connection is open).
+  # out-of-turn update count; monotone while the connection is open, for at
+  # most `max_oot_sessions/0` sessions).
   #
   # Only an async `session/prompt` (reply_to `{:owner, ...}`) opens a turn: a
   # sync caller is parked in `GenServer.call` and cannot receive deliveries, so
   # its session's updates are stamped out-of-turn.
 
   alias Raxol.AgentClientProtocol.Connection.TurnState
-  alias Raxol.AgentClientProtocol.Delivery
+  alias Raxol.AgentClientProtocol.{Delivery, Rpc, Telemetry}
+
+  @max_oot_sessions 10_000
+  @max_tracked_id_bytes 256
+
+  @doc false
+  @spec max_oot_sessions() :: 10_000
+  def max_oot_sessions, do: @max_oot_sessions
 
   @type state :: %{
           :turns => %{String.t() => TurnState.t()},
@@ -134,9 +142,46 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
         {Delivery.new(token, n, rx_seq), put_in(state.turns[session_id].next_ordinal, n + 1)}
 
       nil ->
-        ordinal = Map.get(state.oot_seq, session_id, 0)
-        state = %{state | oot_seq: Map.put(state.oot_seq, session_id, ordinal + 1)}
-        {Delivery.new(nil, ordinal, rx_seq), state}
+        stamp_out_of_turn(state, session_id, rx_seq)
+    end
+  end
+
+  # Sessions first seen in a peer's update are tracked only while there are
+  # fewer than @max_oot_sessions and their id is at most @max_tracked_id_bytes,
+  # so a peer inventing session ids cannot grow the map without bound. Sessions
+  # this side named itself (`track/2`) are always tracked. Updates for
+  # sessions beyond the cap are stamped ordinal 0, not tracked, and reported as
+  # `[:raxol, :acp, :oot_untracked]`.
+  defp stamp_out_of_turn(state, session_id, rx_seq) do
+    case Map.fetch(state.oot_seq, session_id) do
+      {:ok, ordinal} ->
+        {Delivery.new(nil, ordinal, rx_seq),
+         %{state | oot_seq: Map.update!(state.oot_seq, session_id, &(&1 + 1))}}
+
+      # The key is copied: a decoded string can reference its whole frame.
+      :error
+      when map_size(state.oot_seq) < @max_oot_sessions and
+             byte_size(session_id) <= @max_tracked_id_bytes ->
+        oot_seq = Map.put(state.oot_seq, :binary.copy(session_id), 1)
+        {Delivery.new(nil, 0, rx_seq), %{state | oot_seq: oot_seq}}
+
+      :error ->
+        Telemetry.execute([:raxol, :acp, :oot_untracked], %{session_id: Rpc.printable(session_id)})
+
+        {Delivery.new(nil, 0, rx_seq), state}
+    end
+  end
+
+  @doc false
+  # Sessions this side names in its own requests (or receives from session/new)
+  # are always tracked, so a peer flooding invented ids cannot push them past
+  # the cap.
+  @spec track(state(), term()) :: state()
+  def track(state, params) do
+    case prompt_session_id(params) do
+      nil -> state
+      session_id when is_map_key(state.oot_seq, session_id) -> state
+      session_id -> %{state | oot_seq: Map.put(state.oot_seq, :binary.copy(session_id), 0)}
     end
   end
 

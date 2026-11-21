@@ -148,7 +148,8 @@ defmodule Raxol.AgentClientProtocol.Client do
   @doc """
   Sends `session/prompt` and returns `{:ok, {updates, response}}` with the
   turn's updates oldest first, or `{:error, reason}` (timeout, transport, decode
-  failure, or `{:delivery_gap, %{delivered: n, expected: m}}`).
+  failure, `{:delivery_gap, %{delivered: n, expected: m}}`, or `:connection_closed`
+  when the Connection dies mid-turn).
   """
   @spec prompt(pid(), struct(), pos_integer()) ::
           {:ok, {[update()], prompt_result()}} | {:error, term()}
@@ -179,11 +180,19 @@ defmodule Raxol.AgentClientProtocol.Client do
     end
   end
 
+  # The monitor covers a Connection killed without running its teardown, which
+  # would otherwise leave this process waiting forever.
   defp run_turn(conn, request, timeout_ms, acc, step) do
     tag = make_ref()
+    mon = Process.monitor(conn)
 
-    with :ok <- Connection.async_request(conn, "session/prompt", request, self(), tag, timeout_ms) do
-      await_turn(%{tag: tag, next: 0, count: nil, acc: acc, step: step})
+    try do
+      with :ok <-
+             Connection.async_request(conn, "session/prompt", request, self(), tag, timeout_ms) do
+        await_turn(%{tag: tag, mon: mon, next: 0, count: nil, acc: acc, step: step})
+      end
+    after
+      Process.demonitor(mon, [:flush])
     end
   end
 
@@ -206,6 +215,9 @@ defmodule Raxol.AgentClientProtocol.Client do
 
       {:acp_result, ^tag, {:error, _} = error} ->
         error
+
+      {:DOWN, mon, :process, _pid, _reason} when mon == turn.mon ->
+        {:error, :connection_closed}
     end
   end
 

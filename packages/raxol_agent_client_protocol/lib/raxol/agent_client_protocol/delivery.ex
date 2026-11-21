@@ -47,7 +47,9 @@ defmodule Raxol.AgentClientProtocol.Delivery do
   key to reconstruct order. `turn` is the receiver-minted turn token (`nil`
   when the update is out-of-turn — no open prompt turn for the session on
   this connection); `ordinal` is the contiguous per-(session, namespace)
-  stamp assigned at the demux point; `rx_seq` is the connection-wide
+  stamp assigned at the demux point (out-of-turn updates for sessions outside
+  the connection's tracking cap, see `Connection.update_watermark/2`, are all
+  stamped 0); `rx_seq` is the connection-wide
   monotone frame stamp (used by the separate cancel/prompt wire-order
   latch).
   """
