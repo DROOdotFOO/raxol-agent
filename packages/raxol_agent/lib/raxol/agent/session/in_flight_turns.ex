@@ -55,7 +55,7 @@ defmodule Raxol.Agent.Session.InFlightTurns do
   # The agent gets a ref of the session's own: the caller's ref can only
   # cancel, while a holder of the agent ref can answer the turn.
   defp dispatch(state, caller, ref, text, approver, metadata) do
-    case Companions.dispatcher(state.lifecycle_pid) do
+    case Companions.lifecycle_dispatcher(state.lifecycle_pid) do
       nil ->
         Comm.reply(caller, ref, {:error, :no_dispatcher})
         state
@@ -217,7 +217,7 @@ defmodule Raxol.Agent.Session.InFlightTurns do
   """
   @spec forward(state(), term(), map()) :: state()
   def forward(state, message, metadata) do
-    case Companions.dispatcher(state.lifecycle_pid) do
+    case Companions.lifecycle_dispatcher(state.lifecycle_pid) do
       nil ->
         Logger.debug(
           "[Agent.Session] #{inspect(state.id)} dropped message (no dispatcher): " <>

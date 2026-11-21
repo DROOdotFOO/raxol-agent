@@ -36,7 +36,8 @@ defmodule Raxol.Agent.Stream do
     (Anthropic thinking blocks, OpenAI reasoning); distinct from the
     answer text so the contract can seal it as its own reasoning block
   - `{:tool_use, %{name, arguments, id}}` -- LLM requesting a tool call
-  - `{:tool_result, %{name, result}}` -- result from executing a tool
+  - `{:tool_result, %{name, result, id}}` -- result from executing a tool;
+    `id` is the `:tool_use` id it answers
   - `{:turn_complete, %{content, usage, iteration}}` -- end of one ReAct turn
   - `{:done, %{content, tool_results, usage}}` -- final answer (from `react/2`,
     also `messages`: the conversation the loop built, tool exchanges included)
@@ -92,7 +93,11 @@ defmodule Raxol.Agent.Stream do
           | {:error, term()}
 
   @type tool_use :: %{name: String.t(), arguments: map(), id: String.t() | nil}
-  @type tool_result :: %{name: String.t(), result: map() | {:error, term()}}
+  @type tool_result :: %{
+          required(:name) => String.t(),
+          required(:result) => map() | {:error, term()},
+          optional(:id) => String.t() | nil
+        }
   @type turn_info :: %{
           content: String.t(),
           usage: map(),
@@ -525,7 +530,7 @@ defmodule Raxol.Agent.Stream do
     Enum.map(tool_calls, fn tc ->
       name = Map.get(tc, "name")
       {result_map, msg} = dispatch_tool(name, tc, config)
-      emit(config, {:tool_result, result_map})
+      emit(config, {:tool_result, Map.put(result_map, :id, Map.get(tc, "id"))})
       msg
     end)
   end

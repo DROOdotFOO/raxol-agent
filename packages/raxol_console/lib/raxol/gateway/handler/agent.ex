@@ -16,9 +16,9 @@ defmodule Raxol.Gateway.Handler.Agent do
       (`:backend`, `:backend_opts`, `:executor`, `:provider`, `:model`, ...).
       When neither `:backend` nor `:executor` is pinned, `auto_provider: true`
       is added so the executor resolves from the environment (1Password ref ->
-      provider env vars -> `AI_API_KEY`). When nothing resolves, every turn
-      is answered with a notice naming the variables to set; there is no
-      mock fallback.
+      provider env vars -> `AI_API_KEY`). When nothing resolves, each turn
+      is answered with a notice that no provider is configured; the
+      variables to set are logged at session start, never sent to the chat.
     * `:max_turns_per_window` -- per-chat fixed-window turn cap. Unset means
       no throttle. When the cap is hit, the event is answered with a short
       rate-limit notice: no backend call is made and history is untouched,
@@ -111,7 +111,7 @@ defmodule Raxol.Gateway.Handler.Agent do
          }}
 
       {:error, reason} ->
-        Logger.warning("gateway agent turn failed: #{inspect(reason)}")
+        Logger.warning("gateway agent turn failed: #{inspect(reason)}" <> log_hint(reason))
         {:reply, error_text(reason), %{state | messages: messages}}
     end
   end
@@ -234,8 +234,18 @@ defmodule Raxol.Gateway.Handler.Agent do
     |> Enum.drop_while(&(&1.role == :assistant))
   end
 
+  defp log_hint(:no_backend), do: ". " <> @provider_hint
+  defp log_hint(_reason), do: ""
+
+  # Chat users may be untrusted, so these name no variables or backends;
+  # the details are in the log.
   defp error_text(:no_backend),
-    do: "No agent provider is configured. " <> @provider_hint
+    do:
+      "No agent provider is configured. The operator can set one with a " <>
+        "provider API key; the server log names the variables."
+
+  defp error_text({:backend_unavailable, _reason}),
+    do: "The configured agent provider is unavailable. See the server log."
 
   defp error_text(reason) when is_atom(reason),
     do: "Agent error (#{reason}). Try again."

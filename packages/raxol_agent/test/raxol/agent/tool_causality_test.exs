@@ -1,9 +1,10 @@
 defmodule Raxol.Agent.ToolCausalityTest do
   @moduledoc """
   Tool-call causality on the journal `Raxol.Agent.StreamPump` produces from a
-  real `Raxol.Agent.Stream.react/2` loop: every `tool_result` follows a
-  `tool_use` of the same name in the same turn, each `tool_use` gets at most
-  one result, and a call that failed is reported failed, never as a success.
+  real `Raxol.Agent.Stream.react/2` loop: every `tool_result` names, by
+  `call_id`, a `tool_use` of the same tool earlier in the same turn; each
+  `tool_use` gets exactly one result; and a call that failed is reported
+  failed, never as a success.
   """
   use ExUnit.Case, async: false
   use ExUnitProperties
@@ -32,6 +33,10 @@ defmodule Raxol.Agent.ToolCausalityTest do
     def run(_params, _ctx), do: {:error, :refused}
   end
 
+  @max_turns 3
+  @max_rounds 3
+  @max_calls_per_round 3
+
   # "missing" names no action, so dispatch fails before any action runs.
   @outcomes %{"echo" => :ok, "refuse" => :error, "missing" => :error}
 
@@ -49,8 +54,11 @@ defmodule Raxol.Agent.ToolCausalityTest do
     end
   end
 
-  # A turn is up to three tool rounds of one to three calls each.
-  defp turn_gen, do: list_of(list_of(call_gen(), min_length: 1, max_length: 3), max_length: 3)
+  defp turn_gen do
+    call_gen()
+    |> list_of(min_length: 1, max_length: @max_calls_per_round)
+    |> list_of(max_length: @max_rounds)
+  end
 
   # Each round is answered once, then the backend gives a plain answer.
   defp run_turn(session_id, rounds) do
@@ -81,7 +89,7 @@ defmodule Raxol.Agent.ToolCausalityTest do
         actions: [Echo, Refuse]
       )
 
-    {:ok, _} = StreamPump.pump(session_id, stream, prompt: "go")
+    assert {:ok, _} = StreamPump.pump(session_id, stream, prompt: "go")
     Agent.stop(queue)
   end
 
@@ -106,21 +114,22 @@ defmodule Raxol.Agent.ToolCausalityTest do
         do: {ev.turn_id, type, p}
   end
 
-  # Walks the journal in order, pairing each result with the oldest
-  # unanswered use of its turn. Fails on a result with no use to answer.
+  # Walks the journal in order, matching each result to the open use of
+  # its turn with the same call_id. Fails on a result that answers no open
+  # use: one from another turn, one already answered, or one with no id.
   defp pair(items) do
     {pairs, open} =
       Enum.reduce(items, {[], %{}}, fn
         {turn, :tool_use, use}, {pairs, open} ->
-          {pairs, Map.update(open, turn, [use], &(&1 ++ [use]))}
+          {pairs, Map.put(open, {turn, use.call_id}, use)}
 
         {turn, :tool_result, result}, {pairs, open} ->
-          case Map.get(open, turn, []) do
-            [use | rest] ->
-              {[{use, result} | pairs], Map.put(open, turn, rest)}
+          case Map.pop(open, {turn, Map.get(result, :call_id)}) do
+            {nil, _open} ->
+              flunk("tool_result #{inspect(result)} in #{turn} answers no open tool_use")
 
-            [] ->
-              flunk("tool_result #{inspect(result.name)} in #{turn} has no prior tool_use")
+            {use, open} ->
+              {[{use, result} | pairs], open}
           end
       end)
 
@@ -128,24 +137,29 @@ defmodule Raxol.Agent.ToolCausalityTest do
   end
 
   property "every tool_result answers one prior same-turn tool_use, and failures stay failures" do
-    check all(turns <- list_of(turn_gen(), min_length: 1, max_length: 3), max_runs: 50) do
+    check all(turns <- list_of(turn_gen(), min_length: 1, max_length: @max_turns)) do
       session_id = "causality-#{System.unique_integer([:positive])}"
       :ok = SessionStreamer.subscribe(session_id)
 
       Enum.each(turns, &run_turn(session_id, &1))
-      events = drain(session_id)
+      items = session_id |> drain() |> tool_items()
 
-      {pairs, unanswered} = events |> tool_items() |> pair()
-      calls = turns |> List.flatten()
+      {pairs, unanswered} = pair(items)
+      uses = for {_turn, :tool_use, use} <- items, do: use
 
-      assert length(pairs) == length(calls)
-      assert Enum.all?(Map.values(unanswered), &(&1 == []))
+      assert unanswered == %{}
+      assert length(uses) == length(List.flatten(turns))
+      assert length(pairs) == length(uses)
 
-      for {{use, result}, {name, _n}} <- Enum.zip(pairs, calls) do
+      for {use, {name, n}} <- Enum.zip(uses, List.flatten(turns)) do
         assert use.name == name
+        assert use.arguments == %{"n" => n}
+      end
+
+      for {use, result} <- pairs do
         assert result.name == use.name
 
-        case @outcomes[name] do
+        case @outcomes[use.name] do
           :ok -> assert result.result == %{n: use.arguments["n"]}
           :error -> assert match?({:error, _}, result.result)
         end

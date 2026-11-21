@@ -104,10 +104,10 @@ defmodule Raxol.Agent.Session do
       id: {__MODULE__, id},
       start: {__MODULE__, :start_link, [opts]},
       restart: :permanent,
-      # Must exceed `Companions.stop_budget_ms/0`: a standalone session stops
+      # Must exceed `Companions.lifecycle_stop_budget_ms/0`: a standalone session stops
       # its lifecycle in `terminate/2`, and a parent that killed it first
       # would orphan the lifecycle.
-      shutdown: Companions.stop_budget_ms() + 1_000
+      shutdown: Companions.lifecycle_stop_budget_ms() + 1_000
     }
   end
 
@@ -213,10 +213,10 @@ defmodule Raxol.Agent.Session do
 
     {lifecycle_pid, lifecycle_mref} =
       if owns_lifecycle? do
-        pid = Companions.start_owned(app_module, id, session_id)
+        pid = Companions.start_owned_lifecycle(app_module, id, session_id)
         {pid, Process.monitor(pid)}
       else
-        {Companions.lookup(session_id), nil}
+        {Companions.lookup_lifecycle(session_id), nil}
       end
 
     Logger.info(
@@ -310,7 +310,7 @@ defmodule Raxol.Agent.Session do
   def handle_manager_call(request, _from, state)
       when request in [:get_model, :get_view_tree, :get_semantic_view] do
     result =
-      case Companions.dispatcher(state.lifecycle_pid) do
+      case Companions.lifecycle_dispatcher(state.lifecycle_pid) do
         nil -> {:error, :no_dispatcher}
         pid -> dispatcher_call(pid, request)
       end
@@ -421,7 +421,7 @@ defmodule Raxol.Agent.Session do
   # what it published while stopping.
   @impl GenServer
   def terminate(_reason, state) do
-    if state.owns_lifecycle?, do: Companions.stop(state.lifecycle_pid)
+    if state.owns_lifecycle?, do: Companions.stop_lifecycle(state.lifecycle_pid)
     if state.owns_bridge?, do: Companions.stop_bridge(state.emit_bridge)
     :ok
   end

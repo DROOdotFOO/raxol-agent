@@ -181,7 +181,9 @@ defmodule Raxol.Agent.StreamPump do
           counter,
           acc,
           :tool_result,
-          tool_result_extra(name, Map.get(tool_result, :result))
+          name
+          |> tool_result_extra(Map.get(tool_result, :result))
+          |> put_call_id(Map.get(tool_result, :id))
         )
 
       # A consequential tool is holding for a keyboard answer. Emitted
@@ -678,6 +680,10 @@ defmodule Raxol.Agent.StreamPump do
   # `Raxol.UI.Components.Harness.Block.extract_diff_content/1` reads them)
   # and a `diff: true` marker tells the projection's BlockBuilder to resolve
   # this block's kind to `:diff`. A non-diff result is unchanged.
+  # The answered tool_use's id, when the producer knows it.
+  defp put_call_id(extra, nil), do: extra
+  defp put_call_id(extra, id), do: Map.put(extra, :call_id, id)
+
   # The `extra` fields `complete_item/6` merges onto a tool_result item.
   # `item_id`/`item_type` are added by `complete_item` itself.
   defp tool_result_extra(name, %{path: path, old: old, new: new} = result)

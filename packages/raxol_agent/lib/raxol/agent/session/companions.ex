@@ -20,19 +20,19 @@ defmodule Raxol.Agent.Session.Companions do
   # without draining; `Session.Supervisor.stop_session/1` flushes the journal
   # tail before tearing the tree down.
   @doc "Child spec for the tree-owned lifecycle (between bridge and session)."
-  @spec child_spec(keyword()) :: Supervisor.child_spec()
-  def child_spec(opts) do
+  @spec lifecycle_child_spec(keyword()) :: Supervisor.child_spec()
+  def lifecycle_child_spec(opts) do
     %{
       id: :lifecycle,
-      start: {__MODULE__, :start_supervised, [opts]},
+      start: {__MODULE__, :start_supervised_lifecycle, [opts]},
       restart: :permanent,
       shutdown: Defaults.shutdown_timeout_ms()
     }
   end
 
   @doc "Start the lifecycle linked to its supervisor, after its old name clears."
-  @spec start_supervised(keyword()) :: GenServer.on_start()
-  def start_supervised(opts) do
+  @spec start_supervised_lifecycle(keyword()) :: GenServer.on_start()
+  def start_supervised_lifecycle(opts) do
     app_module = Keyword.fetch!(opts, :app_module)
     id = Keyword.fetch!(opts, :id)
     session_id = Keyword.fetch!(opts, :session_id)
@@ -46,8 +46,8 @@ defmodule Raxol.Agent.Session.Companions do
   the session as a monitor `:DOWN`. A lifecycle a brutally killed predecessor
   left under the same session id is reattached.
   """
-  @spec start_owned(module(), term(), String.t()) :: pid()
-  def start_owned(app_module, id, session_id) do
+  @spec start_owned_lifecycle(module(), term(), String.t()) :: pid()
+  def start_owned_lifecycle(app_module, id, session_id) do
     case Runtime.start_link(app_module, runtime_opts(app_module, id, session_id)) do
       {:ok, pid} ->
         Process.unlink(pid)
@@ -59,8 +59,8 @@ defmodule Raxol.Agent.Session.Companions do
   end
 
   @doc "The tree-owned lifecycle of `session_id`."
-  @spec lookup(String.t()) :: pid() | nil
-  def lookup(session_id), do: Registration.lookup({:lifecycle, session_id})
+  @spec lookup_lifecycle(String.t()) :: pid() | nil
+  def lookup_lifecycle(session_id), do: Registration.lookup({:lifecycle, session_id})
 
   @doc """
   Stop the lifecycle and wait until it is dead, so its name is free for a
@@ -68,10 +68,10 @@ defmodule Raxol.Agent.Session.Companions do
   kills it: a restart that reattached to a dying runtime would lose every
   message sent to it.
   """
-  @spec stop(pid() | nil) :: :ok
-  def stop(nil), do: :ok
+  @spec stop_lifecycle(pid() | nil) :: :ok
+  def stop_lifecycle(nil), do: :ok
 
-  def stop(pid) when is_pid(pid) do
+  def stop_lifecycle(pid) when is_pid(pid) do
     if Process.alive?(pid) do
       ref = Process.monitor(pid)
       Runtime.stop(pid)
@@ -79,7 +79,7 @@ defmodule Raxol.Agent.Session.Companions do
       receive do
         {:DOWN, ^ref, :process, ^pid, _reason} -> :ok
       after
-        stop_budget_ms() ->
+        lifecycle_stop_budget_ms() ->
           Process.demonitor(ref, [:flush])
           Process.exit(pid, :kill)
       end
@@ -88,13 +88,13 @@ defmodule Raxol.Agent.Session.Companions do
     :ok
   end
 
-  @doc "How long `stop/1` may block. A parent's shutdown budget must exceed it."
-  @spec stop_budget_ms() :: pos_integer()
-  def stop_budget_ms, do: Defaults.shutdown_timeout_ms() + 1_000
+  @doc "How long `stop_lifecycle/1` may block. A parent's shutdown budget must exceed it."
+  @spec lifecycle_stop_budget_ms() :: pos_integer()
+  def lifecycle_stop_budget_ms, do: Defaults.shutdown_timeout_ms() + 1_000
 
   @doc "The lifecycle's dispatcher pid, or nil when it is down."
-  @spec dispatcher(pid() | nil) :: pid() | nil
-  def dispatcher(pid) when is_pid(pid) do
+  @spec lifecycle_dispatcher(pid() | nil) :: pid() | nil
+  def lifecycle_dispatcher(pid) when is_pid(pid) do
     if Process.alive?(pid) do
       %{dispatcher_pid: dispatcher} = GenServer.call(pid, :get_full_state)
       dispatcher
@@ -103,7 +103,7 @@ defmodule Raxol.Agent.Session.Companions do
     :exit, _ -> nil
   end
 
-  def dispatcher(_pid), do: nil
+  def lifecycle_dispatcher(_pid), do: nil
 
   @doc """
   Start the session's emit bridge, under `Raxol.Agent.DynSup` when it runs

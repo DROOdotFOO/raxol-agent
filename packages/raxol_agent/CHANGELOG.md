@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Raxol.Payments.Secret` and `Raxol.Earn.Secret` delegate to it.
 - **`Raxol.Agent.ChildEnv`**, `Raxol.Core.ChildEnv` widened for children that
   run model- or third-party-chosen code.
+- `Raxol.Agent.Stream.react/2` `{:tool_result, _}` events carry the `id` of
+  the `:tool_use` they answer, and `Raxol.Agent.StreamPump` journals it as
+  the `tool_result` item's `call_id`.
 
 ### Changed
 

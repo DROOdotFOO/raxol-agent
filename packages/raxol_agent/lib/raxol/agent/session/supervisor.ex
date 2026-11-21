@@ -307,7 +307,7 @@ defmodule Raxol.Agent.Session.Supervisor do
         restart: :permanent,
         shutdown: 5_000
       },
-      Session.Companions.child_spec(opts),
+      Session.Companions.lifecycle_child_spec(opts),
       %{
         id: :session,
         start: {Session, :start_link, [session_opts]},
