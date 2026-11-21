@@ -353,7 +353,9 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
       %{session_id: sid, surface: surface, reason: reason}
     )
 
-    Logger.debug("acp reattach: attach denied for #{inspect(sid)} (#{inspect(reason)})")
+    Logger.debug(
+      "acp reattach: attach denied for #{Raxol.AgentClientProtocol.Rpc.loggable(sid)} (#{inspect(reason)})"
+    )
 
     :ok
   end

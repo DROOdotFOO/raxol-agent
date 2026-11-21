@@ -186,14 +186,14 @@ defmodule Raxol.AgentClientProtocol.Client do
     tag = make_ref()
     mon = Process.monitor(conn)
 
-    result =
+    try do
       with :ok <-
              Connection.async_request(conn, "session/prompt", request, self(), tag, timeout_ms) do
         await_turn(%{tag: tag, mon: mon, next: 0, count: nil, acc: acc, step: step})
       end
-
-    Process.demonitor(mon, [:flush])
-    result
+    after
+      Process.demonitor(mon, [:flush])
+    end
   end
 
   defp await_turn(%{tag: tag, next: next} = turn) do

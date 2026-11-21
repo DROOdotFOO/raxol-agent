@@ -31,8 +31,13 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
   def handle(state, %Notification{method: "session/cancel", params: params}, rx_seq) do
     with {:ok, %{session_id: session_id}} <- CancelNotification.from_json(params || %{}) do
       case lookup_session(session_id) do
-        [{spid, _} | _] -> GenServer.cast(spid, {:acp_session_cancel, rx_seq})
-        [] -> Logger.debug("ACP: session/cancel for unknown session #{inspect(session_id)}")
+        [{spid, _} | _] ->
+          GenServer.cast(spid, {:acp_session_cancel, rx_seq})
+
+        [] ->
+          Logger.debug(
+            "ACP: session/cancel for unknown session #{Raxol.AgentClientProtocol.Rpc.loggable(session_id)}"
+          )
       end
     end
 

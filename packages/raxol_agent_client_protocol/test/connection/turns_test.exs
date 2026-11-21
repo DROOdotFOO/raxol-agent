@@ -25,4 +25,15 @@ defmodule Raxol.AgentClientProtocol.Connection.TurnsTest do
     assert known.ordinal == 5
     assert s.oot_seq["s1"] == 6
   end
+
+  test "over-long session ids are not tracked, and tracked keys are copies" do
+    {_stamp, s} = Turns.stamp_update(state(%{}), %{session_id: String.duplicate("x", 257)}, 1)
+    assert s.oot_seq == %{}
+
+    frame = String.duplicate("y", 10_000)
+    <<sid::binary-size(10), _rest::binary>> = frame
+    {_stamp, s} = Turns.stamp_update(state(%{}), %{session_id: sid}, 1)
+    [key] = Map.keys(s.oot_seq)
+    assert :binary.referenced_byte_size(key) == byte_size(key)
+  end
 end

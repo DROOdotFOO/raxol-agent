@@ -1842,6 +1842,31 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       ScriptedPeer.assert_no_frame(peer, 150)
     end
 
+    test "a cancel between delegation and :deferred leaves the reply to the adopter" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 22, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx, task_pid: task} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          send(test_pid, :delegated)
+          receive do: (:go -> :deferred)
+        end)
+
+      assert_receive :delegated
+      ScriptedPeer.send_cancel_request(peer, 22)
+      assert_receive {:acp_reply_cancelled, _ref}
+      send(task, :go)
+
+      wait_until(fn -> match?(%{22 => %{task_pid: nil}}, :sys.get_state(conn).pending_in) end)
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      ScriptedPeer.assert_no_frame(peer, 150)
+      assert :sys.get_state(conn).pending_in == %{}
+    end
+
     test "a handler crash after delegating leaves the reply to the adopter" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()

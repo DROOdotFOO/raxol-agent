@@ -19,21 +19,37 @@ defmodule Raxol.AgentClientProtocol.Rpc do
   """
 
   @max_printable 128
+  @max_printable_bytes 512
 
   @doc """
   A peer-supplied string made safe for logs and telemetry: cut to
-  #{@max_printable} characters, then control characters escaped (so a peer
+  #{@max_printable} characters and #{@max_printable_bytes} bytes, then control characters escaped (so a peer
   cannot forge log lines). Invalid UTF-8 becomes `"<binary>"`.
   """
   @spec printable(binary()) :: String.t()
   def printable(string) when is_binary(string) do
     if String.valid?(string) do
-      escaped = string |> String.slice(0, @max_printable) |> inspect()
+      escaped =
+        string
+        |> String.slice(0, @max_printable)
+        |> cap_bytes()
+        |> inspect()
+
       binary_part(escaped, 1, byte_size(escaped) - 2)
     else
       "<binary>"
     end
   end
+
+  @doc "A term from the peer for a log line: quoted `printable/1` for strings, capped `inspect/2` otherwise."
+  @spec loggable(term()) :: String.t()
+  def loggable(value) when is_binary(value), do: ~s("#{printable(value)}")
+  def loggable(value), do: inspect(value, limit: 10, printable_limit: @max_printable)
+
+  defp cap_bytes(string) when byte_size(string) <= @max_printable_bytes, do: string
+
+  defp cap_bytes(string),
+    do: string |> binary_part(0, @max_printable_bytes) |> String.replace_invalid("")
 end
 
 defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
@@ -66,7 +82,7 @@ defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
   @doc "The id for logs and telemetry; string ids go through `Rpc.printable/1`."
   @spec display(t()) :: String.t()
   def display(nil), do: "null"
-  def display(id) when is_integer(id), do: Integer.to_string(id)
+  def display(id) when is_integer(id), do: id |> Integer.to_string() |> String.slice(0, 128)
   def display(id) when is_binary(id), do: Raxol.AgentClientProtocol.Rpc.printable(id)
 end
 

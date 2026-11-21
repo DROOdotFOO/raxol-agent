@@ -60,9 +60,6 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   defp reason_tag(tag) when is_atom(tag), do: tag
   defp reason_tag(_other), do: :unknown
 
-  defp loggable(id) when is_binary(id), do: Rpc.printable(id)
-  defp loggable(id), do: inspect(id, limit: 10, printable_limit: 128)
-
   defp decode_and(state, frame, decode, handle) do
     case decode.(frame) do
       {:ok, decoded} -> handle.(state, decoded)
@@ -79,8 +76,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
       {:error, _reason} ->
         id = Map.get(frame, "id")
-        Logger.warning("ACP: malformed response frame dropped (id #{loggable(id)})")
-        Telemetry.execute([:raxol, :acp, :malformed_response], %{id: loggable(id)})
+        Logger.warning("ACP: malformed response frame dropped (id #{Rpc.loggable(id)})")
+        Telemetry.execute([:raxol, :acp, :malformed_response], %{id: Rpc.loggable(id)})
         {:noreply, state}
     end
   end
@@ -232,9 +229,19 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   defp request_result(state, id, result) do
     case Map.get(state.pending_in, id) do
-      nil -> {:noreply, state}
-      %{cancelled?: true} = entry -> {:noreply, Link.drop_pending_in(state, id, entry)}
-      entry -> finish(state, id, entry, result)
+      nil ->
+        {:noreply, state}
+
+      # Cancelled after delegation: the adopter still replies (and the reply is
+      # suppressed), so keep the entry for it.
+      %{cancelled?: true, adopter: {_pid, _mon}} = entry when result == :deferred ->
+        {:noreply, put_in(state.pending_in[id], %{entry | task_ref: nil, task_pid: nil})}
+
+      %{cancelled?: true} = entry ->
+        {:noreply, Link.drop_pending_in(state, id, entry)}
+
+      entry ->
+        finish(state, id, entry, result)
     end
   end
 
@@ -320,8 +327,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
       nil ->
         {:noreply, state}
 
-      # The adopter owns the reply now; it answers (or its DOWN does).
+      # The adopter owns the reply now; it answers (or its DOWN does). The
+      # entry holds an inbound slot until then.
       %{adopter: {_pid, _mon}} = entry ->
+        if reason != :normal, do: report_crash(entry, id, reason)
         entry = %{entry | task_ref: nil, task_pid: nil}
         {:noreply, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
 
@@ -329,18 +338,21 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         {:noreply, Link.drop_pending_in(state, id, entry)}
 
       entry ->
-        Logger.error(
-          "ACP: request handler crashed (#{Rpc.printable(entry.method)}, id #{RequestId.display(id)}): " <>
-            inspect(reason)
-        )
-
-        Telemetry.execute([:raxol, :acp, :handler_crash], %{
-          kind: :request,
-          method: Rpc.printable(entry.method)
-        })
-
+        report_crash(entry, id, reason)
         state |> Link.drop_pending_in(id, entry) |> internal_error(id)
     end
+  end
+
+  defp report_crash(entry, id, reason) do
+    Logger.error(
+      "ACP: request handler crashed (#{Rpc.printable(entry.method)}, id #{RequestId.display(id)}): " <>
+        inspect(reason)
+    )
+
+    Telemetry.execute([:raxol, :acp, :handler_crash], %{
+      kind: :request,
+      method: Rpc.printable(entry.method)
+    })
   end
 
   defp adopter_down(state, mon_ref) do

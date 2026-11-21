@@ -20,7 +20,12 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
     end
   end
 
-  def response(id, {:error, %Error{} = err}), do: frame(Response.error(id, err))
+  def response(id, {:error, %Error{} = err}) do
+    case Jason.encode(err) do
+      {:ok, _json} -> frame(Response.error(id, err))
+      {:error, _reason} -> frame(Response.error(id, Error.internal_error()))
+    end
+  end
 
   @spec error(RequestId.t(), Error.t(), term()) :: map()
   def error(id, %Error{} = error, data), do: response(id, {:error, Error.with_data(error, data)})

@@ -32,9 +32,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
   # its session's updates are stamped out-of-turn.
 
   alias Raxol.AgentClientProtocol.Connection.TurnState
-  alias Raxol.AgentClientProtocol.Delivery
+  alias Raxol.AgentClientProtocol.{Delivery, Rpc, Telemetry}
 
   @max_oot_sessions 10_000
+  @max_tracked_id_bytes 256
 
   @doc false
   @spec max_oot_sessions() :: 10_000
@@ -145,19 +146,27 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
     end
   end
 
-  # Out-of-turn counters are kept for at most @max_oot_sessions sessions, so a
-  # peer inventing session ids cannot grow the map without bound. Updates for
-  # sessions beyond the cap are stamped ordinal 0 and not tracked.
+  # Out-of-turn counters are kept for at most @max_oot_sessions sessions with ids
+  # of at most @max_tracked_id_bytes bytes, so a peer inventing session ids
+  # cannot grow the map without bound. Updates for
+  # sessions beyond the cap are stamped ordinal 0, not tracked, and reported as
+  # `[:raxol, :acp, :oot_untracked]`.
   defp stamp_out_of_turn(state, session_id, rx_seq) do
     case Map.fetch(state.oot_seq, session_id) do
       {:ok, ordinal} ->
         {Delivery.new(nil, ordinal, rx_seq),
-         %{state | oot_seq: Map.put(state.oot_seq, session_id, ordinal + 1)}}
+         %{state | oot_seq: Map.update!(state.oot_seq, session_id, &(&1 + 1))}}
 
-      :error when map_size(state.oot_seq) < @max_oot_sessions ->
-        {Delivery.new(nil, 0, rx_seq), %{state | oot_seq: Map.put(state.oot_seq, session_id, 1)}}
+      # The key is copied: a decoded string can reference its whole frame.
+      :error
+      when map_size(state.oot_seq) < @max_oot_sessions and
+             byte_size(session_id) <= @max_tracked_id_bytes ->
+        oot_seq = Map.put(state.oot_seq, :binary.copy(session_id), 1)
+        {Delivery.new(nil, 0, rx_seq), %{state | oot_seq: oot_seq}}
 
       :error ->
+        Telemetry.execute([:raxol, :acp, :oot_untracked], %{session_id: Rpc.printable(session_id)})
+
         {Delivery.new(nil, 0, rx_seq), state}
     end
   end

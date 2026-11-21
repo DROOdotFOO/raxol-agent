@@ -31,7 +31,9 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable.ModelInfo do
 
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
-    with {:ok, model_id} <- AgentTypes.fetch(map, "modelId", &is_binary/1),
+    # List items stay presence-checked: a wrong-typed entry must not fail the
+    # enclosing response.
+    with {:ok, model_id} <- AgentTypes.fetch(map, "modelId"),
          {:ok, name} <- AgentTypes.fetch(map, "name") do
       {:ok,
        %__MODULE__{

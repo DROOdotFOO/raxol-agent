@@ -53,4 +53,21 @@ defmodule Raxol.AgentClientProtocol.Schema.IdStrictnessTest do
                "value" => "v"
              })
   end
+
+  test "a wrong-typed id inside a response's list does not fail the response" do
+    alias Raxol.AgentClientProtocol.Schema.AgentTypes.NewSessionResponse
+    alias Raxol.AgentClientProtocol.Schema.Unstable.ListSessionsResponse
+
+    models = %{
+      "currentModelId" => "m",
+      "availableModels" => [%{"modelId" => "m", "name" => "M"}, %{"modelId" => 7, "name" => "B"}]
+    }
+
+    assert {:ok, _} = NewSessionResponse.from_json(%{"sessionId" => "s", "models" => models})
+
+    assert {:ok, _} =
+             ListSessionsResponse.from_json(%{
+               "sessions" => [%{"sessionId" => "s", "cwd" => nil}]
+             })
+  end
 end

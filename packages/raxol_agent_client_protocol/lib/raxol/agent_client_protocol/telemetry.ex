@@ -41,6 +41,8 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
     [:raxol, :acp, :late_response] => :peer,
     [:raxol, :acp, :malformed_response] => :peer,
     [:raxol, :acp, :notification_shed] => :operational,
+    # An out-of-turn update for a session beyond the per-connection tracking cap.
+    [:raxol, :acp, :oot_untracked] => :peer,
     [:raxol, :acp, :parse_error] => :peer,
     [:raxol, :acp, :session_idle_reaped] => :operational,
     [:raxol, :acp, :unknown_notification] => :peer,

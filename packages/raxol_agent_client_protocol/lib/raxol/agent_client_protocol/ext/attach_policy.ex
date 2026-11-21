@@ -250,7 +250,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
     # Reason to telemetry + Logger (stderr) ONLY — never to the wire (anti-oracle).
     Logger.warning(
       "acp attach denied: #{inspect(reason)} " <>
-        "session=#{inspect(ctx[:session_id])} surface=#{inspect(ctx[:surface])}"
+        "session=#{Raxol.AgentClientProtocol.Rpc.loggable(ctx[:session_id])} surface=#{inspect(ctx[:surface])}"
     )
 
     telemetry(
