@@ -118,9 +118,10 @@ defmodule Raxol.Agent.DoneGate do
     # instead of a fresh whole-journal Enum.find per ref.
     by_offset = Map.new(journal, &{event_id(&1), &1})
     last_mut = last_mutation(journal, turn_id)
+    ran_at = mutation_result(journal, by_offset, turn_id, last_mut)
 
     Enum.reduce_while(refs, {:ok, refs}, fn ref, acc ->
-      case classify_ref(journal, by_offset, turn_id, last_mut, ref) do
+      case classify_ref(journal, by_offset, turn_id, {last_mut, ran_at}, ref) do
         :ok -> {:cont, acc}
         err -> {:halt, err}
       end
@@ -133,7 +134,8 @@ defmodule Raxol.Agent.DoneGate do
 
   @doc """
   Candidate evidence refs for `turn_id`: journal offsets of the turn's own
-  `:tool_result` events that postdate its last mutating action.
+  `:tool_result` events that postdate its last mutating action and that
+  action's own result.
 
   This mirrors the gate's evidence-class + ordering window so a producer can
   cite the refs it would offer without re-deriving the notion of evidence.
@@ -145,20 +147,24 @@ defmodule Raxol.Agent.DoneGate do
   """
   @spec evidence_refs(journal(), term()) :: [offset()]
   def evidence_refs(journal, turn_id) do
+    by_offset = Map.new(journal, &{event_id(&1), &1})
     last_mut = last_mutation(journal, turn_id)
+    ran_at = mutation_result(journal, by_offset, turn_id, last_mut)
 
     journal
     |> Enum.filter(fn ev ->
       event_turn_id(ev) == turn_id and evidence_class?(ev) and
-        (last_mut == nil or event_id(ev) > last_mut)
+        (last_mut == nil or event_id(ev) > last_mut) and
+        (ran_at == nil or event_id(ev) >= ran_at)
     end)
     |> Enum.map(&event_id/1)
   end
 
-  # Order: existence -> class -> same-turn -> ordering -> mutation-echo.
-  # First violation wins; refs are walked in caller order.
+  # Order: existence -> class -> same-turn -> ordering -> mutation-echo ->
+  # ran-before-the-mutation. First violation wins; refs are walked in caller
+  # order.
 
-  defp classify_ref(journal, by_offset, turn_id, last_mut, ref) do
+  defp classify_ref(journal, by_offset, turn_id, {last_mut, ran_at}, ref) do
     case Map.get(by_offset, ref) do
       nil ->
         {:error, {:missing_ref, ref}}
@@ -171,16 +177,43 @@ defmodule Raxol.Agent.DoneGate do
           event_turn_id(ev) != turn_id ->
             {:error, {:foreign_turn, ref}}
 
-          last_mut != nil and event_id(ev) <= last_mut ->
-            {:error, {:stale_evidence, ref}}
-
-          mutation_echo?(journal, turn_id, ev, last_mut) ->
-            {:error, {:mutation_echo, ref}}
-
           true ->
-            :ok
+            classify_order(journal, by_offset, turn_id, {last_mut, ran_at}, ev)
         end
     end
+  end
+
+  defp classify_order(journal, by_offset, turn_id, {last_mut, ran_at}, ev) do
+    ref = event_id(ev)
+
+    cond do
+      last_mut != nil and ref <= last_mut ->
+        {:error, {:stale_evidence, ref}}
+
+      mutation_echo?(journal, by_offset, turn_id, ev, last_mut) ->
+        {:error, {:mutation_echo, ref}}
+
+      # A producer that batches calls journals every tool_use of a round
+      # before any result, so a result after the last tool_use can still
+      # come from a call that ran before the mutation did.
+      ran_at != nil and ref < ran_at ->
+        {:error, {:stale_evidence, ref}}
+
+      true ->
+        :ok
+    end
+  end
+
+  # Offset of the last mutation's own result, or nil when it has none.
+  defp mutation_result(_journal, _by_offset, _turn_id, nil), do: nil
+
+  defp mutation_result(journal, by_offset, turn_id, last_mut) do
+    Enum.find_value(journal, fn ev ->
+      if event_turn_id(ev) == turn_id and evidence_class?(ev) and
+           event_id(ev) > last_mut and
+           mutation_echo?(journal, by_offset, turn_id, ev, last_mut),
+         do: event_id(ev)
+    end)
   end
 
   # Offset of the turn's last mutating action, or nil if the turn mutated nothing.
@@ -229,17 +262,21 @@ defmodule Raxol.Agent.DoneGate do
 
   # Check 5 — is this `:tool_result` the last mutation's own echo?
   #
-  # A result is paired to its producing call by tool NAME + nearest-preceding
-  # order within the claiming turn: the v0 producer emits each result
-  # sequentially after its call and stamps `name` on both sides (it stamps no
-  # `call_id` on results, so name+order is the only pairing signal in the
-  # frozen shape). If the producing call IS the turn's last mutation, the ref
+  # A result carrying a `call_id` pairs with the tool_use of that id.
+  # Otherwise it pairs by tool NAME + nearest-preceding order within the
+  # claiming turn. If the producing call IS the turn's last mutation, the ref
   # is that mutation's byproduct — it postdates the mutation trivially and
-  # verifies nothing. An unpaired result (no named preceding call in the turn)
-  # is not an echo.
-  defp mutation_echo?(_journal, _turn_id, _ev, nil), do: false
+  # verifies nothing. An unpaired result is not an echo.
+  defp mutation_echo?(_journal, _by_offset, _turn_id, _ev, nil), do: false
 
-  defp mutation_echo?(journal, turn_id, ev, last_mut) do
+  defp mutation_echo?(journal, by_offset, turn_id, ev, last_mut) do
+    case call_id(ev) do
+      nil -> name_echo?(journal, turn_id, ev, last_mut)
+      id -> call_id(Map.get(by_offset, last_mut)) == id
+    end
+  end
+
+  defp name_echo?(journal, turn_id, ev, last_mut) do
     name = tool_name(ev)
     offset = event_id(ev)
 
@@ -255,6 +292,15 @@ defmodule Raxol.Agent.DoneGate do
         ids -> Enum.max(ids) == last_mut
       end
   end
+
+  defp call_id(%{} = ev) do
+    case get_either(get_either(ev, :payload), :call_id) do
+      id when is_binary(id) -> id
+      _ -> nil
+    end
+  end
+
+  defp call_id(_ev), do: nil
 
   # Tool names are free-form strings on the wire — read raw (never atomized)
   # and normalize atoms from synthetic fixtures to their string form.

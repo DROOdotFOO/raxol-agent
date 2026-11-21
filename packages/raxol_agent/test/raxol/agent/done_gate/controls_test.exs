@@ -7,7 +7,7 @@ defmodule Raxol.Agent.DoneGate.ControlsTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Agent.DoneGate
-  alias Raxol.Agent.DoneGateEvidence.{Build, Contours, Fired, Gen, Injector, Oracle}
+  alias Raxol.Agent.Test.DoneGateEvidence.{Build, Contours, Fired, Gen, Injector, Oracle}
 
   # Through apply/3, so the return type stays dynamic.
   defp real_gate(journal, turn, refs),

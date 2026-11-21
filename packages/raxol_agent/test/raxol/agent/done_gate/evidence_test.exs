@@ -1,13 +1,13 @@
 defmodule Raxol.Agent.DoneGate.EvidenceTest do
   @moduledoc """
   `Raxol.Agent.DoneGate.gate/3` against fixed contours from
-  `Raxol.Agent.DoneGateEvidence.Contours` and a generated fold property.
+  `Raxol.Agent.Test.DoneGateEvidence.Contours` and a generated fold property.
   """
   use ExUnit.Case, async: true
   use ExUnitProperties
 
   alias Raxol.Agent.DoneGate
-  alias Raxol.Agent.DoneGateEvidence.{Build, Contours, Gen, Oracle}
+  alias Raxol.Agent.Test.DoneGateEvidence.{Build, Contours, Gen, Oracle}
 
   # Through apply/3, so the return type stays dynamic and `{:ok, _}`
   # matches are not flagged as dead clauses.

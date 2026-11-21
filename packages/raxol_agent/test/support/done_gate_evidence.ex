@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.DoneGateEvidence do
+defmodule Raxol.Agent.Test.DoneGateEvidence do
   @moduledoc """
   Test support for the `Raxol.Agent.DoneGate` suites: a journal builder
   (`Build`), a specification oracle that never calls `DoneGate` (`Oracle`),
@@ -7,7 +7,7 @@ defmodule Raxol.Agent.DoneGateEvidence do
   """
 end
 
-defmodule Raxol.Agent.DoneGateEvidence.Build do
+defmodule Raxol.Agent.Test.DoneGateEvidence.Build do
   @moduledoc false
   alias Raxol.Agent.Contract.Event
 
@@ -118,9 +118,9 @@ defmodule Raxol.Agent.DoneGateEvidence.Build do
   def resolve(journal, offset), do: Enum.find(journal, &(&1.id == offset))
 end
 
-defmodule Raxol.Agent.DoneGateEvidence.Oracle do
+defmodule Raxol.Agent.Test.DoneGateEvidence.Oracle do
   @moduledoc false
-  alias Raxol.Agent.DoneGateEvidence.Build
+  alias Raxol.Agent.Test.DoneGateEvidence.Build
 
   @doc "Evidence-class predicate: a tool result / verification output."
   def evidence_class?(%{type: :item_completed, payload: p}),
@@ -186,24 +186,62 @@ defmodule Raxol.Agent.DoneGateEvidence.Oracle do
           ev.turn_id != turn_id ->
             {:error, {:foreign_turn, ref}}
 
-          last_mut != nil and ev.id <= last_mut ->
-            {:error, {:stale_evidence, ref}}
-
-          mutation_echo?(journal, turn_id, ev, last_mut) ->
-            {:error, {:mutation_echo, ref}}
-
           true ->
-            :ok
+            classify_order(journal, turn_id, last_mut, ev)
         end
+    end
+  end
+
+  defp classify_order(journal, turn_id, last_mut, ev) do
+    cond do
+      last_mut != nil and ev.id <= last_mut ->
+        {:error, {:stale_evidence, ev.id}}
+
+      mutation_echo?(journal, turn_id, ev, last_mut) ->
+        {:error, {:mutation_echo, ev.id}}
+
+      ran_before_mutation?(journal, turn_id, ev, last_mut) ->
+        {:error, {:stale_evidence, ev.id}}
+
+      true ->
+        :ok
+    end
+  end
+
+  @doc """
+  True when `ev` precedes the last mutation's own result: in a batched
+  round every tool_use is journaled before any result, so such a result
+  came from a call that ran before the mutation.
+  """
+  def ran_before_mutation?(_journal, _turn_id, _ev, nil), do: false
+
+  def ran_before_mutation?(journal, turn_id, ev, last_mut) do
+    journal
+    |> Enum.find(fn res ->
+      res.turn_id == turn_id and evidence_class?(res) and res.id > last_mut and
+        mutation_echo?(journal, turn_id, res, last_mut)
+    end)
+    |> case do
+      nil -> false
+      result -> ev.id < result.id
     end
   end
 
   @doc """
   A `:tool_result` produced by the turn's last mutating call is that call's
-  echo and verifies nothing. Results pair with calls by tool name and
-  nearest preceding order within the turn; an unpaired result is no echo.
+  echo and verifies nothing. A result with a `call_id` pairs with the
+  tool_use of that id; otherwise by tool name and nearest preceding order
+  within the turn. An unpaired result is no echo.
   """
   def mutation_echo?(_journal, _turn_id, _ev, nil), do: false
+
+  def mutation_echo?(journal, _turn_id, %{payload: %{call_id: id}}, last_mut)
+      when is_binary(id) do
+    case Build.resolve(journal, last_mut) do
+      %{payload: %{call_id: ^id}} -> true
+      _ -> false
+    end
+  end
 
   def mutation_echo?(journal, turn_id, ev, last_mut) do
     name = ev.payload[:name]
@@ -220,7 +258,7 @@ defmodule Raxol.Agent.DoneGateEvidence.Oracle do
   end
 end
 
-defmodule Raxol.Agent.DoneGateEvidence.Injector do
+defmodule Raxol.Agent.Test.DoneGateEvidence.Injector do
   @moduledoc false
 
   # Injectors put their fake done at offset 9_999, past any contour or
@@ -232,7 +270,7 @@ defmodule Raxol.Agent.DoneGateEvidence.Injector do
   defmodule Reference do
     @moduledoc false
     @behaviour Raxol.Agent.DoneGate
-    alias Raxol.Agent.DoneGateEvidence.{Build, Oracle}
+    alias Raxol.Agent.Test.DoneGateEvidence.{Build, Oracle}
 
     @impl true
     def gate(journal, turn_id, refs) do
@@ -256,7 +294,7 @@ defmodule Raxol.Agent.DoneGateEvidence.Injector do
   defmodule AcceptsWithoutRefs do
     @moduledoc false
     @behaviour Raxol.Agent.DoneGate
-    alias Raxol.Agent.DoneGateEvidence.Build
+    alias Raxol.Agent.Test.DoneGateEvidence.Build
 
     @impl true
     def gate(_journal, turn_id, refs),
@@ -267,7 +305,7 @@ defmodule Raxol.Agent.DoneGateEvidence.Injector do
   defmodule ExistenceOnly do
     @moduledoc false
     @behaviour Raxol.Agent.DoneGate
-    alias Raxol.Agent.DoneGateEvidence.{Build, Oracle}
+    alias Raxol.Agent.Test.DoneGateEvidence.{Build, Oracle}
 
     @impl true
     def gate(_journal, _turn_id, []), do: {:error, :evidence_required}
@@ -295,7 +333,7 @@ defmodule Raxol.Agent.DoneGateEvidence.Injector do
   defmodule TextAsEvidence do
     @moduledoc false
     @behaviour Raxol.Agent.DoneGate
-    alias Raxol.Agent.DoneGateEvidence.{Build, Oracle}
+    alias Raxol.Agent.Test.DoneGateEvidence.{Build, Oracle}
 
     @impl true
     def gate(_journal, _turn_id, []), do: {:error, :evidence_required}
@@ -339,7 +377,7 @@ defmodule Raxol.Agent.DoneGateEvidence.Injector do
   defmodule SkipsTurnCheck do
     @moduledoc false
     @behaviour Raxol.Agent.DoneGate
-    alias Raxol.Agent.DoneGateEvidence.{Build, Oracle}
+    alias Raxol.Agent.Test.DoneGateEvidence.{Build, Oracle}
 
     @impl true
     def gate(_journal, _turn_id, []), do: {:error, :evidence_required}
@@ -373,9 +411,9 @@ defmodule Raxol.Agent.DoneGateEvidence.Injector do
   end
 end
 
-defmodule Raxol.Agent.DoneGateEvidence.Contours do
+defmodule Raxol.Agent.Test.DoneGateEvidence.Contours do
   @moduledoc false
-  alias Raxol.Agent.DoneGateEvidence.Build
+  alias Raxol.Agent.Test.DoneGateEvidence.Build
 
   @doc """
   `{name, journal, turn_id, refs, expected_shape}`. Each is a hand-built,
@@ -458,9 +496,9 @@ defmodule Raxol.Agent.DoneGateEvidence.Contours do
   def outcome_class({:error, {:mutation_echo, _}}), do: :mutation_echo
 end
 
-defmodule Raxol.Agent.DoneGateEvidence.Gen do
+defmodule Raxol.Agent.Test.DoneGateEvidence.Gen do
   @moduledoc false
-  alias Raxol.Agent.DoneGateEvidence.Build
+  alias Raxol.Agent.Test.DoneGateEvidence.Build
 
   # `sample/1` is deterministic and diverse: each index gets its own seed
   # (`@seed + index`) through `StreamData.__call__/3`. Enumerating a
@@ -557,7 +595,7 @@ defmodule Raxol.Agent.DoneGateEvidence.Gen do
   defp build_step(:state_change, off), do: Build.state_change(off)
 end
 
-defmodule Raxol.Agent.DoneGateEvidence.Fired do
+defmodule Raxol.Agent.Test.DoneGateEvidence.Fired do
   @moduledoc false
 
   def new do

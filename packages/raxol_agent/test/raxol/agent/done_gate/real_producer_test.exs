@@ -81,6 +81,81 @@ defmodule Raxol.Agent.DoneGate.RealProducerTest do
     end
   end
 
+  defmodule RunTests do
+    use Raxol.Agent.Action,
+      name: "run_tests",
+      description: "Run the test suite",
+      schema: [input: []]
+
+    @impl true
+    def run(_params, _ctx), do: {:ok, %{passed: 12}}
+  end
+
+  defmodule FsWrite do
+    use Raxol.Agent.Action,
+      name: "fs_write",
+      description: "Write a file",
+      schema: [input: []]
+
+    @impl true
+    def run(_params, _ctx), do: {:ok, %{wrote: 42}}
+  end
+
+  # One round asking for [run_tests, fs_write]: `Stream.react/2` journals
+  # both tool_uses before either result, so the test run's result comes
+  # after the last tool_use even though it ran before the write.
+  defp batched_journal do
+    session_id = "batched-#{System.unique_integer([:positive])}"
+    :ok = SessionStreamer.subscribe(session_id)
+    round = [%{"id" => "c1", "name" => "run_tests"}, %{"id" => "c2", "name" => "fs_write"}]
+    {:ok, rounds} = Agent.start_link(fn -> [round] end)
+
+    next_round = fn ->
+      Agent.get_and_update(rounds, fn
+        [] -> {nil, []}
+        [r | rest] -> {r, rest}
+      end)
+    end
+
+    stream =
+      Raxol.Agent.Stream.react("fix the bug",
+        backend: Raxol.Agent.Backend.Mock,
+        backend_opts: [tool_calls_fn: next_round, response: "All fixed."],
+        actions: [RunTests, FsWrite]
+      )
+
+    assert {:ok, _} = StreamPump.pump(session_id, stream, prompt: "fix the bug")
+    journal = drain_events(session_id)
+    [%Event{turn_id: turn_id} | _] = journal
+
+    {journal, turn_id, result_at(journal, "run_tests"), result_at(journal, "fs_write")}
+  end
+
+  defp result_at(journal, name) do
+    Enum.find_value(journal, fn ev ->
+      if ev.payload[:item_type] == :tool_result and ev.payload[:name] == name, do: ev.id
+    end)
+  end
+
+  describe "a batched round from Stream.react" do
+    test "a test run batched with a later write is stale evidence" do
+      {journal, turn, tests_at, write_at} = batched_journal()
+
+      assert tests_at < write_at
+      assert DoneGate.gate(journal, turn, [tests_at]) == {:error, {:stale_evidence, tests_at}}
+      assert DoneGate.gate(journal, turn, [write_at]) == {:error, {:mutation_echo, write_at}}
+      refute tests_at in DoneGate.evidence_refs(journal, turn)
+    end
+
+    test "no offset in a batched journal is acceptable evidence" do
+      {journal, turn, _tests_at, _write_at} = batched_journal()
+
+      for %Event{id: offset} <- journal do
+        refute match?({:ok, _}, DoneGate.gate(journal, turn, [offset]))
+      end
+    end
+  end
+
   defp drain_events(session_id, acc \\ []) do
     receive do
       {:session_event, ^session_id, %Event{tier: :durable} = event} ->
