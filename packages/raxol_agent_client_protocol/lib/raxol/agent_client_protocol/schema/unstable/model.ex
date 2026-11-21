@@ -1,6 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Schema.Unstable.ModelInfo do
   @moduledoc """
   Information about a selectable model.
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes

@@ -1,6 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.Implementation do
   @moduledoc """
   Identifies an agent or client implementation (name, version, optional title).
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes

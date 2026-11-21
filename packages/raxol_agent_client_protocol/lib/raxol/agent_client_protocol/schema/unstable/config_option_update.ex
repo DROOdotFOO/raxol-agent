@@ -2,6 +2,8 @@ defmodule Raxol.AgentClientProtocol.Schema.Unstable.SetSessionConfigOptionReques
   @moduledoc """
   Request to set a session configuration option value
   (`session/set_config_option`).
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes

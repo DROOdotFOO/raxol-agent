@@ -3,6 +3,8 @@ defmodule Raxol.AgentClientProtocol.Schema.ClientTypes.PermissionOptionKind do
   Hint about the nature of a `PermissionOption`, so clients can choose
   appropriate icons/UI treatment. Unrecognized values are a decode error (no
   safe default exists for a safety-relevant field).
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   @type t :: :allow_once | :allow_always | :reject_once | :reject_always

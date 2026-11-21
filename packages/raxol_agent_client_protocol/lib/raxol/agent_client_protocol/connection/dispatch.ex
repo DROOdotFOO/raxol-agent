@@ -21,17 +21,21 @@ defmodule Raxol.AgentClientProtocol.Connection.Dispatch do
   @spec start(Raxol.AgentClientProtocol.Connection.t(), term(), Ctx.t()) ::
           {:ok, Task.t()} | {:error, Exception.t()}
   def start(state, dispatchable, ctx) do
-    {:ok, Task.Supervisor.async_nolink(state.task_sup, fn -> run(state, dispatchable, ctx) end)}
+    # Capture only what the task needs, not the whole Connection state.
+    %{role: role, handler: handler} = state
+
+    {:ok,
+     Task.Supervisor.async_nolink(state.task_sup, fn -> run(role, handler, dispatchable, ctx) end)}
   rescue
     e -> {:error, e}
   end
 
-  defp run(state, {:ext_request, wire, params}, ctx),
-    do: state.handler.handle_ext_request(wire, params, ctx)
+  defp run(_role, handler, {:ext_request, wire, params}, ctx),
+    do: handler.handle_ext_request(wire, params, ctx)
 
-  defp run(state, {:ext_notification, wire, params}, ctx),
-    do: state.handler.handle_ext_notification(wire, params, ctx)
+  defp run(_role, handler, {:ext_notification, wire, params}, ctx),
+    do: handler.handle_ext_notification(wire, params, ctx)
 
-  defp run(state, dispatchable, ctx),
-    do: Router.dispatch(state.role, state.handler, dispatchable, ctx)
+  defp run(role, handler, dispatchable, ctx),
+    do: Router.dispatch(role, handler, dispatchable, ctx)
 end

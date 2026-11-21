@@ -1,6 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Schema.ClientTypes.CreateTerminalRequest do
   @moduledoc """
   Request to create a new terminal and execute a command (`terminal/create`).
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.EnvVariable

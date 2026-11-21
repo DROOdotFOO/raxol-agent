@@ -3,6 +3,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.McpServer do
   A client-provided MCP server descriptor: tagged union of `http`, `sse`
   (both discriminated by a `"type"` wire field), and the untagged `stdio`
   fallback.
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.{

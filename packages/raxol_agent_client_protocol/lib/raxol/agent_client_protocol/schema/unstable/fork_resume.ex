@@ -1,6 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Schema.Unstable.ForkSessionRequest do
   @moduledoc """
   Request to fork an existing session (`session/fork`).
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes

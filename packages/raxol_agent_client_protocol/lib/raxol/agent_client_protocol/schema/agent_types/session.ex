@@ -2,6 +2,8 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.NewSessionRequest do
   @moduledoc """
   The `session/new` request: creates a new session rooted at `cwd`, optionally
   wiring up MCP servers.
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes

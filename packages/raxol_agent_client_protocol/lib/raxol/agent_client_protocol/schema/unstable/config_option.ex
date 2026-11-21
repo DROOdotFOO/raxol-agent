@@ -1,6 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Schema.Unstable.SessionConfigSelectOption do
   @moduledoc """
   A possible value for a `select`-kind session configuration option.
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes

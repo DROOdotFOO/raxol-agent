@@ -1,6 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Schema.AgentTypes.PromptRequest do
   @moduledoc """
   The `session/prompt` request: a turn's content blocks sent to the agent.
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes

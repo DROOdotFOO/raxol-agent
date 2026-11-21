@@ -260,6 +260,8 @@ defmodule Raxol.AgentClientProtocol.Client do
       end
 
     quote do
+      alias Raxol.AgentClientProtocol.Client.FsSandbox
+
       @impl Raxol.AgentClientProtocol.Client
       def read_text_file(req, _ctx),
         do:
@@ -267,7 +269,7 @@ defmodule Raxol.AgentClientProtocol.Client do
 
       @impl Raxol.AgentClientProtocol.Client
       def write_text_file(req, _ctx),
-        do: Raxol.AgentClientProtocol.Client.FsSandbox.write(unquote(path), req)
+        do: FsSandbox.write(unquote(path), req)
 
       defoverridable read_text_file: 2, write_text_file: 2
     end

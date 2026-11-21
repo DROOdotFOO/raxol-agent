@@ -1,6 +1,8 @@
 defmodule Raxol.AgentClientProtocol.Schema.ClientTypes.ReleaseTerminalRequest do
   @moduledoc """
   Request to release a terminal and free its resources (`terminal/release`).
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields

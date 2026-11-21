@@ -2,6 +2,8 @@ defmodule Raxol.AgentClientProtocol.Schema.ClientTypes.WriteTextFileRequest do
   @moduledoc """
   Request to write content to a text file (`fs/write_text_file`). Only sent
   if the client declared the `fs.writeTextFile` capability.
+
+  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
