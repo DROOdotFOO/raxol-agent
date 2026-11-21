@@ -1,9 +1,5 @@
-# Ported (as new coverage; upstream had no dedicated content test file) from
-# the conventions of the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Targets
-# Raxol.AgentClientProtocol.Schema.{Role,Annotations,TextContent,
-# ImageContent,AudioContent,TextResourceContents,BlobResourceContents,
-# EmbeddedResourceResource,EmbeddedResource,ResourceLink,ContentBlock}.
+# Content blocks and their payload structs, in the style of the MIT
+# `f1729/agent_client_protocol` suite (c) 2025 f1729; see NOTICE.md.
 defmodule Raxol.AgentClientProtocol.Schema.ContentTest do
   use ExUnit.Case, async: true
 

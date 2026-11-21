@@ -470,25 +470,17 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   defp clear_latch(%__MODULE__{turn: nil} = state), do: state
 
   defp clear_latch(%__MODULE__{turn: %{appender_ref: ref}} = state) do
-    if is_reference(ref), do: Process.demonitor(ref, [:flush])
+    Process.demonitor(ref, [:flush])
     %{state | turn: nil}
   end
 
-  # Single-holder telemetry: a non-holder turn_completed whose durable append
-  # was refused. Guarded so :telemetry stays an optional dep (never raise into the
-  # single-publisher mailbox).
+  # A non-holder turn_completed whose durable append was refused.
   @spec emit_non_holder_rejected(t(), term()) :: :ok
   defp emit_non_holder_rejected(%__MODULE__{session_id: sid}, turn_id) do
-    if Code.ensure_loaded?(:telemetry) and
-         function_exported?(:telemetry, :execute, 3) do
-      apply(:telemetry, :execute, [
-        [:raxol, :acp, :journal, :non_holder_turn_completed],
-        %{count: 1},
-        %{session_id: sid, turn_id: turn_id}
-      ])
-    end
-
-    :ok
+    Raxol.AgentClientProtocol.Telemetry.execute(
+      [:raxol, :acp, :journal, :non_holder_turn_completed],
+      %{session_id: sid, turn_id: turn_id}
+    )
   end
 
   # -- Publish (single site) --------------------------------------------------

@@ -1,7 +1,5 @@
-# Ported from the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Adapted to Raxol.AgentClientProtocol.Schema.Version
-# and extended with coverage for the `coerce/1` defect fix (Zed legacy
-# date-string handshake tolerance).
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Extended with `coerce/1` (legacy date-string versions).
 defmodule Raxol.AgentClientProtocol.Schema.VersionTest do
   use ExUnit.Case, async: true
 

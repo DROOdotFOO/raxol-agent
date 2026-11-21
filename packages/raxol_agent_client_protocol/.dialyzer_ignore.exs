@@ -1,44 +1,31 @@
 [
-  # ================================================================================
-  # DIALYZER SUPPRESSIONS
-  # ================================================================================
-  #
-  # Only warnings with a clear, documented cause are suppressed here. Each
-  # entry names the exact pattern and why it's benign. See the sibling
-  # `mix.exs` for the check's own flags (`:error_handling`, `:underspecs`).
-  #
-  # W7b hygiene pass, 2026-07-17.
-  #
-  # ================================================================================
+  # Only warnings with a documented, benign cause are suppressed here.
 
   # ------------------------------------------------------------------------------
   # BROAD PUBLIC API SPECS (contract_supertype)
   # ------------------------------------------------------------------------------
-  # These functions return a single constant/struct literal (an error code,
-  # a protocol version, a `new/0` struct with its defaults, a registry atom,
-  # etc.) but are deliberately spec'd against the wider public type
-  # (`integer()`, `t()`, `atom()`, `map()`, ...) rather than the narrow
-  # literal dialyzer infers, so the contract stays stable if the literal
-  # ever needs to vary. Matches the main package's "BROAD PUBLIC API SPECS"
-  # precedent (`../../.dialyzer_ignore.exs`).
+  # Specs deliberately name the wider public type (`t()`, `map()`, the
+  # Connection state map) rather than the literal dialyzer infers under
+  # `:underspecs`, so contracts stay stable.
   ~r"agent_client_protocol\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/application\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/error\.ex:\d+:contract_supertype",
-  ~r"agent_client_protocol/ext/attach_policy\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/ext/attach_policy/token\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/ext/journal/writer\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/method_table\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/rpc\.ex:\d+:contract_supertype",
-  ~r"agent_client_protocol/schema/agent_types\.ex:\d+:contract_supertype",
-  ~r"agent_client_protocol/schema/client_types\.ex:\d+:contract_supertype",
+  ~r"agent_client_protocol/schema/agent_types(/\w+)?\.ex:\d+:contract_supertype",
+  ~r"agent_client_protocol/schema/client_types/\w+\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/schema/content\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/schema/ext\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/schema/lifecycle_extras\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/schema/session_update\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/schema/tool_call\.ex:\d+:contract_supertype",
-  ~r"agent_client_protocol/schema/unstable\.ex:\d+:contract_supertype",
+  ~r"agent_client_protocol/schema/unstable(/\w+)?\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/schema/version\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/session\.ex:\d+:contract_supertype",
+  ~r"agent_client_protocol/telemetry\.ex:\d+:contract_supertype",
+  ~r"agent_client_protocol/transport/reassembly\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/transport/framer\.ex:\d+:contract_supertype",
   ~r"agent_client_protocol/transport/paired\.ex:\d+:contract_supertype",
 

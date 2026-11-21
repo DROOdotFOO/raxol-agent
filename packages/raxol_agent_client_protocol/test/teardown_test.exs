@@ -1,8 +1,5 @@
-# The teardown helper the end-to-end tests hang their `on_exit` on. It gets its
-# own tests because the thing it replaced was an inverted assertion that passed
-# only in the race where cleanup had FAILED, and the way that surfaced -- a red
-# X on an unrelated PR, reported at a line inside a callback -- is expensive
-# enough to be worth pinning both directions of.
+# The teardown helper the end-to-end tests hang `on_exit` on, pinned in both
+# directions (it replaced an assertion that only passed when cleanup failed).
 defmodule Raxol.AgentClientProtocol.TeardownTest do
   use ExUnit.Case, async: true
 

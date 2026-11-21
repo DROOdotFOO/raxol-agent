@@ -1,7 +1,5 @@
-# Tests pinning Raxol.AgentClientProtocol.MethodTable per
-# scratchpad/specs/acp-methodtable-design.md §8 ("Tests that pin the
-# design") and its G1 gate-review fix log. Not a port of any upstream
-# f1729 test file -- this module and its table have no upstream analogue.
+# `MethodTable`: row shape and invariants, and agreement with the pinned
+# schema's `meta.json`.
 defmodule Raxol.AgentClientProtocol.MethodTableTest do
   # async: false -- the atom-count property tests below assert a tight
   # bound on global atom growth (:erlang.system_info(:atom_count) is

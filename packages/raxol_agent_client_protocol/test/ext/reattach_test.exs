@@ -1012,7 +1012,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
   end
 
   # ===========================================================================
-  # DROOdotFOO adversarial review of PR #624 — reattach/journal hardening.
+  # Reattach/journal edge cases.
   # ===========================================================================
 
   # Finding 1 (MEDIUM): the synchronous replay runs inside `GenServer.call(sub,

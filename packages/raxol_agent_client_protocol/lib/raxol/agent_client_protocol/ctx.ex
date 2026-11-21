@@ -16,7 +16,7 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   `session/prompt` itself (it carries `conn`, `reply_ref`, `rx_seq`, etc.).
   It does **not** reach the turn task the handler spawns — `turn_runner` is
   injected at `Session` start with a fixed `(session_pid, req) -> ...`
-  arity-2 shape (`session.ex` moduledoc, "Turn runner seam"), and a
+  arity-2 shape (`Session.start_link/1`'s `:turn_runner`), and a
   subagent's task closure only ever receives what its parent closed over.
   There is deliberately **one** ctx concept in this package
   (`Connection.Ctx`); this module does not introduce a second,
@@ -50,7 +50,7 @@ defmodule Raxol.AgentClientProtocol.Ctx do
       surfacing `{:error, :turn_over}` for a straggler post after drain
       and `{:error, :empty_chunk}`
       for an empty-text `agent_message_chunk`/`agent_thought_chunk` (never
-      sent to the wire — see `session.ex`'s `empty_chunk?/1`).
+      sent to the wire — see `Session.Turn.empty_chunk?/1`).
 
   ## Timeouts
 
@@ -170,8 +170,8 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   via the Connection's `notify/3` on the Session's own FIFO lane, returns
   `{:error, :turn_over}` for a straggler post after the turn has drained,
   and `{:error, :empty_chunk}` for an empty-text `agent_message_chunk`/
-  `agent_thought_chunk` — the streaming guard lives in `session.ex`
-  (`empty_chunk?/1`); this wrapper adds no logic of its own, only the
+  `agent_thought_chunk` — the streaming guard lives in
+  `Session.Turn.empty_chunk?/1`; this wrapper adds no logic of its own, only the
   re-export so handler code has one module to `alias`.
   """
   @spec post_update(GenServer.server(), SessionNotification.t()) ::

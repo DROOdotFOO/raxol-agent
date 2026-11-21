@@ -1,13 +1,6 @@
-# Tests pinning Raxol.AgentClientProtocol.Router per
-# scratchpad/specs/acp-methodtable-design.md (D1-1 decode/4 arity, D1-2
-# $/cancel_request + session/cancel pre-filter exclusion, D1-6 params: nil
-# arity-1 dispatch, §4 clause ordering). Not a port of any upstream f1729
-# test file -- Router and its codegen have no upstream analogue.
-#
-# Capability gating (design doc §6, D1-3's "capability check on the wire
-# method string BEFORE decode" ordering) is explicitly Connection's job,
-# not Router's -- Router has no capability awareness at all, so it is not
-# exercised here. See the "capability gating is out of scope" note below.
+# `Router`: decode/4, dispatch arity (including `params: nil` rows) and
+# clause ordering. Capability gating is the Connection's job and is tested
+# in `capabilities_test.exs`.
 defmodule Raxol.AgentClientProtocol.RouterTest do
   use ExUnit.Case, async: true
 
@@ -299,7 +292,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
   # -- stale-codegen guard: the generated surface must track MethodTable --------
   #
   # These iterate the WHOLE table, so any future row is auto-covered. They RED
-  # exactly the `_raxol/session.steer` #650 failure mode: a table row present but
+  # the failure mode where a table row present but
   # absent from the compiled Router/Agent/Client surface because an incremental
   # build did not recompile the codegen consumers. `MethodTable.depend_on_source/0`
   # (an `@external_resource` on the table source) keeps them in lockstep; these

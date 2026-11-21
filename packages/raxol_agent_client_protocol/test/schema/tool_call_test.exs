@@ -1,9 +1,5 @@
-# Ported (as new coverage; upstream had no dedicated tool_call test file)
-# from the conventions of the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Targets
-# Raxol.AgentClientProtocol.Schema.{ToolKind,ToolCallStatus,
-# ToolCallLocation,Diff,ToolCallTerminal,ToolCallContentWrapper,
-# ToolCallContent,ToolCallUpdateFields,ToolCallUpdate,ToolCall}.
+# Tool call structs and enums, in the style of the MIT
+# `f1729/agent_client_protocol` suite (c) 2025 f1729; see NOTICE.md.
 defmodule Raxol.AgentClientProtocol.Schema.ToolCallTest do
   use ExUnit.Case, async: true
 

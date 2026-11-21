@@ -1,10 +1,5 @@
-# Ported from the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Adapted: module names restructured under
-# Raxol.AgentClientProtocol.Schema.AgentTypes.*; assertions updated for the
-# total from_json contract ({:ok, t} | {:error, reason}, never a bare/raising
-# match, per the port's mandatory defect-fix (a)); added coverage for the
-# forward-compat `_meta` fold (defect-fix (d)) and the `StopReason.from_json/1`
-# totality fix (upstream had no catch-all clause, defect-fix (a)).
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Extended with `_meta` pass-through and decode-totality coverage.
 defmodule Raxol.AgentClientProtocol.Schema.AgentTypesTest do
   use ExUnit.Case, async: true
 
@@ -70,7 +65,7 @@ defmodule Raxol.AgentClientProtocol.Schema.AgentTypesTest do
       refute Map.has_key?(json, "x")
     end
 
-    test "to_json/1 nests _meta under the wire \"_meta\" key, matching WireFields.emit_meta/2 (regression: put_meta/2 used to flatten it onto the top-level object)" do
+    test "to_json/1 nests _meta under the wire \"_meta\" key" do
       impl = %Implementation{name: "test", version: "1.0", _meta: %{"custom" => true}}
 
       assert Implementation.to_json(impl) == %{

@@ -1,18 +1,5 @@
-# Tests for Raxol.AgentClientProtocol.Agent -- the ergonomic `use`-based
-# behaviour + library-mode start helpers for the agent side of ACP. Not a
-# port of any upstream f1729 test file (f1729 has no equivalent ergonomic
-# layer). Two tiers:
-#
-#   1. Pure unit tests of the generated callback surface (naming, arity,
-#      defaults, overridability) and of `child_spec/1`'s shape -- these
-#      never touch `Connection`/`Session` and always run.
-#   2. One end-to-end smoke test wiring a minimal agent + client pair over
-#      `Transport.Paired` and driving a real `initialize` -> `session/new`
-#      -> `session/prompt` (2 streamed updates + response) turn through
-#      `Connection`. `Connection`/`Session` are sibling-wave modules that
-#      may not have landed in this worktree yet; the `describe` block below
-#      tags itself `:skip` at load time via `Code.ensure_loaded?/1` when they
-#      are absent, so the rest of the suite stays green either way.
+# `Agent`: the generated callback surface, `child_spec/1`, and an end-to-end
+# turn over `Transport.Paired`.
 defmodule Raxol.AgentClientProtocol.AgentTest do
   use ExUnit.Case, async: true
 
@@ -234,13 +221,6 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
   end
 
   describe "end-to-end smoke over Transport.Paired" do
-    # ExUnit has no runtime skip: a callback returning {:skip, _} raises and
-    # invalidates the module. Decide at load time instead.
-    if not Code.ensure_loaded?(Raxol.AgentClientProtocol.Connection) do
-      @describetag skip:
-                     "Raxol.AgentClientProtocol.Connection has not landed in this worktree yet"
-    end
-
     test "initialize -> session/new -> session/prompt streams 2 updates then a response" do
       alias Raxol.AgentClientProtocol.Connection
 

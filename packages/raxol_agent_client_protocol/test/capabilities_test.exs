@@ -1,17 +1,6 @@
-# Fail-closed capability gate (W17-caps; delete/close/auth leaves closed by
-# W7a / parked review item 5). Two tiers:
-#
-#   1. Pure-predicate matrix over `Capabilities.negotiated?/2` and the
-#      `MethodTable` capability column: no-requirement methods always pass;
-#      gated methods deny on absent/false/nil caps; the (now closed)
-#      session/delete|close|logout oracle-divergence rows gate live on real
-#      leaves instead of failing closed unconditionally; snapshot
-#      immutability; drift guard on `cap_fields/1`.
-#   2. One end-to-end Paired integration: a client that never advertised
-#      `terminal` rejects the agent's `terminal/create` with `-32601`, BEFORE
-#      decode (proven by decode-invalid params still yielding -32601, not
-#      -32602). `Connection`/`Client`/`Agent` are sibling-wave modules; the
-#      integration `describe` skips (not fails) if they have not landed.
+# The fail-closed capability gate: `Capabilities.negotiated?/2` over the
+# `MethodTable` column, and a client that never advertised `terminal`
+# rejecting `terminal/create` with -32601 before decode.
 defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
   use ExUnit.Case, async: true
 
@@ -154,11 +143,10 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
     end
   end
 
-  # -- closed oracle divergences: delete/close/auth leaves (W17-caps / parked --
-  # -- review item 5) now gate live instead of failing closed unconditionally --
+  # -- delete/close/auth leaves gate on real capability fields --
 
-  describe "logout gates on auth.logout (closed oracle-divergence gap)" do
-    test "logout is no longer :never in the table" do
+  describe "logout gates on auth.logout" do
+    test "the table gates logout on auth.logout" do
       assert MethodTable.capability_for("logout") == {:agent, [:auth, :logout]}
     end
 
@@ -179,7 +167,7 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
     end
   end
 
-  describe "session/delete and session/close gate on session_capabilities.{delete,close} (closed oracle-divergence gap)" do
+  describe "session/delete and session/close gate on session_capabilities.{delete,close}" do
     test "the table resolves real paths, not :never" do
       assert MethodTable.capability_for("session/delete") ==
                {:agent, [:session_capabilities, :delete]}
@@ -330,14 +318,6 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
   # -- end-to-end over Transport.Paired -----------------------------------
 
   describe "Paired integration: agent terminal/create against a no-terminal client" do
-    # ExUnit has no runtime skip: a callback returning {:skip, _} raises and
-    # invalidates the module. Decide at load time instead.
-    if not (Code.ensure_loaded?(Raxol.AgentClientProtocol.Connection) and
-              Code.ensure_loaded?(Raxol.AgentClientProtocol.Agent) and
-              Code.ensure_loaded?(Raxol.AgentClientProtocol.Client)) do
-      @describetag skip: "Connection/Agent/Client sibling-wave modules have not landed yet"
-    end
-
     defmodule GateAgent do
       @moduledoc false
       use Raxol.AgentClientProtocol.Agent
@@ -393,8 +373,7 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
 
       # No barrier needed here: `phase: :initialized` is committed inside the
       # SAME GenServer reduction that replies to this `request/4` call (see
-      # `handle_inbound_response/2` -> `maybe_client_initialized/3` in
-      # connection.ex) — the reply is sent before the state update, but both
+      # `Connection.Outbound.response/2`) — the reply is sent before the state update, but both
       # happen with no yield point in between, so OTP's single-process
       # mailbox serialization guarantees any later message reaching this
       # connection (including the terminal/create below) observes the

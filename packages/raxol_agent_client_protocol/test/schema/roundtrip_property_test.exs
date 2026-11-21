@@ -1,31 +1,6 @@
-# New coverage (W8): StreamData round-trip properties for the ACP schema
-# layer, complementing the byte-fixed fixtures ported into
-# `test/schema/serialization_test.exs` from the MIT
-# `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
-# Upstream has no dedicated property-test file; the generators and
-# properties below are new, written against this port's actual structs.
-#
-# Coverage: `ContentBlock` (every variant, unicode text), `ToolCall`, `Plan`,
-# `ClientCapabilities`/`AgentCapabilities` trees, and `Rpc.Request`/
-# `Response`/`Notification` across the `RequestId` type matrix (int/string/
-# null), plus the reverse "unknown wire keys survive `_meta` pass-through"
-# property in both directions this package actually implements (nested
-# under `"_meta"` for `WireFields`-based structs; flat merge for the
-# JSON-RPC envelope layer in `rpc.ex`).
-#
-# NOT covered: the `session/update` notification's `sessionUpdate`-tagged
-# union (`ACP.SessionUpdate` upstream). That type is not yet ported anywhere
-# in this package -- see the header comment on
-# `lib/raxol/agent_client_protocol/schema/agent_types.ex` ("intentionally
-# NOT ported here... belongs to whichever coder ports client_types.ex") and
-# confirm no `SessionUpdate` module exists under `lib/`. Nothing to write a
-# property against yet.
-#
-# `AgentTypes.*` capability structs (PromptCapabilities/McpCapabilities/
-# SessionCapabilities/AgentCapabilities) now generate non-empty `_meta` too:
-# the `AgentTypes.put_meta/2` flattening bug that used to make this
-# unsound (documented, now fixed, in `serialization_test.exs`'s "meta field
-# uses _meta key" test) no longer applies.
+# StreamData round-trip properties for the schema layer: content blocks,
+# tool calls, plans, capability trees, and JSON-RPC envelopes across the
+# request-id matrix, plus unknown-key `_meta` pass-through.
 defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
   use ExUnit.Case, async: true
   use ExUnitProperties

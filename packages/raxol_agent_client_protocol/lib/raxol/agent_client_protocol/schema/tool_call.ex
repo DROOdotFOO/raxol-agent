@@ -60,8 +60,6 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCallStatus do
   `x-deserialize-default-on-error: true`, so -- like `ToolKind` -- decode is
   total and infallible: an unrecognized wire value falls back to the
   documented default, `:pending`, rather than failing the enclosing object.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   @type t :: :pending | :in_progress | :completed | :failed
@@ -91,8 +89,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.ToolCallLocation do
   @moduledoc """
   A file location being accessed or modified by a tool.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
@@ -144,17 +140,8 @@ end
 
 defmodule Raxol.AgentClientProtocol.Schema.Diff do
   @moduledoc """
-  A diff representing file modifications.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
-
-  ## Fixed defect
-
-  Upstream's `to_json/1` unconditionally emitted `"oldText" => nil` when
-  `old_text` was absent (a new-file diff), instead of omitting the key. The
-  ACP schema types `oldText` as optional (`string | null`); this port omits
-  it like every other absent-optional field, rather than emitting an
-  explicit wire `null`.
+  A diff representing file modifications. An absent `old_text` (a new file)
+  omits `oldText` on encode.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
@@ -210,8 +197,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.ToolCallTerminal do
   @moduledoc """
   Embeds a terminal created with `terminal/create`, by its id.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
@@ -264,8 +249,6 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCallContentWrapper do
   variant of `ToolCallContent`; named `Content` in the official schema, but
   kept as `ToolCallContentWrapper` here to avoid colliding with
   `Schema.ContentBlock`, the tagged-union content block type).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.ContentBlock
@@ -314,8 +297,6 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCallContent do
   @moduledoc """
   Content produced by a tool call: a tagged union discriminated by a
   `"type"` wire key (`content` | `diff` | `terminal`).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Diff
@@ -380,8 +361,6 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCallUpdateFields do
   on the two list fields) -- decode of this struct never fails for a map
   input. Flattened directly into `ToolCallUpdate`'s wire object (no nested
   `"_meta"` of its own; unrecognized fields fold into the parent's `_meta`).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.ToolCallContent
@@ -466,8 +445,6 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCallUpdate do
   An update to an existing tool call. `ToolCallUpdateFields` is flattened
   into the same wire object as `toolCallId` and `_meta` (a "serde flatten"),
   not nested under its own key.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.ToolCallUpdateFields
@@ -533,8 +510,6 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCall do
   `kind` and `status` default (`:other` / `:pending`) rather than erroring
   on an unrecognized wire value; `content` and `locations` default to `[]`
   and skip items that individually fail to decode.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.ToolCallContent

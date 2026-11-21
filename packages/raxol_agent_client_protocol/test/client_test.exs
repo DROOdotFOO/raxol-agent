@@ -1,7 +1,5 @@
-# Tests for Raxol.AgentClientProtocol.Client -- the ergonomic `use`-based
-# behaviour + library-mode start helpers for the client side of ACP. Mirrors
-# `agent_test.exs`'s structure and rationale (see its header comment); not a
-# port of any upstream f1729 test file.
+# `Client`: the generated callback surface, `child_spec/1`, and an end-to-end
+# turn over `Transport.Paired`.
 defmodule Raxol.AgentClientProtocol.ClientTest do
   use ExUnit.Case, async: true
 
@@ -100,7 +98,7 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
       end
     end
 
-    # W17-client: the generated default now broadcasts to `Client.subscribe/3`
+    # The generated default broadcasts to `Client.subscribe/3`
     # subscribers (client_ergonomics_test.exs covers the subscription
     # mechanics in depth) instead of being a pure no-op, so this needs a
     # real `conn` pid and a notification-shaped argument -- `:fake_ctx`/
@@ -241,13 +239,6 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
   end
 
   describe "end-to-end smoke over Transport.Paired" do
-    # ExUnit has no runtime skip: a callback returning {:skip, _} raises and
-    # invalidates the module. Decide at load time instead.
-    if not Code.ensure_loaded?(Raxol.AgentClientProtocol.Connection) do
-      @describetag skip:
-                     "Raxol.AgentClientProtocol.Connection has not landed in this worktree yet"
-    end
-
     test "client-side session_update/2 observes both streamed updates before the prompt response" do
       alias Raxol.AgentClientProtocol.Connection
 

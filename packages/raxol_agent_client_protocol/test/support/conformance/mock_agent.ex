@@ -22,8 +22,8 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
   machine (cancellation, the streaming/straggler guards, the turn-group
   drain gate). See `do_late_tool/3` for why that matters: this package
   enforces invariant I3 (no `session/update` may serialize after its turn's
-  terminal `session/prompt` response — `Session`'s "straggler-task guard",
-  `session.ex` §3.3) even for out-of-band, fire-and-forget-style tool
+  terminal `session/prompt` response; `Session.post_update/2` returns
+  `{:error, :turn_over}` once the turn is over) even for out-of-band, fire-and-forget-style tool
   updates, where the upstream fixture does not. `Session.spawn_task/2`
   (the turn-group hold-open primitive) is used to reproduce the same
   *observable* update set the corpus checks for without violating that
@@ -153,7 +153,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
       text == "echo" ->
         # `echo` with no argument would otherwise emit an EMPTY text chunk,
         # which `Session`'s streaming guard #1 rejects outright
-        # (`empty_chunk?/1`, session.ex "no empty chunks" -- W17-ctx). A
+        # (`Session.Turn.empty_chunk?/1`). A
         # non-empty placeholder keeps this fixture inside that guard rather
         # than silently losing the update.
         emit_chunk(session_pid, session_id, "(empty)")
@@ -183,10 +183,9 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
     end
   end
 
-  # Cancellable sleep: per Session's moduledoc, the turn runner "MAY
-  # receive/peek :acp_cancel between steps to wind down gracefully" -- a
-  # bare `Process.sleep/1` would ignore a cancel until the 30s backstop
-  # force-kills the task (session.ex §4), which is correct-but-slow and
+  # Cancellable sleep: the Session sends the root task `:acp_cancel`, and a
+  # bare `Process.sleep/1` would ignore it until the 30s backstop
+  # force-kills the task, which is correct-but-slow and
   # would make `acp.v1.session.cancel.in_flight` needlessly wait out most of
   # its "sleep 5000" prompt instead of cancelling near-instantly.
   defp run_sleep(text) do
@@ -240,8 +239,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
   # response" so the *client-side* harness can be checked for tolerating a
   # straggler. Our `Session` enforces that ordering as invariant I3 (no
   # exception for out-of-band emitters): `post_update/2` on an already-idle
-  # turn returns `{:error, :turn_over}` and emits nothing (session.ex's
-  # "straggler-task guard", §3.3) -- reproducing the upstream fixture
+  # turn returns `{:error, :turn_over}` and emits nothing -- reproducing the upstream fixture
   # verbatim would silently drop the two tool-call updates and fail this
   # case's `updates_count_at_least: 4` check.
   #
@@ -261,28 +259,22 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
   defp do_late_tool(session_pid, session_id, text) do
     rest = text |> String.replace_prefix("late-tool ", "") |> String.trim()
 
-    case String.split(rest, " ", parts: 2) do
-      [ms_str, late_text] ->
-        case Integer.parse(ms_str) do
-          {ms, ""} ->
-            emit_chunk(session_pid, session_id, "writing now")
+    with [ms_str, late_text] <- String.split(rest, " ", parts: 2),
+         {ms, ""} <- Integer.parse(ms_str) do
+      emit_chunk(session_pid, session_id, "writing now")
 
-            {:ok, _ref} =
-              Session.spawn_task(session_pid, fn ->
-                Process.sleep(ms)
-                tool_call_id = unique_id()
-                emit_tool_call(session_pid, session_id, tool_call_id, late_text)
-                Process.sleep(5)
-                emit_tool_call_update(session_pid, session_id, tool_call_id, late_text)
-              end)
+      {:ok, _ref} =
+        Session.spawn_task(session_pid, fn ->
+          Process.sleep(ms)
+          tool_call_id = unique_id()
+          emit_tool_call(session_pid, session_id, tool_call_id, late_text)
+          Process.sleep(5)
+          emit_tool_call_update(session_pid, session_id, tool_call_id, late_text)
+        end)
 
-            emit_chunk(session_pid, session_id, "late-tool scheduled: " <> late_text)
-
-          _invalid ->
-            emit_chunk(session_pid, session_id, "error: usage: late-tool <milliseconds> <text>")
-        end
-
-      _other ->
+      emit_chunk(session_pid, session_id, "late-tool scheduled: " <> late_text)
+    else
+      _invalid ->
         emit_chunk(session_pid, session_id, "error: usage: late-tool <milliseconds> <text>")
     end
 

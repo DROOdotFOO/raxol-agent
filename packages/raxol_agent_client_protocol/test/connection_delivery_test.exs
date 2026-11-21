@@ -1,34 +1,8 @@
-# Red-first suite for the Connection's delivery-ordering unit: the
-# ACTUAL fix for the shipped session/update drop/reorder bug: a
-# receiver-assigned per-turn ordinal stamped at the demux point
-# (`dispatch_inbound_notification/3`), delivered to the turn owner
-# DIRECTLY by the Connection itself (`{:acp_turn_update, tag, ordinal,
-# notification}`), the same single-sender operation `deliver_outcome/2`
-# already uses for the terminal result -- so BEAM's pairwise FIFO makes the
-# owner's mailbox order equal wire order, with NO reorder buffer and NO
-# settle timer needed on this path.
-#
-# Registers the D family invariants (test/INVARIANTS.md): D1 (order), D2
-# (no silent drop / fail-the-turn), D3 (no wall-clock timer), D5 (hostile
-# peer cannot wedge/steer delivery), D7 (recursive turn-namespace / no
-# straggler cross-talk), D9 (telemetry contract). D4/D6 are the (not yet
-# built) bounded Reorder engine's and the client streaming path's own
-# invariants respectively -- D6's positive case is already exercised by
-# `client_ergonomics_test.exs`'s `prompt_stream/4` describe block; both
-# flagged as NOT owned by this file.
-#
-# Driving mechanism: `Raxol.AgentClientProtocol.Test.ScriptedPeer` plays
-# the *agent* peer at the raw wire-map level against a real, directly
-# started `Raxol.AgentClientProtocol.Connection` (`role: :client`) -- same
-# technique as `connection_test.exs`'s `start_client_conn/1` and
-# `client_ergonomics_test.exs`'s local reimplementation of it (both files
-# are owned by other units; reimplemented locally here too, not touched).
-# The test PROCESS ITSELF is always the turn owner (`self()` passed
-# straight to `Connection.async_request/6`) -- `async_request` returns as
-# soon as the frame is queued, so no wrapper `Task` is needed just to hold
-# the owner pid; `:acp_turn_update`/`:acp_turn_end`/`:acp_result` land
-# directly in this process's mailbox, assertable via `assert_receive`.
-
+# Turn delivery ordering (INVARIANTS.md family D): the Connection stamps each
+# `session/update` with a per-turn ordinal and sends it to the turn owner
+# itself, so the owner sees updates in wire order before the result.
+# `ScriptedPeer` plays the agent against a real client-role Connection; the
+# test process is the turn owner.
 defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest.Client do
   @moduledoc false
   # A client handler whose `session_update/2` rendezvous-blocks: it reports
@@ -83,9 +57,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest.FaultConnection do
 end
 
 defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
-  # async: false -- defines a global `:telemetry` module below (D9) and
-  # drives real Connection/Paired processes, matching connection_test.exs's
-  # own precedent.
+  # async: false: attaches global :telemetry handlers (D9) and drives real
+  # Connection/Paired processes.
   use ExUnit.Case, async: false
   use Raxol.AgentClientProtocol.Test.InvariantSentinel
 
@@ -536,10 +509,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
   # [:raxol, :acp, :delivery] with %{session, turn, decision, buffered,
   # ordinal}, partitioning into :emit | :buffer | :gap | :fail (:gap is
   # unreachable in v1 -- nothing is coalescible; not asserted here, no
-  # such variant exists yet). `:telemetry` is a dev/test-only dependency
-  # (mix.exs) so the `Code.ensure_loaded?(:telemetry)` guards in `Connection`
-  # and `Raxol.AgentClientProtocol.Delivery` resolve true here while the
-  # published package keeps no runtime telemetry requirement.
+  # such variant exists yet). `:telemetry` is a dev/test-only dependency, so
+  # `Telemetry.execute/3` emits here while the published package does not
+  # require it.
   # ===========================================================================
 
   @doc false

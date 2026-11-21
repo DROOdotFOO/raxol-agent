@@ -1,21 +1,6 @@
-# Ported/adapted from the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md ("SessionUpdate plan", "SessionUpdate
-# current_mode_update", "AvailableCommand to_json/from_json" in
-# `test/acp/client_types_test.exs`). Adapted: module names restructured
-# under `Raxol.AgentClientProtocol.Schema.*`; assertions updated for the
-# total `from_json/1` contract (`{:ok, t} | {:error, reason}`, never a
-# bare/raising match). The upstream "SessionNotification to_json/from_json"
-# test is NOT ported here: `ACP.SessionNotification` (the envelope wrapping
-# a `SessionUpdate` with `sessionId`/`_meta`) belongs to whichever coder
-# ports `client_types.ex` -- see `SessionUpdate`'s moduledoc.
-#
-# New coverage (not in upstream): a discriminator round-trip test for every
-# one of the eleven variants (including `usage_update`, the oracle's 11th
-# variant absent from f1729), `"sessionUpdate"` non-leakage into a variant
-# payload's `_meta`, totality assertions for unrecognized/missing
-# discriminators and non-map input, and `ContentChunk.messageId` /
-# `UsageUpdate` / `Cost` coverage (all closing oracle-vs-f1729 gaps, none
-# ported from upstream).
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Extended with a round trip for every variant, discriminator non-leakage,
+# totality, and `ContentChunk.messageId`/`UsageUpdate`/`Cost` coverage.
 defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
   use ExUnit.Case, async: true
 

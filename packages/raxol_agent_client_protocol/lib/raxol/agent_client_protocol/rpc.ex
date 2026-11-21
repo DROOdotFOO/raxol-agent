@@ -23,8 +23,6 @@ defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
   @moduledoc """
   JSON-RPC request id: `null | integer | string`. Wire type is preserved
   exactly (no coercion between string and integer ids).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   @type t :: nil | integer() | String.t()
@@ -57,8 +55,6 @@ end
 defmodule Raxol.AgentClientProtocol.Rpc.Request do
   @moduledoc """
   JSON-RPC 2.0 Request object (`id` + `method` + optional `params`).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Rpc.RequestId
@@ -128,8 +124,6 @@ defmodule Raxol.AgentClientProtocol.Rpc.Response do
   invalid-request error detected before any request id could be read is
   answered with a `null`-id error response; this is not an absent id, it is
   the spec-mandated value for an uncorrelatable error.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Error
@@ -188,8 +182,6 @@ defmodule Raxol.AgentClientProtocol.Rpc.Notification do
   @moduledoc """
   JSON-RPC 2.0 Notification object: `method` + optional `params`, no `id`,
   no response expected.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   @enforce_keys [:method]
@@ -250,8 +242,6 @@ defmodule Raxol.AgentClientProtocol.Rpc.Message do
       `jsonrpc` field is present but not `"2.0"`)
 
   It never raises.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Rpc.{Notification, Request, Response}

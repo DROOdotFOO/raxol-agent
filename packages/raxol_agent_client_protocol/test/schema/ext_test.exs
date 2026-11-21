@@ -1,7 +1,5 @@
-# Ported (as new coverage, upstream had no dedicated ext test file) from the
-# conventions of the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Targets
-# Raxol.AgentClientProtocol.Schema.Ext.{ExtRequest,ExtNotification,ExtResponse}.
+# `Schema.Ext` request/notification/response, in the style of the MIT
+# `f1729/agent_client_protocol` suite (c) 2025 f1729; see NOTICE.md.
 defmodule Raxol.AgentClientProtocol.Schema.ExtTest do
   use ExUnit.Case, async: true
 

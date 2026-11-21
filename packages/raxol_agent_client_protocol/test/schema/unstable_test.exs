@@ -1,17 +1,5 @@
-# Ported from the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Adapted: module names restructured under
-# Raxol.AgentClientProtocol.Schema.Unstable.*; assertions updated for the
-# total from_json contract ({:ok, t} | {:error, reason}, never a bare/raising
-# match, per the port's mandatory defect-fix (a)); added coverage for the
-# forward-compat `_meta` fold (defect-fix (d)) and the `SessionConfigKind`
-# totality fix (upstream had no catch-all for an unknown/missing "type",
-# defect-fix (a)).
-#
-# The upstream `MaybeUndefined`, `SessionUpdate`, `AgentSide.decode_request`,
-# and `MethodNames` test groups are intentionally NOT ported here: those
-# types live in different upstream files (`maybe_undefined.ex`,
-# `client_types.ex`, `agent_side_connection.ex`, `method_names.ex`
-# respectively), so they belong to the tests for those files.
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Extended with `_meta` pass-through and decode-totality coverage.
 defmodule Raxol.AgentClientProtocol.Schema.UnstableTest do
   use ExUnit.Case, async: true
 

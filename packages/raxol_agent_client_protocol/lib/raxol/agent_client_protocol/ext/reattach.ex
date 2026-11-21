@@ -344,21 +344,14 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
   defp emit_denied(ctx, denied) do
     reason = denial_reason(denied)
-    # Total against a partially-injected ctx: the deny path can be
-    # reached before a full ctx is guaranteed populated (an injected `:ctx` may
-    # omit keys), so read audit fields defensively — a missing key must NOT crash
-    # the fail-closed path.
+    # An injected ctx may omit keys; the fail-closed path must not crash.
     sid = Map.get(ctx, :session_id)
     surface = Map.get(ctx, :surface, :unknown)
 
-    if Code.ensure_loaded?(:telemetry) and
-         function_exported?(:telemetry, :execute, 3) do
-      apply(:telemetry, :execute, [
-        [:raxol, :acp, :attach, :denied],
-        %{count: 1},
-        %{session_id: sid, surface: surface, reason: reason}
-      ])
-    end
+    Raxol.AgentClientProtocol.Telemetry.execute(
+      [:raxol, :acp, :attach, :denied],
+      %{session_id: sid, surface: surface, reason: reason}
+    )
 
     Logger.debug("acp reattach: attach denied for #{inspect(sid)} (#{inspect(reason)})")
 
