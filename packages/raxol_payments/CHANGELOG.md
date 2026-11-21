@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`Raxol.Payments.Secret` is deprecated** and delegates to
+  `Raxol.Agent.Secret` (raxol_agent); `new/1` returns a `Raxol.Agent.Secret`.
+- **Breaking: `Xochi.Stealth.derive_keys/1` returns each private key
+  `Raxol.Agent.Secret`-wrapped** (`{secret, public_key}`). `scan/3` takes raw
+  or wrapped keys, runs under `with_revealed/2` (a raise becomes `{:error,
+  :secret_operation_crashed}`), and returns `{:error, :invalid_announcements}`
+  for a non-list instead of raising.
+- `Xochi.Client` accepts a wrapped token in `auth: {:member, _}`;
+  `protect_config/1` wraps raw member tokens for a caller about to keep the
+  config. `Relay.Client` and `Pxe.Client` accept a wrapped token or key; a
+  `nil` relay token sends no `authorization` header (was `Bearer `).
+- `ChainReader.JSONRPC` and `Accounting.env_config/0` keep RPC URLs wrapped,
+  since provider URLs embed API keys.
+- Requires a raxol_agent release with `Raxol.Agent.Secret` (see its
+  CHANGELOG) before publishing.
+
 ### Added
 
 - The Xochi status parsers read every `IntentLifecycleStatus` of

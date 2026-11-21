@@ -58,11 +58,12 @@ defmodule Raxol.Payments.Pxe.Client do
       outcome unknown.
   """
 
+  alias Raxol.Agent.Secret
   alias Raxol.Payments.Pxe.Schemas.{CreateNoteParams, CreateNoteResult, HealthStatus}
 
   @type config :: %{
           optional(:url) => String.t(),
-          optional(:api_key) => String.t() | nil,
+          optional(:api_key) => String.t() | Secret.t() | nil,
           optional(:create_note_timeout_ms) => pos_integer(),
           optional(:request_timeout_ms) => pos_integer(),
           optional(:req_options) => keyword()
@@ -231,6 +232,8 @@ defmodule Raxol.Payments.Pxe.Client do
     # why nothing here had a success-path test.
     Req.new(Keyword.merge(opts, Map.get(config, :req_options, [])))
   end
+
+  defp auth_headers(%{api_key: %Secret{} = key}), do: auth_headers(%{api_key: Secret.reveal(key)})
 
   defp auth_headers(%{api_key: key}) when is_binary(key) and key != "" do
     [{"authorization", "Bearer #{key}"}]

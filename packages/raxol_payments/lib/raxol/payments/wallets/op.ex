@@ -20,7 +20,7 @@ defmodule Raxol.Payments.Wallets.Op do
 
   use Raxol.Core.Behaviours.BaseManager
 
-  alias Raxol.Payments.Secret
+  alias Raxol.Agent.Secret
 
   @default_chain_id 8453
 

@@ -8,7 +8,8 @@ defmodule Raxol.Payments.Xochi.StealthE2ETest do
   use ExUnit.Case, async: true
 
   alias Raxol.Payments.Xochi.Stealth
-  alias Raxol.Payments.{PrivacyTier, Router, Secret}
+  alias Raxol.Agent.Secret
+  alias Raxol.Payments.{PrivacyTier, Router}
 
   defp generate_keypair do
     priv = :crypto.strong_rand_bytes(32)
