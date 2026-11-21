@@ -53,6 +53,26 @@ defmodule Raxol.Payments.Telemetry.LoggerHandlerTest do
       refute log =~ "pw"
     end
 
+    test "cuts URLs inside text and escapes control characters" do
+      :ok = LoggerHandler.attach()
+
+      log =
+        capture_log(fn ->
+          :telemetry.execute([:raxol, :payments, :spend], %{amount: Decimal.new("1")}, %{
+            agent_id: "a",
+            error: "request to https://k@rpc.example/v2/leak?apikey=leak failed",
+            intent_id: "abc\n[error] forged",
+            metadata: %{"k\nforged" => 1}
+          })
+        end)
+
+      assert log =~ "error=request to https://rpc.example failed"
+      assert log =~ ~S(intent_id=abc\n[error] forged)
+      refute log =~ "leak"
+      refute log =~ "\n[error] forged"
+      refute log =~ "k\nforged"
+    end
+
     test "keeps scalars readable" do
       :ok = LoggerHandler.attach()
 
@@ -62,14 +82,14 @@ defmodule Raxol.Payments.Telemetry.LoggerHandlerTest do
             agent_id: {:agent, 7},
             rate: 1.5,
             at: ~U[2026-11-21 00:00:00Z],
-            note: "see https:// docs"
+            note: "plain words"
           })
         end)
 
       assert log =~ "agent_id={agent,7}"
       assert log =~ "rate=1.5"
       assert log =~ "at=2026-11-21T00:00:00Z"
-      assert log =~ "note=see https:// docs"
+      assert log =~ "note=plain words"
     end
 
     test "logs :over_budget at :warning" do

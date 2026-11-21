@@ -105,6 +105,42 @@ defmodule Raxol.Payments.Req.MandateTest do
       assert_received {:request, "collector.example", []}
     end
 
+    test "the delegation is not re-attached after leaving the first origin" do
+      put_mandate()
+      test_pid = self()
+
+      for location <- [
+            "http://api.xochi.fi/api/intent/quote",
+            "https://attacker.xochi.fi/api/intent/quote",
+            URI.to_string(%URI{
+              scheme: "https",
+              host: "api.xochi.fi",
+              port: 8443,
+              path: "/api/intent/quote"
+            })
+          ] do
+        plug = fn conn ->
+          delegation = Plug.Conn.get_req_header(conn, "x-xochi-delegation")
+          send(test_pid, {:request, conn.scheme, conn.host, conn.port, delegation})
+
+          if conn.host == "api.xochi.fi" and conn.port == 443 and conn.scheme == :https do
+            conn
+            |> Plug.Conn.put_resp_header("location", location)
+            |> Plug.Conn.send_resp(307, "")
+          else
+            Plug.Conn.send_resp(conn, 200, "ok")
+          end
+        end
+
+        Req.new(url: "https://api.xochi.fi/api/intent/quote", plug: plug, retry: false)
+        |> ReqMandate.attach(agent_wallet: @agent)
+        |> Req.get!()
+
+        assert_received {:request, :https, "api.xochi.fi", 443, [_envelope]}
+        assert_received {:request, _scheme, _host, _port, []}, location
+      end
+    end
+
     test "maps /api/intent/execute to scope execute" do
       put_mandate(scopes: ["execute"])
 

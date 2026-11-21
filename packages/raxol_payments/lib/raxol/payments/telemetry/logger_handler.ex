@@ -20,10 +20,13 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
   ## Customization
 
   The default formatter renders one structured line per event. It does
-  not print caller data: a nested metadata map shows only its keys, a URL
-  only its origin, and other compound values only their kind; top-level
-  strings and numbers print as given. A custom formatter gets the raw terms
-  and owns that redaction. To override:
+  not print caller data: a nested metadata map shows only its keys, a tuple
+  its scalar elements, any other compound value only its kind, and every
+  `scheme://...` run inside a string only its origin. Control characters
+  are escaped, so a value cannot start a log line of its own. Numbers,
+  atoms, pids and the rest of a string print as given; dates print in ISO
+  8601. A custom formatter gets the raw terms and owns that redaction. To
+  override:
 
       Raxol.Payments.Telemetry.LoggerHandler.attach(handler_id: "my-pay",
         formatter: &MyApp.format_pay_event/3)
@@ -133,7 +136,7 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
 
   defp format_value(v), do: scalar(v)
 
-  defp scalar(v) when is_binary(v), do: if(Redact.url?(v), do: Redact.url(v), else: v)
+  defp scalar(v) when is_binary(v), do: v |> cut_urls() |> escape()
   defp scalar(v) when is_atom(v), do: Atom.to_string(v)
   defp scalar(v) when is_integer(v) or is_float(v), do: to_string(v)
   defp scalar(v) when is_pid(v) or is_reference(v) or is_port(v), do: inspect(v)
@@ -144,6 +147,16 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
 
   defp keys(keys), do: keys |> Enum.map(&key_name/1) |> Enum.sort() |> Enum.join(",")
 
-  defp key_name(k) when is_atom(k) or is_binary(k) or is_integer(k), do: to_string(k)
+  defp key_name(k) when is_atom(k) or is_binary(k) or is_integer(k),
+    do: k |> to_string() |> escape()
+
   defp key_name(_k), do: "?"
+
+  # Every `scheme://...` run in the text, prose included, is cut to its origin.
+  @url_run ~r{[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]*}
+  defp cut_urls(text), do: Regex.replace(@url_run, text, &Redact.url/1)
+
+  # A newline or other control character would let a value forge a log line.
+  defp escape(text),
+    do: String.replace(text, ~r/[\x00-\x1f\x7f]/, fn c -> inspect(c) |> String.trim("\"") end)
 end

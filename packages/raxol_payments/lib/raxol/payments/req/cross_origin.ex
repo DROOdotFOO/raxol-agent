@@ -4,7 +4,9 @@ defmodule Raxol.Payments.Req.CrossOrigin do
   # origin; any other credential header goes with it. `attach/3` adds a
   # response step, run before `:redirect`, that removes `headers` from the
   # request when the response redirects to another scheme, host or port. A
-  # same-origin redirect (a trailing-slash 308, say) keeps them.
+  # same-origin redirect (a trailing-slash 308, say) keeps them. A stripped
+  # request is marked, so a request step that would add a header back on the
+  # next hop can check `stripped?/1` first.
 
   @redirects [301, 302, 303, 307, 308]
 
@@ -19,7 +21,7 @@ defmodule Raxol.Payments.Req.CrossOrigin do
       [location | _] ->
         if same_origin?(request.url, location),
           do: {request, response},
-          else: {Enum.reduce(headers, request, &Req.Request.delete_header(&2, &1)), response}
+          else: {strip_headers(request, headers), response}
 
       [] ->
         {request, response}
@@ -27,6 +29,17 @@ defmodule Raxol.Payments.Req.CrossOrigin do
   end
 
   defp strip(request_response, _headers), do: request_response
+
+  @doc "Whether a cross-origin redirect has stripped this request's headers."
+  @spec stripped?(Req.Request.t()) :: boolean()
+  def stripped?(%Req.Request{} = req),
+    do: Req.Request.get_private(req, :raxol_cross_origin, false)
+
+  defp strip_headers(request, headers) do
+    headers
+    |> Enum.reduce(request, &Req.Request.delete_header(&2, &1))
+    |> Req.Request.put_private(:raxol_cross_origin, true)
+  end
 
   defp same_origin?(url, location) do
     from = URI.parse(url)
