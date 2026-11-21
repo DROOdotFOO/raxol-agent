@@ -21,6 +21,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.2.0.
 - Also ships the connection, delivery, journal writer and attach-policy
   robustness and security fixes merged in #27.
+- **A cancelled request is now answered.** After `$/cancel_request` the
+  Connection sends exactly one response for the id, as the ACP schema
+  requires: `-32800` for an undelegated request, otherwise the adopter's reply
+  (`Session` answers `stopReason: cancelled`), or `-32800` if the adopter exits
+  or does not reply within `:cancel_reply_timeout_ms`. Previously it sent
+  nothing.
+- After the peer closes its write side, a `Connection` stops once every
+  in-flight request is answered (bounded by `:close_drain_ms`, default five
+  minutes) instead of after a fixed five seconds, and fails its pending
+  outbound requests with `:connection_closed` at once.
+- MCP server descriptors are type-checked: `name`, `url`, `command`, `args`
+  (a list of strings) and env/header names and values must be strings, and an
+  unknown `type` is refused; such a request fails with `-32602`.
+
+### Added
+
+- `Connection` options `:max_notification_tasks` (default 500), a separate cap
+  on concurrent notification handlers so they cannot use up the task capacity
+  requests need, `:close_drain_ms` and `:cancel_reply_timeout_ms` (default
+  60_000). Like `:max_inbound`, invalid values stop the Connection at start.
+- `Error.request_cancelled/0` (`-32800`).
+
+### Fixed
+
+- The `Client.subscribe/3` table is owned by a long-lived process (an
+  application child, started on demand otherwise), so it no longer disappears
+  with the short-lived task that first created it; entries for exited
+  subscribers and connections are removed.
 
 ## [0.1.0] - 2026-11-14
 
