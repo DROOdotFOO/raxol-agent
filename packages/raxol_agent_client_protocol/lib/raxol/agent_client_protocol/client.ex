@@ -47,6 +47,7 @@ defmodule Raxol.AgentClientProtocol.Client do
   require Raxol.AgentClientProtocol.Handler.Codegen
   require Raxol.AgentClientProtocol.MethodTable
 
+  alias Raxol.AgentClientProtocol.Client.Subscriptions
   alias Raxol.AgentClientProtocol.{Connection, Delivery, MethodTable}
   alias Raxol.AgentClientProtocol.Handler.{Codegen, Wiring}
   alias Raxol.AgentClientProtocol.Schema.SessionUpdate
@@ -70,53 +71,28 @@ defmodule Raxol.AgentClientProtocol.Client do
 
   # -- Subscriptions ----------------------------------------------------------
 
-  @subs_table :raxol_acp_client_session_subscriptions
-
   @doc """
   Registers `subscriber` for `{:acp_session_update, session_id, update}`
   broadcasts from `conn`. Idempotent: subscribing the same pid twice registers
-  it once.
+  it once. Registrations end when the subscriber or the connection exits.
   """
   @spec subscribe(pid(), String.t(), pid()) :: :ok
   def subscribe(conn, session_id, subscriber \\ self())
-      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber) do
-    ensure_subs_table!()
-    :ets.insert(@subs_table, {{conn, session_id}, subscriber})
-    :ok
-  end
+      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber),
+      do: Subscriptions.subscribe(conn, session_id, subscriber)
 
   @doc "Removes a `subscribe/3` registration; unknown entries are a no-op."
   @spec unsubscribe(pid(), String.t(), pid()) :: :ok
   def unsubscribe(conn, session_id, subscriber \\ self())
-      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber) do
-    ensure_subs_table!()
-    :ets.delete_object(@subs_table, {{conn, session_id}, subscriber})
-    :ok
-  end
+      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber),
+      do: Subscriptions.unsubscribe(conn, session_id, subscriber)
 
   @doc false
   # Called by the default `session_update/2`. Best effort; never raises.
   @spec broadcast_update(pid(), String.t(), term()) :: :ok
   def broadcast_update(conn, session_id, update) do
-    ensure_subs_table!()
-
-    for {_key, subscriber} <- :ets.lookup(@subs_table, {conn, session_id}) do
+    for subscriber <- Subscriptions.subscribers(conn, session_id) do
       send(subscriber, {:acp_session_update, session_id, update})
-    end
-
-    :ok
-  rescue
-    _ -> :ok
-  end
-
-  # Creating an existing named table raises; losing that race is fine.
-  defp ensure_subs_table! do
-    if :ets.whereis(@subs_table) == :undefined do
-      try do
-        :ets.new(@subs_table, [:bag, :public, :named_table])
-      rescue
-        ArgumentError -> :ok
-      end
     end
 
     :ok

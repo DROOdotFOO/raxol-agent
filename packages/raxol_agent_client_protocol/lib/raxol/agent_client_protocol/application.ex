@@ -37,8 +37,9 @@ defmodule RaxolAgentClientProtocol.Application do
 
   The application module is declared in `mix.exs` (`mod:`), so in a project
   that depends on this package it starts before the project's own
-  application, with all five children: two `Registry`s, two
-  `DynamicSupervisor`s and one `Task.Supervisor`. None of them opens a file,
+  application, with all six children: two `Registry`s, two
+  `DynamicSupervisor`s, one `Task.Supervisor` and the `Client.subscribe/3`
+  table owner. None of them opens a file,
   a port or a listener. Use them as they are: do not also start
   `children/0` in your own supervisor while this application runs, or your
   supervisor fails with `{:already_started, _}`.
@@ -109,7 +110,9 @@ defmodule RaxolAgentClientProtocol.Application do
       #     (without it every attach denies :policy_infra).
       {Task.Supervisor, name: @attach_task_supervisor},
       # standalone-mode connection host.
-      {DynamicSupervisor, name: @connections_supervisor, strategy: :one_for_one}
+      {DynamicSupervisor, name: @connections_supervisor, strategy: :one_for_one},
+      # owner of the Client.subscribe/3 table.
+      Raxol.AgentClientProtocol.Client.Subscriptions
     ]
   end
 
