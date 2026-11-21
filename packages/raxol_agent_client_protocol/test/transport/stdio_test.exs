@@ -98,7 +98,7 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioTest do
            SEED_PHRASE SSH_AUTH_SOCK OP_SESSION_me my_api_key)
 
       # The credentials among these (DATABASE_URL onwards) are known misses:
-      # only raxol_core's pattern catches them, and this package does not
+      # only raxol_core's pattern or named list catches them, and this package does not
       # depend on it. A spawner adds them through `:unset_env`.
       kept =
         ~w(PATH HOME KEYBOARD TOKENIZERS_PARALLELISM GRPC_TRACE DATABASE_URL PGPASSWORD

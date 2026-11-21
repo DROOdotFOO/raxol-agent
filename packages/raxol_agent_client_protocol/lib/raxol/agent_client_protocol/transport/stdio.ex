@@ -175,7 +175,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   `:unset_env` are unset too. That is the whole list: this package reads no
   application config, so a host's own secret list (raxol's
   `Raxol.Core.ChildEnv` `extra_secrets:`/`pass:`) applies only if the host
-  passes it here. Names only raxol_core's wider pattern catches
+  passes it here. Names only raxol_core's wider pattern or named list catches
   (`DATABASE_URL`, `PGPASSWORD`, `API_KEYS`, `SECRET_KEY_BASE`,
   `RELEASE_COOKIE`) are inherited; raxol_agent's
   `Raxol.Agent.ChildEnv.unset_names/0`, passed as `:unset_env`, adds them.
