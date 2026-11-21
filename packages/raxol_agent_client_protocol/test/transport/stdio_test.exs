@@ -61,6 +61,56 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioTest do
     end
   end
 
+  describe "child environment" do
+    test "credential-looking variables are unset unless named in :env" do
+      suffix = System.unique_integer([:positive])
+      dropped = "ACP_STDIO_TEST_#{suffix}_API_KEY"
+      kept = "ACP_STDIO_TEST_#{suffix}_TOKEN"
+      plain = "ACP_STDIO_TEST_#{suffix}_PLAIN"
+
+      for name <- [dropped, kept, plain], do: System.put_env(name, "v")
+      on_exit(fn -> for name <- [dropped, kept, plain], do: System.delete_env(name) end)
+
+      script =
+        ~s(printf '{"dropped":"%s","kept":"%s","plain":"%s"}\\n' ) <>
+          ~s("${#{dropped}-unset}" "${#{kept}-unset}" "${#{plain}-unset}")
+
+      {:ok, _transport} =
+        Stdio.start_spawn("sh", ["-c", script],
+          owner: self(),
+          env: [{String.to_charlist(kept), ~c"given"}]
+        )
+
+      assert_receive {:acp_transport, _ref,
+                      {:message, %{"dropped" => "unset", "kept" => "given", "plain" => "v"}}},
+                     2_000
+    end
+
+    test ":unset_env names are unset too, even without a credential name" do
+      name = "ACP_STDIO_TEST_#{System.unique_integer([:positive])}_HOST"
+      System.put_env(name, "v")
+      on_exit(fn -> System.delete_env(name) end)
+
+      script = ~s(printf '{"value":"%s"}\\n' "${#{name}-unset}")
+
+      {:ok, _transport} =
+        Stdio.start_spawn("sh", ["-c", script], owner: self(), unset_env: [name])
+
+      assert_receive {:acp_transport, _ref, {:message, %{"value" => "unset"}}}, 2_000
+    end
+
+    test "scrub_env: false inherits everything" do
+      name = "ACP_STDIO_TEST_#{System.unique_integer([:positive])}_SECRET"
+      System.put_env(name, "v")
+      on_exit(fn -> System.delete_env(name) end)
+
+      script = ~s(printf '{"value":"%s"}\\n' "${#{name}-unset}")
+      {:ok, _transport} = Stdio.start_spawn("sh", ["-c", script], owner: self(), scrub_env: false)
+
+      assert_receive {:acp_transport, _ref, {:message, %{"value" => "v"}}}, 2_000
+    end
+  end
+
   describe "tolerant decoding of a misbehaving peer" do
     test "a non-JSON line and a valid-JSON-but-non-object line both produce decode_error, not a crash" do
       {:ok, transport} =
