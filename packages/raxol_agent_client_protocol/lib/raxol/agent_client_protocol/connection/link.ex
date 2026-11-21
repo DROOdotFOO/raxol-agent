@@ -91,6 +91,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         out_tags: %{},
         pending_in: %{},
         task_index: %{},
+        notif_tasks: 0,
         reply_refs: %{},
         phase: :closed
     })

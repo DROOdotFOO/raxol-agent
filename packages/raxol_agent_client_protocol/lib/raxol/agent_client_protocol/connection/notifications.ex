@@ -61,20 +61,34 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
   end
 
   # No reply obligation, so an over-capacity spawn is dropped, not answered.
+  defp spawn_notification(
+         %{notif_tasks: n, max_notif: max} = state,
+         method,
+         _dispatchable,
+         _stamp
+       )
+       when n >= max,
+       do: shed(state, method, "#{max} notification handlers already running")
+
   defp spawn_notification(state, method, dispatchable, stamp) do
     case Dispatch.start(state, dispatchable, %{Dispatch.ctx(state) | delivery_stamp: stamp}) do
       {:error, reason} ->
-        Logger.warning(
-          "ACP: notification #{Rpc.printable(method)} dropped — dispatch task_sup saturated (#{inspect(reason)})"
-        )
-
-        Telemetry.execute([:raxol, :acp, :notification_shed], %{method: Rpc.printable(method)})
-        {:noreply, state}
+        shed(state, method, "dispatch task_sup saturated (#{inspect(reason)})")
 
       {:ok, task} ->
         {:noreply,
-         %{state | task_index: Map.put(state.task_index, task.ref, {:notification, method})}}
+         %{
+           state
+           | task_index: Map.put(state.task_index, task.ref, {:notification, method}),
+             notif_tasks: state.notif_tasks + 1
+         }}
     end
+  end
+
+  defp shed(state, method, why) do
+    Logger.warning("ACP: notification #{Rpc.printable(method)} dropped: #{why}")
+    Telemetry.execute([:raxol, :acp, :notification_shed], %{method: Rpc.printable(method)})
+    {:noreply, state}
   end
 
   # Marks the entry cancelled first, then stops its task or tells its adopter.

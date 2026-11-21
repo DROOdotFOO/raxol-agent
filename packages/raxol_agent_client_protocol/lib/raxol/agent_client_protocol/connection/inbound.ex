@@ -222,7 +222,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
         case tag do
           {:request, id} -> request_result(state, id, ref, result)
-          {:notification, _method} -> {:noreply, state}
+          {:notification, _method} -> {:noreply, notification_done(state)}
         end
     end
   end
@@ -311,12 +311,14 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         adopter_down(state, ref)
 
       {{:notification, method}, task_index} ->
-        notification_crash(%{state | task_index: task_index}, method, reason)
+        notification_crash(notification_done(%{state | task_index: task_index}), method, reason)
 
       {{:request, id}, task_index} ->
         request_crash(%{state | task_index: task_index}, id, ref, reason)
     end
   end
+
+  defp notification_done(state), do: %{state | notif_tasks: max(state.notif_tasks - 1, 0)}
 
   defp notification_crash(state, method, reason) do
     Logger.error(

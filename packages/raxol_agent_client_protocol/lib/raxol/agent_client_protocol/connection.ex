@@ -34,6 +34,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # Concurrent inbound-request cap; excess requests are shed with -32603.
   @default_max_inbound 1_000
 
+  # Concurrent notification-handler cap; excess notifications are dropped so
+  # they cannot use up the task capacity requests need.
+  @default_max_notification_tasks 500
+
   # Grace for in-flight inbound requests after the peer closes its write side.
   @close_drain_ms 5_000
 
@@ -58,6 +62,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
             handler_state: nil,
             task_sup: nil,
             max_in: @default_max_inbound,
+            max_notif: @default_max_notification_tasks,
+            notif_tasks: 0,
             turns: %{},
             turn_ids: %{},
             oot_seq: %{}
@@ -87,6 +93,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
           handler_state: term(),
           task_sup: GenServer.server() | nil,
           max_in: pos_integer(),
+          max_notif: pos_integer(),
+          notif_tasks: non_neg_integer(),
           turns: %{String.t() => TurnState.t()},
           turn_ids: map(),
           oot_seq: %{String.t() => non_neg_integer()}
@@ -106,7 +114,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
   Starts a Connection. Options: `:role`, `:transport` (`{mod, handle}`),
   `:handler`, `:handler_arg`, `:max_inbound` (a positive integer, default
   #{@default_max_inbound}; anything else stops with
-  `{:invalid_option, :max_inbound, value}`), and either `:parent_sup` or
+  `{:invalid_option, :max_inbound, value}`), `:max_notification_tasks` (likewise,
+  default #{@default_max_notification_tasks}), and either `:parent_sup` or
   `:task_sup`/`:session_sup`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -207,7 +216,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
     Process.flag(:trap_exit, true)
     handler = Keyword.fetch!(opts, :handler)
 
-    with {:ok, max_in} <- max_inbound(opts),
+    with {:ok, max_in} <- positive_option(opts, :max_inbound, @default_max_inbound),
+         {:ok, max_notif} <-
+           positive_option(opts, :max_notification_tasks, @default_max_notification_tasks),
          {:ok, handler_state} <- init_handler(handler, Keyword.get(opts, :handler_arg)) do
       {mod, handle} = Keyword.fetch!(opts, :transport)
 
@@ -220,19 +231,20 @@ defmodule Raxol.AgentClientProtocol.Connection do
         task_sup: Keyword.get(opts, :task_sup),
         handler: handler,
         handler_state: handler_state,
-        max_in: max_in
+        max_in: max_in,
+        max_notif: max_notif
       }
 
       {:ok, state, {:continue, :boot}}
     end
   end
 
-  # A non-integer cap would compare greater than any map size and silently
-  # disable the flood guard, so it is refused.
-  defp max_inbound(opts) do
-    case Keyword.get(opts, :max_inbound, @default_max_inbound) do
+  # A non-integer cap would compare greater than any count and silently
+  # disable its guard, so it is refused.
+  defp positive_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
       n when is_integer(n) and n > 0 -> {:ok, n}
-      other -> {:stop, {:invalid_option, :max_inbound, other}}
+      other -> {:stop, {:invalid_option, key, other}}
     end
   end
 

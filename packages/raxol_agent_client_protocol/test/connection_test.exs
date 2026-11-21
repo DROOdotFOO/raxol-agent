@@ -1969,4 +1969,73 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert Process.alive?(conn)
     end
   end
+
+  describe "notification task cap" do
+    test "notifications beyond :max_notification_tasks are dropped, requests unaffected" do
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :notif_cap_sup)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :client,
+            transport: {Paired, conn_handle},
+            handler: ScriptClient,
+            handler_arg: self(),
+            task_sup: task_sup,
+            max_notification_tasks: 2
+          )
+        )
+
+      init =
+        Task.async(fn ->
+          Connection.request(conn, "initialize", %{"protocolVersion" => 1}, 2000)
+        end)
+
+      frame = ScriptedPeer.recv(peer)
+      ScriptedPeer.send_result(peer, frame["id"], %{"protocolVersion" => 1})
+      {:ok, _} = Task.await(init)
+
+      :telemetry.attach(
+        "notif-cap-test",
+        [:raxol, :acp, :notification_shed],
+        &__MODULE__.forward_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("notif-cap-test") end)
+
+      for m <- ["m1", "m2", "m3"] do
+        ScriptedPeer.send_notification(peer, "session/update", session_update_params("s1", m))
+      end
+
+      # Two handlers park in the rendezvous; the third notification is shed.
+      assert_receive {:handler_invoke, :session_update, _, _, t1, r1}
+      assert_receive {:handler_invoke, :session_update, _, _, t2, r2}
+      assert_receive {:telemetry, [:raxol, :acp, :notification_shed], %{method: "session/update"}}
+      refute_receive {:handler_invoke, :session_update, _, _, _, _}, 100
+
+      for {t, r} <- [{t1, r1}, {t2, r2}], do: send(t, {:handler_run, r, fn _n, _c -> :ok end})
+      wait_until(fn -> :sys.get_state(conn).notif_tasks == 0 end)
+    end
+
+    test "a non-positive :max_notification_tasks refuses to start" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      assert {:error, {:invalid_option, :max_notification_tasks, 0}} =
+               Connection.start_link(
+                 role: :client,
+                 transport: {Paired, conn_handle},
+                 handler: ScriptClient,
+                 handler_arg: self(),
+                 task_sup: self(),
+                 max_notification_tasks: 0
+               )
+    end
+  end
+
+  @doc false
+  def forward_telemetry(event, _measurements, metadata, pid),
+    do: send(pid, {:telemetry, event, metadata})
 end
