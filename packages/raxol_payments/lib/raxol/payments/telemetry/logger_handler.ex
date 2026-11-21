@@ -19,8 +19,11 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
 
   ## Customization
 
-  The default formatter renders one structured line per event. To
-  override:
+  The default formatter renders one structured line per event. It does
+  not print caller data: a nested metadata map shows only its keys, a URL
+  only its origin, and other compound values only their kind; top-level
+  strings and numbers print as given. A custom formatter gets the raw terms
+  and owns that redaction. To override:
 
       Raxol.Payments.Telemetry.LoggerHandler.attach(handler_id: "my-pay",
         formatter: &MyApp.format_pay_event/3)
@@ -31,6 +34,7 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
 
   require Logger
 
+  alias Raxol.Payments.Redact
   alias Raxol.Payments.Telemetry
 
   @default_handler_id "raxol-payments-logger"
@@ -113,9 +117,33 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
     |> Enum.map(fn {k, v} -> [?\s, to_string(k), ?=, format_value(v)] end)
   end
 
+  # Metadata can hold whatever a caller attached to a spend. Scalars render
+  # as themselves; a string that parses as a URL is cut to its origin, a map
+  # is rendered by its keys, a tuple element by element (one level), and any
+  # other compound term by its kind.
   defp format_value(%Decimal{} = v), do: Decimal.to_string(v, :normal)
-  defp format_value(v) when is_binary(v), do: v
-  defp format_value(v) when is_atom(v), do: Atom.to_string(v)
-  defp format_value(v) when is_integer(v) or is_boolean(v), do: to_string(v)
-  defp format_value(v), do: inspect(v)
+  defp format_value(%DateTime{} = v), do: DateTime.to_iso8601(v)
+  defp format_value(%NaiveDateTime{} = v), do: NaiveDateTime.to_iso8601(v)
+  defp format_value(%Date{} = v), do: Date.to_iso8601(v)
+  defp format_value(%module{}), do: "#" <> inspect(module)
+  defp format_value(v) when is_map(v), do: ["%{", v |> Map.keys() |> keys(), "}"]
+
+  defp format_value(v) when is_tuple(v),
+    do: ["{", v |> Tuple.to_list() |> Enum.map(&scalar/1) |> Enum.intersperse(","), "}"]
+
+  defp format_value(v), do: scalar(v)
+
+  defp scalar(v) when is_binary(v), do: if(Redact.url?(v), do: Redact.url(v), else: v)
+  defp scalar(v) when is_atom(v), do: Atom.to_string(v)
+  defp scalar(v) when is_integer(v) or is_float(v), do: to_string(v)
+  defp scalar(v) when is_pid(v) or is_reference(v) or is_port(v), do: inspect(v)
+  defp scalar(%{}), do: "#map"
+  defp scalar(v) when is_list(v), do: "#list"
+  defp scalar(v) when is_tuple(v), do: "#tuple"
+  defp scalar(_v), do: "#term"
+
+  defp keys(keys), do: keys |> Enum.map(&key_name/1) |> Enum.sort() |> Enum.join(",")
+
+  defp key_name(k) when is_atom(k) or is_binary(k) or is_integer(k), do: to_string(k)
+  defp key_name(_k), do: "?"
 end

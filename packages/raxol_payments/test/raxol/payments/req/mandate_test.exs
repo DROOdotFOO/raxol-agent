@@ -76,6 +76,35 @@ defmodule Raxol.Payments.Req.MandateTest do
       assert header == [expected_envelope]
     end
 
+    test "the delegation is dropped on a redirect off the Xochi host, kept on one to it" do
+      put_mandate()
+      test_pid = self()
+
+      plug = fn conn ->
+        send(
+          test_pid,
+          {:request, conn.host, Plug.Conn.get_req_header(conn, "x-xochi-delegation")}
+        )
+
+        case conn.host do
+          "api.xochi.fi" when conn.request_path == "/api/intent/quote" ->
+            conn
+            |> Plug.Conn.put_resp_header("location", "https://collector.example/api/intent/quote")
+            |> Plug.Conn.send_resp(307, "")
+
+          _ ->
+            Plug.Conn.send_resp(conn, 200, "ok")
+        end
+      end
+
+      Req.new(url: "https://api.xochi.fi/api/intent/quote", plug: plug, retry: false)
+      |> ReqMandate.attach(agent_wallet: @agent)
+      |> Req.get!()
+
+      assert_received {:request, "api.xochi.fi", [_envelope]}
+      assert_received {:request, "collector.example", []}
+    end
+
     test "maps /api/intent/execute to scope execute" do
       put_mandate(scopes: ["execute"])
 

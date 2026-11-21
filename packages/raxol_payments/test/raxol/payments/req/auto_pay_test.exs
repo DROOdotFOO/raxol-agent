@@ -447,6 +447,50 @@ defmodule Raxol.Payments.Req.AutoPayTest do
     end
   end
 
+  describe "paid retry redirects" do
+    defp redirecting_stub(test_pid, location) do
+      fn req ->
+        paid? = Req.Request.get_header(req, "x-payment") != []
+        send(test_pid, {:request, req.url.host, req.url.path, paid?})
+
+        resp =
+          cond do
+            req.url.path == "/landed" ->
+              Req.Response.new(status: 200, body: "ok")
+
+            not paid? ->
+              Req.Response.new(status: 402, body: "")
+              |> Req.Response.put_header("payment-required", x402_challenge(1))
+
+            true ->
+              Req.Response.new(status: 307, body: "")
+              |> Req.Response.put_header("location", location)
+          end
+
+        {req, resp}
+      end
+    end
+
+    defp run_paid(location) do
+      Req.new(url: "https://api.example.com/data", retry: false)
+      |> AutoPay.attach(wallet: StubWallet, policy: SpendingPolicy.dev(), agent_id: :test)
+      |> Req.Request.prepend_request_steps(stub: redirecting_stub(self(), location))
+      |> Req.Request.run!()
+    end
+
+    test "a cross-origin redirect is followed without the payment" do
+      assert %Req.Response{status: 200} = run_paid("https://cdn.example/landed")
+      assert_received {:request, "api.example.com", "/data", true}
+      assert_received {:request, "cdn.example", "/landed", false}
+    end
+
+    test "a same-origin redirect keeps the payment" do
+      assert %Req.Response{status: 200} = run_paid("/landed")
+      assert_received {:request, "api.example.com", "/data", true}
+      assert_received {:request, "api.example.com", "/landed", true}
+    end
+  end
+
   describe "per-request cap" do
     setup do
       Process.put(:wallet_signal_target, self())

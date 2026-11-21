@@ -69,6 +69,9 @@ defmodule Raxol.Payments.Xochi.AgentStream do
 
   require Logger
 
+  alias Raxol.Payments.Redact
+  alias Raxol.Payments.Xochi.Client
+
   @default_jitter_ms 250
   @announce_path "/api/agent/announce"
 
@@ -357,12 +360,17 @@ defmodule Raxol.Payments.Xochi.AgentStream do
 
   defp addr_eq?(a, b), do: String.downcase(a) == String.downcase(b)
 
-  defp validate_base_url!("https://" <> _), do: :ok
-  defp validate_base_url!("http://localhost" <> _), do: :ok
-  defp validate_base_url!("http://127.0.0.1" <> _), do: :ok
-
+  # The host is parsed, not prefix-matched: `http://localhost@evil.example`
+  # starts with `http://localhost` and is a plaintext request to evil.example.
   defp validate_base_url!(url) do
+    case Client.validate_config(%{base_url: url}) do
+      :ok -> :ok
+      {:error, _} -> refuse_base_url!(url)
+    end
+  end
+
+  defp refuse_base_url!(url) do
     raise ArgumentError,
-          "Xochi agent-stream requires HTTPS base_url, got: #{inspect(url)}"
+          "Xochi agent-stream requires HTTPS base_url, got: #{Redact.url(url)}"
   end
 end

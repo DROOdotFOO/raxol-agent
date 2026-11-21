@@ -41,6 +41,7 @@ defmodule Raxol.Payments.Req.Mandate do
 
   alias Raxol.Payments.Mandate
   alias Raxol.Payments.Mandate.{Check, Store}
+  alias Raxol.Payments.Req.CrossOrigin
 
   @default_hosts ["xochi.fi", "api.xochi.fi"]
   @default_path_scopes %{
@@ -59,6 +60,9 @@ defmodule Raxol.Payments.Req.Mandate do
   def attach(%Req.Request{} = req, opts) do
     req
     |> Req.Request.append_request_steps(mandate: &maybe_attach_header(&1, opts))
+    # Req drops only `authorization` on a cross-origin redirect. The request
+    # step runs again for the redirect and re-attaches only on a Xochi host.
+    |> CrossOrigin.attach(:mandate_cross_origin, ["x-xochi-delegation"])
     |> Req.Request.append_response_steps(mandate_revocation: &maybe_prune_revoked(&1, opts))
   end
 
@@ -112,8 +116,11 @@ defmodule Raxol.Payments.Req.Mandate do
   @spec maybe_attach_header(Req.Request.t(), keyword()) :: Req.Request.t()
   defp maybe_attach_header(%Req.Request{} = req, opts) do
     case resolve_envelope(req, opts) do
-      {:ok, envelope} -> Req.Request.put_header(req, "x-xochi-delegation", envelope)
-      :skip -> req
+      {:ok, envelope} ->
+        Req.Request.put_header(req, "x-xochi-delegation", envelope)
+
+      :skip ->
+        req
     end
   end
 
