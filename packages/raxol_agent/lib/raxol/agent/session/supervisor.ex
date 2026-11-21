@@ -315,11 +315,9 @@ defmodule Raxol.Agent.Session.Supervisor do
       }
     ]
 
-    # Restarts are made deterministic (each via-named child waits for its dead
-    # predecessor's Registry key to clear before re-registering — see
-    # `start_bridge/2`, `Session.Lifecycle.start_supervised/1`,
-    # `Session.start_link/1`), so `max_restarts` no longer has to absorb a lost
-    # cleanup race. Keep a small budget purely as a genuine crash-loop backstop.
+    # Each via-named child waits for its dead predecessor's Registry key to
+    # clear before registering, so restarts do not race cleanup; this budget
+    # only stops a crash loop.
     Supervisor.init(children,
       strategy: :rest_for_one,
       max_restarts: 5,

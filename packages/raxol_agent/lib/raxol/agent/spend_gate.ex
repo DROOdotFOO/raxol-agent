@@ -1,50 +1,35 @@
 defmodule Raxol.Agent.SpendGate do
   @moduledoc """
-  Reserve-before-call at the agent loop's tool/provider boundary.
-
-  ## Not wired here
-
-    * **`cost_ref` ↔ journal tie.** The gate emits its reserve/call/settle
-      records through the injected `context.emit` sink; binding that sink to the
-      real durable per-session journal (`family: :meta` records carrying
-      `cost_ref`; see `docs/harness/architecture.md`, "The safety substrate")
-      is the caller's job.
-    * **Budget-side release on settle.** `settle/3` records the authoritative
-      `actual`; the refund of `estimate - actual` is *derivable* from the
-      `(reserve, settle)` pair. Wiring that release back to a
-      `Raxol.Payments.Ledger.try_spend/5`-shaped budget is the caller's job —
-      `context` exposes only the reserve seam, and the reserve/refund is a
-      Gate↔budget-internal step (see "Settlement is internal" below).
-
-  ## The law
+  Reserve-before-call at the agent loop's tool and provider boundary.
 
   Every spend-bearing call (an LLM provider call, a paid tool) journals
 
       reserve → call → settle
 
-  **in that order, per call**, correlated by an opaque `cost_ref`. This is the
-  same reserve-before-call law the payments stack enforces at the wallet
-  boundary (`Raxol.Payments.Ledger.try_spend/5` +
-  `Raxol.Payments.Actions.SpendGate`), generalized to the harness loop.
-  raxol_agent does **not** depend on raxol_payments (the dependency runs the
-  other way), so the gate replicates the atomic `try_spend` *shape* — it does not
-  import the module.
+  in that order, correlated by an opaque `cost_ref`. This is the law
+  `Raxol.Payments.Ledger.try_spend/5` and `Raxol.Payments.Actions.SpendGate`
+  enforce at the wallet boundary. raxol_payments depends on raxol_agent, not
+  the reverse, so the gate takes the `try_spend` shape as a closure.
 
-    * **Fail-closed.** No reserve ⇒ no call, EVER. A refused reserve means the
-      call does not happen and a typed refusal record states why.
-    * **Settlement is internal.** `settle/3` records the actual cost; the refund
-      of `estimate - actual` is a Gate↔budget internal step. The `settle` record
-      is the authoritative post-hoc fact — the refund is *derivable* from the
-      `(reserve, settle)` pair, never a separate truth.
-    * **The journal fold IS the accounting.** There is no side ledger of truth
-      for the harness loop; folding the reserve/settle records reconstructs the
-      spend state, including a reserve left dangling by a crash between reserve
-      and call (visible in the fold, never silently lost).
+    * No reserve, no call: a refused reserve journals a typed refusal and
+      the call does not happen.
+    * `settle/3` records the actual cost. The refund of `estimate - actual`
+      follows from the `(reserve, settle)` pair and is not recorded
+      separately.
+    * Folding the records is the accounting. A reserve a crash left
+      dangling stays visible in the fold.
 
-  ## Observable seam
+  ## Context
 
-  The Gate emits one cost record per step through an injectable sink in
-  `context` — `context.emit.(record)` where `record` is
+  `context.try_reserve` reserves atomically; every caller, tests included,
+  reserves through it, so atomicity is a property of the gate:
+
+      context.try_reserve.(estimate()) ::
+        {:ok, remaining :: non_neg_integer()} | {:error, :over_limit}
+
+  Run- and session-level caps are separate seams the caller composes.
+
+  `context.emit.(record)` receives one record per step:
 
       %{kind: :reserve | :reserve_refused | :call | :settle,
         cost_ref: String.t(),
@@ -52,40 +37,18 @@ defmodule Raxol.Agent.SpendGate do
         actual: non_neg_integer() | nil,
         reason: atom() | nil}
 
-  In production the sink is wired to the per-session journal (the durable
-  reserve/call/settle records — likely `family: :meta` with a `cost_ref`; see
-  `docs/harness/architecture.md`, "The safety substrate"); in the tests it is
-  an in-memory recorder the checkers fold. Binding `emit` to the real journal
-  is the caller's job.
+  A raising sink is not swallowed: a dropped record on a charged reserve is
+  the silent divergence this gate prevents. It raises
+  `Raxol.Agent.SpendGate.JournalWriteError` with the record, so the budget
+  owner can refund or halt. Only a `:noproc` exit (a dead in-memory test bus)
+  is tolerated.
 
-  **A real `emit` failure is never swallowed.** The fold is the accounting, so
-  a silently dropped record on irreversible spend state (a charged reserve, a
-  flipped settle guard) would be exactly the silent charge/record divergence
-  this gate exists to prevent. A raising sink propagates as
-  `Raxol.Agent.SpendGate.JournalWriteError`, carrying the record so the budget
-  owner can reconcile (refund the estimate, halt the run). The only tolerated
-  failure is an ephemeral `:noproc` exit — a dead in-memory test bus.
+  ## Left to the caller
 
-  ## The reserve seam (frozen — binds atomicity to the GATE, not a test helper)
-
-  Reservation is atomic against `context.try_reserve` — a callable in the
-  frozen context shape:
-
-      context.try_reserve.(estimate()) ::
-        {:ok, remaining :: non_neg_integer()} | {:error, :over_limit}
-
-  This is the `try_spend` shape (mirrors `Raxol.Payments.Ledger.try_spend/5`),
-  generalized as a plain closure so raxol_agent doesn't need to depend on
-  raxol_payments. **Both** `reserve/3` and any test caller MUST reserve through
-  this SAME callable — fixing it in the context shape (rather than letting
-  each caller reach into a test-support module function directly) is what
-  makes the atomicity guarantee a property of the GATE's contract, not an
-  artifact of the probe. A run-level and session-level cap can each be
-  represented as their own `try_reserve` seam, composed by the caller that
-  builds `context`.
-
-  Wiring the production closure to a real
-  `Raxol.Payments.Ledger.try_spend/5`-shaped budget is the caller's job.
+  Binding `emit` to the per-session journal (`family: :meta` records with
+  `cost_ref`; see `docs/harness/architecture.md`, "The safety substrate"),
+  and wiring `try_reserve` and the refund on settle to a
+  `Raxol.Payments.Ledger.try_spend/5`-shaped budget.
   """
 
   alias Raxol.Agent.SpendGate.JournalWriteError

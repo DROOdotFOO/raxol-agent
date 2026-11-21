@@ -1,130 +1,81 @@
 defmodule Raxol.Agent.EmitBridge do
   @moduledoc """
   Bridges the package-neutral `Raxol.Core.Runtime.EmitBus` to the agent
-  harness contract, and is the **durable-tier id authority** — the sink that
-  closes the keystone.
+  contract, and is the id authority for durable events.
 
-  The Dispatcher (main `raxol` package) publishes neutral event maps at its
-  model-fold sites and turn brackets but knows nothing about the agent contract
-  — it must not, since `raxol` cannot depend on `raxol_agent`. This bridge lives
-  on the `raxol_agent` side, where the `raxol -> raxol_agent` direction is legal.
-  It:
+  The Dispatcher (in `raxol`, which cannot depend on `raxol_agent`) publishes
+  neutral event maps. This bridge subscribes to `EmitBus` for one
+  `session_id`, appends durable events to the session's `Raxol.Agent.Journal`,
+  maps each map onto a `Raxol.Agent.Contract.Event` and re-emits it through
+  `Raxol.Agent.SessionStreamer`, the channel `Raxol.Agent.StreamPump.pump/3`
+  output uses too.
 
-    1. subscribes to `EmitBus` for a `session_id`,
-    2. for **durable** events, appends to the session `Raxol.Agent.Journal`
-       FIRST and takes the returned offset as the event id (append-before-
-       publish),
-    3. maps each neutral map onto a `Raxol.Agent.Contract.Event`, and
-    4. re-emits it through `Raxol.Agent.SessionStreamer`,
+  ## Ids
 
-  so any surface already subscribed to `SessionStreamer` (a TUI, SSE)
-  receives Dispatcher-originated events on the same channel as
-  `Raxol.Agent.StreamPump.pump/3` output. Producers differ; the contract does not.
+  `Event.id` is the journal offset. A durable event (`turn_started`,
+  `item_completed`, `turn_completed`, `error`) is appended first and stamped
+  with the offset `append/2` returns, then emitted, so replay reproduces the
+  live ids. An ephemeral `item_delta` is never journaled and carries the last
+  durable offset, or `0` before the first append.
 
-  ## The id authority (kills the dual-id landmine)
+  The journal opens on the first durable event (or comes from `:journal`),
+  under `RAXOL_SESSIONS_DIR` or `~/.raxol/sessions`, and closes in
+  `terminate/2`.
 
-  The contract says `Event.id == journal offset`. Before this unit the bridge
-  stamped `Event.id` from a local per-process counter, so a durable event's live
-  id and its journal offset diverged the moment the event was journaled — two
-  ids for one event. Now the **journal is the single id authority**:
-
-    * **Durable** events (`turn_started`, `item_completed`, `turn_completed`,
-      `error`): `Journal.append/2` FIRST, take the returned `offset`, stamp
-      `Event.id = offset`, THEN `SessionStreamer.emit`. Replaying the journal
-      reproduces exactly these ids — one identity, zero divergence.
-    * **Ephemeral** events (`item_delta`): never journaled. Their id carries the
-      **last durable offset** so it never masquerades as a fresh offset — a
-      delta refines the item at the current durable position. Real journal
-      offsets start at `1`; an ephemeral event emitted before any durable
-      append carries the sentinel id `0` ("pre-durable").
-
-  The journal is opened lazily on the first durable event (or supplied up-front
-  via the `:journal` option), scoped to `session_id` under `RAXOL_SESSIONS_DIR`
-  / `~/.raxol/sessions`, and closed on `terminate/2`. It persists to disk and
-  survives a BEAM kill.
-
-  ## The journal is the hard gate for durable events
-
-  When a durable append fails (journal cannot be opened, or `append/2` returns
-  `{:error, reason}` — e.g. a full disk), the durable event is **dropped from
-  the live tail**: it is NOT published with a fabricated id and `last_offset`
-  does NOT advance. Fabricating an id here would resurrect the dual-id
-  landmine — the Writer does not advance its offset on a failed append, so the
-  next successful append would reuse the fabricated number and two live-tail
-  events would share one id while replay reproduced only one. An un-journaled
-  durable event must never look durable.
-
-  Instead the bridge emits a loud, clearly-marked failure signal: an
-  **ephemeral** `:error` contract event with payload
+  When an append fails (journal unopenable, full disk), the event is dropped
+  from the live tail and `last_offset` does not advance: the Writer reuses an
+  offset it did not commit, so a fabricated id would collide. The bridge
+  emits an ephemeral `:error` event with payload
   `%{reason: :journal_append_failed | :journal_open_failed, original_type: t,
-  detail: ...}`, plus a `Logger.error`. If the failure was a dead Writer, the
-  stale handle is dropped so the next durable event lazily reopens the journal
-  and resumes from the on-disk offset — ids stay collision-free.
+  detail: ...}` and logs at `:error`. A dead Writer's handle is dropped and
+  the next durable event reopens the journal.
 
   ## A required journal
 
-  With `journal_required: true` the journal is not optional and not lazy: the
-  bridge opens it in `init`, private and with `require_lock: true` (see
-  `Raxol.Agent.Journal.FileStore`), and stops instead of starting when it
-  cannot, so a session tree whose bridge is its first child does not start
-  unjournaled. The stop reasons:
+  With `journal_required: true` the bridge opens the journal in `init`,
+  private and with `require_lock: true` (see `Raxol.Agent.Journal.FileStore`),
+  and refuses to start without it, so a session tree whose first child is the
+  bridge never runs unjournaled. Stop reasons:
 
-    * `{:journal_locked, os_pid}` - a live BEAM holds the writer lock
-      (`{:journal_locked, :lock_unavailable}` when no lock could be taken)
+    * `{:journal_locked, os_pid}`, or `{:journal_locked, :lock_unavailable}`
+      when no lock could be taken
     * `{:journal_bound, %{field: :cwd | :title, journal: recorded, requested:
-      asked}}` - `meta.json` records another `:cwd` or `:title` than the one in
-      `:journal_opts`: the journal belongs to another project root or
-      application and is not continued
+      asked}}` - the journal belongs to another project root or app
     * `{:journal_damaged, session_id}` - its records do not replay
     * `{:journal_open_failed, reason}` - anything else `FileStore.open/2` refused
 
-  The journal continues and the model does not: every start appends
-  `agent_started` (payload `prior_offset`, the offset the journal had reached;
-  `0` for a new one) as its first record, then one `turn_canceled` (payload
-  `reason: "agent_restarted"`) per `turn_started` an earlier run left without
-  its closing bracket, so a checkpoint is never refused as mid-turn because of
-  a turn nothing is running any more. Both are stamped like any durable event
-  of this bridge (actor, branch, provenance) but are journal-only: nothing
-  can be subscribed yet, so they are not emitted. `agent_started` is a
-  `family: :loop` record outside the conversational set, so it is never a
-  journal tip. `prior_offset/1` answers the offset this bridge found.
+  Every start journals `agent_started` (payload `prior_offset`, `0` for a new
+  journal), then a `turn_canceled` (`reason: "agent_restarted"`) for each
+  `turn_started` an earlier run left open, so a checkpoint is not refused as
+  mid-turn. These are journal-only; `agent_started` is a `family: :loop`
+  record and never a journal tip. `prior_offset/1` returns the offset found.
 
-  Such a bridge traps exits, so a supervised stop runs `terminate/2`: the
-  journal is flushed and its lock released before the stop returns. If its
-  Writer exits, the bridge stops too, whether it learns of it from the exit
-  or from a failed append, and its supervisor reopens the journal.
+  Such a bridge traps exits: a supervised stop flushes the journal and
+  releases its lock. If its Writer exits, the bridge stops too and its
+  supervisor reopens the journal.
 
-  ## Neutral -> contract mapping
+  ## Mapping
 
-  | neutral `type`     | tier         | contract `type`   |
-  | ------------------ | ------------ | ----------------- |
-  | `:command_result`   | `:ephemeral` | `:item_delta`        |
-  | `:app_update`       | `:durable`   | `:item_completed`    |
-  | `:turn_started`     | `:durable`   | `:turn_started`      |
-  | `:turn_completed`   | `:durable`   | `:turn_completed`    |
-  | `:error`            | `:durable`   | `:error`             |
-  | `:turn_canceled`    | `:durable`   | `:turn_canceled`     |
+  | neutral `type`        | tier           | contract `type`       |
+  | --------------------- | -------------- | --------------------- |
+  | `:command_result`     | `:ephemeral`   | `:item_delta`         |
+  | `:app_update`         | `:durable`     | `:item_completed`     |
+  | `:turn_started`       | `:durable`     | `:turn_started`       |
+  | `:turn_completed`     | `:durable`     | `:turn_completed`     |
+  | `:error`              | `:durable`     | `:error`              |
+  | `:turn_canceled`      | `:durable`     | `:turn_canceled`      |
   | `:approval_requested` | (tier as sent) | `:approval_requested` |
-  | `:item_started`     | (tier as sent) | `:item_started`    |
-  | `:woken`            | (tier as sent) | `:woken`           |
+  | `:item_started`       | (tier as sent) | `:item_started`       |
+  | `:woken`              | (tier as sent) | `:woken`              |
 
-  Anything else passes through as an `:item_completed` with its tier preserved.
-  `family` and `turn_id` carry through unchanged; `ts` is preserved.
+  Anything else becomes an `:item_completed` with its tier. `family`,
+  `turn_id` and `ts` carry through.
 
-  ## Envelope carry-through
-
-  `scope` / `provenance` / `actor` flow end-to-end: the neutral map's values are
-  stamped onto the live `Event` (`map_event/3`) AND the journal record
-  (`durable_record/1`), and `actor` is stamped from the bridge's write-generation
-  context at this producer seam (modules never invent it). `provenance` is met
-  against the optional write-generation provenance context under the
-  taint-absorbing meet (see the `:provenance` option and `stamp_provenance/2`):
-  a tainted generation force-taints every event it emits, and a module-supplied
-  `:tainted` is never overwritten — the seam can add taint, never remove it. The
-  journal record OMITS any envelope field that equals its default, so a record
-  that carries only defaults keeps the bytes it had before these fields existed,
-  and only non-default provenance / scope / actor / branch land on disk. A
-  non-default value is never stranded on one path.
+  `scope`, `provenance` and `actor` are stamped on both the live event and
+  the journal record. `actor` comes from the bridge's write-generation
+  context. `provenance` is met with the optional `:provenance` context: a
+  tainted generation taints every event, and a module's `:tainted` is never
+  cleared. The journal record omits envelope fields at their defaults.
   """
 
   use Raxol.Core.Behaviours.BaseManager
@@ -527,12 +478,10 @@ defmodule Raxol.Agent.EmitBridge do
     }
   end
 
-  # Append the durable event to the journal and return the assigned offset. The
-  # journal is opened lazily on first use. The journal is the HARD GATE: on
-  # open/append failure no id is fabricated (the Writer did not advance its
-  # offset, so a fabricated id would collide with the next successful append —
-  # the dual-id landmine). The caller drops the event from the live tail and
-  # emits an ephemeral `:error` signal instead.
+  # Append the durable event and return its offset, opening the journal on
+  # first use. On failure no id is fabricated: the Writer did not advance, so
+  # it would collide with the next append. The caller drops the event and
+  # emits an ephemeral `:error` instead.
   defp append_durable(state, neutral) do
     case ensure_journal(state) do
       {:ok, state} ->

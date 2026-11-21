@@ -324,7 +324,7 @@ defmodule Raxol.Agent.Backend.Resolver do
   # skipped no matter how well configured it is -- including the generic
   # `AI_API_KEY` endpoint, which is someone's prepaid balance too. Naming one
   # explicitly (`harness: :openrouter`) still works and is the
-  # opt-in; `RAXOL_ALLOW_PAID_API=1` restores the old walk-everything order for
+  # opt-in; `RAXOL_ALLOW_PAID_API=1` restores walking every provider for
   # a deployment that wants it.
   defp auto_detect(opts) do
     Enum.find_value(auto_detect_providers(), fn spec ->

@@ -1,137 +1,64 @@
 defmodule Raxol.Agent.DoneGate do
   @moduledoc """
-  Evidence-gated done. A pure read/decision function over a turn journal: it
-  never touches a shared write path.
+  Evidence-gated done: a pure decision over a turn journal.
 
-  ## What it gates
+  An agent may not declare a turn done on its own say-so. A
+  `turn_completed{final: true}` must cite journaled evidence (tool results,
+  verification output) that postdates the turn's last mutating action.
 
-  An agent may not declare a turn "done" on its own say-so. The
-  done/turn-success transition (a `turn_completed` with `final: true`) is
-  **gated on journaled evidence** — tool results and verification outputs (test
-  runs, file checks) — that **postdates the last mutating action of the turn**.
+  Evidence is named by `refs`, journal offsets on the proposed done. Refs are
+  checked in order and the first violation wins. Each ref must:
 
-  Evidence is named by `refs`: journal offsets carried on the proposed done.
-  Each ref is checked, in `refs` order, and the **first violation wins**:
+    1. exist, else `{:error, {:missing_ref, offset}}`;
+    2. be evidence-class (a tool result, never a `:message` self-report or a
+       `:state_change`), else `{:error, {:not_evidence, offset}}`;
+    3. belong to the claiming turn, else `{:error, {:foreign_turn, offset}}`,
+       even when it postdates this turn's last mutation;
+    4. postdate the turn's last mutation, else
+       `{:error, {:stale_evidence, offset}}`;
+    5. not be the last mutation's own result, else
+       `{:error, {:mutation_echo, offset}}`.
 
-    1. **exist** — resolve to a real journal record, else `{:error, {:missing_ref, offset}}`;
-    2. **be evidence-class** — a tool result / verification output, never the
-       agent's own `:message` self-report and never an internal `:state_change`,
-       else `{:error, {:not_evidence, offset}}`;
-    3. **belong to the claiming turn** — a ref journaled under a *different*
-       turn is `{:error, {:foreign_turn, offset}}`, even when its offset
-       postdates this turn's last mutation (the cross-turn evidence spoof this
-       check exists to close);
-    4. **postdate the last mutation** — strictly greater offset than the turn's
-       last mutating action; stale evidence that predates a later mutation does
-       not count, else `{:error, {:stale_evidence, offset}}`;
-    5. **not be the last mutation's own echo** — a `:tool_result` produced BY
-       the turn's last mutating tool call is that mutation's byproduct, not
-       independent verification of it, else `{:error, {:mutation_echo, offset}}`
-       (see "What counts as a mutation" below for the pairing rule).
+  A done with no refs is `{:error, :evidence_required}`. A done whose claiming
+  `turn_id` is nil is `{:error, :unturned_done}` before any ref is checked:
+  checks 3 and 4 are keyed on the turn. When every ref passes, the gate
+  returns the durable `turn_completed{final: true, refs: [...]}` to journal.
+  A rejected claim leaves the turn open.
 
-  A done carrying no refs at all is `{:error, :evidence_required}`. Only when
-  every ref satisfies (1)-(5) does the gate accept and hand back the durable
-  `turn_completed{final: true, refs: [...]}` event for journaling — so a surface
-  can render "done because X".
+  ## Mutations
 
-  ## What counts as a mutation (fail-safe by construction)
+  Every completed `:tool_use` is a mutation. Producers stamp no effect
+  metadata, and effect classification must be structural, never
+  self-reported, so:
 
-  **Every completed `:tool_use` is a mutation.** The real producer
-  (`Raxol.Agent.StreamPump.pump/3`) stamps no effect metadata on tool calls, and
-  the frozen effect taxonomy (`:reversible_local | :bounded_sandboxable |
-  :irreversible_external`) contains
-  only effect-BEARING classes and rules that effect enforcement is *structural,
-  compiled in our own tree — never self-reported*. So:
-
-    * an absent `effect_class` means UNCLASSIFIED, and unclassified resolves
-      toward "is a mutation" (fail-safe) — never toward "is safe";
-    * a producer-stamped `mutating: false` (or any `destructiveHint`-style
-      self-report) can never REMOVE a tool call from the mutation set — a lying
-      producer must not be able to widen the valid-evidence window and launder
+    * an absent `effect_class` counts as a mutation;
+    * a stamped `mutating: false` (or any `destructiveHint`-style claim) never
+      removes a call from the mutation set, or a lying producer could launder
       stale evidence past a real mutation;
-    * the only future seam that may refine a `:tool_use` OUT of the mutation
-      set is a structural effect classification (see
-      `classified_effect_free?/1`), which does not exist yet.
+    * only a structural classification (`classified_effect_free?/1`, not yet
+      implemented) may exempt a call.
 
-  Because a `:tool_result` always postdates its own `:tool_use`, check 5 pins
-  the corollary: the last mutation's own result echo is not evidence that the
-  mutation was verified. A result is paired to its producing call by tool
-  `name` + nearest-preceding order — the only pairing signal the frozen v0
-  producer shape carries (it stamps `name` on both sides and no `call_id` on
-  results).
+  A result is paired with its call by tool `name` and nearest preceding
+  order, the only link the v0 producer shape carries. On today's journals
+  every tool call gates and no tool result can pass check 5, so the gate is
+  fully fail-closed until a structurally classified verification class
+  exists.
 
-  **Consequence, stated plainly:** on a journal produced by today's v0
-  producer, where no tool carries a structural classification, every tool call
-  gates and no tool result can green-light a done — the gate is *fully
-  fail-closed* until a structurally-classified verification class exists.
-  That is intentional; see "Wiring status".
+  Evidence class is checked, not content: a test run that reported failures
+  still counts as a verification tool that ran.
 
-  ## Wiring status (disclosure)
+  ## Wiring
 
-  `StreamPump.pump/3` consults `gate/3` on the real done path, in
-  **observe-only** mode: it derives the turn's candidate evidence
-  (`evidence_refs/2`), calls `gate/3`, and emits a telemetry signal for the
-  verdict, but it does NOT hard-block completion — the turn still closes with
-  `turn_completed{final: true}`, carrying the accepted `refs` when the gate
-  accepts. Completion stays fail-open on purpose: until structural mutation
-  classes and a real verification class exist, the
-  gate is fully fail-closed on v0 producer journals (see "What counts as a
-  mutation"), so blocking every done would be wrong. The observe-only wiring
-  makes the boundary live and measurable now:
+  `Raxol.Agent.StreamPump.pump/3` consults `gate/3` observe-only: it derives
+  candidate refs (`evidence_refs/2`), calls the gate and emits
+  `[:raxol, :agent, :done_gate, :ungated_done]` (no evidence cited) or
+  `[:raxol, :agent, :done_gate, :rejected_evidence]` (metadata carries
+  `reason`), but the turn still closes. Blocking needs structural mutation
+  classes and a way for an agent to cite its own evidence; whether a
+  zero-tool turn may ever be done is undecided.
 
-    * `[:raxol, :agent, :done_gate, :ungated_done]` — a done citing no evidence
-      (the parked zero-tool-turn policy path);
-    * `[:raxol, :agent, :done_gate, :rejected_evidence]` — a done whose cited
-      evidence the gate rejected (metadata carries the `reason`).
-
-  Promoting this to a hard block needs those classes and the refs-citation
-  seam (how an agent names its own evidence offsets). Both remain open, as
-  does the gating strength.
-
-  The gate never transitions the turn to done on a rejected claim; the turn
-  stays open and the typed error is surfaced.
-
-  ### A nil claiming turn is structurally rejected (`:unturned_done`)
-
-  The whole gate hinges on turn identity: same-turn ownership (check 3) and
-  the per-turn last-mutation window (check 4) are both keyed on `turn_id`. A
-  done whose *claiming* `turn_id` is `nil` therefore cannot be gated — its
-  ownership check degenerates to `nil == nil` (any nil-turn ref would satisfy
-  "same turn") and its last-mutation scan collapses onto the nil-turn slice, so
-  cross-turn isolation evaporates for the whole claim. Rather than let value
-  equality paper over a missing turn, a nil claiming turn is rejected up front
-  as `{:error, :unturned_done}`, before any ref is examined and regardless of
-  how many refs are cited. There is no such thing as a done that belongs to no
-  turn.
-
-  ### Content is NOT validated (intentional scope boundary)
-
-  Evidence **class** is checked, not its **content**: a `:tool_result` that ran
-  and reported *failure* (e.g. `"tests: 0 passed, 12 FAILED"`) still class-passes
-  — the gate pins that a verification tool RAN and was journaled, not that it
-  passed. Content gating (parsing pass/fail out of the result payload) is not
-  done here; the gate stops at "a verification tool ran".
-
-  ## Gating strength (policy note)
-
-  A weaker reading would have `turn_completed{final: true}` merely *report*
-  whatever evidence a run happened to produce. This module follows the
-  **stronger** reading: a done that cites no journaled evidence (or cites refs
-  that don't hold up) is **REJECTED** — the turn does not transition to done.
-  The test oracle (`Oracle.verdict/3` + `Contours`) is the authoritative contract
-  here; this module matches it. The separate parked policy question about
-  **zero-tool turns** (whether a turn that legitimately ran no tools may ever
-  declare done) is left UNRESOLVED on purpose — this module does not
-  special-case it, preserving the suite's current behaviour (a turn with no
-  evidence refs is `:evidence_required`, full stop).
-
-  ## Behaviour
-
-  `gate/3` is declared as a behaviour callback so the tests can drive
-  deliberately-broken implementations (one that skips the ref check, one that
-  checks existence but not ordering, one that lets self-reported text count as
-  evidence, one that skips the turn-ownership check) through the same shape and
-  prove each one is caught.
+  `gate/3` is a behaviour callback so tests can drive deliberately broken
+  implementations through the same shape.
   """
 
   alias Raxol.Agent.Contract.Event
