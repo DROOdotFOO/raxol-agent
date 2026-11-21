@@ -718,6 +718,13 @@ defmodule Raxol.Web3.Backend.CantonTest do
       assert {_name, "Bearer " <> @key} = List.keyfind(called.headers, "authorization", 0)
     end
 
+    test "a configured Scan URL does not render when the handle is inspected" do
+      {:ok, handle} =
+        Canton.new("canton:global", scan_url: "https://acct-7.scan.example/api/scan/v0")
+
+      refute inspect(handle, limit: :infinity) =~ "acct-7"
+    end
+
     test "a configured handle does not render its key when it is inspected" do
       # `Router.candidates/3` is operator-facing and hands back handles, and a
       # crash below formats the struct whole, so the struct declares what may

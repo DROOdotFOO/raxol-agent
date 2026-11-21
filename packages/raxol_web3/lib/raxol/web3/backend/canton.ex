@@ -216,7 +216,9 @@ defmodule Raxol.Web3.Backend.Canton do
   # struct into a crash log, which is how the ccscan key would reach one.
   # `:http_opts` is out for the same reason: it is an operator's own keyword
   # list and may carry an authorization header for an RBAC-gated Scan.
-  @derive {Inspect, except: [:ccscan_key, :http_opts]}
+  # Both URLs are out as well: per `Raxol.Web3.Origin`, an operator's Scan
+  # host can name an account.
+  @derive {Inspect, except: [:http_opts, :scan_url, :ccscan_url, :ccscan_key]}
   @enforce_keys [:chain_ref, :scan_url]
   defstruct [
     :chain_ref,

@@ -82,6 +82,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # neither is something `inspect/1` may render: a handle reaches an operator
   # through `Raxol.Web3.Router.candidates/3`, and a crash anywhere below formats
   # the struct whole into a log line.
+  # `:host` stays visible: it comes from the fixed table of public explorers
+  # below, never from configuration.
   @derive {Inspect, except: [:rpc_url, :http_opts]}
   @enforce_keys [:chain_ref, :host]
   defstruct [:chain_ref, :host, :rpc_url, http_opts: [], cache?: true]

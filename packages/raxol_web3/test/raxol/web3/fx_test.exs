@@ -61,6 +61,11 @@ defmodule Raxol.Web3.FXTest do
       refute inspect(s) =~ @key
     end
 
+    test "a configured base_url does not render when the handle is inspected" do
+      {:ok, s} = Sleuth.new(api_key: @key, base_url: "https://acct-7.sleuth.example/api/mcp")
+      refute inspect(s, limit: :infinity) =~ "acct-7"
+    end
+
     test "neither the key nor a keyed RPC URL renders from a crashed holder's state" do
       # The FX handle sits in every agent tool context, and a GenServer that
       # crashes holding one has its state formatted into the crash report.
