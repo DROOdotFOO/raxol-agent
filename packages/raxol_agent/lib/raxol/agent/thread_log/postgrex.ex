@@ -259,8 +259,6 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
     end
   end
 
-  # --- SQL builders ---------------------------------------------------------
-
   @doc """
   Returns the `CREATE TABLE IF NOT EXISTS` + secondary index SQL.
   Run once as part of the consumer's migration step.
@@ -351,8 +349,6 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
 
   defp limit_to_int(:all), do: 1_000_000
   defp limit_to_int(n) when is_integer(n) and n > 0, do: n
-
-  # --- Helpers --------------------------------------------------------------
 
   defp conn_and_table(config) do
     conn = Map.fetch!(config, :conn)

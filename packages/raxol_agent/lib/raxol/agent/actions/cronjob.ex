@@ -142,8 +142,6 @@ defmodule Raxol.Agent.Actions.Cronjob do
     end)
   end
 
-  # -- helpers ----------------------------------------------------------------
-
   # Resolve the id, confirm the job belongs to the caller's owner, then run the
   # operation. A cross-owner id is reported as :not_found so the action never
   # confirms a job's existence to a different owner.

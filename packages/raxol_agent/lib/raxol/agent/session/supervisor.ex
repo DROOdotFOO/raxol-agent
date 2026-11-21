@@ -81,8 +81,6 @@ defmodule Raxol.Agent.Session.Supervisor do
   @registry Raxol.Agent.Registry
   @dynsup Raxol.Agent.DynSup
 
-  # --- public API --------------------------------------------------------------
-
   @doc """
   Start a session as one supervised subtree under `Raxol.Agent.DynSup`.
 
@@ -270,8 +268,6 @@ defmodule Raxol.Agent.Session.Supervisor do
     ArgumentError -> []
   end
 
-  # --- supervisor --------------------------------------------------------------
-
   @doc false
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
@@ -341,8 +337,6 @@ defmodule Raxol.Agent.Session.Supervisor do
     Session.Registration.await_free({:emit_bridge, session_id})
     EmitBridge.start_link(bridge_opts)
   end
-
-  # --- helpers -----------------------------------------------------------------
 
   defp normalize_opts(app_module, opts) do
     session_id =

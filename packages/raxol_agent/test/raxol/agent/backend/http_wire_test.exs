@@ -13,8 +13,6 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
   # the separate reasoning channel, and length-truncation honesty + the
   # raised/configurable max_tokens ceiling.
 
-  # -- helpers ----------------------------------------------------------------
-
   # Stub the transport so `complete/2` runs the real request/parse pipeline
   # against a canned response body -- exercising `parse_response/2` end to end.
   defp complete_stub(response_body, provider_opts) do
@@ -81,8 +79,6 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
     refute text =~ "=>", "content must not contain map arrows: #{inspect(text)}"
     text
   end
-
-  # -- non-streaming (complete/2) shape ---------------------------------------
 
   describe "LongCat non-streaming (complete/2) shape" do
     test "extracts message.content as text, reasoning_content as :reasoning, no raw map" do
@@ -280,8 +276,6 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
       refute Map.has_key?(captured_body(provider: :anthropic, api_key: "k", tools: []), :tools)
     end
   end
-
-  # -- streaming (:openai SSE) shape ------------------------------------------
 
   # parse_sse emits {:reasoning_delta, _} for the reasoning channel; stream_next
   # maps it to the backend-stream {:reasoning, _} event (verified separately).

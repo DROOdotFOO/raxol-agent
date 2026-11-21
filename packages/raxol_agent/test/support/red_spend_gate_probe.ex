@@ -36,8 +36,6 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
         seq: non_neg_integer()}
   """
 
-  # --- cost journal (injectable emit sink + fold source) ---------------------
-
   @doc "A fresh serialized cost journal. Returns the recorder pid."
   def new_journal do
     {:ok, pid} = Agent.start_link(fn -> %{seq: 0, records: []} end)
@@ -69,8 +67,6 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
   @doc "All records in emission (fold) order."
   def records(journal), do: Agent.get(journal, fn %{records: r} -> Enum.reverse(r) end)
 
-  # --- provider stub (call counter) ------------------------------------------
-
   @doc "A fresh provider stub. Returns a `:counters` ref."
   def new_provider, do: :counters.new(1, [])
 
@@ -90,8 +86,6 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
   def call_fun(provider, cost_ref, actual) do
     fn -> {provider_call(provider, actual), {:result, cost_ref}} end
   end
-
-  # --- atomic budget (the try_spend-shaped reference) ------------------------
 
   @doc "A fresh budget with cap `cap` tokens. Returns the budget pid."
   def new_budget(cap) do
@@ -130,8 +124,6 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
 
   @doc "Total currently reserved against the budget."
   def budget_reserved(budget), do: Agent.get(budget, fn %{reserved: r} -> r end)
-
-  # --- checkers (pure folds over the record stream) --------------------------
 
   @canonical_orders [
     [],
@@ -282,8 +274,6 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
     records |> Enum.map(& &1.cost_ref) |> Enum.uniq()
   end
 
-  # --- fired counters (meta-invariant m1) ------------------------------------
-
   @doc "A fresh fired-counter probe."
   def new_probe do
     {:ok, pid} = Agent.start_link(fn -> %{armed: MapSet.new(), fired: %{}} end)
@@ -327,7 +317,6 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
     fired
   end
 
-  # --- dead injectors (one mutation each; the negative controls, m4) ---------
   #
   # Each is a WRONG SpendGate implementation. The matching checker MUST flag it,
   # proving the checker is not vacuous. Every injector reads context.emit /

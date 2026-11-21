@@ -738,8 +738,6 @@ defmodule Raxol.Agent.McpToolsTest do
   @doc false
   def raising_root, do: raise("no root today")
 
-  # -- helpers ------------------------------------------------------------------
-
   defp start_mcp do
     {registry, server} = Process.get(:mcp)
     start_supervised!({Raxol.MCP.Registry, name: registry, server: server})

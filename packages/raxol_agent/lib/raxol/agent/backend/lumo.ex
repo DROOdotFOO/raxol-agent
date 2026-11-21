@@ -48,8 +48,6 @@ defmodule Raxol.Agent.Backend.Lumo do
   @default_tools ["proton_info"]
   @web_search_tools ["web_search", "weather", "stock", "cryptocurrency"]
 
-  # -- AIBackend callbacks ---------------------------------------------------
-
   @impl true
   def complete(messages, opts \\ []) do
     case tamer_url() do
@@ -85,8 +83,6 @@ defmodule Raxol.Agent.Backend.Lumo do
 
   @impl true
   def capabilities, do: [:completion, :streaming]
-
-  # -- Direct Lumo API (with U2L encryption) ---------------------------------
 
   @spec direct_complete([map()], keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -176,8 +172,6 @@ defmodule Raxol.Agent.Backend.Lumo do
     end
   end
 
-  # -- Request building ------------------------------------------------------
-
   @spec build_payload([map()], keyword()) ::
           {:ok, map()} | {:error, term()}
   defp build_payload(messages, opts) do
@@ -242,8 +236,6 @@ defmodule Raxol.Agent.Backend.Lumo do
   defp format_turn(%{role: role, content: content}) do
     %{"role" => to_string(role), "content" => content}
   end
-
-  # -- HTTP ------------------------------------------------------------------
 
   @spec do_lumo_request(String.t(), String.t(), map(), pos_integer()) ::
           {:ok, term()} | {:error, term()}
@@ -325,8 +317,6 @@ defmodule Raxol.Agent.Backend.Lumo do
     end
   end
 
-  # -- SSE parsing -----------------------------------------------------------
-
   @spec parse_lumo_sse(binary(), map() | nil) :: {[term()], binary()}
   defp parse_lumo_sse(raw, encryption) do
     lines = String.split(raw, "\n")
@@ -382,8 +372,6 @@ defmodule Raxol.Agent.Backend.Lumo do
 
   defp decrypt_content(%{"content" => content}, _encryption), do: content
 
-  # -- Response parsing (non-streaming) --------------------------------------
-
   @spec parse_complete_response(term()) :: map()
   defp parse_complete_response(body) when is_binary(body) do
     %{
@@ -400,8 +388,6 @@ defmodule Raxol.Agent.Backend.Lumo do
       metadata: %{backend: :lumo, provider: :proton}
     }
   end
-
-  # -- Token refresh ---------------------------------------------------------
 
   @spec maybe_refresh_and_retry(String.t(), String.t(), map(), pos_integer()) ::
           {:ok, term()} | {:error, term()}
@@ -471,8 +457,6 @@ defmodule Raxol.Agent.Backend.Lumo do
     end
   end
 
-  # -- lumo-tamer fallback (OpenAI-compatible) -------------------------------
-
   @spec tamer_complete(String.t(), [map()], keyword()) ::
           {:ok, map()} | {:error, term()}
   defp tamer_complete(base_url, messages, opts) do
@@ -494,8 +478,6 @@ defmodule Raxol.Agent.Backend.Lumo do
       model: Keyword.get(opts, :model, "lumo")
     )
   end
-
-  # -- Config helpers --------------------------------------------------------
 
   @spec credentials() :: {String.t(), String.t()} | nil
   defp credentials do

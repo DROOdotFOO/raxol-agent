@@ -57,8 +57,6 @@ defmodule Raxol.Agent.Strategy.ReAct do
     end
   end
 
-  # -- Loop ------------------------------------------------------------------
-
   defp run_loop(_messages, _backend, _opts, _actions, _context, max_iter, iteration)
        when iteration >= max_iter do
     {:error, :max_iterations_reached}
@@ -84,8 +82,6 @@ defmodule Raxol.Agent.Strategy.ReAct do
     end
   end
 
-  # -- Tool execution --------------------------------------------------------
-
   defp execute_tool_calls(tool_calls, actions, context) do
     {msgs_rev, results_rev} =
       Enum.reduce(tool_calls, {[], []}, fn tool_call, {msgs, results} ->
@@ -109,8 +105,6 @@ defmodule Raxol.Agent.Strategy.ReAct do
 
     {Enum.reverse(msgs_rev), Enum.reverse(results_rev)}
   end
-
-  # -- Message building ------------------------------------------------------
 
   defp build_initial_messages(nil, prompt) do
     [%{role: :user, content: prompt}]

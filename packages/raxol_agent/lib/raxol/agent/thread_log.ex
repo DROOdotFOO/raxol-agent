@@ -116,8 +116,6 @@ defmodule Raxol.Agent.ThreadLog do
   @callback truncate(config(), thread_id(), before :: sequence()) ::
               :ok | {:error, term()}
 
-  # --- Module-level dispatcher --------------------------------------------
-
   @doc """
   Normalize the thread-log opt into `{module, config}` form.
 

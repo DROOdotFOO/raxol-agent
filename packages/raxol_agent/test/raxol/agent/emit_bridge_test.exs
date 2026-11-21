@@ -93,9 +93,7 @@ defmodule Raxol.Agent.EmitBridgeTest do
     end
   end
 
-  # ===========================================================================
   # Adversarial fix (🔴): producer-seam stamping is not spoofable
-  # ===========================================================================
 
   describe "producer-seam stamping is not spoofable (actor/branch_id)" do
     setup do
@@ -217,9 +215,7 @@ defmodule Raxol.Agent.EmitBridgeTest do
     end
   end
 
-  # ===========================================================================
   # Round-2 fix (🔴): write-generation provenance seam (taint-absorbing meet)
-  # ===========================================================================
 
   describe "write-generation provenance seam (taint-absorbing meet)" do
     setup do
@@ -337,9 +333,7 @@ defmodule Raxol.Agent.EmitBridgeTest do
     end
   end
 
-  # ===========================================================================
   # Adjacent fix: approval_requested / woken are forced durable
-  # ===========================================================================
 
   describe "approval_requested is forced durable (resume-bracket)" do
     setup do

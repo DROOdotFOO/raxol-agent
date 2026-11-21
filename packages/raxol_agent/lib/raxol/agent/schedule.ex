@@ -91,8 +91,6 @@ defmodule Raxol.Agent.Schedule do
     end
   end
 
-  # -- interval / relative ----------------------------------------------------
-
   defp parse_interval("every " <> rest) do
     case parse_duration(String.trim(rest)) do
       {:ok, seconds} ->
@@ -134,8 +132,6 @@ defmodule Raxol.Agent.Schedule do
     end
   end
 
-  # -- timestamp --------------------------------------------------------------
-
   defp parse_timestamp(token) do
     case DateTime.from_iso8601(token) do
       {:ok, dt, _offset} ->
@@ -149,8 +145,6 @@ defmodule Raxol.Agent.Schedule do
   defp timestamp_next(dt, from) do
     if DateTime.compare(dt, from) == :gt, do: {:ok, dt}, else: :never
   end
-
-  # -- cron -------------------------------------------------------------------
 
   defp parse_cron(fields, source) do
     case reduce_cron_fields(fields) do

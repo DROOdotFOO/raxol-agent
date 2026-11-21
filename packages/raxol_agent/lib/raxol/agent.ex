@@ -154,8 +154,6 @@ defmodule Raxol.Agent do
     end
   end
 
-  # --- Module-level helpers (callable without `use Raxol.Agent`) ----------
-
   @doc """
   Return the effective hook chain for `agent_module`: prepends
   `Raxol.Agent.SandboxHook` to `agent_module.command_hooks/0` when

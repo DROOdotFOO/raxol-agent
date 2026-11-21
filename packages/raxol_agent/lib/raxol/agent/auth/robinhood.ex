@@ -302,8 +302,6 @@ defmodule Raxol.Agent.Auth.Robinhood do
       else: :error
   end
 
-  # -- default transport ------------------------------------------------------
-
   defp http(opts), do: Keyword.get(opts, :http_fn, &request/3)
 
   defp request(url, body, opts) do

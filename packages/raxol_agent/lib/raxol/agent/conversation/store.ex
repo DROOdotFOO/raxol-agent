@@ -54,8 +54,6 @@ defmodule Raxol.Agent.Conversation.Store do
               {:ok, map()} | {:error, :not_found}
   @callback list_conversations(config()) :: {:ok, [conversation_id()]}
 
-  # --- Module-level dispatcher ---------------------------------------------
-
   @doc "Normalize a store opt into `{module, config}` form."
   @spec normalize(module() | {module(), config()}) :: {module(), config()}
   def normalize({module, config}) when is_atom(module) and is_map(config),

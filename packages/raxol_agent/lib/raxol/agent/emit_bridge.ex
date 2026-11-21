@@ -527,8 +527,6 @@ defmodule Raxol.Agent.EmitBridge do
     }
   end
 
-  # --- durable id authority --------------------------------------------------
-
   # Append the durable event to the journal and return the assigned offset. The
   # journal is opened lazily on first use. The journal is the HARD GATE: on
   # open/append failure no id is fabricated (the Writer did not advance its

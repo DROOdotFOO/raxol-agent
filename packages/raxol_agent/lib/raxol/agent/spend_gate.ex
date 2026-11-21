@@ -188,8 +188,6 @@ defmodule Raxol.Agent.SpendGate do
             ) ::
               {:ok, result :: term()} | {:error, {:reserve_refused, refusal()}}
 
-  # --- implementation ---------------------------------------------------------
-
   @doc """
   Reserve `estimate` for `cost_ref`. See the `reserve/3` callback for the
   success and fail-closed refusal contract.
@@ -385,8 +383,6 @@ defmodule Raxol.Agent.SpendGate do
       Reservations.release(scope, cost_ref)
       :erlang.raise(kind, reason, __STACKTRACE__)
   end
-
-  # --- internals ------------------------------------------------------------
 
   # Journal a record through `context.emit` — in production, durable I/O (a
   # per-session journal write) that CAN fail. The journal fold IS the

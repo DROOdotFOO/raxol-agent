@@ -49,8 +49,6 @@ defmodule Raxol.Agent.Scheduler.Fire do
     |> normalize()
   end
 
-  # -- turn -------------------------------------------------------------------
-
   # No tools: a single completion. The prompt string becomes a lone user turn --
   # no prior history is threaded in, which is what keeps fires independent.
   defp run_stream(prompt, run_opts, []) do
@@ -97,8 +95,6 @@ defmodule Raxol.Agent.Scheduler.Fire do
   defp normalize({:ok, other}), do: {:error, {:unexpected_turn_result, other}}
   defp normalize({:error, reason}), do: {:error, reason}
 
-  # -- system prompt + skills -------------------------------------------------
-
   defp compose_system_prompt(job, opts) do
     [Keyword.get(opts, :system_prompt), skills_block(job, opts)]
     |> Enum.reject(&(&1 in [nil, ""]))
@@ -142,8 +138,6 @@ defmodule Raxol.Agent.Scheduler.Fire do
   catch
     :exit, reason -> {:error, {:exit, reason}}
   end
-
-  # -- opts helpers -----------------------------------------------------------
 
   # auto_provider only when nothing is pinned: a resolved environment executor
   # wins over :backend, so defaulting it unconditionally could hijack an

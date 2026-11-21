@@ -335,8 +335,6 @@ defmodule Raxol.Agent.Action.ToolConverter do
     }
   end
 
-  # -- Private ---------------------------------------------------------------
-
   defp find_action(name, tools) do
     case Enum.find(tools, fn tool -> tool_name(tool) == name end) do
       nil -> {:error, {:unknown_tool, name}}

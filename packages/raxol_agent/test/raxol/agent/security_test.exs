@@ -8,9 +8,7 @@ defmodule Raxol.Agent.SecurityTest do
 
   use ExUnit.Case, async: true
 
-  # ---------------------------------------------------------------------------
   # Protocol decode atom safety
-  # ---------------------------------------------------------------------------
 
   describe "Protocol.decode/1 atom safety" do
     alias Raxol.Agent.Protocol
@@ -92,9 +90,7 @@ defmodule Raxol.Agent.SecurityTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # ToolConverter argument validation
-  # ---------------------------------------------------------------------------
 
   describe "ToolConverter argument limits" do
     alias Raxol.Agent.Action.ToolConverter

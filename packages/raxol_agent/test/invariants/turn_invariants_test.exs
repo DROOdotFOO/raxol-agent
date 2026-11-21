@@ -185,8 +185,6 @@ defmodule Raxol.Agent.Invariants.TurnInvariantsTest do
     end
   end
 
-  # --- helpers ---------------------------------------------------------------
-
   defp await_type!(session_id, type) do
     receive do
       {:session_event, ^session_id, %Event{type: ^type} = ev} -> ev

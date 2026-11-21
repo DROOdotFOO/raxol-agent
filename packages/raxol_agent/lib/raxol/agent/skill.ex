@@ -81,8 +81,6 @@ defmodule Raxol.Agent.Skill do
     end
   end
 
-  # -- parse helpers ----------------------------------------------------------
-
   defp split(content) do
     case Regex.named_captures(@frontmatter, content) do
       %{"front" => front, "body" => body} -> {:ok, front, body}
@@ -110,8 +108,6 @@ defmodule Raxol.Agent.Skill do
   defp stringify(nil), do: nil
   defp stringify(v) when is_binary(v), do: v
   defp stringify(v), do: to_string(v)
-
-  # -- render helpers ---------------------------------------------------------
 
   defp render_frontmatter(skill) do
     modeled =

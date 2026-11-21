@@ -42,9 +42,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   @doc "The frozen CONVERSATIONAL type whitelist (string forms)."
   def conversational_types, do: @conversational
 
-  # ---------------------------------------------------------------------------
   # Session / seeding — the REAL Writer/FileStore path
-  # ---------------------------------------------------------------------------
 
   @doc "Open a fresh real FileStore journal under `base`. Returns `{handle, session, dir}`."
   def open!(base, opts \\ []) do
@@ -87,9 +85,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     end)
   end
 
-  # ---------------------------------------------------------------------------
   # Independent raw decoder (m6) — never FileStore.read
-  # ---------------------------------------------------------------------------
 
   @segment_re ~r/^\d{6}\.jsonl$/
 
@@ -123,9 +119,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # Oracles
-  # ---------------------------------------------------------------------------
 
   @doc "Record-layer density (P-JS1 / N-JS6): ids are dense `1..n`, in order."
   def dense_ids?(dir) do
@@ -204,8 +198,6 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   def snapshot_present?(dir, ref) when is_binary(ref),
     do: File.exists?(Path.join(dir, ref))
 
-  # --- toy deterministic fold (surrogate for the real MS codec) --------------
-
   @doc "Fold the event records (offset order) into a toy model. Surrogate for MS fold."
   def fold(records) when is_list(records) do
     records
@@ -244,9 +236,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
     {ref, hash}
   end
 
-  # ---------------------------------------------------------------------------
   # Dead-injectors (fabricate the broken shapes; controls assert the oracle catches)
-  # ---------------------------------------------------------------------------
 
   @doc """
   Raw-append `record` (already carrying an `"id"`) to the newest segment,
@@ -337,9 +327,7 @@ defmodule Raxol.Agent.Red.CheckpointRed do
   def mutant_restore_silent_fallback(dir, _ref),
     do: {:ok, fold(raw_records(dir))}
 
-  # ---------------------------------------------------------------------------
   # Fired-counter harness (meta-inv 1/2) — generic over atoms
-  # ---------------------------------------------------------------------------
 
   defmodule Counters do
     @moduledoc "Generic armed-site fire counter for the U9-R controls (meta-inv 1)."

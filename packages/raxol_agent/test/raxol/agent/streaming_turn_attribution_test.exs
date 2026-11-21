@@ -110,8 +110,6 @@ defmodule Raxol.Agent.StreamingTurnAttributionTest do
     refute delta.turn_id == turn_n1
   end
 
-  # --- helpers ---------------------------------------------------------------
-
   defp agent_id(sess) do
     %{id: id} = :sys.get_state(sess)
     id

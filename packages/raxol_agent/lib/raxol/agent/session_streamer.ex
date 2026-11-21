@@ -65,8 +65,6 @@ defmodule Raxol.Agent.SessionStreamer do
           max_history: pos_integer()
         }
 
-  # -- Client API ---------------------------------------------------------------
-
   @doc "Start the SessionStreamer (typically in your supervision tree)."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -117,8 +115,6 @@ defmodule Raxol.Agent.SessionStreamer do
   def list_sessions(server \\ __MODULE__) do
     GenServer.call(server, :list_sessions)
   end
-
-  # -- Server Callbacks ---------------------------------------------------------
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do

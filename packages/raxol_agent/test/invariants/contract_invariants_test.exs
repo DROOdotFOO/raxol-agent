@@ -74,9 +74,7 @@ defmodule Raxol.Agent.Invariants.ContractInvariantsTest do
     {:ok, base: base}
   end
 
-  # ===========================================================================
   # Envelope: the Event struct may only grow
-  # ===========================================================================
 
   describe "I9 — envelope" do
     test "every snapshotted envelope field still exists on Contract.Event (removal/rename breaks the contract)" do
@@ -118,9 +116,7 @@ defmodule Raxol.Agent.Invariants.ContractInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # Producer 1: StreamPump.pump — every snapshotted shape still producible
-  # ===========================================================================
 
   describe "I9 — pump producer" do
     test "a scripted stream reproduces every snapshotted event type + item_type variant with all required payload fields" do
@@ -214,9 +210,7 @@ defmodule Raxol.Agent.Invariants.ContractInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # Producer 2: Dispatcher -> EmitBridge — mapping + journal record shape
-  # ===========================================================================
 
   describe "I9 — dispatcher/bridge producer" do
     test "the neutral→contract mapping and journal record shape match the snapshot",
@@ -335,9 +329,7 @@ defmodule Raxol.Agent.Invariants.ContractInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # Golden journal corpus (the upcast seed)
-  # ===========================================================================
 
   describe "I9 — golden journal fixture v1.0.0" do
     test "the checked-in golden journal opens, replays fully, validates against the snapshot, and accepts appends",
@@ -534,8 +526,6 @@ defmodule Raxol.Agent.Invariants.ContractInvariantsTest do
       end
     end
   end
-
-  # --- helpers ---------------------------------------------------------------
 
   defp pump_shape_key(%Event{type: :item_completed, payload: %{item_type: it}}),
     do: "item_completed.#{it}"

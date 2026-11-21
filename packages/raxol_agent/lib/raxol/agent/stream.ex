@@ -110,8 +110,6 @@ defmodule Raxol.Agent.Stream do
   # Shape: %{backend: module, opts: keyword, actions: [module],
   #          context: map, max_iterations: pos_integer, caller: pid, ref: reference}
 
-  # -- Public API --------------------------------------------------------------
-
   @doc """
   Stream a single LLM completion.
 
@@ -231,8 +229,6 @@ defmodule Raxol.Agent.Stream do
     )
   end
 
-  # -- Filter Helpers ----------------------------------------------------------
-
   @doc "Filter stream to only text delta events, unwrapping the text."
   @spec text_deltas(Enumerable.t()) :: Enumerable.t()
   def text_deltas(stream) do
@@ -291,8 +287,6 @@ defmodule Raxol.Agent.Stream do
       _ -> text
     end
   end
-
-  # -- Private: Single Completion Stream --------------------------------------
 
   defp stream_completion(backend, messages, backend_opts) do
     case backend.stream(messages, backend_opts) do
@@ -407,8 +401,6 @@ defmodule Raxol.Agent.Stream do
     )
   end
 
-  # -- Private: Stream.resource next_fun for react ----------------------------
-
   defp receive_react_event(%{done: true} = state), do: {:halt, state}
 
   defp receive_react_event(%{ref: ref} = state) do
@@ -426,8 +418,6 @@ defmodule Raxol.Agent.Stream do
       @react_timeout_ms -> {[{:error, :timeout}], %{state | done: true}}
     end
   end
-
-  # -- Private: ReAct Loop (runs in spawned process) --------------------------
 
   defp react_loop(_messages, iteration, %{max_iterations: max} = config)
        when iteration >= max do
@@ -517,8 +507,6 @@ defmodule Raxol.Agent.Stream do
     send(caller, {:react_event, ref, event})
   end
 
-  # -- Private: Tool Execution ------------------------------------------------
-
   defp execute_tools(tool_calls, config) do
     Enum.map(tool_calls, fn tc ->
       name = Map.get(tc, "name")
@@ -556,8 +544,6 @@ defmodule Raxol.Agent.Stream do
      }}
   end
 
-  # -- Private: Extract results from message history --------------------------
-
   @tool_result_pattern ~r/\[Tool result for (.+?)\]: (.+)/
 
   defp extract_tool_results(messages) do
@@ -582,8 +568,6 @@ defmodule Raxol.Agent.Stream do
   end
 
   defp parse_tool_result_message(_), do: []
-
-  # -- Private: Backend Resolution --------------------------------------------
 
   # Resolves the backend module + options from the caller's opts.
   #
@@ -673,8 +657,6 @@ defmodule Raxol.Agent.Stream do
 
   defp maybe_override_model(backend_opts, model),
     do: Keyword.put(backend_opts, :model, model)
-
-  # -- Private: Message Building ----------------------------------------------
 
   defp build_messages(prompt, opts) when is_binary(prompt) do
     case Keyword.get(opts, :messages) do

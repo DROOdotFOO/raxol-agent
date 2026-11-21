@@ -56,8 +56,6 @@ defmodule Raxol.Agent.Process do
   @default_tick_ms 1_000
   @max_event_buffer 100
 
-  # -- Client API --------------------------------------------------------------
-
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     agent_id = Keyword.fetch!(opts, :agent_id)
@@ -143,8 +141,6 @@ defmodule Raxol.Agent.Process do
       error -> error
     end
   end
-
-  # -- Server ------------------------------------------------------------------
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
@@ -288,8 +284,6 @@ defmodule Raxol.Agent.Process do
     save_context(state)
     :ok
   end
-
-  # -- Private: observe/think/act loop -----------------------------------------
 
   defp run_cycle(state) do
     state = %{state | status: :thinking}

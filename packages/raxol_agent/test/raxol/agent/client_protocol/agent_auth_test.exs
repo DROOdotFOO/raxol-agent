@@ -120,8 +120,6 @@ defmodule Raxol.Agent.ClientProtocol.AgentAuthTest do
     end
   end
 
-  # -- scaffolding ------------------------------------------------------------
-
   # Stands in for the user approving in a browser: fetch the callback URL the
   # flow put in the authorization URL, with a code attached.
   defp browser do

@@ -589,8 +589,6 @@ defmodule Raxol.Agent.Session.SupervisorTest do
     end
   end
 
-  # --- helpers ---------------------------------------------------------------
-
   defp agent_id(session) do
     %{id: id} = :sys.get_state(session)
     id

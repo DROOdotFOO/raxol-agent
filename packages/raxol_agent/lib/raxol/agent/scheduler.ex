@@ -72,8 +72,6 @@ defmodule Raxol.Agent.Scheduler do
           fire_count: non_neg_integer()
         }
 
-  # -- Public API -------------------------------------------------------------
-
   @doc "Create a job from `attrs` (`prompt`, `schedule`, and optional `owner`, `skills`, `target`, `enabled`, `id`)."
   @spec create(GenServer.server(), map()) :: {:ok, job()} | {:error, term()}
   def create(server \\ __MODULE__, attrs) when is_map(attrs) do
@@ -111,8 +109,6 @@ defmodule Raxol.Agent.Scheduler do
   @doc "Remove a job, cancel its timer, and delete it from the store."
   @spec remove(GenServer.server(), String.t()) :: :ok
   def remove(server \\ __MODULE__, id), do: GenServer.call(server, {:remove, id})
-
-  # -- BaseManager callbacks --------------------------------------------------
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
@@ -229,8 +225,6 @@ defmodule Raxol.Agent.Scheduler do
     :ok
   end
 
-  # -- firing -----------------------------------------------------------------
-
   # A scheduled fire: run the work, then advance to the next occurrence.
   defp fire(job, state) do
     state
@@ -336,8 +330,6 @@ defmodule Raxol.Agent.Scheduler do
     end
   end
 
-  # -- timers -----------------------------------------------------------------
-
   # Arm (or re-arm) a job's timer. A next-fire beyond the timer ceiling parks a
   # `:rearm` checkpoint that recomputes the delay on wake, so no single timer
   # exceeds the send_after limit.
@@ -387,8 +379,6 @@ defmodule Raxol.Agent.Scheduler do
       0 -> :ok
     end
   end
-
-  # -- job construction -------------------------------------------------------
 
   defp build_job(attrs, state) do
     with {:ok, prompt} <- require_string(attrs, :prompt),
@@ -477,8 +467,6 @@ defmodule Raxol.Agent.Scheduler do
     if count >= state.max_per_owner, do: {:error, :owner_limit_reached}, else: :ok
   end
 
-  # -- persistence ------------------------------------------------------------
-
   defp open_store(opts) do
     case Dets.resolve_path(opts, :raxol_agent, :scheduler_dets_path) do
       nil ->
@@ -517,8 +505,6 @@ defmodule Raxol.Agent.Scheduler do
     %{state | jobs: Map.put(state.jobs, job.id, job)}
   end
 
-  # -- change helpers ---------------------------------------------------------
-
   defp string_change(changes, key) do
     case Map.get(changes, key) do
       value when is_binary(value) and value != "" -> value
@@ -551,8 +537,6 @@ defmodule Raxol.Agent.Scheduler do
   defp maybe_put(job, _key, nil), do: job
   defp maybe_put(job, :target, :unset), do: %{job | target: nil}
   defp maybe_put(job, key, value), do: Map.put(job, key, value)
-
-  # -- misc -------------------------------------------------------------------
 
   defp fetch!(state, id), do: Map.fetch!(state.jobs, id)
 

@@ -228,7 +228,6 @@ defmodule Raxol.Agent.DoneGate do
     |> Enum.map(&event_id/1)
   end
 
-  # -- ref classification -----------------------------------------------------
   # Order: existence -> class -> same-turn -> ordering -> mutation-echo.
   # First violation wins; refs are walked in caller order.
 
@@ -346,7 +345,6 @@ defmodule Raxol.Agent.DoneGate do
     end
   end
 
-  # -- accessors tolerant of both decoded and JSON-replayed journals ----------
   #
   # A journal that reaches the gate straight from `StreamPump.pump`/`EmitBridge`
   # is atom-keyed `%Event{}` structs. One replayed from disk via

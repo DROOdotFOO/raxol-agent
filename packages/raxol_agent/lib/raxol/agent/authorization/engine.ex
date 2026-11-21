@@ -90,8 +90,6 @@ defmodule Raxol.Agent.Authorization.Engine do
     %{state | labels: labels, approvals: approvals}
   end
 
-  # -- Reduction --------------------------------------------------------------
-
   defp reduce(policies, context, route, state) do
     acc0 = %{labels: state.labels, asks: [], escrow: %{}}
 
@@ -150,8 +148,6 @@ defmodule Raxol.Agent.Authorization.Engine do
       escrow: acc.escrow,
       route: route
     }
-
-  # -- Approval memory --------------------------------------------------------
 
   defp approved?(state, policy, route),
     do: MapSet.member?(state.approvals, approval_key(policy.name, policy.scope, route))

@@ -430,8 +430,6 @@ defmodule Raxol.Agent.KeystoneCloseTest do
     end
   end
 
-  # --- helpers ---------------------------------------------------------------
-
   defp collect_until_turn_completed(session_id, acc \\ []) do
     receive do
       {:session_event, ^session_id, %Event{tier: :durable} = ev} ->

@@ -5,8 +5,6 @@ defmodule Raxol.Agent.StreamTest do
 
   alias Raxol.Agent.Stream, as: AgentStream
 
-  # -- Test Actions -----------------------------------------------------------
-
   defmodule AddNumbers do
     use Raxol.Agent.Action,
       name: "add_numbers",
@@ -40,8 +38,6 @@ defmodule Raxol.Agent.StreamTest do
     def run(%{value: v}, _ctx), do: {:ok, %{formatted: "Result: #{v}"}}
   end
 
-  # -- Sequence Mock Backend --------------------------------------------------
-
   defmodule SequenceMock do
     @behaviour Raxol.Agent.AIBackend
 
@@ -65,8 +61,6 @@ defmodule Raxol.Agent.StreamTest do
     def capabilities, do: [:completion, :tool_use]
   end
 
-  # -- Native (vendor-owns-loop) backend --------------------------------------
-
   defmodule NativeToolLoopBackend do
     @moduledoc "A backend that runs its own tool loop (tools injected over MCP)."
     @behaviour Raxol.Agent.AIBackend
@@ -85,8 +79,6 @@ defmodule Raxol.Agent.StreamTest do
     def handles_tools_internally?, do: true
   end
 
-  # -- Capturing Mock Backend ---------------------------------------------------
-
   defmodule CapturingBackend do
     @moduledoc "Sends the exact messages it was handed to the test process."
     @behaviour Raxol.Agent.AIBackend
@@ -104,8 +96,6 @@ defmodule Raxol.Agent.StreamTest do
     @impl true
     def capabilities, do: [:completion]
   end
-
-  # -- Reasoning-emitting streaming backend -----------------------------------
 
   defmodule ReasoningStreamMock do
     @moduledoc "A streaming backend that surfaces reasoning before the answer."
@@ -133,8 +123,6 @@ defmodule Raxol.Agent.StreamTest do
     @impl true
     def capabilities, do: [:completion]
   end
-
-  # -- Helpers ----------------------------------------------------------------
 
   defp capturing_opts do
     [backend: CapturingBackend, backend_opts: [owner: self()], stream: false]
@@ -169,8 +157,6 @@ defmodule Raxol.Agent.StreamTest do
   defp text_response(content, extra \\ %{}) do
     Map.merge(%{content: content, usage: %{}, metadata: %{}}, extra)
   end
-
-  # -- run/2 tests ------------------------------------------------------------
 
   describe "run/2 reasoning passthrough" do
     test "backend reasoning events surface as {:reasoning, text}, distinct from text deltas" do
@@ -334,8 +320,6 @@ defmodule Raxol.Agent.StreamTest do
     end
   end
 
-  # -- react/2 tests ----------------------------------------------------------
-
   describe "react/2" do
     test "returns done when LLM responds with text immediately" do
       opts = mock_opts("The answer is 42.") ++ [actions: [AddNumbers]]
@@ -437,8 +421,6 @@ defmodule Raxol.Agent.StreamTest do
     end
   end
 
-  # -- Filter helpers ---------------------------------------------------------
-
   describe "text_deltas/1" do
     test "extracts text from deltas" do
       texts =
@@ -494,8 +476,6 @@ defmodule Raxol.Agent.StreamTest do
     end
   end
 
-  # -- collect/1 and collect_text/1 -------------------------------------------
-
   describe "collect/1" do
     test "collects final done info" do
       assert {:ok, done} =
@@ -521,8 +501,6 @@ defmodule Raxol.Agent.StreamTest do
       assert text == "Hello world!"
     end
   end
-
-  # -- Composability with Stream ----------------------------------------------
 
   describe "composability" do
     test "works with Stream.take" do
@@ -567,8 +545,6 @@ defmodule Raxol.Agent.StreamTest do
       assert tool_count == 2
     end
   end
-
-  # -- Backend resolution (executor + model override) -------------------------
 
   defmodule EchoModelBackend do
     @behaviour Raxol.Agent.AIBackend
@@ -683,8 +659,6 @@ defmodule Raxol.Agent.StreamTest do
       assert log =~ "Raxol.Agent.Backend.Mock"
     end
   end
-
-  # -- Native (vendor-owns-loop) backends -------------------------------------
 
   defmodule FakeNativeBackend do
     @behaviour Raxol.Agent.AIBackend

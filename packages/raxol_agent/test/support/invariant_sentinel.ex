@@ -94,8 +94,6 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
     :ok
   end
 
-  # -- verdict ----------------------------------------------------------------
-
   defp verdict(handler_id, expected) do
     fired = :ets.lookup(@table, handler_id)
     :ets.delete(@table, handler_id)
@@ -150,8 +148,6 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
     """
   end
 
-  # -- tag parsing ------------------------------------------------------------
-
   defp expected_invariants(context) do
     context
     |> Map.get(:expect_invariant)
@@ -200,8 +196,6 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
         """)
     end
   end
-
-  # -- collector --------------------------------------------------------------
 
   # One process for the whole run, owning the public table. It holds no state
   # of its own: it exists only so the table outlives every test process.

@@ -354,15 +354,12 @@ defmodule Raxol.Agent.StreamPump do
     end
   end
 
-  # -- item lifecycle bookkeeping -------------------------------------------
-
   # Turn-scoped item ids, mirroring the fixture corpus ("i1", "i2", …).
   # Uniqueness only matters within the turn: the projection keys its
   # live tail by `{turn_id, item_id}`.
   defp next_item_id(acc),
     do: {"i#{acc.item_seq + 1}", %{acc | item_seq: acc.item_seq + 1}}
 
-  # -- message item lifecycle -------------------------------------------------
   #
   # The answer mirrors the reasoning lifecycle below, with the same
   # deliberate laziness: the item is opened at the first NON-BLANK
@@ -452,7 +449,6 @@ defmodule Raxol.Agent.StreamPump do
     %{acc | journal: [ev | acc.journal], msg_item: nil, msg_chunks: []}
   end
 
-  # -- reasoning item lifecycle ---------------------------------------------
   #
   # Reasoning mirrors the message lifecycle with one deliberate difference:
   # the item is opened LAZILY at the first NON-BLANK thought — a

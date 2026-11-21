@@ -58,9 +58,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     {:ok, base: base}
   end
 
-  # ===========================================================================
   # I1 — id authority under failure/crash
-  # ===========================================================================
 
   describe "I1 — id authority under generated fault schedules" do
     property "journal dense 1..n, live ids never fabricated, HEAD ≤ n, replay == journal" do
@@ -101,9 +99,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # I2 — the ephemeral/durable wall
-  # ===========================================================================
 
   describe "I2 — ephemeral/durable wall" do
     property "journal is durable-only; ephemeral ids ride the last durable offset; byte-identity post-stamp" do
@@ -180,9 +176,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # I3 — journal-before-publish observability
-  # ===========================================================================
 
   describe "I3 — journal-before-publish" do
     # NOTE: run_step/await_durable! asserts I3 on EVERY durable receipt in
@@ -203,9 +197,7 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     end
   end
 
-  # ===========================================================================
   # driver
-  # ===========================================================================
 
   # Per-run context: a fresh session dir, an anonymous streamer, a bridge, and
   # book-keeping for the expected journal/live id sequences.
@@ -254,8 +246,6 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     drain_mailbox(ctx.session_id)
     :ok
   end
-
-  # --- steps -----------------------------------------------------------------
 
   defp run_step(ctx, {:durable, tag}) do
     publish(ctx, :app_update, :durable, %{tag: inspect(tag)})
@@ -400,8 +390,6 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     %{ctx | live: ctx.live ++ [err]}
   end
 
-  # --- end-of-run verification (the I1 assertions) ----------------------------
-
   defp verify_run!(ctx, schedule) do
     n = ctx.next_id
 
@@ -439,8 +427,6 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     # m1: every armed fault site fired at least once — else the run was hollow.
     FaultJournal.assert_all_fired!(ctx.harness, schedule)
   end
-
-  # --- oracle helpers ----------------------------------------------------------
 
   defp publish(ctx, type, tier, payload) do
     EmitBus.publish(EmitBus.build(ctx.session_id, type, tier, payload, turn_id: "t1"))
@@ -571,7 +557,6 @@ defmodule Raxol.Agent.Invariants.IdentityInvariantsTest do
     base
   end
 
-  # --- schedule generator (m5: required trace patterns) ------------------------
   #
   # Every schedule front-loads two durables (fault sites need a live journal),
   # guarantees at least one ephemeral (mixed tiers), and interleaves EVERY
