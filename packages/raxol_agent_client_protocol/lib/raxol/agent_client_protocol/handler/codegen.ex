@@ -54,20 +54,18 @@ defmodule Raxol.AgentClientProtocol.Handler.Codegen do
   end
 
   # The `use` body shared by `Agent` and `Client`: defaults for every callback,
-  # all overridable.
+  # all overridable. No `@impl` here: setting it in this quote's context would
+  # make the compiler demand it on every generated default.
   @spec using(module(), side()) :: Macro.t()
   def using(behaviour, side) do
     quote do
       @behaviour unquote(behaviour)
 
-      @impl unquote(behaviour)
       def init(arg), do: {:ok, arg}
 
-      @impl unquote(behaviour)
       def handle_ext_request(_wire, _params, _ctx),
         do: {:error, Raxol.AgentClientProtocol.Error.method_not_found()}
 
-      @impl unquote(behaviour)
       def handle_ext_notification(_wire, _params, _ctx), do: :ok
 
       unquote(splice(side |> rows() |> Enum.map(&default_clause/1)))
