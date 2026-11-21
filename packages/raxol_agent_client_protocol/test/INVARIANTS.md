@@ -87,13 +87,13 @@ Home: `test/connection_test.exs`, `describe "invariants"`. Moduledoc: the
 | Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent). | `connection_test.exs:880` |
 | Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_test.exs:912` |
 | Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_test.exs:944` |
-| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1021` |
-| Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1055` |
-| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1068` |
-| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1102` |
-| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings. | `connection_test.exs:1120` |
-| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1160` |
-| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1193` |
+| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1024` |
+| Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1058` |
+| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1071` |
+| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1105` |
+| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings. | `connection_test.exs:1123` |
+| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1163` |
+| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1196` |
 
 ## Family `IC`: shared Interface Contract (IC-1..IC-8)
 
@@ -108,7 +108,7 @@ enforcing test is cited.
 | IC-1 | ONE GenServer per peer link is the sole correlation/dispatch authority: never blocks, never runs handler code in-process, never mints atoms from wire input. | `connection_test.exs` `describe "§8 sequence diagrams"` (`:192`) + Inv-7/Inv-8 |
 | IC-2 | `Connection.Ctx` is THE single per-dispatch struct handed to handler callbacks (`conn`, `reply_ref`, `rx_seq`); there is exactly one ctx concept. | `ctx_test.exs` (whole suite; moduledoc `:18`) |
 | IC-3 | `async_request/6` is THE outbound primitive (only it accepts `:infinity`); `request/4` is a caller-parking wrapper on the same `pending_out` table; Connection is the single timeout authority. | `ctx_test.exs:303`; `connection_test.exs` `describe "§8 sequence diagrams"` |
-| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_test.exs:1120` (Inv-19); `session_test.exs:691` (I17) |
+| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_test.exs:1123` (Inv-19); `session_test.exs:691` (I17) |
 | IC-5 | (IC-5c) `rx_seq` latch: cancel and prompt commute by wire order, not scheduling order. | `session_test.exs:397` (I16) |
 | IC-6 | **Response-count invariant (canonical):** at most one response frame per inbound id; exactly one unless the peer `$/cancel_request`'d it first (then zero). `Inv-4` is its alias. | `connection_test.exs:546` |
 | IC-7 | The Connection never blocks: no `GenServer.call` to itself, no synchronous wait on tasks, no transport call that waits on peer progress. | `connection_test.exs:755` (Inv-8) |

@@ -38,8 +38,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # they cannot use up the task capacity requests need.
   @default_max_notification_tasks 500
 
-  # Grace for in-flight inbound requests after the peer closes its write side.
-  @close_drain_ms 5_000
+  # After the peer closes its write side, the Connection stops once every
+  # in-flight inbound request is answered, or after this bound.
+  @default_close_drain_ms 300_000
 
   defstruct role: :agent,
             transport_mod: nil,
@@ -64,6 +65,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
             max_in: @default_max_inbound,
             max_notif: @default_max_notification_tasks,
             notif_tasks: 0,
+            close_drain_ms: @default_close_drain_ms,
+            draining?: false,
             turns: %{},
             turn_ids: %{},
             oot_seq: %{}
@@ -95,6 +98,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
           max_in: pos_integer(),
           max_notif: pos_integer(),
           notif_tasks: non_neg_integer(),
+          close_drain_ms: pos_integer() | :infinity,
+          draining?: boolean(),
           turns: %{String.t() => TurnState.t()},
           turn_ids: map(),
           oot_seq: %{String.t() => non_neg_integer()}
@@ -115,7 +120,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   `:handler`, `:handler_arg`, `:max_inbound` (a positive integer, default
   #{@default_max_inbound}; anything else stops with
   `{:invalid_option, :max_inbound, value}`), `:max_notification_tasks` (likewise,
-  default #{@default_max_notification_tasks}), and either `:parent_sup` or
+  default #{@default_max_notification_tasks}), `:close_drain_ms` (how long, after the
+  peer closes, in-flight requests may still be answered; a positive integer or
+  `:infinity`, default #{@default_close_drain_ms}), and either `:parent_sup` or
   `:task_sup`/`:session_sup`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -219,6 +226,7 @@ defmodule Raxol.AgentClientProtocol.Connection do
     with {:ok, max_in} <- positive_option(opts, :max_inbound, @default_max_inbound),
          {:ok, max_notif} <-
            positive_option(opts, :max_notification_tasks, @default_max_notification_tasks),
+         {:ok, close_drain_ms} <- drain_option(opts),
          {:ok, handler_state} <- init_handler(handler, Keyword.get(opts, :handler_arg)) do
       {mod, handle} = Keyword.fetch!(opts, :transport)
 
@@ -232,7 +240,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
         handler: handler,
         handler_state: handler_state,
         max_in: max_in,
-        max_notif: max_notif
+        max_notif: max_notif,
+        close_drain_ms: close_drain_ms
       }
 
       {:ok, state, {:continue, :boot}}
@@ -245,6 +254,13 @@ defmodule Raxol.AgentClientProtocol.Connection do
     case Keyword.get(opts, key, default) do
       n when is_integer(n) and n > 0 -> {:ok, n}
       other -> {:stop, {:invalid_option, key, other}}
+    end
+  end
+
+  defp drain_option(opts) do
+    case Keyword.get(opts, :close_drain_ms, @default_close_drain_ms) do
+      :infinity -> {:ok, :infinity}
+      other -> positive_option([close_drain_ms: other], :close_drain_ms, nil)
     end
   end
 
@@ -305,84 +321,102 @@ defmodule Raxol.AgentClientProtocol.Connection do
     :ok
   end
 
-  # -- Calls ------------------------------------------------------------------
+  # -- Callbacks --------------------------------------------------------------
 
   @impl GenServer
-  def handle_call({:request, method, params, timeout_ms}, from, state) do
+  def handle_call(msg, from, state), do: msg |> on_call(from, state) |> drain_check()
+
+  @impl GenServer
+  def handle_info(msg, state), do: msg |> on_info(state) |> drain_check()
+
+  # While draining, the Connection stops as soon as nothing is in flight. Checked
+  # here, after every callback, so no retirement path can be missed.
+  defp drain_check({:noreply, %{draining?: true, pending_in: p} = st}) when map_size(p) == 0,
+    do: {:stop, :normal, Link.down(st)}
+
+  defp drain_check({:reply, reply, %{draining?: true, pending_in: p} = st}) when map_size(p) == 0,
+    do: {:stop, :normal, reply, Link.down(st)}
+
+  defp drain_check(result), do: result
+
+  # -- Calls ------------------------------------------------------------------
+
+  defp on_call({:request, method, params, timeout_ms}, from, state) do
     case Outbound.submit(state, method, params, timeout_ms, {:call, from}) do
       {:parked, st} -> {:noreply, st}
       {:answered, answer, st} -> {:reply, answer, st}
     end
   end
 
-  def handle_call({:async_request, method, params, owner, tag, timeout_ms}, _from, state) do
+  defp on_call({:async_request, method, params, owner, tag, timeout_ms}, _from, state) do
     case Outbound.submit(state, method, params, timeout_ms, {:owner, owner, tag}) do
       {:parked, st} -> {:reply, :ok, st}
       {:answered, answer, st} -> {:reply, answer, st}
     end
   end
 
-  def handle_call({:notify, method, params}, _from, state),
+  defp on_call({:notify, method, params}, _from, state),
     do: Outbound.notify(state, method, params)
 
-  def handle_call({:cancel_request, tag}, {owner_pid, _}, state),
+  defp on_call({:cancel_request, tag}, {owner_pid, _}, state),
     do: {:reply, :ok, Outbound.cancel(state, owner_pid, tag)}
 
-  def handle_call({:update_watermark, session_id}, _from, state),
+  defp on_call({:update_watermark, session_id}, _from, state),
     do: {:reply, {:ok, Turns.watermark(state, session_id)}, state}
 
-  def handle_call({:delegate_reply, reply_ref, adopter}, _from, state) do
+  defp on_call({:delegate_reply, reply_ref, adopter}, _from, state) do
     case Inbound.delegate(state, reply_ref, adopter) do
       {:ok, st} -> {:reply, :ok, st}
       error -> {:reply, error, state}
     end
   end
 
-  def handle_call({:reply, reply_ref, result}, _from, state),
+  defp on_call({:reply, reply_ref, result}, _from, state),
     do: Inbound.reply(state, reply_ref, result)
 
-  def handle_call(:close, _from, state), do: {:stop, :normal, :ok, Link.down(state)}
+  defp on_call(:close, _from, state), do: {:stop, :normal, :ok, Link.down(state)}
 
   # -- Messages ---------------------------------------------------------------
 
-  @impl GenServer
-  def handle_info({:outbound_timeout, id}, state), do: {:noreply, Outbound.timeout(state, id)}
+  defp on_info({:outbound_timeout, id}, state), do: {:noreply, Outbound.timeout(state, id)}
 
-  def handle_info({:acp_transport, ref, _event}, %{transport_ref: current} = state)
-      when ref != current do
+  defp on_info({:acp_transport, ref, _event}, %{transport_ref: current} = state)
+       when ref != current do
     Logger.debug("ACP: dropping event from stale transport ref #{inspect(ref)}")
     {:noreply, state}
   end
 
-  def handle_info({:acp_transport, _ref, {:message, frame}}, state) do
+  defp on_info({:acp_transport, _ref, {:message, frame}}, state) do
     rx_seq = state.rx_seq + 1
     Inbound.message(%{state | rx_seq: rx_seq}, frame, rx_seq)
   end
 
-  # A closed read side with requests still in flight gets a bounded grace so
-  # handlers can answer a peer that sent its requests and closed stdin.
-  def handle_info({:acp_transport, _ref, {:closed, reason}}, state) do
+  # A peer that sends its requests and closes its write side still gets its
+  # answers: the Connection drains (see `drain_check/1`) instead of stopping.
+  defp on_info({:acp_transport, _ref, {:closed, reason}}, state) do
     if state.phase != :closed and map_size(state.pending_in) > 0 do
-      Process.send_after(self(), {:acp_close_drained, reason}, @close_drain_ms)
-      {:noreply, state}
+      if state.close_drain_ms != :infinity,
+        do: Process.send_after(self(), {:acp_close_drained, reason}, state.close_drain_ms)
+
+      {:noreply, %{state | draining?: true}}
     else
       {:stop, :normal, Link.down(state)}
     end
   end
 
-  def handle_info({:acp_transport, _ref, {:decode_error, reason, _raw_line}}, state),
+  defp on_info({:acp_transport, _ref, {:decode_error, reason, _raw_line}}, state),
     do: Inbound.decode_error(state, reason)
 
-  def handle_info({:acp_close_drained, _reason}, state), do: {:stop, :normal, Link.down(state)}
+  defp on_info({:acp_close_drained, _reason}, state), do: {:stop, :normal, Link.down(state)}
 
-  def handle_info({ref, result}, state) when is_reference(ref),
+  defp on_info({ref, result}, state) when is_reference(ref),
     do: Inbound.task_result(state, ref, result)
 
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{transport_monitor: ref} = state),
+  defp on_info({:DOWN, ref, :process, _pid, _reason}, %{transport_monitor: ref} = state),
     do: {:stop, :normal, Link.down(state)}
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state),
+  defp on_info({:DOWN, ref, :process, _pid, reason}, state),
     do: Inbound.down(state, ref, reason)
 
-  def handle_info(_msg, state), do: {:noreply, state}
+  defp on_info(_msg, state), do: {:noreply, state}
 end

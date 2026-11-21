@@ -1005,6 +1005,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       frame = ScriptedPeer.recv(peer)
       assert frame["id"] == 77
       assert frame["result"]["sessionId"] == "/held"
+
+      # Nothing left in flight: the Connection stops right away.
+      assert_receive {:DOWN, ^cmon, :process, ^conn, :normal}, 500
     end
 
     test "a closed read side with nothing in flight still stops at once" do
@@ -2032,6 +2035,55 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
                  task_sup: self(),
                  max_notification_tasks: 0
                )
+    end
+  end
+
+  describe "close drain bound" do
+    defp start_drain_conn(close_drain_ms) do
+      task_sup = start_supervised!({Task.Supervisor, []}, id: {:drain_sup, make_ref()})
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :agent,
+            transport: {Paired, conn_handle},
+            handler: ScriptAgent,
+            handler_arg: self(),
+            task_sup: task_sup,
+            close_drain_ms: close_drain_ms
+          )
+        )
+
+      %{conn: conn, peer: peer}
+    end
+
+    test ":close_drain_ms bounds how long a closed connection waits" do
+      %{conn: conn, peer: peer} = start_drain_conn(100)
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 88, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> receive do: (:never -> :ok) end)
+
+      cmon = Process.monitor(conn)
+      send(conn, {:acp_transport, :sys.get_state(conn).transport_ref, {:closed, :eof}})
+      assert_receive {:DOWN, ^cmon, :process, ^conn, :normal}, 1_000
+    end
+
+    test "an invalid :close_drain_ms refuses to start" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      for bad <- [0, nil, "5s"] do
+        assert {:error, {:invalid_option, :close_drain_ms, ^bad}} =
+                 Connection.start_link(
+                   role: :agent,
+                   transport: {Paired, conn_handle},
+                   handler: ScriptAgent,
+                   handler_arg: self(),
+                   task_sup: self(),
+                   close_drain_ms: bad
+                 )
+      end
     end
   end
 
