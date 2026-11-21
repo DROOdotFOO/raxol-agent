@@ -297,52 +297,52 @@ defmodule Raxol.Broker.ExecutorTest do
       {executor, fn at -> Agent.update(now, fn _ -> at end) end}
     end
 
-    test "resets at New York midnight, not UTC midnight, before the spring DST change", ctx do
-      {executor, set} = day_window!(ctx, ~U[2026-03-07 23:30:00.000000Z])
+    test "resets at New York midnight, not UTC midnight, across the spring DST change", ctx do
+      {executor, set} = day_window!(ctx, ~U[2026-03-06 23:30:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-1"), context())
 
       # UTC has turned, New York (EST) has not.
-      set.(~U[2026-03-08 00:30:00.000000Z])
+      set.(~U[2026-03-07 00:30:00.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("spring-2"), context())
 
-      # Midnight EST, the day DST starts at 02:00.
-      set.(~U[2026-03-08 05:00:00.000000Z])
+      # The next trading day starts at midnight EDT after the weekend change.
+      set.(~U[2026-03-09 04:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-3"), context())
 
-      # Same New York day after the change (EDT).
-      set.(~U[2026-03-09 03:59:00.000000Z])
+      # Still that Monday in New York.
+      set.(~U[2026-03-10 03:59:00.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("spring-4"), context())
 
       # Midnight EDT.
-      set.(~U[2026-03-09 04:00:00.000000Z])
+      set.(~U[2026-03-10 04:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("spring-5"), context())
     end
 
     test "resets at New York midnight on both sides of the autumn DST change", ctx do
-      {executor, set} = day_window!(ctx, ~U[2026-10-31 23:30:00.000000Z])
+      {executor, set} = day_window!(ctx, ~U[2026-10-30 23:30:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-1"), context())
 
-      set.(~U[2026-11-01 03:59:59.000000Z])
+      set.(~U[2026-10-31 03:59:59.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("fall-2"), context())
 
-      # Midnight EDT; DST ends at 02:00 that day.
-      set.(~U[2026-11-01 04:00:00.000000Z])
+      # The next trading day starts at midnight EST after the weekend change.
+      set.(~U[2026-11-02 05:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-3"), context())
 
-      # Still Sunday in New York (EST) an hour past where EDT would have turned.
-      set.(~U[2026-11-02 04:30:00.000000Z])
+      # Still Monday in New York, an hour past where EDT would have turned.
+      set.(~U[2026-11-03 04:30:00.000000Z])
 
       assert {:deny, _, {:daily_notional_cap, _}} =
                Executor.run(executor, limit("fall-4"), context())
 
       # Midnight EST.
-      set.(~U[2026-11-02 05:00:00.000000Z])
+      set.(~U[2026-11-03 05:00:00.000000Z])
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("fall-5"), context())
     end
   end
@@ -372,7 +372,7 @@ defmodule Raxol.Broker.ExecutorTest do
                Executor.approve(ctx.executor, gid, "droo@terminal")
 
       assert types(ctx.path, gid) ==
-               ~w(intent context verdict review verdict approval verdict placing order)
+               ~w(intent context verdict review verdict context approval verdict placing order)
 
       assert Fake.calls(ctx.server, "place_") == ["place_equity_order"]
       assert Executor.parked(ctx.executor) == []
@@ -914,16 +914,18 @@ defmodule Raxol.Broker.ExecutorTest do
     test "live mode starts; a disarmed broker sends no order and no cancel", ctx do
       executor = start_executor!(ctx, mode: :live)
       :ok = Journal.record_disarmed(%{"by" => "test"}, ctx.journal)
+      before_calls = Fake.calls(ctx.server)
 
       assert Executor.run(executor, limit("live-1"), context()) == {:error, :not_armed}
       [gid] = groups_for(ctx.path, "live-1")
-      assert types(ctx.path, gid) == ~w(intent context verdict close)
+      assert types(ctx.path, gid) == ~w(intent context close)
       assert hd(group(ctx.path, gid))["mode"] == "dry_run"
       assert List.last(group(ctx.path, gid))["reason"] == "not_armed"
 
       {:ok, cancel} = Intent.cancel("ord-1", provenance: :human, id: "live-cancel")
       assert Executor.run(executor, cancel, context()) == {:error, :not_armed}
       assert sent(ctx.server) == []
+      assert Fake.calls(ctx.server) == before_calls
     end
 
     test "an armed broker sends a human cancel and refuses a strategy's", ctx do
@@ -1305,7 +1307,7 @@ defmodule Raxol.Broker.ExecutorTest do
              ]
     end
 
-    test "a port gone before the place call is :failed, not_sent; a re-run places", ctx do
+    test "a port lost after review sends nothing and the intent can be retried", ctx do
       executor = start_executor!(ctx, reconnect_ms: 10)
       %{port: {PortMCP, %{pid: client}}} = :sys.get_state(executor)
       test_pid = self()
@@ -1322,9 +1324,8 @@ defmodule Raxol.Broker.ExecutorTest do
       run = Task.async(fn -> Executor.run(executor, intent, context()) end)
       assert_receive {:reviewing, hook}, 5_000
 
-      # The review result reaches the executor's mailbox while it is
-      # suspended; the client then dies, so its EXIT queues behind the
-      # result and the place call meets a dead pid.
+      # Let review complete before the client's EXIT. The final asynchronous
+      # clock check gives the executor another chance to refuse the dead port.
       %{busy: %{pid: review}} = :sys.get_state(executor)
       :ok = :sys.suspend(executor)
       review_ref = Process.monitor(review)
@@ -1335,9 +1336,9 @@ defmodule Raxol.Broker.ExecutorTest do
       assert_receive {:DOWN, ^client_ref, :process, ^client, _}, 5_000
       :ok = :sys.resume(executor)
 
-      assert {:ok, %{status: :failed, response: %{"not_sent" => true}, journaled: true}} =
-               Task.await(run)
-
+      assert {:error, :port_not_ready} = Task.await(run)
+      [gid] = groups_for(ctx.path, "noproc")
+      refute "placing" in types(ctx.path, gid)
       assert Fake.calls(ctx.server, "place_") == []
 
       Fake.on_call(ctx.server, "review_equity_order", fn _args -> :answer end)

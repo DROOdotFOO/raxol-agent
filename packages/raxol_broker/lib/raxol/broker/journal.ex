@@ -166,6 +166,12 @@ defmodule Raxol.Broker.Journal do
       pending the owner's approval, turned out (`resolve/4`). An order the
       broker never received, or a proposal declined or expired, stops
       counting and frees its intent id.
+    * `day_baseline`: the first live USD account total observed in the first
+      60 seconds after New York midnight (`record_day_baseline/2`).
+      Only `Raxol.Broker.DailyBaseline` references that writer in production.
+      `day_baseline/3` reads the exact account/day's durable value; duplicate
+      writes cannot reset losses, and invalid or duplicate recovery records
+      make the journal unavailable. There is no intraday/manual substitute.
   """
 
   use GenServer
@@ -186,11 +192,12 @@ defmodule Raxol.Broker.Journal do
   # and the reasons that end one, written only by `record_resume/2`.
   @pauses %{"drawdown_halt" => :drawdown_halt, "dead_man_pause" => :dead_man}
   @resumes %{"dead_man_resume" => :dead_man}
-  @types ~w(intent context verdict review approval placing order close fill) ++ @event_types
+  @types ~w(intent context verdict review approval placing order close fill day_baseline) ++
+           @event_types
   @phases [:pre_review, :post_review]
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
   @decisions [:approved, :declined]
-  @before_placing [:verdict, :review, :approval, :placing]
+  @before_placing [:context, :verdict, :review, :approval, :placing]
   @minute_us 60_000_000
   @default_write_deadline 60_000
 
@@ -198,6 +205,7 @@ defmodule Raxol.Broker.Journal do
   @type group_id :: String.t()
   @type entry ::
           {:verdict, :pre_review | :post_review, Policy.result()}
+          | {:context, Context.t()}
           | {:review, map()}
           | {:approval, :approved | :declined, String.t()}
           | {:placing}
@@ -253,6 +261,8 @@ defmodule Raxol.Broker.Journal do
          path when is_binary(path) <- path(opts) || {:error, :no_journal_path},
          {:ok, handle} <- open_store(path) do
       table = :ets.new(name, [:named_table, :ordered_set, :protected, read_concurrency: true])
+      :ets.insert(table, {:halt_request_path, Raxol.Broker.HaltRequest.path(path)})
+      :ets.insert(table, {:arm_generation, make_ref()})
 
       state = %{
         handle: handle,
@@ -366,6 +376,11 @@ defmodule Raxol.Broker.Journal do
       when is_binary(group_id),
       do: GenServer.call(server, {:append_to_group, group_id, entry}, timeout)
 
+  @doc "Record a refreshed approval context, only from the claimant, before placing."
+  @spec record_context(group_id(), Context.t(), server()) :: :ok | {:error, term()}
+  def record_context(group_id, context, server \\ __MODULE__),
+    do: append_to_group(group_id, {:context, context}, server)
+
   @doc """
   Write a whole group (intent, context, then `entries` in order) as one
   contiguous run of records, with the same rules as `append_to_group/2`.
@@ -388,6 +403,25 @@ defmodule Raxol.Broker.Journal do
   @doc "Record a fill with the realized P&L the broker reported for it."
   @spec append_fill(fill(), server()) :: :ok | {:error, term()}
   def append_fill(fill, server \\ __MODULE__), do: GenServer.call(server, {:append_fill, fill})
+
+  @doc "Persist the first boundary observation for an account/day; never replace it."
+  @spec record_day_baseline(map(), server()) :: :ok | {:error, term()}
+  def record_day_baseline(fields, server \\ __MODULE__),
+    do: GenServer.call(server, {:day_baseline, fields}, :infinity)
+
+  @doc "Read the durable boundary value for this exact account and New York day."
+  @spec day_baseline(String.t(), DateTime.t(), server()) ::
+          {:ok, Decimal.t() | nil} | {:error, term()}
+  def day_baseline(account, %DateTime{} = day, server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        case :ets.lookup(server, {:day_baseline, account, to_us(day)}) do
+          [{_key, value}] -> {:ok, value}
+          [] -> {:ok, nil}
+        end
+      end)
+    end
+  end
 
   @doc """
   Claim the journal for the calling process, the only one allowed to write
@@ -493,10 +527,21 @@ defmodule Raxol.Broker.Journal do
   @doc "Intents `strategy_id` emitted that no `dispatch` record names yet, oldest first."
   @spec pending_intents(String.t(), server()) :: {:ok, [Intent.t()]} | {:error, term()}
   def pending_intents(strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
+    with {:ok, emissions} <- pending_emissions(strategy_id, server) do
+      {:ok, Enum.map(emissions, & &1.intent)}
+    end
+  end
+
+  @doc "Pending intents with their journal emit timestamp, oldest first. Invalid timestamps are preserved for fail-closed expiry."
+  @spec pending_emissions(String.t(), server()) ::
+          {:ok, [%{intent: Intent.t(), at: term()}]} | {:error, term()}
+  def pending_emissions(strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
     with :ok <- healthy(server),
          {:ok, emitted} <-
-           select(fn -> {:ok, by_seq(server, {{:emit, :_}, :_, strategy_id, :_})} end) do
-      decode_all(emitted, fn {_key, _seq, _strategy, intent} -> Codec.decode_intent(intent) end)
+           select(fn -> {:ok, by_seq(server, {{:emit, :_}, :_, strategy_id, :_, :_})} end) do
+      decode_all(emitted, fn {_key, _seq, _strategy, intent, at} ->
+        with {:ok, intent} <- Codec.decode_intent(intent), do: {:ok, %{intent: intent, at: at}}
+      end)
     end
   end
 
@@ -540,7 +585,25 @@ defmodule Raxol.Broker.Journal do
   """
   @spec record_armed(map(), server()) :: :ok | {:error, term()}
   def record_armed(fields, server \\ __MODULE__) when is_map(fields),
-    do: event("mode", Map.put(fields, "mode", "armed"), server)
+    do: record_armed(fields, server, :any)
+
+  @doc "Arm only if no mode change or halt occurred during the checks."
+  @spec record_armed(map(), server(), reference() | :any) :: :ok | {:error, term()}
+  def record_armed(fields, server, generation) when is_map(fields),
+    do: GenServer.call(server, {:arm, Codec.term(fields), generation}, :infinity)
+
+  @doc "The journal-local generation invalidated by every mode record or restart."
+  @spec arm_generation(server()) :: {:ok, reference()} | {:error, term()}
+  def arm_generation(server \\ __MODULE__) do
+    with :ok <- healthy(server) do
+      select(fn ->
+        case :ets.lookup(server, :arm_generation) do
+          [{:arm_generation, generation}] -> {:ok, generation}
+          [] -> {:error, :journal_not_ready}
+        end
+      end)
+    end
+  end
 
   @doc "Record the broker as disarmed, with `fields` (who, why). Open to any caller."
   @spec record_disarmed(map(), server()) :: :ok | {:error, term()}
@@ -583,6 +646,15 @@ defmodule Raxol.Broker.Journal do
           [] -> {:ok, :disarmed, nil}
         end
       end)
+    end
+  end
+
+  @doc "Whether a cross-process halt marker exists; unreadable state blocks arming."
+  @spec halt_pending?(server()) :: boolean()
+  def halt_pending?(server \\ __MODULE__) do
+    case select(fn -> :ets.lookup(server, :halt_request_path) end) do
+      [{:halt_request_path, path}] -> Raxol.Broker.HaltRequest.pending?(path)
+      _unreadable -> true
     end
   end
 
@@ -702,6 +774,21 @@ defmodule Raxol.Broker.Journal do
     {:reply, {:ok, ids}, state}
   end
 
+  def handle_call({:day_baseline, fields}, _from, state) do
+    with {:ok, {fields, at}} <- Raxol.Broker.Plain.normalize({fields, state.clock.()}),
+         {:ok, record} <- Codec.encode_day_baseline(fields, at),
+         key = {:day_baseline, fields.account, to_us(fields.day_start)},
+         [] <- :ets.lookup(state.table, key),
+         {:ok, _offsets} <- write(state, [record]) do
+      :ets.insert(state.table, {key, fields.value})
+      {:reply, :ok, state}
+    else
+      [_existing] -> {:reply, {:error, :day_baseline_exists}, state}
+      {:error, {:not_plain, _path}} -> refuse(state, :invalid_day_baseline)
+      {:error, reason} -> refuse(state, reason)
+    end
+  end
+
   def handle_call({:append_group, intent, context, entries, opts}, {caller, _tag}, state) do
     with :ok <- claimant(state, caller, nil),
          {:ok, id, group, records} <- build_group(state, intent, context, entries, opts),
@@ -732,6 +819,21 @@ defmodule Raxol.Broker.Journal do
       {:reply, :ok, state}
     else
       {:error, reason} -> refuse(state, reason)
+    end
+  end
+
+  def handle_call({:arm, fields, expected}, from, state) do
+    [{:arm_generation, current}] = :ets.lookup(state.table, :arm_generation)
+
+    cond do
+      halt_pending?(state.table) ->
+        {:reply, {:error, :halt_requested}, state}
+
+      expected != :any and expected != current ->
+        {:reply, {:error, :mode_changed}, state}
+
+      true ->
+        handle_call({:event, "mode", Map.put(fields, "mode", "armed")}, from, state)
     end
   end
 
@@ -897,6 +999,13 @@ defmodule Raxol.Broker.Journal do
   defp entry_record(entry, id, %{placing: %{}}, _state)
        when is_tuple(entry) and tuple_size(entry) > 0 and elem(entry, 0) in @before_placing,
        do: {:error, {:already_placing, id}}
+
+  defp entry_record({:context, context}, id, group, state) do
+    with {:ok, context} <- Context.normalize(context) do
+      record = record(state, "context", id, %{"context" => Codec.encode_context(context)})
+      {:ok, record, %{group | context: context, post_action: nil, approved?: false}}
+    end
+  end
 
   defp entry_record({:verdict, phase, result}, id, group, state) when phase in @phases do
     with {:ok, encoded} <- Codec.encode_result(result) do
@@ -1123,7 +1232,8 @@ defmodule Raxol.Broker.Journal do
   defp recover_records(state, records) do
     {groups, fills} = Groups.fold(records)
 
-    with {:ok, _offsets} <- write(state, crash_closes(state, groups)),
+    with :ok <- index_day_baselines(state.table, records),
+         {:ok, _offsets} <- write(state, crash_closes(state, groups)),
          :ok <- index_groups(state.table, Enum.filter(groups, &Groups.counts?/1)),
          :ok <- index_intents(state.table, groups),
          :ok <- index_fills(state.table, fills) do
@@ -1231,7 +1341,7 @@ defmodule Raxol.Broker.Journal do
   defp index_event(table, %{"kind" => "broker", "type" => "emit"} = record) do
     case record do
       %{"intent" => %{"id" => id} = intent, "strategy_id" => strategy} when is_binary(id) ->
-        :ets.insert(table, {{:emit, id}, seq(), strategy, intent})
+        :ets.insert(table, {{:emit, id}, seq(), strategy, intent, record["at"]})
 
       _malformed ->
         true
@@ -1255,7 +1365,7 @@ defmodule Raxol.Broker.Journal do
   # An armed record ends the drawdown pause: only a fresh arm resumes.
   defp index_event(table, %{"kind" => "broker", "type" => "mode"} = record) do
     if record["mode"] == "armed", do: :ets.delete(table, {:pause, :drawdown_halt})
-    :ets.insert(table, {:mode, record})
+    :ets.insert(table, [{:mode, record}, {:arm_generation, make_ref()}])
   end
 
   defp index_event(table, %{"kind" => "broker", "type" => "halt", "reason" => reason}) do
@@ -1346,6 +1456,22 @@ defmodule Raxol.Broker.Journal do
         {:error, _} = error -> {:halt, error}
         _malformed -> {:halt, {:error, unindexable}}
       end
+    end)
+  end
+
+  defp index_day_baselines(table, records) do
+    Enum.reduce_while(records, :ok, fn
+      %{"type" => "day_baseline"} = record, :ok ->
+        with {:ok, fields} <- Codec.decode_day_baseline(record),
+             key = {:day_baseline, fields.account, to_us(fields.day_start)},
+             true <- :ets.insert_new(table, {key, fields.value}) do
+          {:cont, :ok}
+        else
+          _invalid -> {:halt, {:error, :invalid_or_duplicate_day_baseline}}
+        end
+
+      _record, :ok ->
+        {:cont, :ok}
     end)
   end
 

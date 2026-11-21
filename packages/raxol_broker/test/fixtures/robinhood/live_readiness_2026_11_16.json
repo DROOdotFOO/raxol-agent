@@ -1,0 +1,275 @@
+{
+  "provenance": {
+    "observed_date": "2026-11-16",
+    "server": "https://agent.robinhood.com/mcp/trading",
+    "server_version": "1.19.1",
+    "account_selection": "The unique account with agentic_allowed=true; identifiers and balances omitted",
+    "format": "Field/type observations, not replayable raw read responses"
+  },
+  "trade_approvals_enabled": true,
+  "shapes": {
+    "accounts": {
+      "data": {
+        "accounts": {
+          "count": 2,
+          "type": "array",
+          "example": [
+            {
+              "account_number": "string",
+              "affiliate": "string",
+              "agentic_allowed": "boolean",
+              "brokerage_account_type": "string",
+              "deactivated": "boolean",
+              "is_default": "boolean",
+              "management_type": "string",
+              "option_level": "string",
+              "permanently_deactivated": "boolean",
+              "rhs_account_number": "string",
+              "state": "string",
+              "type": "string",
+              "unsettled_funds": "string"
+            }
+          ]
+        }
+      },
+      "guide": "string"
+    },
+    "approval_setting": {
+      "data": {
+        "setting": {
+          "account_number": "string",
+          "human_must_approve_trades": "boolean",
+          "updated_at": "string"
+        }
+      },
+      "guide": "string"
+    },
+    "approvals_before": {
+      "data": {
+        "approvals": {
+          "count": 0,
+          "type": "array",
+          "example": []
+        }
+      },
+      "guide": "string"
+    },
+    "quotes": {
+      "data": {
+        "results": {
+          "count": 1,
+          "type": "array",
+          "example": [
+            {
+              "close": {
+                "date": "string",
+                "interpolated": "boolean",
+                "price": "string",
+                "source": "string",
+                "symbol": "string"
+              },
+              "quote": {
+                "adjusted_previous_close": "string",
+                "ask_price": "string",
+                "bid_price": "string",
+                "has_traded": "boolean",
+                "last_non_reg_trade_price": "string",
+                "last_trade_price": "string",
+                "previous_close": "string",
+                "previous_close_date": "string",
+                "state": "string",
+                "symbol": "string",
+                "venue_ask_time": "string",
+                "venue_bid_time": "string",
+                "venue_last_non_reg_trade_time": "string",
+                "venue_last_trade_time": "string"
+              }
+            }
+          ]
+        }
+      },
+      "guide": "string"
+    },
+    "positions": {
+      "data": {
+        "positions": {
+          "count": 0,
+          "type": "array",
+          "example": []
+        }
+      },
+      "guide": "string"
+    },
+    "portfolio": {
+      "data": {
+        "buying_power": {
+          "buying_power": "string",
+          "display_currency": "string",
+          "unleveraged_buying_power": "string"
+        },
+        "cash": "string",
+        "crypto_buying_power": {
+          "buying_power": "string"
+        },
+        "crypto_value": "string",
+        "currency": "string",
+        "equity_value": "string",
+        "event_contracts_value": "string",
+        "fixed_income_value": "string",
+        "futures_value": "string",
+        "mutual_funds_value": "string",
+        "options_value": "string",
+        "pending_deposits": "string",
+        "total_value": "string"
+      },
+      "guide": "string"
+    },
+    "orders": {
+      "data": {
+        "orders": {
+          "count": 0,
+          "type": "array",
+          "example": []
+        }
+      },
+      "guide": "string"
+    }
+  },
+  "order_state_queries": {
+    "new": {
+      "succeeded": true,
+      "order_count": 0
+    },
+    "unconfirmed": {
+      "succeeded": true,
+      "order_count": 0
+    },
+    "queued": {
+      "succeeded": true,
+      "order_count": 0
+    },
+    "confirmed": {
+      "succeeded": true,
+      "order_count": 0
+    },
+    "partially_filled": {
+      "succeeded": true,
+      "order_count": 0
+    }
+  },
+  "review": {
+    "fixture": "review_equity_order_checks.json",
+    "order_checks": {
+      "alertType": "EQUITY_NOT_ENOUGH_BP",
+      "equityNotEnoughBpAlertDetails": {
+        "brokerageAccountType": "INDIVIDUAL",
+        "depositAmount": {
+          "amount": "[REDACTED-NUMBER]",
+          "currency": "USD"
+        }
+      }
+    },
+    "customer_approval_required": true
+  },
+  "review_metadata_drift": {
+    "fields": {
+      "dollar_amount": {
+        "after": {
+          "description": "USD notional (e.g. '100.00'). Only valid with type=market and time_in_force=gfd.",
+          "type": "string"
+        },
+        "before": {
+          "description": "USD notional (e.g. '100.00'). Only valid with type=market.",
+          "type": "string"
+        }
+      },
+      "quantity": {
+        "after": {
+          "description": "Number of shares. Decimals (fractional) allowed only on type=market with time_in_force=gfd and market_hours=regular_hours; limit and stop orders take whole shares.",
+          "type": "string"
+        },
+        "before": {
+          "description": "Number of shares. Decimals (fractional) allowed for market + regular_hours only.",
+          "type": "string"
+        }
+      },
+      "time_in_force": {
+        "after": {
+          "description": "'gfd' (good for day) or 'gtc' (good till cancelled). Default: gfd. Fractional and dollar_amount orders take gfd only.",
+          "type": "string"
+        },
+        "before": {
+          "description": "'gfd' (good for day) or 'gtc' (good till cancelled). Default: gfd.",
+          "type": "string"
+        }
+      }
+    },
+    "description_changes": [
+      "--- frozen",
+      "+++ live",
+      "@@ -3,8 +3,8 @@",
+      " Parameter rules:",
+      " - If the user has not specified type, ask. For immediate fills with price protection, prefer a marketable limit at the current ask over a plain market.",
+      " - Outside regular hours, only limit orders execute. For an immediate fill during extended or overnight/24-hour sessions, place a limit order (a marketable limit at the current ask) with market_hours set to that session \u2014 not a market order. Market and stop orders are regular_hours-only; placed after hours as regular_hours they queue for the next regular open.",
+      "-- Provide exactly one of quantity or dollar_amount, and take the value from the user \u2014 if they did not say how much, ask. Never substitute a default such as 1 share or $100. dollar_amount requires type=market (server computes shares from last_trade_price).",
+      "-- Fractional shares: only on type=market with market_hours=regular_hours, eligible accounts, up to 6 decimal places, no short sells.",
+      "+- Provide exactly one of quantity or dollar_amount, and take the value from the user \u2014 if they did not say how much, ask. Never substitute a default such as 1 share or $100. dollar_amount requires type=market and time_in_force=gfd (server computes shares from last_trade_price).",
+      "+- Fractional shares: only on type=market with time_in_force=gfd and market_hours=regular_hours, eligible accounts, up to 6 decimal places, no short sells. Limit, stop_market, and stop_limit orders take whole shares only.",
+      " - limit_price required for limit/stop_limit; stop_price required for stop_market/stop_limit.",
+      " - Fractional and dollar-based orders only place in regular_hours; the tool rejects them in other sessions.",
+      " - tax_lots (specified-lot selling, sell only): to sell specific lots, first call get_equity_tax_lots for the symbol, then pass tax_lots as {open_lot_id, quantity} pairs whose quantities sum to the order quantity. Omit for default (FIFO) cost basis. US accounts only; not allowed with dollar_amount, stop orders, all_day_hours, or fractional limit orders."
+    ],
+    "frozen_capture_updated": false
+  },
+  "consumer_findings": [
+    {
+      "path": "lib/raxol/broker/feed.ex:64",
+      "observation": "Live quotes are data.results[].quote; Feed.quotes returned an empty map for the live body."
+    },
+    {
+      "path": "lib/raxol/broker/mode.ex:187",
+      "observation": "Live approval flag is data.setting.human_must_approve_trades; the arming reader expects the flag directly after data unwrapping and otherwise returns unreadable."
+    },
+    {
+      "path": "lib/raxol/broker/snapshot.ex:98",
+      "observation": "Live buying power is data.buying_power.buying_power; the display reader accepts a string or buying_power.amount instead."
+    },
+    {
+      "path": "lib/raxol/broker/policy/context_builder.ex:35",
+      "observation": "total_value is present; none of adjusted_equity_previous_close, equity_previous_close or previous_close is present in the portfolio body. Start-of-day portfolio value remains unsourced."
+    },
+    {
+      "path": "priv/robinhood/tools_list.json",
+      "observation": "Live review descriptions now restrict fractional and dollar-based orders to GFD and clarify whole-share limits/stops. Capture reconciliation will reject the changed review; the frozen capture was not modified."
+    }
+  ],
+  "unverified": [
+    "Non-empty equity position row fields: account has no positions",
+    "Equity order row fields and ref_id: account has no orders",
+    "Non-empty approval row fields: account has no pending approvals",
+    "Actual response cursor key and pagination round-trip: all listings were empty and omitted cursors"
+  ],
+  "safety": {
+    "armed": false,
+    "place_cancel_decline_calls": 0,
+    "refresh_attempted": false,
+    "credential_file_unchanged": true,
+    "policy_accessed": false,
+    "broker_journal_started": false,
+    "orders_body_unchanged_after_review": true,
+    "approvals_body_unchanged_after_review": true
+  },
+  "followup": {
+    "observed_at": "2026-11-16T07:29:46.362605Z",
+    "quote_normalization_verified": true,
+    "approval_setting_normalization_verified": true,
+    "buying_power_normalization_verified": true,
+    "live_usd_total_matches_cash_plus_asset_values": true,
+    "baseline_source": "Owner-selected journaled USD total_value observation within the first 60 seconds after New York midnight; no historical or intraday fallback",
+    "live_baseline_captured": false,
+    "metadata_capture": "2026-11-16T10:58:16.693769Z",
+    "metadata_review": "87 unchanged names and authorization classes; refreshed read contracts and placement descriptions. Existing 36-byte UUID ref_ids remain within the documented 256-byte string limit.",
+    "historical_findings": "consumer_findings and review_metadata_drift describe the initial preflight, before this followup"
+  },
+  "readiness": "NOT A SOAK GO: normalization and metadata followup completed; live midnight baseline capture and empty-row evidence gaps remain"
+}

@@ -42,11 +42,12 @@ defmodule Raxol.Broker.SupervisorTest do
       start_supervised!(
         {Raxol.Broker.Supervisor,
          name: :"broker_sup_#{System.unique_integer([:positive])}",
-         journal: [name: journal, path: path],
+         journal: [name: journal, path: path, clock: &Raxol.Broker.Test.Broker.t0/0],
          executor: [
            name: executor,
            session: Fake.session(server),
            account_number: "FAKE-0001",
+           clock: &Raxol.Broker.Test.Broker.t0/0,
            policy: policy
          ]}
       )
@@ -99,12 +100,13 @@ defmodule Raxol.Broker.SupervisorTest do
   test "the executor's shutdown outlasts an order call" do
     {:ok, policy} = PolicyFile.new(Decimal.new("1000"), Decimal.new("5000"))
 
-    {:ok, {_flags, [_journal, %{shutdown: shutdown}]}} =
+    {:ok, {_flags, children}} =
       Raxol.Broker.Supervisor.init(
         journal: [name: :j, path: "unused"],
         executor: [session: [], account_number: "ACC-1", policy: policy, place_timeout: 60_000]
       )
 
+    %{shutdown: shutdown} = Enum.find(children, &(&1.id == Executor))
     assert is_integer(shutdown) and shutdown >= 60_000
   end
 
@@ -239,6 +241,38 @@ defmodule Raxol.Broker.SupervisorTest do
     assert [{after_restart, %{id: "dip_buy-F"}}] = Strategy.Supervisor.running(strategies)
     assert after_restart != before
     assert is_pid(child(sup, Client))
+  end
+
+  test "executor account automatically captures using the configured read client", %{path: path} do
+    id = System.unique_integer([:positive])
+    journal = :"broker_baseline_journal_#{id}"
+    client = :"broker_baseline_client_#{id}"
+    fake = Fake.start(portfolio: %{"total_value" => "1000", "currency" => "USD"})
+    {clock, _agent} = Raxol.Broker.Test.Broker.clock(~U[2026-10-02 04:00:00Z])
+    owner = self()
+
+    _sup =
+      start_supervised!(
+        {Raxol.Broker.Supervisor,
+         name: :"broker_baseline_sup_#{id}",
+         journal: [name: journal, path: path, clock: clock],
+         executor: [
+           name: :"broker_baseline_executor_#{id}",
+           session: Fake.session(fake),
+           account_number: "FAKE-0001",
+           clock: clock,
+           policy: Raxol.Broker.Test.Broker.policy()
+         ],
+         client: Fake.client_opts(fake, name: client),
+         daily_baseline: [schedule: fn delay -> send(owner, {:baseline_scheduled, delay}) end]}
+      )
+
+    assert_receive {:baseline_scheduled, 86_400_000}, 5_000
+
+    assert Journal.day_baseline("FAKE-0001", ~U[2026-10-02 04:00:00Z], journal) ==
+             {:ok, Decimal.new("1000")}
+
+    assert Fake.calls(fake, "get_portfolio") == ["get_portfolio"]
   end
 
   # Kills the `module` child, waits for it to go down, then reads the restarted

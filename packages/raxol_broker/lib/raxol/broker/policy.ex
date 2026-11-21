@@ -14,6 +14,7 @@ defmodule Raxol.Broker.Policy do
   | `:pricing` | DENY when the order's USD notional cannot be computed (a market order in shares with no quote) |
   | `:symbol` | DENY a symbol in `symbols_deny`, or outside `symbols_allow` when set |
   | `:order_type` | DENY an order type missing from `order_types`; options unless `options: true`; advanced orders unless `advanced_orders: true` |
+  | `:trading_day` | DENY new orders on a known closed New York calendar day, regardless of `after_hours_market` |
   | `:after_hours_market` | DENY market and stop-market orders outside the regular session unless `after_hours_market: true` |
   | `:drawdown_breaker` | DENY when today's loss is more than `drawdown_halt` of the start-of-day value |
   | `:order_rate` | DENY when `max_orders_per_minute` orders were already placed in the last minute |
@@ -27,6 +28,11 @@ defmodule Raxol.Broker.Policy do
   Caps are inclusive: an order exactly at a cap is allowed. Notional counts
   both buys and sells. Rules whose policy key is `:unset` abstain. A rule that
   needs a context field left `nil` denies with `{:missing_context, field}`.
+  Closed calendar days cannot queue proposals against a cap that resets
+  before the next trading day. A closed overnight session on a trading day
+  keeps the existing limit-order and after-hours market policy behavior.
+  Contexts without `trading_day` retain their historical session rules.
+
   A cancel or a trade-approval decline with `:human` provenance is always
   allowed: it cannot add exposure. Any other is `{:deny,
   {:cancel_provenance, provenance}}`, so a strategy or model output cannot
@@ -51,6 +57,7 @@ defmodule Raxol.Broker.Policy do
     :pricing,
     :symbol,
     :order_type,
+    :trading_day,
     :after_hours_market,
     :drawdown_breaker,
     :order_rate,
@@ -66,6 +73,7 @@ defmodule Raxol.Broker.Policy do
           :pricing
           | :symbol
           | :order_type
+          | :trading_day
           | :after_hours_market
           | :drawdown_breaker
           | :order_rate
@@ -250,6 +258,7 @@ defmodule Raxol.Broker.Policy do
   defp run(:pricing, input), do: pricing(input)
   defp run(:symbol, input), do: symbol(input)
   defp run(:order_type, input), do: order_type(input)
+  defp run(:trading_day, input), do: trading_day(input)
   defp run(:after_hours_market, input), do: after_hours_market(input)
   defp run(:drawdown_breaker, input), do: drawdown_breaker(input)
   defp run(:order_rate, input), do: order_rate(input)
@@ -288,6 +297,9 @@ defmodule Raxol.Broker.Policy do
     type = type_of(intent)
     if type in policy.order_types, do: Verdict.allow(), else: deny(:order_type, type)
   end
+
+  defp trading_day(%{context: %Context{trading_day: false}}), do: deny(:trading_day, :closed)
+  defp trading_day(_input), do: Verdict.allow()
 
   defp after_hours_market(%{intent: intent, context: context, policy: policy}) do
     cond do

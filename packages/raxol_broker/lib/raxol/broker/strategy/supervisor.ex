@@ -27,8 +27,10 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   `start_link/1`: `:name` (default this module), `:restore` (default
   `true`), and for every runner `:journal` (default `Raxol.Broker.Journal`),
   `:executor` (default `Raxol.Broker.Executor`), `:feed` (default nil, no
-  quotes) and `:retry_ms`. The functions below take `:supervisor` (default
-  this module) and `:journal`.
+  quotes), `:retry_ms`, `:max_age_ms` (default 300_000), and `:clock`
+  (a zero-arity UTC clock, default `DateTime.utc_now/0`). Pending emissions
+  from an earlier New York day or older than the age limit expire. The
+  functions below take `:supervisor` (default this module) and `:journal`.
   """
 
   use Supervisor

@@ -2,7 +2,7 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
   @moduledoc """
   The context fields the executor fetches itself instead of trusting its
   caller: `quotes`, `positions`, `portfolio_value`, `start_of_day_value`,
-  `day_pnl` and `market_session`.
+  `day_pnl`, `market_session` and `trading_day`.
 
     * `quotes`: `get_equity_quotes` for the intent's symbol, its last trade
       price.
@@ -12,31 +12,33 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
       when the listing fails, is unreadable or runs past its page limit, and
       when the intent's own symbol is held but cannot be valued: a holding
       read as zero would let a concentrated buy through.
-    * `portfolio_value` and `start_of_day_value`: `get_portfolio` for the
-      account; the first present of `equity`, `total_value`,
-      `portfolio_value` and of `adjusted_equity_previous_close`,
-      `equity_previous_close`, `previous_close`.
-    * `day_pnl`: `portfolio_value - start_of_day_value`, realized and
-      unrealized together.
+    * `portfolio_value`: the live USD `total_value` from `get_portfolio`.
+    * `start_of_day_value`: the journal's persisted observation from the
+      first 60 seconds after New York midnight for this exact account/day.
+      A missed capture is not replaced by an intraday or previous-close value.
+    * `day_pnl`: current total minus that observation, including unrealized
+      changes but not adjusted for deposits or withdrawals.
     * `market_session`: `Raxol.Broker.MarketCalendar.session/1` at the executor's
       clock.
+    * `trading_day`: `Raxol.Broker.MarketCalendar.trading_day?/1` at the same
+      clock, distinct from an overnight closed session on a trading date.
 
   A read that fails leaves its fields `nil`, so every rule that needs one
   denies with `{:missing_context, field}`: an unreadable portfolio never
   lets an order through a rule that needs it.
   """
 
-  alias Raxol.Broker.{Feed, Intent, MarketCalendar, Response}
+  alias Raxol.Broker.{Feed, Intent, Journal, MarketCalendar, Response}
   alias Raxol.Broker.Executor.Read
   alias Raxol.Broker.Policy.Context
 
-  @current ["equity", "total_value", "portfolio_value"]
-  @start ["adjusted_equity_previous_close", "equity_previous_close", "previous_close"]
+  alias Raxol.Broker.Journal.Codec
 
   @type env :: %{
           port: term(),
           catalog: map(),
           account: String.t(),
+          journal: Journal.server(),
           timeout: timeout(),
           now: DateTime.t()
         }
@@ -55,7 +57,8 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
         portfolio_value: value,
         start_of_day_value: start,
         day_pnl: value && start && Decimal.sub(value, start),
-        market_session: MarketCalendar.session(env.now)
+        market_session: MarketCalendar.session(env.now),
+        trading_day: MarketCalendar.trading_day?(env.now)
     }
   end
 
@@ -115,12 +118,28 @@ defmodule Raxol.Broker.Policy.ContextBuilder do
 
   defp portfolio(env) do
     case read(env, "get_portfolio", %{"account_number" => env.account}) do
-      {:ok, %{} = body} -> {first(body, @current), first(body, @start)}
-      _unreadable -> {nil, nil}
+      {:ok, %{} = body} ->
+        value =
+          case Codec.portfolio_value(body) do
+            {:ok, value} -> value
+            {:error, _reason} -> nil
+          end
+
+        start =
+          case Journal.day_baseline(env.account, MarketCalendar.day_start(env.now), env.journal) do
+            {:ok, %Decimal{coef: coef, sign: 1} = value} when is_integer(coef) and coef > 0 ->
+              value
+
+            _missing ->
+              nil
+          end
+
+        {value, start}
+
+      _unreadable ->
+        {nil, nil}
     end
   end
-
-  defp first(body, keys), do: Enum.find_value(keys, &Response.decimal(body[&1]))
 
   defp read(env, tool, args), do: Read.call(env.port, env.catalog, tool, args, env.timeout)
 end

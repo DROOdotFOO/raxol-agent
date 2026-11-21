@@ -94,6 +94,7 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
          account_number: "FAKE-0001",
          policy: Broker.policy(),
          mode: :live,
+         clock: &Broker.t0/0,
          credential: [store: ctx.store, auth: [http_fn: AuthServer.http_fn(auth)]]}
       )
 
@@ -106,6 +107,34 @@ defmodule Raxol.Broker.Executor.LiveSessionTest do
     _ = :sys.get_state(executor)
 
     assert {:ok, :disarmed, %{"reason" => "reauth_required"}} = Journal.mode(ctx.journal)
+
+    :ok = Raxol.Broker.HaltRequest.request(ctx.path)
+
+    for _retry <- 1..2 do
+      send(executor, :refresh_due)
+
+      assert_receive {:trace, ^executor, :receive, {_ref, {:error, {:token_rejected, 400, _}}}},
+                     5_000
+
+      :sys.get_state(executor)
+    end
+
+    reauth_disarms = fn ->
+      for %{"type" => "mode", "reason" => "reauth_required"} = record <- Broker.records(ctx.path),
+          do: record
+    end
+
+    assert length(reauth_disarms.()) == 1
+    File.rm!(Raxol.Broker.HaltRequest.path(ctx.path))
+
+    :ok = Journal.record_armed(%{"by" => "test"}, ctx.journal)
+    send(executor, :refresh_due)
+
+    assert_receive {:trace, ^executor, :receive, {_ref, {:error, {:token_rejected, 400, _}}}},
+                   5_000
+
+    :sys.get_state(executor)
+    assert length(reauth_disarms.()) == 2
 
     # Signing in again stores a new credential; the next refresh takes it over.
     signed_in = %Credential{

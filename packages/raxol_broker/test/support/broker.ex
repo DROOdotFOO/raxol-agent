@@ -6,9 +6,11 @@ defmodule Raxol.Broker.Test.Broker do
   """
 
   import ExUnit.Callbacks
+  import ExUnit.Assertions
 
   alias Raxol.Agent.Journal.FileStore
-  alias Raxol.Broker.{Executor, Journal, PolicyFile}
+  alias Raxol.Broker.{DailyBaseline, Executor, Journal, MarketCalendar, PolicyFile}
+  alias Raxol.Broker.MCP.{Client, Fake}
 
   @t0 ~U[2026-10-02 14:30:00.000000Z]
 
@@ -83,6 +85,51 @@ defmodule Raxol.Broker.Test.Broker do
   def clock(start) do
     {:ok, agent} = Agent.start_link(fn -> start end)
     {fn -> Agent.get(agent, & &1) end, agent}
+  end
+
+  @doc "Capture through the real worker at midnight, then advance to the requested instant."
+  def baseline_journal!(fake, now \\ @t0) do
+    {clock, clock_agent} = clock(MarketCalendar.day_start(now))
+    ctx = journal!(clock: clock)
+    baseline = capture_baseline!(ctx.journal, fake, clock)
+
+    assert {:ok, %Decimal{}} =
+             Journal.day_baseline("FAKE-0001", MarketCalendar.day_start(now), ctx.journal)
+
+    Agent.update(clock_agent, fn _ -> now end)
+    Map.merge(ctx, %{clock: clock, clock_agent: clock_agent, baseline: baseline})
+  end
+
+  @doc "Start the real read client and boundary worker, waiting for its completed attempt."
+  def capture_baseline!(journal, fake, clock, opts \\ []) do
+    id = System.unique_integer([:positive])
+
+    client =
+      start_supervised!(Supervisor.child_spec({Client, Fake.client_opts(fake)}, id: {Client, id}))
+
+    owner = self()
+    token = make_ref()
+    {schedule, opts} = Keyword.pop(opts, :schedule, fn _delay -> :ok end)
+
+    opts =
+      Keyword.merge(
+        [journal: journal, client: client, account: "FAKE-0001", clock: clock],
+        opts
+      )
+
+    opts =
+      Keyword.put(opts, :schedule, fn delay ->
+        schedule.(delay)
+        send(owner, {token, delay})
+      end)
+
+    worker =
+      start_supervised!(
+        Supervisor.child_spec({DailyBaseline, opts}, id: {DailyBaseline, id}, restart: :temporary)
+      )
+
+    assert_receive {^token, _delay}, 5_000
+    %{worker: worker, client: client}
   end
 
   @doc """

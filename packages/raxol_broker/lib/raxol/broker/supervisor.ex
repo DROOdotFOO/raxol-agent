@@ -13,7 +13,8 @@ defmodule Raxol.Broker.Supervisor do
   decisions starts after `Raxol.Broker.Journal` and restarts with it. The
   journal is first: a process that could place an order must never outlive it.
 
-      Journal, Executor, MCP.Client, Feed.Bucket, Feed, Strategy.Supervisor
+      Journal, Executor, MCP.Client, DailyBaseline, Feed.Bucket, Feed,
+      Strategy.Supervisor, Heartbeat, HaltRequest
 
   ## Options
 
@@ -23,9 +24,15 @@ defmodule Raxol.Broker.Supervisor do
       given, the executor starts after the journal and restarts with it. Its
       `:journal` is always this supervisor's journal: passing a different one
       makes `start_link/1` return `{:error, {:journal_mismatch, given}}`. Its `:name`
-      defaults to `Raxol.Broker.Executor`. Omit it to run the journal alone.
+      defaults to `Raxol.Broker.Executor`. Omit it to run without an executor.
     * `:client` - options for the read-only `Raxol.Broker.MCP.Client`
       (`:name` defaults to that module). Omit it to start none.
+    * `:daily_baseline` - options for `Raxol.Broker.DailyBaseline`. When the
+      executor has an `:account_number`, the collector starts automatically
+      after the read client. Its account and journal are this supervisor's;
+      its client defaults to the configured client's name (or the separately
+      started `Raxol.Broker.MCP.Client`). It does not create another client.
+      Run across New York midnight: a missed capture cannot be backfilled.
     * `:feed` - options for `Raxol.Broker.Feed` (`:name` defaults to that
       module, `:client` to the client's name), plus `:bucket`, options for
       the shared `Raxol.Broker.Feed.Bucket`. Omit it to start no feed.
@@ -38,6 +45,10 @@ defmodule Raxol.Broker.Supervisor do
       switch); `:timeout` defaults to the executor policy's
       `dead_man_timeout`, `:journal` and `:strategies` to this supervisor's.
       Omit it to run without one.
+
+  `HaltRequest` always starts last, including journal-only installs, watching
+  the configured journal directory for owner-only cross-process halts.
+  It disarms once per request and waits for a ready executor before cancelling.
 
   ## Restart semantics
 
@@ -60,7 +71,7 @@ defmodule Raxol.Broker.Supervisor do
 
   use Supervisor
 
-  alias Raxol.Broker.{Executor, Feed, Heartbeat, Journal}
+  alias Raxol.Broker.{DailyBaseline, Executor, Feed, Heartbeat, Journal}
   alias Raxol.Broker.MCP.Client
   alias Raxol.Broker.Strategy
 
@@ -81,13 +92,28 @@ defmodule Raxol.Broker.Supervisor do
         children =
           [{Journal, journal_opts} | executor] ++
             client_children(opts) ++
-            feed_children(opts) ++ strategy_children(opts) ++ heartbeat_children(opts)
+            baseline_children(opts) ++
+            feed_children(opts) ++
+            strategy_children(opts) ++
+            heartbeat_children(opts) ++
+            halt_request_children(opts)
 
         Supervisor.init(children, strategy: :rest_for_one)
 
       {:error, _reason} = error ->
         error
     end
+  end
+
+  defp halt_request_children(opts) do
+    executor = opts |> Keyword.get(:executor, []) |> Keyword.get(:name, Executor)
+    strategies = opts |> Keyword.get(:strategies, []) |> Keyword.get(:name, Strategy.Supervisor)
+    path = opts |> Keyword.get(:journal, []) |> Journal.path()
+
+    [
+      {Raxol.Broker.HaltRequest,
+       path: path, journal: journal_name(opts), executor: executor, strategies: strategies}
+    ]
   end
 
   defp journal_name(opts), do: opts |> Keyword.get(:journal, []) |> Keyword.get(:name, Journal)
@@ -126,6 +152,28 @@ defmodule Raxol.Broker.Supervisor do
     case Keyword.fetch(opts, :client) do
       {:ok, client_opts} -> [{Client, Keyword.put_new(client_opts, :name, Client)}]
       :error -> []
+    end
+  end
+
+  defp baseline_children(opts) do
+    executor = Keyword.get(opts, :executor, [])
+
+    case Keyword.get(executor, :account_number) do
+      account when is_binary(account) and account != "" ->
+        client = opts |> Keyword.get(:client, []) |> Keyword.get(:name, Client)
+
+        baseline =
+          opts
+          |> Keyword.get(:daily_baseline, [])
+          |> Keyword.put(:journal, journal_name(opts))
+          |> Keyword.put(:account, account)
+          |> Keyword.put_new(:client, client)
+          |> Keyword.put_new(:clock, Keyword.get(executor, :clock, &DateTime.utc_now/0))
+
+        [{DailyBaseline, baseline}]
+
+      _no_executor_account ->
+        []
     end
   end
 

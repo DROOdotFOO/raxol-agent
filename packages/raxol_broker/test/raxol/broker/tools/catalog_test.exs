@@ -101,6 +101,26 @@ defmodule Raxol.Broker.Tools.CatalogTest do
       assert log =~ ~r/\[warning\].*read tool get_equity_quotes changed/
     end
 
+    test "changing only an order property's description refuses write permission" do
+      live =
+        Enum.map(Catalog.recorded_tools(), fn
+          %{"name" => "place_equity_order"} = tool ->
+            update_in(tool, ["inputSchema", "properties", "quantity", "description"], fn text ->
+              text <> " Unreviewed upstream wording."
+            end)
+
+          tool ->
+            tool
+        end)
+
+      capture_log(fn ->
+        session = Catalog.reconcile(live)
+
+        assert {:error, {:tool_refused, "place_equity_order", :unknown}} =
+                 Catalog.permit(session, "place_equity_order", :write)
+      end)
+    end
+
     test "a tool the capture lacks is :unknown; write-shaped ones log at :error" do
       live =
         Catalog.recorded_tools() ++

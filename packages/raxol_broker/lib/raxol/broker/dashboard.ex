@@ -24,21 +24,23 @@ defmodule Raxol.Broker.Dashboard do
     * SSH: what the server's `:tenant_opts` function gives for the
       authenticated user, e.g.
       `tenant_opts: fn user -> {:ok, [dashboard: [operator: "ssh:" <> user]]} end`;
-    * LiveView and headless: read-only. `Raxol.LiveView.TEALive` passes no
-      per-user options to the app, so a browser session cannot be tied to a
-      person here; `a`, `d` and `K` answer "read-only" and send nothing.
+    * LiveView: `"liveview:<user>"`, from TEALive's opted-in
+      `:authenticated_user` context option, never a URL param;
+    * headless or an unauthenticated browser: read-only.
 
-  The view keeps no timer of its own: the executor denies an unanswered ASK
-  whether or not a dashboard is open. The view re-reads the executor and the
-  journal once a second, and each refresh beats the dead-man switch
-  (`Raxol.Broker.Heartbeat`), so an open dashboard keeps strategies running.
+  The executor denies an unanswered ASK whether or not a dashboard is open.
+  Refreshes, account reads, heartbeats and operator actions run as independent
+  TEA task directives, at most one per operation. A stalled dependency never
+  blocks input or another operation. Approval and kill outcomes stay pending
+  until their task answers; a slow call is not reported as "nothing sent".
 
   ## Mounting
 
   The app has no surface-specific code:
 
       Raxol.run(Raxol.Broker.Dashboard)                           # terminal
-      use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard  # LiveView, read-only
+      Raxol.LiveView.TEALive.mount(params, session, socket,
+        app_module: Raxol.Broker.Dashboard, authenticated_user_key: "user_id")
       Raxol.SSH.serve(Raxol.Broker.Dashboard,
         port: 2222,
         authorized_keys_dir: dir,
@@ -71,19 +73,20 @@ defmodule Raxol.Broker.Dashboard do
       journal: Keyword.get(config, :journal, Journal),
       strategies: Keyword.get(config, :strategies, Strategy.Supervisor),
       client: Keyword.get(config, :client, Client),
-      operator: operator(environment, dashboard(options)),
+      operator: operator(environment, options),
       heartbeat: Keyword.get(config, :heartbeat, Heartbeat),
       confirming_kill: false,
+      in_flight: %{},
+      errors: %{},
+      account_loaded: false,
       asks: [],
       focus: nil,
       mode: :disarmed,
       runners: [],
       decisions: [],
-      account: [],
+      account: ["account: not connected"],
       status: nil
     }
-    |> refresh()
-    |> read_account()
   end
 
   defp dashboard(options) when is_list(options), do: Keyword.get(options, :dashboard, [])
@@ -91,38 +94,87 @@ defmodule Raxol.Broker.Dashboard do
 
   # Only the surface's own options name an operator; the terminal is the
   # console of the broker's VM, so its user is the operator.
-  defp operator(environment, surface_options) when environment in [nil, :terminal] do
-    Keyword.get_lazy(surface_options, :operator, fn ->
+  defp operator(environment, options) when environment in [nil, :terminal] do
+    Keyword.get_lazy(dashboard(options), :operator, fn ->
       "terminal:" <> (System.get_env("USER") || "unknown")
     end)
   end
 
-  defp operator(_environment, surface_options) do
-    case Keyword.get(surface_options, :operator) do
+  defp operator(:liveview, options) do
+    case Keyword.get(options, :authenticated_user) do
+      user when is_binary(user) and byte_size(user) > 0 and byte_size(user) <= 128 ->
+        if String.valid?(user) and not String.contains?(user, ["\n", "\r", "\0"]),
+          do: "liveview:" <> user
+
+      _none ->
+        nil
+    end
+  end
+
+  defp operator(:ssh, options) do
+    case Keyword.get(dashboard(options), :operator) do
       operator when is_binary(operator) and operator != "" -> operator
       _none -> nil
     end
   end
 
+  defp operator(_environment, _options), do: nil
+
   @impl true
-  def update(:tick, model), do: {model |> beat() |> refresh(), []}
+  def update(:tick, model) do
+    {model, effects} = refresh(model)
+    {model, beat} = launch_beat(model)
+    {model, account} = if model.account_loaded, do: {model, []}, else: launch_account(model)
+    {model, effects ++ beat ++ account}
+  end
 
-  def update(key_match("y"), %{confirming_kill: true} = model),
-    do: {model |> kill() |> refresh(), []}
+  def update({:command_result, {:broker_dashboard, operation, ref, result}}, model) do
+    if model.in_flight[operation] == ref do
+      model = %{model | in_flight: Map.delete(model.in_flight, operation)}
+      complete(operation, result, model)
+    else
+      {model, []}
+    end
+  end
 
-  def update(%Raxol.Core.Events.Event{type: :key}, %{confirming_kill: true} = model),
-    do: {%{model | confirming_kill: false, status: "kill cancelled; nothing sent"}, []}
+  def update(key_match("y"), %{confirming_kill: true} = model), do: kill(model)
+
+  def update(%Raxol.Core.Events.Event{type: :key}, %{confirming_kill: true} = model) do
+    status =
+      if Map.has_key?(model.in_flight, :answer) or Map.has_key?(model.in_flight, :kill),
+        do: "kill confirmation cancelled; earlier action outcome still pending",
+        else: "kill cancelled; nothing sent"
+
+    {%{model | confirming_kill: false, status: status}, []}
+  end
 
   def update(message, model) do
     case message do
-      key_match("j") -> {move(model, 1), []}
-      key_match("k") -> {move(model, -1), []}
-      key_match("a") -> {model |> answer(:approve) |> refresh(), []}
-      key_match("d") -> {model |> answer(:decline) |> refresh(), []}
-      key_match("r") -> {model |> refresh() |> read_account(), []}
-      key_match("K") -> {confirm_kill(model), []}
-      key_match("q") -> {model, [Directive.stop()]}
-      _other -> {model, []}
+      key_match("j") ->
+        {move(model, 1), []}
+
+      key_match("k") ->
+        {move(model, -1), []}
+
+      key_match("a") ->
+        answer(model, :approve)
+
+      key_match("d") ->
+        answer(model, :decline)
+
+      key_match("r") ->
+        {model, effects} = refresh(model)
+        {model, account} = launch_account(model)
+        {model, effects ++ account}
+
+      key_match("K") ->
+        {confirm_kill(model), []}
+
+      key_match("q") ->
+        {model, [Directive.stop()]}
+
+      _other ->
+        {model, []}
     end
   end
 
@@ -152,6 +204,15 @@ defmodule Raxol.Broker.Dashboard do
       ask_lines(model),
       ["", "recent decisions:"],
       decision_lines(model.decisions),
+      Enum.map(
+        Enum.sort(Map.keys(model.errors)),
+        fn operation ->
+          case {operation, Map.fetch!(model.errors, operation)} do
+            {:heartbeat, :heartbeat_not_running} -> "dead-man switch: not configured"
+            _other -> "#{operation} unavailable; outcome or snapshot unconfirmed"
+          end
+        end
+      ),
       status_lines(model.status)
     ])
   end
@@ -210,26 +271,32 @@ defmodule Raxol.Broker.Dashboard do
   end
 
   defp answer(%{operator: nil} = model, _decision),
-    do: %{model | status: "read-only: this surface has no operator; nothing sent"}
+    do: {%{model | status: "read-only: this surface has no operator; nothing sent"}, []}
+
+  defp answer(%{in_flight: pending} = model, _decision)
+       when is_map_key(pending, :answer) or is_map_key(pending, :kill),
+       do: {model, []}
 
   defp answer(%{focus: nil} = model, _decision),
-    do: %{model | status: "pick an approval with j/k first; nothing sent"}
+    do: {%{model | status: "pick an approval with j/k first; nothing sent"}, []}
 
   defp answer(model, decision) do
-    case Enum.find(model.asks, &(&1.group_id == model.focus)) do
-      nil ->
-        %{model | focus: nil, status: "the focused approval is gone; nothing sent"}
+    cond do
+      ask = Enum.find(model.asks, &(&1.group_id == model.focus)) ->
+        model = %{model | status: "#{decision} #{ask.intent.id}: pending; outcome not yet known"}
 
-      ask ->
-        result =
-          safe(fn ->
+        launch(model, :answer, fn ->
+          result =
             case decision do
               :approve -> Executor.approve(model.executor, ask.group_id, model.operator)
               :decline -> Executor.decline(model.executor, ask.group_id, model.operator)
             end
-          end)
 
-        %{model | status: "#{decision} #{ask.intent.id}: #{describe(result)}"}
+          {decision, ask.intent.id, result}
+        end)
+
+      true ->
+        {%{model | focus: nil, status: "the focused approval is gone; nothing sent"}, []}
     end
   end
 
@@ -240,17 +307,15 @@ defmodule Raxol.Broker.Dashboard do
   defp describe({:ask, _group_id, _prompts}), do: "asked again"
   defp describe({:error, reason}), do: "error #{inspect(reason, structs: false)}"
 
-  # Only an operator's dashboard keeps the dead-man switch from firing.
-  defp beat(%{operator: nil} = model), do: model
+  # Independent from refresh: a stalled executor must not starve the heartbeat.
+  defp launch_beat(%{operator: nil} = model), do: {model, []}
 
-  defp beat(model) do
-    _ =
-      safe(fn ->
-        if GenServer.whereis(model.heartbeat),
-          do: Heartbeat.beat(model.heartbeat, model.operator)
-      end)
-
-    model
+  defp launch_beat(model) do
+    launch(model, :heartbeat, fn ->
+      if GenServer.whereis(model.heartbeat),
+        do: Heartbeat.beat(model.heartbeat, model.operator),
+        else: {:error, :heartbeat_not_running}
+    end)
   end
 
   defp confirm_kill(%{operator: nil} = model),
@@ -266,41 +331,132 @@ defmodule Raxol.Broker.Dashboard do
   end
 
   defp kill(model) do
-    opts = [
-      executor: model.executor,
-      journal: model.journal,
-      strategies: model.strategies,
-      trigger: model.operator
-    ]
+    if Map.has_key?(model.in_flight, :kill) do
+      {%{model | confirming_kill: false}, []}
+    else
+      opts = [
+        executor: model.executor,
+        journal: model.journal,
+        strategies: model.strategies,
+        trigger: model.operator
+      ]
 
-    status =
-      case safe(fn -> Halt.kill(opts) end) do
-        {:ok, summary} -> "killed: #{length(summary.results)} cancel(s) and decline(s) sent"
-        {:error, reason} -> "kill failed: #{inspect(reason, structs: false)}"
-      end
-
-    %{model | confirming_kill: false, status: status}
+      model = %{model | confirming_kill: false, status: "kill pending; outcome not yet known"}
+      launch(model, :kill, fn -> Halt.kill(opts) end)
+    end
   end
 
   defp refresh(model) do
-    asks = safe(fn -> Executor.parked(model.executor, @call_timeout) end)
-    asks = if is_list(asks), do: asks, else: model.asks
+    [
+      {:executor, fn -> Executor.parked(model.executor, @call_timeout) end},
+      {:journal,
+       fn ->
+         with {:ok, decisions} <- Journal.recent(model.journal, 5) do
+           {:ok, Mode.current(model.journal), decisions}
+         end
+       end},
+      {:strategies,
+       fn ->
+         Enum.map(Strategy.Supervisor.running(model.strategies), &elem(&1, 1))
+       end}
+    ]
+    |> Enum.reduce({model, []}, fn {operation, fun}, {model, effects} ->
+      {model, next} = launch(model, operation, fun)
+      {model, effects ++ next}
+    end)
+  end
 
-    decisions =
-      case safe(fn -> Journal.recent(model.journal, 5) end) do
-        {:ok, decisions} -> decisions
-        _unreadable -> model.decisions
-      end
+  defp launch_account(model),
+    do: launch(model, :account, fn -> read_account(model).account end)
 
-    %{
+  defp launch(model, operation, fun) do
+    if Map.has_key?(model.in_flight, operation) do
+      {model, []}
+    else
+      ref = make_ref()
+
+      effect =
+        Directive.spawn_task(fn ->
+          {:broker_dashboard, operation, ref, safe(fun)}
+        end)
+
+      {%{model | in_flight: Map.put(model.in_flight, operation, ref)}, [effect]}
+    end
+  end
+
+  defp complete(:executor, asks, model) when is_list(asks) do
+    model = %{
       model
       | asks: asks,
-        focus: if(Enum.any?(asks, &(&1.group_id == model.focus)), do: model.focus),
-        mode: Mode.current(model.journal),
-        runners: Enum.map(Strategy.Supervisor.running(model.strategies), &elem(&1, 1)),
-        decisions: decisions
+        focus: if(Enum.any?(asks, &(&1.group_id == model.focus)), do: model.focus)
     }
+
+    {clear_error(model, :executor), []}
   end
+
+  defp complete(:journal, {:ok, mode, decisions}, model),
+    do: {clear_error(%{model | mode: mode, decisions: decisions}, :journal), []}
+
+  defp complete(:strategies, runners, model) when is_list(runners),
+    do: {clear_error(%{model | runners: runners}, :strategies), []}
+
+  defp complete(:account, account, model) when is_list(account),
+    do: {clear_error(%{model | account: account, account_loaded: true}, :account), []}
+
+  defp complete(:heartbeat, :ok, model), do: {clear_error(model, :heartbeat), []}
+
+  defp complete(:answer, {decision, id, result}, model) do
+    refresh(%{clear_error(model, :answer) | status: "#{decision} #{id}: #{describe(result)}"})
+  end
+
+  defp complete(:kill, {:ok, summary}, model) do
+    refresh(%{clear_error(model, :kill) | status: kill_report(summary)})
+  end
+
+  defp complete(operation, {:error, reason}, model) do
+    model = %{model | errors: Map.put(model.errors, operation, reason)}
+    model = if operation == :journal, do: %{model | mode: :disarmed}, else: model
+
+    if operation in [:answer, :kill] do
+      {%{model | status: "#{operation} outcome unconfirmed: #{inspect(reason, structs: false)}"},
+       []}
+    else
+      {model, []}
+    end
+  end
+
+  defp kill_report(summary) do
+    disarm =
+      if summary.disarmed == :ok,
+        do: [],
+        else: ["disarm unconfirmed: #{inspect(summary.disarmed, structs: false)}"]
+
+    failed =
+      for result <- summary.results,
+          result.outcome != "placed",
+          do: "#{result.kind} #{result.id} unconfirmed: #{result.outcome}"
+
+    issues =
+      disarm ++
+        listing_issue("orders", summary.orders) ++
+        listing_issue("approvals", summary.approvals) ++ failed
+
+    case issues do
+      [] ->
+        "kill completed: #{length(summary.results)} successful cancel/decline response(s); verify Robinhood app"
+
+      issues ->
+        "kill INCOMPLETE: " <> Enum.join(issues, "; ") <> "; check Robinhood app"
+    end
+  end
+
+  defp listing_issue(_name, {:ok, _ids}), do: []
+
+  defp listing_issue(name, {:error, reason}),
+    do: ["#{name} incomplete: #{inspect(reason, structs: false)}"]
+
+  defp clear_error(model, operation),
+    do: %{model | errors: Map.delete(model.errors, operation)}
 
   defp read_account(model) do
     lines =
@@ -340,6 +496,8 @@ defmodule Raxol.Broker.Dashboard do
 
   defp safe(fun) do
     fun.()
+  rescue
+    error -> {:error, {:exception, Exception.message(error)}}
   catch
     :exit, reason -> {:error, {:down, reason}}
   end

@@ -69,7 +69,9 @@ defmodule Raxol.Broker.Tools.Options do
     * `order_id` (optional, string)
     * `placed_agent` (optional, string)
     * `state` (optional, string)
+    * `state_group` (optional, string)
     * `underlying_type` (optional, string)
+    * `updated_at_gte` (optional, string)
   """
   @spec get_option_orders(GenServer.server(), map()) :: {:ok, map()} | {:error, term()}
   def get_option_orders(client, args \\ %{}),

@@ -7,9 +7,11 @@ defmodule Raxol.Broker.ToolsTest do
 
   alias Mix.Tasks.Raxol.Broker.CaptureTools
   alias Raxol.Broker.MCP.{Client, Fake}
+  alias Raxol.Broker.Response
   alias Raxol.Broker.Tools
   alias Raxol.Broker.Tools.{Catalog, Generator}
   alias Raxol.Broker.Tools.MarketData
+  alias Raxol.Broker.Tools.Options
 
   @moduletag :capture_log
   @moduletag :tmp_dir
@@ -56,7 +58,43 @@ defmodule Raxol.Broker.ToolsTest do
     assert {:ok, %{is_error: false, content: [%{"text" => text}]}} =
              MarketData.get_equity_quotes(client, %{"symbols" => ["AAPL"]})
 
-    assert %{"quotes" => [%{"symbol" => "AAPL"}]} = Jason.decode!(text)
+    assert %{"results" => [%{"quote" => %{"symbol" => "AAPL"}}]} = Jason.decode!(text)
+  end
+
+  test "option reads admit open-state and update filters including pending cancellations" do
+    fake = Fake.start()
+
+    Fake.on_call(fake, "get_option_orders", fn %{
+                                                 "account_number" => "FAKE-0001",
+                                                 "state_group" => "open",
+                                                 "updated_at_gte" => "2026-11-18T00:00:00Z"
+                                               } ->
+      {:result,
+       %{
+         "isError" => false,
+         "content" => [
+           %{
+             "type" => "text",
+             "text" =>
+               Jason.encode!(%{
+                 "orders" => [%{"id" => "cancel-requested", "state" => "pending_cancelled"}]
+               })
+           }
+         ]
+       }}
+    end)
+
+    client = start_supervised!({Client, Fake.client_opts(fake)})
+
+    assert {:ok, result} =
+             Options.get_option_orders(client, %{
+               "account_number" => "FAKE-0001",
+               "state_group" => "open",
+               "updated_at_gte" => "2026-11-18T00:00:00Z"
+             })
+
+    assert {:ok, %{"orders" => [%{"id" => "cancel-requested", "state" => "pending_cancelled"}]}} =
+             Response.body({:ok, result})
   end
 
   test "technical indicators take exactly one of symbol and symbols, checked before sending" do

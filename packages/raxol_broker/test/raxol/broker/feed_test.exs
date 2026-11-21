@@ -114,16 +114,20 @@ defmodule Raxol.Broker.FeedTest do
     assert quote_calls(ctx.fake) > 10
   end
 
-  test "quotes/1 reads Robinhood's quote fields and skips malformed entries" do
+  test "quotes/1 reads nested quote rows and skips malformed entries" do
     body = %{
-      "quotes" => [
+      "results" => [
         %{
-          "symbol" => "F",
-          "last_trade_price" => "12.255000",
-          "bid_price" => "12.11",
-          "ask_price" => "12.35"
+          "quote" => %{
+            "symbol" => "F",
+            "last_trade_price" => "12.255000",
+            "bid_price" => "12.11",
+            "ask_price" => "12.35"
+          }
         },
-        %{"symbol" => "X"},
+        %{"quote" => %{"symbol" => "X"}},
+        %{"symbol" => "Y", "last_trade_price" => "10"},
+        %{"quote" => nil},
         "junk"
       ]
     }
@@ -132,5 +136,96 @@ defmodule Raxol.Broker.FeedTest do
     assert Decimal.equal?(last, Decimal.new("12.255"))
     assert Decimal.equal?(bid, Decimal.new("12.11")) and Decimal.equal?(ask, Decimal.new("12.35"))
     assert map_size(Feed.quotes(body)) == 1
+  end
+
+  test "quotes/1 rejects missing, legacy and invalid result containers" do
+    quote = %{"symbol" => "F", "last_trade_price" => "9.80"}
+
+    bodies = [
+      nil,
+      [],
+      [quote],
+      %{},
+      %{"quotes" => [quote]},
+      %{"results" => nil},
+      %{"results" => %{"quote" => quote}},
+      %{"results" => [quote]}
+    ]
+
+    for body <- bodies do
+      assert Feed.quotes(body) == %{}, inspect(body)
+    end
+  end
+
+  test "a live data envelope delivers the nested quote, not its close row", ctx do
+    body = %{
+      "data" => %{
+        "results" => [
+          %{
+            "close" => %{"symbol" => "F", "price" => "1.00"},
+            "quote" => %{
+              "symbol" => "F",
+              "last_trade_price" => "12.255000",
+              "bid_price" => "12.11",
+              "ask_price" => "12.35"
+            }
+          }
+        ]
+      },
+      "guide" => "quote guide"
+    }
+
+    Fake.on_call(ctx.fake, "get_equity_quotes", fn _args ->
+      {:result, %{"content" => [%{"type" => "text", "text" => Jason.encode!(body)}]}}
+    end)
+
+    feed = feed!(ctx, bucket!(ctx))
+    :ok = Feed.subscribe(feed, ["F"])
+    poll!(feed)
+
+    assert_received {:quote, "F", %{last: last, bid: bid, ask: ask}}
+    assert Decimal.equal?(last, Decimal.new("12.255"))
+    assert Decimal.equal?(bid, Decimal.new("12.11"))
+    assert Decimal.equal?(ask, Decimal.new("12.35"))
+  end
+
+  test "missing or invalid inner quotes never reach subscribers", ctx do
+    feed = feed!(ctx, bucket!(ctx, limit: 100))
+    :ok = Feed.subscribe(feed, ["F", "AAPL"])
+    quote = %{"symbol" => "F", "last_trade_price" => "9.80"}
+
+    invalid_rows = [
+      %{"symbol" => "F"},
+      %{"symbol" => "F", "quote" => %{"last_trade_price" => "9.80"}},
+      %{"symbol" => "AAPL", "quote" => quote},
+      %{"symbol" => nil, "quote" => quote},
+      %{"quote" => Map.put(quote, "symbol", "")},
+      %{"quote" => Map.put(quote, "symbol", 123)},
+      %{"quote" => Map.put(quote, "last_trade_price", nil)},
+      %{"quote" => Map.put(quote, "last_trade_price", "9.80junk")},
+      %{"quote" => Map.put(quote, "last_trade_price", "NaN")},
+      %{"quote" => Map.put(quote, "last_trade_price", "Infinity")},
+      %{"quote" => Map.put(quote, "last_trade_price", "0")},
+      %{"quote" => Map.put(quote, "last_trade_price", "-1")}
+    ]
+
+    for row <- invalid_rows do
+      body = %{"data" => %{"results" => [row]}}
+
+      Fake.on_call(ctx.fake, "get_equity_quotes", fn _args ->
+        {:result, %{"content" => [%{"type" => "text", "text" => Jason.encode!(body)}]}}
+      end)
+
+      poll!(feed)
+      refute_received {:quote, _, _}
+      advance(ctx, 1_000)
+    end
+
+    assert quote_calls(ctx.fake) == length(invalid_rows)
+  end
+
+  test "a matching optional wrapper symbol does not replace the inner quote symbol" do
+    quote = %{"symbol" => "F", "last_trade_price" => "9.80"}
+    assert %{"F" => _} = Feed.quotes(%{"results" => [%{"symbol" => "F", "quote" => quote}]})
   end
 end

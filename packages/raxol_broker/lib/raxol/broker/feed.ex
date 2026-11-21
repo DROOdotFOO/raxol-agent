@@ -59,27 +59,35 @@ defmodule Raxol.Broker.Feed do
   @spec unsubscribe(GenServer.server()) :: :ok
   def unsubscribe(feed), do: GenServer.call(feed, {:unsubscribe, self()})
 
-  @doc "Parse a `get_equity_quotes` body into `%{symbol => quote}`; malformed entries are skipped."
-  @spec quotes(map() | list()) :: %{String.t() => map()}
-  def quotes(body) do
-    body
-    |> Response.list(["quotes", "results"])
+  @doc "Parse nested `results[].quote` bodies; malformed or contradictory rows are skipped."
+  @spec quotes(term()) :: %{String.t() => map()}
+  def quotes(%{"results" => results}) when is_list(results) do
+    results
     |> Enum.flat_map(fn
-      %{"symbol" => symbol} = entry when is_binary(symbol) ->
-        case Response.decimal(entry["last_trade_price"]) do
-          nil ->
-            []
-
-          last ->
-            ask = Response.decimal(entry["ask_price"])
-            [{symbol, %{last: last, bid: Response.decimal(entry["bid_price"]), ask: ask}}]
+      %{"quote" => %{"symbol" => symbol} = quote} = row
+      when is_binary(symbol) and symbol != "" ->
+        with true <- not Map.has_key?(row, "symbol") or row["symbol"] == symbol,
+             %Decimal{} = last <- Response.decimal(quote["last_trade_price"]),
+             true <- Decimal.gt?(last, 0) do
+          [
+            {symbol,
+             %{
+               last: last,
+               bid: Response.decimal(quote["bid_price"]),
+               ask: Response.decimal(quote["ask_price"])
+             }}
+          ]
+        else
+          _invalid -> []
         end
 
-      _entry ->
+      _row ->
         []
     end)
     |> Map.new()
   end
+
+  def quotes(_body), do: %{}
 
   @impl GenServer
   def init(opts) do

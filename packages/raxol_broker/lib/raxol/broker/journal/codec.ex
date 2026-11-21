@@ -28,6 +28,102 @@ defmodule Raxol.Broker.Journal.Codec do
   @intent_decimals [:qty, :notional, :limit, :stop]
   @context_decimals [:portfolio_value, :start_of_day_value, :day_pnl, :today_notional]
 
+  @doc "Read only the live USD account total, never equity or previous-close aliases."
+  def portfolio_value(%{"currency" => "USD", "total_value" => value}) do
+    case Raxol.Broker.Response.decimal(value) do
+      %Decimal{coef: coef, sign: 1} = value when is_integer(coef) and coef > 0 ->
+        {:ok, value}
+
+      _invalid ->
+        {:error, :invalid_portfolio_value}
+    end
+  end
+
+  def portfolio_value(_body), do: {:error, :invalid_portfolio_value}
+
+  @doc "Whether an instant is inside the exact New York midnight capture window."
+  def capture_window?(%DateTime{} = day, %DateTime{} = at) do
+    DateTime.compare(Raxol.Broker.MarketCalendar.day_start(at), day) == :eq and
+      DateTime.diff(at, day, :microsecond) in 0..59_999_999
+  end
+
+  def capture_window?(_day, _at), do: false
+
+  @doc "Validate and encode a baseline with the journal's trusted write timestamp."
+  def encode_day_baseline(fields, at) do
+    with %{
+           account: account,
+           day_start: day,
+           value: %Decimal{coef: coef, sign: 1, exp: exp} = value,
+           currency: "USD",
+           request_started_at: started,
+           observed_at: observed
+         } <- fields,
+         true <-
+           is_binary(account) and account != "" and is_integer(coef) and coef > 0 and
+             is_integer(exp),
+         true <- Enum.all?([day, started, observed, at], &baseline_timestamp?/1),
+         true <-
+           capture_window?(day, started) and capture_window?(day, observed) and
+             capture_window?(day, at),
+         true <-
+           DateTime.compare(observed, started) != :lt and
+             DateTime.compare(at, observed) != :lt do
+      {:ok,
+       %{
+         "kind" => "broker",
+         "type" => "day_baseline",
+         "account_number" => account,
+         "day_start" => baseline_iso(day),
+         "value" => Decimal.to_string(value),
+         "currency" => "USD",
+         "request_started_at" => baseline_iso(started),
+         "observed_at" => baseline_iso(observed),
+         "at" => baseline_iso(at)
+       }}
+    else
+      _invalid -> {:error, :invalid_day_baseline}
+    end
+  rescue
+    _error in [ArgumentError, FunctionClauseError] -> {:error, :invalid_day_baseline}
+  end
+
+  defp baseline_timestamp?(%DateTime{calendar: Calendar.ISO} = at) do
+    Calendar.ISO.valid_date?(at.year, at.month, at.day) and
+      Calendar.ISO.valid_time?(at.hour, at.minute, at.second, at.microsecond) and
+      at.utc_offset in -86_400..86_400 and at.std_offset in -86_400..86_400
+  end
+
+  defp baseline_timestamp?(_at), do: false
+
+  defp baseline_iso(at), do: at |> DateTime.shift_zone!("Etc/UTC") |> DateTime.to_iso8601()
+
+  @doc "Validate a persisted baseline before rebuilding its first-write-wins index."
+  def decode_day_baseline(record) do
+    with %{"kind" => "broker", "type" => "day_baseline", "currency" => "USD"} <- record,
+         {:ok, day, 0} <- DateTime.from_iso8601(record["day_start"]),
+         {:ok, started, 0} <- DateTime.from_iso8601(record["request_started_at"]),
+         {:ok, observed, 0} <- DateTime.from_iso8601(record["observed_at"]),
+         {:ok, at, 0} <- DateTime.from_iso8601(record["at"]),
+         {:ok, value} <- parse_decimal(record["value"]),
+         {:ok, value} <- Raxol.Broker.Plain.normalize(value),
+         fields = %{
+           account: record["account_number"],
+           day_start: day,
+           value: value,
+           currency: "USD",
+           request_started_at: started,
+           observed_at: observed
+         },
+         {:ok, _record} <- encode_day_baseline(fields, at) do
+      {:ok, fields}
+    else
+      _invalid -> {:error, :invalid_day_baseline}
+    end
+  rescue
+    _error in [ArgumentError, FunctionClauseError] -> {:error, :invalid_day_baseline}
+  end
+
   # -- Intent -----------------------------------------------------------------
 
   @doc "Encode an intent as a JSON-ready map."
@@ -119,6 +215,7 @@ defmodule Raxol.Broker.Journal.Codec do
       "quotes" => price_map(context.quotes),
       "orders_last_minute" => term(context.orders_last_minute),
       "market_session" => atom_or_nil(context.market_session),
+      "trading_day" => context.trading_day,
       "review_warnings" => term(context.review_warnings)
     })
   end
@@ -138,6 +235,7 @@ defmodule Raxol.Broker.Journal.Codec do
       positions: &decode_price_map(&1, :positions),
       quotes: &decode_price_map(&1, :quotes),
       market_session: &session/1,
+      trading_day: &decode_trading_day/1,
       orders_last_minute: &decode_count/1,
       review_warnings: &json_list/1
     ]
@@ -162,6 +260,9 @@ defmodule Raxol.Broker.Journal.Codec do
   defp decode_count(nil), do: {:ok, nil}
   defp decode_count(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp decode_count(_value), do: {:error, {:bad_context, :orders_last_minute}}
+
+  defp decode_trading_day(value) when value in [nil, true, false], do: {:ok, value}
+  defp decode_trading_day(_value), do: {:error, {:bad_context, :trading_day}}
 
   defp session(value) do
     case optional_one_of(value, @sessions, :market_session) do

@@ -8,6 +8,40 @@ switches. Equity orders only. The package is pre-alpha and has not yet
 traded real money; a read-only session and the policy tooling work on
 their own.
 
+## Live preflight — 2026-11-16
+
+Read-only checks against server `1.19.1` established the live envelopes now
+used by the consumers: `data.results[].quote`,
+`data.setting.human_must_approve_trades` (observed `true`) and
+`data.buying_power.buying_power`. The reviewed tool capture and generated
+read wrappers include the current contracts. Equity limit/stop orders
+require whole shares; fractional and dollar market orders retain GFD and
+regular-hours defaults. Unsupported option/advanced/crypto execution stays
+refused rather than inferring instrument eligibility or changing prices.
+Stable 36-byte UUID idempotency keys remain unchanged and satisfy the refreshed
+server contract (a nonempty string of at most 256 bytes).
+
+**This is not a live-soak GO.** The MCP server provides current USD
+`total_value`, but no historical account NAV or complete daily P&L source.
+The owner chose a durable New York day-boundary observation instead:
+`DailyBaseline` captures during the first 60 seconds after local midnight.
+Both request start and completion, and the journal's record timestamp, must
+fit that window. A missed window leaves baseline-dependent orders denied all day.
+The first drawdown-policy evaluation without it also disarms and pauses
+strategies; a later capture does not resume or re-arm them automatically.
+Collector timers round up and reschedule early wakes, including after wall-clock
+changes. Configured clocks run in bounded tasks and are rebuilt as valid UTC ISO
+timestamps; a refused clock leaves the collector alive and schedules another check.
+No arbitrary intraday value, previous-close alias or caller context can
+substitute for the capture; same-day restarts reuse it without replacement.
+
+All five kill-state queries succeeded with empty orders. Positions and
+pending approvals were empty too: their row fields, `ref_id` and actual
+response cursors remain unverified. Field/type observations and remaining
+gaps are recorded in
+[`live_readiness_2026_11_16.json`](test/fixtures/robinhood/live_readiness_2026_11_16.json).
+No arming, order action, credential refresh or policy access occurred.
+
 ## Quick start
 
 Limits come first: nothing stores a credential before the policy file
@@ -54,6 +88,16 @@ loads. Run these from your project, in this order.
    `Raxol.run(Raxol.Broker.Dashboard)`. Expect `mode: DISARMED` and the
    strategy `running`; its intents are journaled as dry run and nothing is
    sent.
+
+   Keep the read-only client and supervisor running across New York
+   midnight when `drawdown_halt` is configured. The executor's account
+   automatically starts `DailyBaseline`, using the configured read client's
+   name (or the separately started `Raxol.Broker.MCP.Client`). It does not
+   create another credential/session. Before arming, check that
+   `Raxol.Broker.Journal.day_baseline(account, day)` returns
+   `{:ok, %Decimal{}}`, where
+   `day = Raxol.Broker.MarketCalendar.day_start(DateTime.utc_now())`.
+   Starting after the capture window cannot backfill today's baseline.
 
 6. Arm, from the same `iex` session.
 
@@ -271,15 +315,31 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   `today_notional` and `orders_last_minute` come from the journal, with
   the day starting at midnight America/New_York on both sides of a
   daylight-saving change (`Raxol.Broker.MarketCalendar`, over the `tz`
-  database); quotes, positions, portfolio value, start-of-day value, day
-  P&L and market session are read through the executor's own session
-  (`Raxol.Broker.Policy.ContextBuilder`, `get_equity_quotes`,
-  `get_equity_positions`, `get_portfolio`). A read that fails leaves its
-  fields empty, and every rule that needs one denies; positions are read
-  page by page, and a listing that fails, cannot be read or is longer than
-  its page limit leaves them empty too. Holidays are not modelled in the
-  market session.
-* **Drawdown breaker.** A pre-review DENY by `:drawdown_breaker` disarms
+  database); current quotes, positions and USD portfolio `total_value`
+  come through the executor's own session (`Raxol.Broker.Policy.ContextBuilder`,
+  `get_equity_quotes`, `get_equity_positions`, `get_portfolio`).
+  Start-of-day value comes only from the journal's account/day baseline;
+  day P&L is current NAV minus that observation. This is not a cash-flow
+  adjusted return: do not deposit or withdraw during the soak. Failed reads
+  or a missing baseline leave the fields empty and the dependent rules deny.
+  A context fetch crossing New York midnight or a backwards clock change
+  is discarded before review; the market session is refreshed at completion.
+  Immediately before placing, another asynchronous clock check refuses a
+  snapshot whose day or market session changed, or whose clock moved backwards,
+  including during review or approval. The executor sends nothing and does not
+  retry inline. A retry, including the runner's existing retry path, fetches fresh
+  context and reviews again. Cancels and declines remain exempt.
+  Positions are read page by page; a listing that fails, cannot be read or
+  is longer than
+  its page limit leaves them empty too. Full-day NYSE holidays for 2026
+  and 2027 and weekends are closed for the entire New York calendar day
+  ([NYSE calendar](https://www.nyse.com/trade/hours-calendars)).
+  New equity orders are denied on those days regardless of
+  `after_hours_market`, preventing holiday-held proposals from using a new
+  day's cap. Weekday overnight limit behavior is unchanged; human cancels
+  and declines remain available. Half days and later years' holidays
+  are not modelled.
+* **Drawdown breaker.** A pre-review or approval-time DENY by `:drawdown_breaker` disarms
   the broker, journals a `halt` record and pauses every strategy runner
   (`Raxol.Broker.Halt.pause/2`). The pause is the journal's
   (`Raxol.Broker.Journal.pauses/1`): a runner restarted, or a strategy
@@ -326,16 +386,19 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   `{:invalid_timeout, key, value}`.
 * **Any review warning asks.** A warning turns ALLOW into ASK
   (`:review_warning`); a review response that cannot be read counts as one.
-  `approve/3` reads the counters again, journals the approval and re-runs
-  the policy: a cap reached while the ASK waited still denies. `decline/3`
+  `approve/3` re-fetches quotes, positions, portfolio, calendar and journal
+  counters, records the refreshed context, journals approval and re-runs
+  policy. A cap reached or position weight changed while waiting denies.
+  A fresh drawdown DENY also disarms and pauses all runners. `decline/3`
   and `close/3` end the group. A bad approver name raises in the caller
   and leaves the group parked.
 * **Counters come from the journal.** Decisions are serialized, so two
-  callers cannot both pass the daily cap. The daily window is a rolling
-  24 hours back from the executor's clock, and no caller input moves it,
-  until #1185 adds a trading calendar the executor owns. Queued callers
-  are monitored, and a queued run whose caller has died is dropped, never
-  dispatched. Queued calls run in order; a new call never jumps ahead.
+  callers cannot both pass the daily cap, which resets at New York midnight.
+  Queued callers are monitored, and a queued run whose caller has died is
+  dropped, never dispatched. Ordinary requests keep arrival order.
+  Halt interrupts in-flight context, review and reconciliation reads before
+  queued work; discarded task results cannot resume the order pipeline,
+  even after rearming. Order writes stay bounded and journal-before-send.
 * **One executor per journal.** The executor claims the journal at start;
   only a process started as an executor can claim, a second one fails with
   `{:journal_claimed, pid}`, and the journal takes any group record
@@ -370,11 +433,26 @@ A person answers an ASK later with `approve(executor, token, "name")`,
 * **Review alerts.** Robinhood lists its pre-trade alerts in
   `data.order_checks`, `{}` when there are none. `Review` turns every entry
   into a warning, and so an ASK: `"<name>: <message>"` for a string or a
-  `"message"`, `"order check <name>"` for a shape it does not know. Only
-  the empty case has been recorded so far.
+  `"message"`, `"order check <name>"` for a shape it does not know.
+  `test/fixtures/robinhood/review_equity_order_checks.json` records a
+  non-empty `EQUITY_NOT_ENOUGH_BP` alert from a review-only limit-buy
+  simulation above available buying power; no order or approval resulted.
 * **Account pin.** The executor's session is ready only when `get_accounts`
   marks its `:account_number` as the one `agentic_allowed` account; it is
   checked on every connect, and again when arming.
+* **Two-stage approval requirement.** Start the executor with
+  `require_customer_approval: true` to require a literal
+  `customer_approval_required: true` from the recorded review before any new
+  order is sent. A missing/false flag returns
+  `{:error, :customer_approval_unconfirmed}` and closes the group without
+  `placing`, including after an operator approves ASK. The default is `false`;
+  enable this explicitly for the controlled canary. Cancels and approval
+  declines remain available. This does not approve a proposal in Robinhood,
+  re-read the upstream setting at placement, or guarantee that an order cannot fill.
+* **Explicit order envelope.** Equity review and placement both send
+  `time_in_force: "gfd"` and `market_hours: "regular_hours"`, pinning the
+  documented defaults rather than relying on omitted arguments. Cancel and
+  decline arguments are unchanged; no additional order type or session is enabled.
 * **Fail closed.** Any journal error before `placing`, review error or
   unsupported order kind means no order. Once the order call is made the
   result is `{:ok, _}`: a place call that times out is journaled
@@ -382,12 +460,12 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   not record comes back with `journaled: false`. While the port is not
   connected the executor stays up and refuses with
   `{:error, :port_not_ready}` until it reconnects.
-* **Armed or disarmed.** No order tool is sent unless the journal's latest
-  mode record is `armed` (see "Arming"). Disarmed, an intent is journaled
-  with `mode: dry_run`, its pre-review verdict is recorded and the group is
-  closed `not_armed` with no review; `run/3` returns `{:error, :not_armed}`.
-  The record is read again before `placing`, so a disarm also stops a parked
-  or in-review group. Cancels always go through.
+* **Armed or disarmed.** No ordinary order tool is sent unless the latest
+  mode record is `armed` (see "Arming"). Disarmed intents fetch no context:
+  a minimal `mode: dry_run` group closes `not_armed`, and `run/3` returns
+  `{:error, :not_armed}`. Mode is read again before `placing`, so disarming
+  also stops a parked or in-review group. Only the kill's human cancels
+  and declines bypass arming.
 * **Sessions.** `mode: :dry_run` (the default) refuses a session that is not
   marked `sandbox: true` or whose URL is on `robinhood.com`. `mode: :live`
   admits Robinhood; with `credential: [store: ..., auth: ...]` the session
@@ -396,11 +474,27 @@ A person answers an ASK later with `approve(executor, token, "name")`,
   token after any review in flight. A refresh Robinhood refuses disarms the
   broker (`reauth_required`): sign in again with `mix raxol.broker.connect`
   and the executor takes the new credential over, but orders wait for a
-  fresh `mix raxol.broker.arm`.
+  fresh `mix raxol.broker.arm`. Refused refreshes continue retrying, but
+  write no repeated `reauth_required` disarm while it is already the latest
+  mode record.
 
 Only equity orders (`review_equity_order`, `place_equity_order`) and equity
 cancels are mapped until the generated tool adapters land; options and
 advanced orders are refused with `{:error, {:no_adapter, kind}}`.
+
+The package requires Plug 1.20.4 or a later 1.20 patch, fixing multipart-parser
+advisory EEF-CVE-2026-120287, and Phoenix LiveView 1.2.14 or a later 1.2 patch,
+fixing live-session hook bypass
+[EEF-CVE-2026-126334](https://osv.dev/vulnerability/EEF-CVE-2026-126334).
+Launch the canary from this package with the pinned `RAXOL_PATH` so it uses this
+patched lock. Starting the Raxol checkout independently uses that project's own
+lock and must be gated separately. An older running process is not upgraded by
+changing either dependency lock.
+
+Pagination regressions against the real Fake cover multi-page aggregation,
+envelope cursors, later-page failures and the twenty-page bound. Those tests
+prove local complete-listing behavior, not an actual upstream cursor round trip.
+They do not satisfy or waive the live-pagination evidence gate.
 
 ## Arming
 
@@ -435,6 +529,9 @@ confirmation shows whether Robinhood's own trade approvals are on
 (`human_must_approve_trades`), and the `armed` record keeps it. Only the
 owner can change that setting, in the app. `disarm` writes a `disarmed`
 record unconditionally.
+The journal commits arming only if its mode generation has not changed
+since the checks began and no halt marker exists. A kill or other mode
+change while the confirmation prompt waits requires starting arm again.
 An off setting refuses with `{:approvals_off, account}` before confirmation
 and writes nothing; an unreadable setting also refuses.
 
@@ -460,16 +557,31 @@ before it is denied, and the last journal decisions. `j`/`k` pick an ASK,
 answered elsewhere or times out, nothing is answered until `j`/`k` picks
 again.
 
+Refreshes, account reads, heartbeats, approvals, declines and kills run
+independently off the TEA process, with one outstanding task per operation.
+Slow approvals and kills remain visibly pending until their actual outcome
+returns; frozen dependencies do not block input or independent heartbeats.
+Initial account and snapshot loading starts on the first one-second tick.
+Kill completion reports incomplete listings and each failed or unknown
+cancel/decline explicitly, including the affected id. A successful response
+count is not a claim that every order is cancelled; verify the Robinhood app.
+If no optional heartbeat process is running, the view explicitly shows
+`dead-man switch: not configured`, rather than an uncertain action outcome.
+
 Only an operator may answer or kill, and the operator is what the
 approval's `by` and the kill's trigger record. The terminal's operator is
 `terminal:<OS user>`. An SSH session's comes from the server's
-`:tenant_opts` for the authenticated user. LiveView and headless sessions
-are read-only: `Raxol.LiveView.TEALive` passes no per-user options, so
-nothing ties a browser to a person.
+`:tenant_opts` for the authenticated user. LiveView uses
+`liveview:<user>` only when TEALive forwards an authenticated session
+identity with `authenticated_user_key: "user_id"` (requires the runtime
+identity-forwarding change). Protect the route with your application's
+authentication; never set that session key from untrusted input. Missing or
+malformed identities and headless sessions remain read-only.
 
 ```elixir
 Raxol.run(Raxol.Broker.Dashboard)                                    # terminal, in the broker's VM
-use Raxol.LiveView.TEALive, app_module: Raxol.Broker.Dashboard      # LiveView, read-only
+Raxol.LiveView.TEALive.mount(params, session, socket,
+  app_module: Raxol.Broker.Dashboard, authenticated_user_key: "user_id")
 Raxol.SSH.serve(Raxol.Broker.Dashboard,
   port: 2222,
   authorized_keys_dir: dir,
@@ -523,6 +635,21 @@ the catalog's write allowlist and is reachable only through
 `Raxol.Broker.Executor.Place`. The baseline kill-to-all-cancelled latency
 against the Fake is in `bench/kill_latency.md`.
 
+From another shell, `mix raxol.broker.kill --journal PATH` submits an empty,
+owner-checked 0600 `halt.request` in the private journal directory when the
+writer lock is held. Its presence blocks new orders and arming immediately.
+The broker's supervised `HaltRequest` polls every 100 ms, disarms once, and runs
+the same kill path, including cancels and declines. No node cookie or RPC
+endpoint is exposed, and the file accepts no payload or trade operation.
+Submission is **not cancellation confirmation**: inspect the halt journal
+and the Robinhood app. If the executor is not ready, the marker stays and
+an off-process worker waits for readiness with a bound and backoff, without
+repeated disarm/halt journal writes. Unsafe markers block trading and are
+reported with repair guidance, not repeatedly logged every poll.
+Without a running broker, the task opens the journal and disarms only.
+Cross-shell requests use the broker's default 10 s per-call bound;
+`--bound` overrides calls only when the task runs in the broker's VM.
+
 `Raxol.Broker.Heartbeat` is the dead-man switch: with no beat within the
 policy's `dead_man_timeout` (24 hours by default, `:off` to disable) it
 journals `dead_man_pause` and pauses every strategy, cancelling nothing;
@@ -552,10 +679,12 @@ mix raxol.broker.strategy stop dip_buy-F
 Each added strategy runs in a `Raxol.Broker.Strategy.Runner` under
 `Raxol.Broker.Strategy.Supervisor`. The runner journals every intent
 (`emit` record) before handing it to the executor and marks it once the
-executor answers (`dispatch` record). A runner that restarts re-sends each
-intent it emitted and never saw answered, with the same intent id, so the
-executor's idempotency check and the `ref_id` derived from that id keep it
-to one order.
+executor answers (`dispatch` record). On restart, only pending emissions
+from the current New York day and no older than `:max_age_ms` (default
+`300_000`) are replayed, with the same intent id. Older, future-dated or
+unreadable emit timestamps are journaled dispatched as `"expired"` and
+never reach the executor. Configure `:max_age_ms` and a zero-arity UTC
+`:clock` through `Strategy.Supervisor`. Idempotency still prevents duplicates.
 
 Adding and stopping are journaled, so the broker starts every added
 strategy when it starts. The task acts on the broker running in its own VM
@@ -690,6 +819,124 @@ refuses a journal whose chain does not verify. Account numbers, wherever
 they appear in recorded responses, print as `[account]` so a replay can be
 shared; `--unredacted` prints them.
 
+### Redacted checkpoint evidence
+
+```sh
+scripts/evidence.sh --date 2026-10-02 [--journal PATH]
+```
+
+Run the normal compile/gate first. This entry point uses `mix run --no-start
+--no-compile --no-deps-check` to keep Mix's task-discovery/compiler chatter out
+of JSON stdout. Only this immutable reader sets `MIX_OS_CONCURRENCY_LOCK=0`,
+so a running collector's Mix build lock cannot block it; do not use that
+setting for compilation or dependency changes. The human-facing
+`mix raxol.broker.evidence` task is also available, but first task discovery
+may print compiler output before its document.
+
+Prints one JSON document, without starting a client, reading credentials,
+opening a writer or making financial reads. Damaged/unreadable journals refuse.
+Groups with recorded UTC-day activity and linked fills retain their recorded
+history, including later records; this is not a day-end snapshot.
+
+The allowlist summarizes intent, policy phase/action, review, broker ASK,
+placement, proposal/order, reconciliation and fill links. Identifiers receive
+consistent export-local pseudonyms. Accounts, order/approval/reference IDs,
+actors, symbols, amounts, balances, raw payloads, prompts and free text never
+appear as originals; pseudonyms are not stable across exports.
+
+Intent risk classes follow `Intent.kinds/0`, including refused option/advanced
+requests. This classification neither exports their parameters nor enables
+unsupported execution.
+
+`journal_integrity: VERIFIED` certifies only the stored chain. Overall result,
+live transport, current broker state and genuine cursor traversal remain
+`UNVERIFIED`. Missing stages and unmatched fills stay unverified/unlinked.
+A proposal is not an order, ASK approval is not Robinhood app approval, and
+a recorded fill does not establish a completely filled order or flat inventory.
+
+### Disarmed macOS handoff
+
+`scripts/handoff.py` coordinates the owner-local launchd collector transition:
+
+```sh
+uv run --locked scripts/handoff.py /absolute/private/handoff.json 2026-11-23T15:15:00Z
+```
+
+This example deadline is not trading permission. Use the absolute expiry from
+a fresh owner decision; the controller never arms or changes a policy.
+The owner-only JSON config contains `collector_label`, `collector_plist`,
+`notifier_label`, `notifier_plist`, `collector_status`, `ready_file`, and
+`command` (an argument list beginning with an absolute executable).
+Control directories must be 0700, files 0600, owner-held, without unsafe or
+symlinked ancestors. Use a new ready-file path for every attempt.
+
+The inline Python environment is hash-locked in `scripts/handoff.py.lock`;
+`--locked` refuses dependency drift before touching services. The deadline
+must be within thirty minutes. Optional bounded budgets are
+`ready_timeout_seconds` (default 600), `drain_timeout_seconds` (60) and
+`recovery_timeout_seconds` (300); none extends the consent deadline.
+
+The web dependency graph also requires Phoenix 1.8.17 for
+[EEF-CVE-2026-129344](https://osv.dev/vulnerability/EEF-CVE-2026-129344) and
+[EEF-CVE-2026-128361](https://osv.dev/vulnerability/EEF-CVE-2026-128361).
+
+The collector must advertise `handoff_protocol: 1` only after installing its
+SIGUSR2 handler. The controller creates an owner-only `handoff-request.json`
+containing the target OS PID, nonce and deadline. A signal alone grants nothing.
+The handler calls `CollectorHandoff.quiesce(directory, root)`: it admits only
+a read-only root's children, suspends restart/refresh processing, refuses an
+armed or non-ready/unpersisted client, then stops the client and journal.
+Use a directly owned root with no external automatic restart. After a
+`:quiesced` result, call `CollectorHandoff.wait_for_unload(directory)`.
+It keeps the caller alive until unload, but exits non-successfully if abandoned
+past the original deadline plus eleven minutes (maximum recovery plus OS margin).
+Only this already-drained caller can expire; no unstored token remains.
+
+**Only a matching acknowledgement of stopped client and closed journal permits
+`launchctl bootout`.** Its finite forced-kill fallback then has no unstored token
+to lose; an infinite Mac shutdown timeout is unnecessary. The OS exit watch is
+registered before the request, and replacement waits for actual old-PID exit
+and a fresh deadline check. Legacy collectors without this protocol refuse.
+That program must exec the broker VM (no daemonization), start disarmed with
+no strategy restoration, and publish its ready JSON atomically. Its environment
+receives `BROKER_HANDOFF_DEADLINE`, `BROKER_HANDOFF_NONCE`, and
+`BROKER_HANDOFF_READY`. Readiness requires the matching nonce/OS PID, fresh
+`observed_at`, `status: running`, `mode: disarmed`, `client_status: ready`,
+`executor_started: true`, `executor_port_ready: true`,
+`strategies_started: false`, `baseline_verified: true`, and
+`credential_persistence_pending: false`. The worker must verify these facts,
+including persisted credentials; a receipt is not a substitute for verification.
+The controller preflights executable/log/temp paths before stopping services.
+Its `.candidate` PID artifact permits cleanup of failed isolated rehearsals.
+Failure JSON includes the phase and whether system state may have changed.
+Cleanup failures set `cleanup_incomplete` on the original result/error instead
+of replacing readiness or a live-candidate warning; failures retain the actual
+`candidate_process_id`. These require owner cleanup, not another refresher.
+If interruption makes process creation uncertain before its PID is returned,
+`launch_outcome_unknown: true` refuses collector restoration and restores only
+alerting. This can require owner intervention even after a failed spawn; it is
+safer than overlapping refreshers. Signals cannot interrupt recovery a second time.
+
+SIGTERM/SIGHUP run bounded recovery instead of abandoning it. Exit events are
+retained even while waiting for acknowledgement; an unexpectedly exited managed
+collector is restarted without forcing any surviving process. If startup exits
+unsuccessfully, restore one read-only collector, wait through missing/intermediate
+health until its report matches launchd, then restore the notifier. A refused or
+failed recovery also restores this alert-only notifier so missing collection
+is not silent. Recovery remains bounded even after consent expires.
+If an old or candidate process survives its bound, **do not force-stop it,
+delete locks or start another refresher**. Report an owner-action incident
+instead. A successfully handed-off full runtime needs its own monitoring;
+the collector-only notifier stays unloaded. No live handoff is authorized
+merely by installing this tool.
+
+macOS lifecycle regression: prebuild `MIX_ENV=test` with the chosen toolchain,
+export its `MIX_BUILD_PATH` (and `RAXOL_PATH` only if using an override), then run
+`python3 -m pytest scripts/test_handoff.py -q` with the locked runtime dependencies
+and pytest available. Missing build/toolchain prerequisites skip explicitly.
+The tests use disposable launchd jobs, isolated journals and the real MCP.Fake;
+no live credentials. Child controllers and candidates are cleaned on failure too.
+
 ## Fake server
 
 `Raxol.Broker.MCP.Fake` stands in for Robinhood's MCP server in tests, dry
@@ -747,6 +994,27 @@ against the captured schema before sending:
 {:ok, result} = Raxol.Broker.Tools.MarketData.get_equity_quotes(session, %{"symbols" => ["AAPL"]})
 ```
 
+Option-order reads accept `state_group: "open" | "closed"` and
+`updated_at_gte` (inclusive UTC timestamp/date) alongside the existing filters.
+Use the open group to include orders with pending cancellation; `pending_cancelled`
+is a result state, not a supported single-state filter. These are read filters,
+not permission to place, cancel or otherwise execute option orders.
+
+The reviewed history guide documents a 5,000-bar cap for explicit intervals.
+The option place/review capability descriptions are vendor metadata, not a
+broker execution adapter: their workflow guidance cannot bypass local review,
+approval or mode gates, and option execution remains unsupported.
+
+Description changes inside `inputSchema` still count as order-tool drift; do not
+strip them to get past a refusal. The latest reviewed capture clarifies that
+per-order buying power can be below the displayed account figure, and a sell
+must fit `shares_available_for_sells`, not total position quantity. Its option
+closing-order guidance does not authorize automatic cancellation or an option
+adapter. The technical-indicator period guide allows 2–500 bars, or 1–500 for
+momentum, roc, atr, keltner_channels and supertrend. These are vendor hints, not
+new local validation. Generated readers are unchanged because property
+descriptions are not rendered. No argument type, required field or annotation changed.
+
 To refresh the capture from a signed-in account:
 
 1. Capture, then list what the new capture changes for the order tools:
@@ -782,12 +1050,13 @@ To refresh the capture from a signed-in account:
    that a new order tool is meant to be one.
 4. Update the counts below from the `classes` line, and the CHANGELOG.
 
-The checked-in capture is Robinhood's live list of 2026-11-11 (87 tools):
-57 are readable, `review_equity_order`, `review_option_order`,
-`review_advanced_order` and `preview_crypto_order` are the review tools, and
-the equity, option, crypto and advanced `place_*`/`cancel_*` tools plus alert
-create/update are the writes. The other 16, `decline_trade_approval` among
-them, are `:unknown` and refused.
+The checked-in capture contains 87 tools; see its provenance for the exact
+capture timestamp. There are 57 reads, four reviews, 11 writes and 15 unknowns.
+The reviews are `review_equity_order`, `review_option_order`,
+`review_advanced_order` and `preview_crypto_order`. Writes are allowlisted equity,
+option, crypto and advanced `place_*`/`cancel_*` tool-name shapes, alert create/update,
+and `decline_trade_approval`. Classification is not an execution adapter: the
+order/cancel adapters are equity-only. Unknown tools remain refused.
 
 ## Robinhood sign-in
 
