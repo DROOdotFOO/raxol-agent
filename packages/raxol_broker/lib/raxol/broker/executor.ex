@@ -531,7 +531,7 @@ defmodule Raxol.Broker.Executor do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{busy: %{ref: ref}} = state),
-    do: review_done(state, {:error, {:review_crashed, reason}})
+    do: review_done(state, {:error, {:review_crashed, collapse(reason)}})
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, %{connect: %Task{ref: ref}} = state),
     do: {:noreply, connected(%{state | connect: nil}, {:error, {:connect_crashed, reason}})}
@@ -622,11 +622,16 @@ defmodule Raxol.Broker.Executor do
   # The session's tool classes: the live list reconciled against the frozen
   # capture (`Raxol.Broker.Tools.Catalog`). A port whose list cannot be read
   # never becomes ready, so no tool is ever called unclassified.
+  #
+  # An exit from the client is caught here and collapsed, so the task never
+  # crashes with (and logs) a reason that can carry the client spec.
   defp await_catalog(port) do
     with :ok <- PortMCP.await_ready(port),
          {:ok, tools} <- PortMCP.list_tools(port) do
       {:ok, Catalog.reconcile(tools)}
     end
+  catch
+    :exit, reason -> {:error, collapse(reason)}
   end
 
   defp connected(state, {:ok, catalog}) do
@@ -649,7 +654,12 @@ defmodule Raxol.Broker.Executor do
     port_failed(%{state | port: nil}, {:connect_failed, reason})
   end
 
+  # The reason is collapsed before it is logged or kept: an exit from the
+  # inner MCP client can carry a stacktrace whose arguments are the client
+  # spec, bearer header included.
   defp port_failed(state, reason) do
+    reason = collapse(reason)
+
     Logger.warning(
       "[Broker.Executor] port not ready (#{inspect(reason, structs: false)}); " <>
         "reconnecting in #{state.backoff} ms"
@@ -664,10 +674,39 @@ defmodule Raxol.Broker.Executor do
     }
   end
 
+  # A failure reason with any argument-carrying term removed: nested
+  # `{atom, inner}` tags are kept (to a bounded depth), and the innermost
+  # reason becomes an atom, an HTTP status or a module; anything else
+  # becomes `:error`. Public for its tests.
+  @doc false
+  @spec collapse(term()) :: term()
+  def collapse(reason), do: collapse(reason, 4)
+
+  defp collapse(reason, _depth) when is_atom(reason), do: reason
+  defp collapse({:http, status}, _depth) when is_integer(status), do: {:http, status}
+  defp collapse(%{__exception__: true, __struct__: module}, _depth), do: module
+
+  defp collapse({%{__exception__: true, __struct__: module}, stack}, _depth) when is_list(stack),
+    do: module
+
+  defp collapse({reason, stack}, _depth) when is_atom(reason) and is_list(stack), do: reason
+
+  defp collapse({tag, inner}, depth) when is_atom(tag) and depth > 0,
+    do: {tag, collapse(inner, depth - 1)}
+
+  defp collapse(%{__struct__: module}, _depth), do: module
+  defp collapse(_reason, _depth), do: :error
+
+  # The receipt key and the session spec (bearer header, stdio env) never
+  # reach a crash report or `:sys.get_status`; neither do the failure terms
+  # OTP adds next to the state.
   @impl GenServer
   def format_status(status) do
-    Map.new(status, fn
-      {:state, %{} = state} -> {:state, %{state | key: :redacted}}
+    status
+    |> Raxol.Agent.Secret.redact_status([:key, :client_spec, :account])
+    |> Map.new(fn
+      {:reason, reason} -> {:reason, collapse(reason)}
+      {:message, message} -> {:message, shape(message)}
       other -> other
     end)
   end

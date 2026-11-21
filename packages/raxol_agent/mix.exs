@@ -1,7 +1,7 @@
 defmodule RaxolAgent.MixProject do
   use Mix.Project
 
-  @version "3.1.0"
+  @version "3.2.0"
   @source_url "https://github.com/DROOdotFOO/raxol-agent"
   @source_ref "raxol_agent-v#{@version}"
 
@@ -66,7 +66,7 @@ defmodule RaxolAgent.MixProject do
     path = "../raxol_agent_client_protocol"
 
     if hex_package?() do
-      [{:raxol_agent_client_protocol, "~> 0.1.0"}]
+      [{:raxol_agent_client_protocol, "~> 0.2.0"}]
     else
       [{:raxol_agent_client_protocol, path: path, override: true}]
     end

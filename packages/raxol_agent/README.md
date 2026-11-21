@@ -6,7 +6,7 @@ loop and SSE streaming backends.
 ## Install
 
 ```elixir
-{:raxol_agent, "~> 3.1"}
+{:raxol_agent, "~> 3.2"}
 ```
 
 Requires `raxol`, `raxol_mcp` and `raxol_journal` 2.8 and `raxol_agent_client_protocol`. The

@@ -86,6 +86,29 @@ defmodule Raxol.Agent.Directive do
 
     @enforce_keys [:command]
     defstruct command: nil, opts: []
+
+    # `opts[:env]` may carry a credential the caller opted in for this
+    # command; its values never render.
+    defimpl Inspect do
+      import Inspect.Algebra
+
+      def inspect(%{command: command, opts: opts}, inspect_opts) do
+        opts =
+          case Keyword.fetch(opts, :env) do
+            {:ok, env} when is_list(env) ->
+              Keyword.put(opts, :env, Enum.map(env, fn {name, _value} -> {name, :redacted} end))
+
+            _other ->
+              opts
+          end
+
+        concat([
+          "#Raxol.Agent.Directive.Shell<",
+          to_doc([command: command, opts: opts], inspect_opts),
+          ">"
+        ])
+      end
+    end
   end
 
   defmodule SendAgent do
@@ -118,7 +141,12 @@ defmodule Raxol.Agent.Directive do
   Options:
     * `:timeout` - max execution time in ms (default: runtime default)
     * `:cd` - working directory
-    * `:env` - environment variables as `[{key, value}]`
+    * `:env` - environment variables as `[{key, value}]`. The command
+      otherwise inherits the node's environment minus every credential
+      (`Raxol.Agent.ChildEnv`: API keys, tokens such as `GH_TOKEN`, AWS keys,
+      RPC URLs); a credential named here is passed to this command only.
+      `config :raxol_core, Raxol.Core.ChildEnv, pass: [name]` lets a name
+      through to every child instead.
   """
   @spec shell(String.t(), keyword()) :: Shell.t()
   def shell(command, opts \\ []) when is_binary(command) and is_list(opts) do

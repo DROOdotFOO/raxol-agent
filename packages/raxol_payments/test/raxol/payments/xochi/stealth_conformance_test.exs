@@ -66,9 +66,14 @@ defmodule Raxol.Payments.Xochi.StealthConformanceTest do
       {sp_priv, sp_pub} = keys.spending
       {vp_priv, vp_pub} = keys.viewing
 
-      assert hex(sp_priv) == norm(v["spending_priv"]), "spending_priv (#{v["name"]})"
+      assert hex(Raxol.Agent.Secret.reveal(sp_priv)) == norm(v["spending_priv"]),
+             "spending_priv (#{v["name"]})"
+
       assert hex(sp_pub) == norm(v["spending_pub"]), "spending_pub (#{v["name"]})"
-      assert hex(vp_priv) == norm(v["viewing_priv"]), "viewing_priv (#{v["name"]})"
+
+      assert hex(Raxol.Agent.Secret.reveal(vp_priv)) == norm(v["viewing_priv"]),
+             "viewing_priv (#{v["name"]})"
+
       assert hex(vp_pub) == norm(v["viewing_pub"]), "viewing_pub (#{v["name"]})"
     end
   end

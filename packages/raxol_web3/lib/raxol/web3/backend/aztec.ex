@@ -184,10 +184,12 @@ defmodule Raxol.Web3.Backend.Aztec do
   alias Raxol.Web3.TTL
 
   # `:http_opts` is an operator's own keyword list and may carry an
-  # authorization header, so it is not something `inspect/1` may render: a
+  # authorization header, and `:base_url` carries the API key as a path
+  # segment (`/v1/<key>`), so neither is something `inspect/1` may render: a
   # handle reaches an operator through `Raxol.Web3.Router.candidates/3`, and a
   # crash anywhere below formats the struct whole into a log line.
-  @derive {Inspect, except: [:http_opts]}
+  # `:base_digest` still identifies the handle.
+  @derive {Inspect, except: [:http_opts, :base_url]}
   @enforce_keys [:chain_ref, :base_url, :network, :source, :base_digest]
   defstruct [
     :chain_ref,

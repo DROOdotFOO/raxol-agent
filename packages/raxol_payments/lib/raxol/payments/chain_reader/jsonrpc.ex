@@ -11,11 +11,15 @@ defmodule Raxol.Payments.ChainReader.JSONRPC do
 
   @behaviour Raxol.Payments.ChainReader
 
+  alias Raxol.Agent.Secret
+
   @doc """
   Build a reader handle over a `chain_id => rpc_url` map.
 
   Options:
-    * `:chains` -- `%{pos_integer() => String.t()}` (required)
+    * `:chains` -- `%{pos_integer() => String.t()}` (required). Each URL is
+      kept `Raxol.Agent.Secret`-wrapped, since provider URLs embed API keys
+      and the handle lives in process state.
     * `:req_options` -- extra `Req` options merged into every request (e.g.
       `plug:` for `Req.Test`, `receive_timeout:`)
   """
@@ -23,7 +27,12 @@ defmodule Raxol.Payments.ChainReader.JSONRPC do
   def new(opts) do
     chains = Keyword.fetch!(opts, :chains)
     req_options = Keyword.get(opts, :req_options, [])
-    {__MODULE__, %{chains: chains, req_options: req_options}}
+
+    {__MODULE__,
+     %{
+       chains: Map.new(chains, fn {id, url} -> {id, Secret.new(url)} end),
+       req_options: req_options
+     }}
   end
 
   @impl true
@@ -91,7 +100,7 @@ defmodule Raxol.Payments.ChainReader.JSONRPC do
 
   defp call(state, chain_id, method, params) do
     case Map.fetch(state.chains, chain_id) do
-      {:ok, url} -> do_call(url, state.req_options, method, params)
+      {:ok, url} -> do_call(Secret.reveal(url), state.req_options, method, params)
       :error -> {:error, {:no_rpc_for_chain, chain_id}}
     end
   end

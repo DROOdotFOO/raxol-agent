@@ -76,6 +76,8 @@ defmodule Raxol.Payments.Xochi.Client do
       {:ok, quote} = Xochi.Client.get_quote(config, %QuoteRequest{...})
   """
 
+  alias Raxol.Agent.Secret
+
   alias Raxol.Payments.Xochi.Schemas.{
     DepositRouteRequest,
     ExecuteRequest,
@@ -87,7 +89,7 @@ defmodule Raxol.Payments.Xochi.Client do
   }
 
   @type auth ::
-          {:member, String.t()}
+          {:member, String.t() | Secret.t()}
           | {:mandate, String.t()}
           | {:mandate, String.t(), keyword()}
           | {:x402, keyword()}
@@ -96,7 +98,7 @@ defmodule Raxol.Payments.Xochi.Client do
   @type config :: %{
           :base_url => String.t(),
           optional(:auth) => auth(),
-          optional(:auth_token) => String.t() | Raxol.Payments.Secret.t(),
+          optional(:auth_token) => String.t() | Secret.t(),
           optional(:req_options) => keyword()
         }
 
@@ -277,6 +279,28 @@ defmodule Raxol.Payments.Xochi.Client do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  @doc """
+  `config` with its member token `Raxol.Agent.Secret`-wrapped (`:auth_token`
+  and `auth: {:member, token}`), for a caller about to keep the config in
+  process state. Already wrapped tokens and other auth modes are unchanged.
+  """
+  @spec protect_config(config() | nil) :: config() | nil
+  def protect_config(%{} = config) do
+    config
+    |> protect(:auth_token)
+    |> protect(:auth)
+  end
+
+  def protect_config(other), do: other
+
+  defp protect(%{auth_token: token} = config, :auth_token) when is_binary(token),
+    do: %{config | auth_token: Secret.new(token)}
+
+  defp protect(%{auth: {:member, token}} = config, :auth) when is_binary(token),
+    do: %{config | auth: {:member, Secret.new(token)}}
+
+  defp protect(config, _key), do: config
+
   defp build_req(config) do
     validate_base_url!(config.base_url)
 
@@ -288,17 +312,17 @@ defmodule Raxol.Payments.Xochi.Client do
 
   # Explicit `:auth` wins; a bare legacy `:auth_token` maps to Member Bearer;
   # otherwise the request is anonymous (the worker answers 402 with a Guest
-  # invite). A `Raxol.Payments.Secret`-wrapped token is revealed only here, so
-  # the token stays redacted in any config/state that a crash report might dump.
+  # invite). A `Secret`-wrapped member token is revealed only when the header
+  # is set, so it stays redacted in any config or state a crash report dumps.
   defp auth_mode(%{auth: auth}), do: auth
-
-  defp auth_mode(%{auth_token: %Raxol.Payments.Secret{} = token}),
-    do: {:member, Raxol.Payments.Secret.reveal(token)}
-
-  defp auth_mode(%{auth_token: token}) when is_binary(token), do: {:member, token}
+  defp auth_mode(%{auth_token: token}) when not is_nil(token), do: {:member, token}
   defp auth_mode(_), do: :none
 
-  defp apply_auth(req, {:member, token}) do
+  defp apply_auth(req, {:member, %Secret{} = token}) do
+    Req.Request.put_header(req, "authorization", "Bearer #{Secret.reveal(token)}")
+  end
+
+  defp apply_auth(req, {:member, token}) when is_binary(token) do
     Req.Request.put_header(req, "authorization", "Bearer #{token}")
   end
 

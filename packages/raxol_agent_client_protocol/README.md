@@ -6,7 +6,7 @@ confused with the Virtuals Agent Commerce Protocol (`Raxol.Earn`).
 
 ```elixir
 def deps do
-  [{:raxol_agent_client_protocol, "~> 0.1"}]
+  [{:raxol_agent_client_protocol, "~> 0.2"}]
 end
 ```
 
@@ -52,7 +52,7 @@ one directory and run `elixir my_client.exs`.
 # and logs go to stderr.
 leader = Process.group_leader()
 Process.group_leader(self(), Process.whereis(:standard_error))
-Mix.install([{:raxol_agent_client_protocol, "~> 0.1"}])
+Mix.install([{:raxol_agent_client_protocol, "~> 0.2"}])
 Process.group_leader(self(), leader)
 
 {:ok, handler} = :logger.get_handler_config(:default)
@@ -104,7 +104,7 @@ end
 
 ```elixir
 # my_client.exs
-Mix.install([{:raxol_agent_client_protocol, "~> 0.1"}])
+Mix.install([{:raxol_agent_client_protocol, "~> 0.2"}])
 
 defmodule MyClient do
   use Raxol.AgentClientProtocol.Client

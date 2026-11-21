@@ -32,6 +32,30 @@ defmodule Raxol.Payments.Relay.ClientTest do
     }
   end
 
+  describe "auth header" do
+    setup do
+      parent = self()
+
+      Req.Test.stub(__MODULE__, fn conn ->
+        send(parent, {:auth, Plug.Conn.get_req_header(conn, "authorization")})
+        Req.Test.json(conn, %{"status" => "pending"})
+      end)
+
+      :ok
+    end
+
+    test "a Secret-wrapped token is sent as the Bearer" do
+      config = %{config() | auth_token: Raxol.Agent.Secret.new("wrapped")}
+      Client.get_status(config, "t_1")
+      assert_received {:auth, ["Bearer wrapped"]}
+    end
+
+    test "a nil token sends no authorization header" do
+      Client.get_status(%{config() | auth_token: nil}, "t_1")
+      assert_received {:auth, []}
+    end
+  end
+
   describe "get_quote/2" do
     test "posts to /relay/quote and parses the response" do
       Req.Test.stub(__MODULE__, fn conn ->

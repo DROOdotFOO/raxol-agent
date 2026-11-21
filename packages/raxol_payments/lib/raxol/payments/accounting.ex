@@ -177,14 +177,18 @@ defmodule Raxol.Payments.Accounting do
   end
 
   # Only chains with a non-empty RPC URL are included, so a partial deployment
-  # (say, Base + Optimism only) reads just those corridors.
-  @spec rpc_urls() :: %{optional(pos_integer()) => String.t()}
+  # (say, Base + Optimism only) reads just those corridors. Each URL is
+  # `Secret`-wrapped: it can embed a provider key and rides child start args.
+  @spec rpc_urls() :: %{optional(pos_integer()) => Raxol.Agent.Secret.t()}
   defp rpc_urls do
     @rpc_env
     |> Enum.reduce(%{}, fn {chain_id, env_var}, acc ->
       case System.get_env(env_var) do
-        url when is_binary(url) and url != "" -> Map.put(acc, chain_id, url)
-        _ -> acc
+        url when is_binary(url) and url != "" ->
+          Map.put(acc, chain_id, Raxol.Agent.Secret.new(url))
+
+        _ ->
+          acc
       end
     end)
   end
@@ -274,7 +278,7 @@ defmodule Raxol.Payments.Accounting do
       true ->
         [
           sleuth_api_key:
-            Raxol.Payments.Secret.new(String.trim(System.get_env("RAXOL_SLEUTH_API_KEY"))),
+            Raxol.Agent.Secret.new(String.trim(System.get_env("RAXOL_SLEUTH_API_KEY"))),
           rpc_urls: rpc_urls
         ]
     end

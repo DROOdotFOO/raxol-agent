@@ -143,6 +143,7 @@ defmodule Raxol.Web3.Backend.AztecTest do
       hosted_url = "https://api.aztecscan.xyz/v1/temporary-api-key"
       {:ok, configured} = Aztec.new(@chain, base_url: hosted_url)
       assert Backend.name(configured) == :aztecscan
+      refute inspect(configured) =~ "temporary-api-key"
     end
 
     test "a base url that cannot be dialled is refused at construction, not per read" do

@@ -86,6 +86,16 @@ defmodule Raxol.Agent.DirectiveTest do
     end
   end
 
+  describe "Shell inspect" do
+    test "env values never render" do
+      shell = Directive.shell("gh pr list", env: [{"GH_TOKEN", "ghp-inspect-test"}], timeout: 5)
+      out = inspect(shell)
+      refute out =~ "ghp-inspect-test"
+      assert out =~ "GH_TOKEN"
+      assert out =~ "gh pr list"
+    end
+  end
+
   describe "Executor for Shell" do
     # Shell directives run through `/bin/sh -c`.
     @tag :unix_only
@@ -164,6 +174,24 @@ defmodule Raxol.Agent.DirectiveTest do
       Executor.execute(directive, %{pid: self(), runtime_pid: self()})
 
       assert_receive {:command_result, {:shell_result, %{exit_status: 0, output: "unset|home"}},
+                      %{turn_id: nil}},
+                     5_000
+    end
+
+    @tag :unix_only
+    test "the command does not inherit a provider key or an RPC URL" do
+      names = ~w(DIRECTIVE_TEST_API_KEY RPC_DIRECTIVE_TEST)
+      for name <- names, do: System.put_env(name, "probe")
+      on_exit(fn -> for name <- names, do: System.delete_env(name) end)
+
+      directive =
+        Directive.shell(
+          ~s(printf '%s|%s' "${DIRECTIVE_TEST_API_KEY-unset}" "${RPC_DIRECTIVE_TEST-unset}")
+        )
+
+      Executor.execute(directive, %{pid: self(), runtime_pid: self()})
+
+      assert_receive {:command_result, {:shell_result, %{exit_status: 0, output: "unset|unset"}},
                       %{turn_id: nil}},
                      5_000
     end

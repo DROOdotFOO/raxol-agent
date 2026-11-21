@@ -32,7 +32,7 @@ defmodule Raxol.Payments.Xochi.Stealth do
   - Scheme ID 1: secp256k1 with view tags
   """
 
-  alias Raxol.Payments.Secret
+  alias Raxol.Agent.Secret
 
   @erc5564_announcer "0x55649E01B5Df198D18D95b5cc5051630cfD45564"
   @erc6538_registry "0x6538E6bf4B0eBd30A8Ea093027Ac2422ce5d6538"
@@ -142,21 +142,33 @@ defmodule Raxol.Payments.Xochi.Stealth do
 
   Returns a list of discovered payments with their stealth private keys.
   """
-  @spec scan(binary(), binary(), [announcement()]) ::
+  @spec scan(binary() | Secret.t(), binary() | Secret.t(), [announcement()]) ::
           {:ok, [stealth_payment()]} | {:error, term()}
   def scan(spending_priv_key, viewing_priv_key, announcements) when is_list(announcements) do
-    payments =
-      announcements
-      |> Enum.filter(&(&1.scheme_id == @stealth_scheme_id))
-      |> Enum.reduce([], fn ann, acc ->
-        case check_announcement(spending_priv_key, viewing_priv_key, ann) do
-          {:ok, payment} -> [payment | acc]
-          :skip -> acc
-        end
-      end)
-      |> Enum.reverse()
+    # Both keys are revealed only inside `with_revealed/2`: a raise while
+    # scanning (a malformed key or announcement) becomes a fixed error instead
+    # of a stacktrace carrying the keys as call arguments.
+    Secret.with_revealed(Secret.new(spending_priv_key), fn spending ->
+      Secret.with_revealed(
+        Secret.new(viewing_priv_key),
+        &{:ok, scan_with(spending, &1, announcements)}
+      )
+    end)
+  end
 
-    {:ok, payments}
+  def scan(_spending_priv_key, _viewing_priv_key, _announcements),
+    do: {:error, :invalid_announcements}
+
+  defp scan_with(spending_priv_key, viewing_priv_key, announcements) do
+    announcements
+    |> Enum.filter(&(&1.scheme_id == @stealth_scheme_id))
+    |> Enum.reduce([], fn ann, acc ->
+      case check_announcement(spending_priv_key, viewing_priv_key, ann) do
+        {:ok, payment} -> [payment | acc]
+        :skip -> acc
+      end
+    end)
+    |> Enum.reverse()
   end
 
   @doc """
@@ -260,9 +272,12 @@ defmodule Raxol.Payments.Xochi.Stealth do
 
   @doc """
   Derive stealth keys from an EVM signature (domain-separated).
+
+  Each keypair is `{private_key, public_key}`, the private key
+  `Raxol.Agent.Secret`-wrapped (`scan/3` takes it as is).
   """
   @spec derive_keys(String.t()) ::
-          {:ok, %{spending: {binary(), binary()}, viewing: {binary(), binary()}}}
+          {:ok, %{spending: {Secret.t(), binary()}, viewing: {Secret.t(), binary()}}}
           | {:error, term()}
   def derive_keys(signature) do
     clean_sig = strip_0x(signature)
@@ -274,8 +289,8 @@ defmodule Raxol.Payments.Xochi.Stealth do
          {:ok, viewing_pub} <- derive_pubkey(viewing_priv) do
       {:ok,
        %{
-         spending: {spending_priv, spending_pub},
-         viewing: {viewing_priv, viewing_pub}
+         spending: {Secret.new(spending_priv), spending_pub},
+         viewing: {Secret.new(viewing_priv), viewing_pub}
        }}
     end
   end

@@ -22,9 +22,9 @@ defmodule Raxol.Agent.Web3 do
   that builds a context. The key is read from the environment then, trimmed,
   and kept in the handle, which never renders it; changing it takes a restart.
   The variable stays in the node's environment. Every child raxol spawns for a
-  model or a third party (directive shell commands, MCP stdio servers,
-  benchmarked agent packages) gets that environment without it
-  (`Raxol.Core.ChildEnv`), so inheriting it is closed. A nested raxol node
+  model or a third party gets that environment without it: directive shell
+  commands and benchmarked agent packages through `Raxol.Agent.ChildEnv`, MCP
+  stdio servers through `Raxol.Core.ChildEnv`, so inheriting it is closed. A nested raxol node
   that needs the key should get
   it from its own config (`fx: [sleuth_api_key: ...]`, e.g. read from a 0600
   file or `op` in `runtime.exs`); `config :raxol_core, Raxol.Core.ChildEnv,
@@ -140,7 +140,7 @@ defmodule Raxol.Agent.Web3 do
               "config :raxol_agent, :web3, fx: is set but has no Sleuth key: give this " <>
                 "node its own with config :raxol_agent, :web3, fx: [sleuth_api_key: ...], " <>
                 "set #{@key_env}, or remove :fx. A node started by another raxol node's " <>
-                "shell or MCP server has #{@key_env} unset by Raxol.Core.ChildEnv. " <>
+                "shell (Raxol.Agent.ChildEnv) or MCP server (Raxol.Core.ChildEnv) has #{@key_env} unset. " <>
                 "The parent's config :raxol_core, Raxol.Core.ChildEnv, " <>
                 "pass: [\"#{@key_env}\"] lets it through, but is global: it hands the key " <>
                 "to EVERY child the parent spawns (shells, MCP servers, the earn bench)"

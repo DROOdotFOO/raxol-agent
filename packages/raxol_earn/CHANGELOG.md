@@ -14,10 +14,17 @@ package formerly named `raxol_acp`; neither name has been on Hex before, so
 
 ### Added
 
-- The console bench runs a buyer-supplied agent package without raxol's own
-  secrets in its environment (`Raxol.Core.ChildEnv`), `RAXOL_ACP_AGENT_PRIVATE_KEY`
-  and `XOCHI_AUTH_TOKEN` included; it used to inherit the node's whole
+- The console bench runs a buyer-supplied agent package without credentials
+  in its environment (`Raxol.Agent.ChildEnv`): raxol's own secrets,
+  `RAXOL_ACP_AGENT_PRIVATE_KEY` and `XOCHI_AUTH_TOKEN` included, plus every
+  credential-named variable and RPC URL; it used to inherit the node's whole
   environment.
+- `Raxol.Earn.Auth` keeps its bearer JWT out of `Inspect` and
+  `:sys.get_status`; the provider adapters keep RPC URLs
+  `Raxol.Agent.Secret`-wrapped; the solver, settler and seller queue wrap the
+  Xochi member token. `Raxol.Earn.Secret` delegates to `Raxol.Agent.Secret`
+  (deprecated).
+- Requires `raxol_payments ~> 0.4` and `raxol_agent ~> 3.2`.
 - **Job session**: `Raxol.Earn.JobSession` plus
   `JobSession.{Registry, Supervisor, Status, Provider, HandlerSeam, Client, Tools}`.
   One supervised process per active job, registered by `{chain_id, job_id}`.

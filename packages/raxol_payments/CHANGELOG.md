@@ -5,7 +5,27 @@ All notable changes to `raxol_payments` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - Unreleased
+
+### Changed
+
+- **Breaking: `Raxol.Payments.Secret` is deprecated** and delegates to
+  `Raxol.Agent.Secret` (raxol_agent); `new/1` returns a `Raxol.Agent.Secret`,
+  so a `%Raxol.Payments.Secret{}` pattern no longer matches.
+  `Accounting.env_config/0` returns its RPC URLs wrapped. Hence 0.4.0.
+- **Breaking: `Xochi.Stealth.derive_keys/1` returns each private key
+  `Raxol.Agent.Secret`-wrapped** (`{secret, public_key}`). `scan/3` takes raw
+  or wrapped keys, runs under `with_revealed/2` (a raise becomes `{:error,
+  :secret_operation_crashed}`), and returns `{:error, :invalid_announcements}`
+  for a non-list instead of raising.
+- `Xochi.Client` accepts a wrapped token in `auth: {:member, _}`;
+  `protect_config/1` wraps raw member tokens for a caller about to keep the
+  config. `Relay.Client` and `Pxe.Client` accept a wrapped token or key; a
+  `nil` relay token sends no `authorization` header (was `Bearer `).
+- `ChainReader.JSONRPC` and `Accounting.env_config/0` keep RPC URLs wrapped,
+  since provider URLs embed API keys.
+- Requires `raxol_agent ~> 3.2` (was `~> 3.0`), the release that ships
+  `Raxol.Agent.Secret`.
 
 ### Added
 

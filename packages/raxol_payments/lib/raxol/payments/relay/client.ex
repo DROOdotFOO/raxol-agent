@@ -16,13 +16,17 @@ defmodule Raxol.Payments.Relay.Client do
   ## Configuration
 
       config = %{base_url: "https://riddler.example.com", auth_token: "token"}
+
+  `auth_token` may be a `Raxol.Agent.Secret`; it is revealed only when the
+  request header is set. A `nil` token sends no `authorization` header.
   """
 
+  alias Raxol.Agent.Secret
   alias Raxol.Payments.Relay.Schemas.{QuoteRequest, QuoteResponse, ExecuteRequest, StatusResponse}
 
   @type config :: %{
           :base_url => String.t(),
-          :auth_token => String.t(),
+          :auth_token => String.t() | Secret.t() | nil,
           optional(:req_options) => keyword()
         }
 
@@ -64,12 +68,18 @@ defmodule Raxol.Payments.Relay.Client do
 
     [
       base_url: config.base_url,
-      headers: [{"authorization", "Bearer #{config.auth_token}"}],
+      headers: auth_headers(Map.get(config, :auth_token)),
       receive_timeout: 30_000
     ]
     |> Keyword.merge(Map.get(config, :req_options, []))
     |> Req.new()
   end
+
+  defp auth_headers(nil), do: []
+  defp auth_headers(%Secret{} = token), do: auth_headers(Secret.reveal(token))
+
+  defp auth_headers(token) when is_binary(token) or is_list(token),
+    do: [{"authorization", "Bearer #{token}"}]
 
   defp validate_base_url!("https://" <> _), do: :ok
   defp validate_base_url!("http://localhost" <> _), do: :ok

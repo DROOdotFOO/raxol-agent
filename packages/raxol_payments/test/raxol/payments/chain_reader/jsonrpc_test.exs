@@ -12,6 +12,11 @@ defmodule Raxol.Payments.ChainReader.JSONRPCTest do
     Req.Test.stub(__MODULE__, fn conn -> Req.Test.json(conn, %{"result" => result}) end)
   end
 
+  test "the handle does not render its RPC URLs" do
+    handle = JSONRPC.new(chains: %{1 => "https://rpc.test/v2/provider-key"})
+    refute inspect(handle) =~ "provider-key"
+  end
+
   test "get_receipt normalizes gasUsed + effectiveGasPrice + status" do
     stub(%{"gasUsed" => "0xb05c", "effectiveGasPrice" => "0x8e1bc9bf04", "status" => "0x1"})
 

@@ -2,6 +2,8 @@
 
 ## 0.1.0 - Unreleased
 
+- Requires `raxol_agent ~> 3.2` (was `~> 3.0`) for `Raxol.Agent.Secret`.
+- `Raxol.Broker.Executor` keeps the session spec (bearer header, stdio env) and the account number out of `:sys.get_status` and crash reports, and collapses a port or review failure reason to its tags plus an atom, HTTP status or module before logging or storing it.
 - Add the standalone package and its fail-closed policy workflow. Policy files are parsed as bounded data rather than evaluated as Elixir, initialization publishes a complete file atomically without replacing an existing destination, and prompting is available only in interactive terminals (with deterministic process-shell coverage). Decimal 3 avoids EEF-CVE-2026-32686.
 - `Raxol.Broker.Supervisor` (#1172), a `:rest_for_one` root to start from your own tree, with `Raxol.Broker.Journal` first (options under `:journal`) and, when `:executor` options are given, `Raxol.Broker.Executor` after it, always pointed at that journal (a different `:journal` makes `start_link/1` return `{:error, {:journal_mismatch, given}}`) and named `Raxol.Broker.Executor` by default. A journal crash restarts the executor, which closes the groups it left open; its child spec carries the executor's `shutdown`. The package still has no application callback, so nothing starts until you start it.
 - `Raxol.Broker.PolicyFile.new/2` builds the complete restrictive policy from the two required caps; `mix raxol.broker.init` uses it. Terminal prompts accept the trimmed entered line, and EOF raises `Mix.Error` without writing. The staging file is created with mode 0600 before it is written, so the published policy is mode 0600.

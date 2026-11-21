@@ -700,6 +700,53 @@ defmodule Raxol.Broker.ExecutorTest do
   defp place_requests(fake),
     do: for({"tools/call", "place_" <> _, _status} = request <- Fake.requests(fake), do: request)
 
+  describe "status redaction" do
+    test ":sys.get_status hides the receipt key, session spec and account", ctx do
+      executor = start_executor!(ctx)
+      {:status, _pid, _mod, [_pdict, _sys, _parent, _dbg, misc]} = :sys.get_status(executor)
+      dump = inspect(misc, structs: false, limit: :infinity)
+
+      refute dump =~ @account
+      assert dump =~ "client_spec: :redacted"
+      assert dump =~ "key: :redacted"
+    end
+
+    test "format_status/1 reduces the failure terms and empties the debug log" do
+      spec = [headers: [{"authorization", "Bearer leak"}]]
+      exit = {%FunctionClauseError{module: M, function: :f, arity: 1}, [{M, :f, [spec], []}]}
+
+      status =
+        Executor.format_status(%{
+          state: %{key: "k", client_spec: spec, account: "ACC"},
+          reason: {:port_exited, exit},
+          message: {:EXIT, self(), spec},
+          log: [{:in, spec}]
+        })
+
+      assert status.reason == {:port_exited, FunctionClauseError}
+      assert status.message =~ ":EXIT"
+      assert status.log == []
+      refute inspect(status) =~ "leak"
+      refute inspect(status) =~ "ACC"
+    end
+
+    test "collapse/1 keeps the tag and drops stack arguments" do
+      spec = [headers: [{"authorization", "Bearer leak"}]]
+      exit = {%FunctionClauseError{module: M, function: :f, arity: 1}, [{M, :f, [spec], []}]}
+
+      assert Executor.collapse({:port_exited, exit}) == {:port_exited, FunctionClauseError}
+      assert Executor.collapse({:connect_failed, {:http, 401}}) == {:connect_failed, {:http, 401}}
+      assert Executor.collapse({:connect_failed, :nxdomain}) == {:connect_failed, :nxdomain}
+
+      assert Executor.collapse({:connect_failed, {:initialization_failed, {:http, 401}}}) ==
+               {:connect_failed, {:initialization_failed, {:http, 401}}}
+
+      assert Executor.collapse({:connect_crashed, {:start, spec}}) == {:connect_crashed, :start}
+      assert Executor.collapse({:connect_crashed, {"x", spec}}) == {:connect_crashed, :error}
+      refute inspect(Executor.collapse({:port_exited, {:killed, [spec]}})) =~ "leak"
+    end
+  end
+
   describe "port" do
     test "a killed port client reconnects and the executor places again", ctx do
       executor = start_executor!(ctx, reconnect_ms: 10)

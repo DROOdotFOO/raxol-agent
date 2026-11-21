@@ -23,7 +23,7 @@ defmodule Raxol.Payments.Wallets.Env do
 
   @behaviour Raxol.Payments.Wallet
 
-  alias Raxol.Payments.Secret
+  alias Raxol.Agent.Secret
 
   @default_env_var "RAXOL_WALLET_KEY"
   @default_chain_id 8453

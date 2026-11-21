@@ -198,7 +198,7 @@ defmodule RaxolCli.MixProject do
     path = "../raxol_agent_client_protocol"
 
     if hex_package?() do
-      [{:raxol_agent_client_protocol, "~> 0.1.0"}]
+      [{:raxol_agent_client_protocol, "~> 0.2.0"}]
     else
       [{:raxol_agent_client_protocol, path: path, override: true}]
     end

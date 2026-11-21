@@ -37,12 +37,13 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
 
   @behaviour Raxol.Earn.ProviderAdapter
 
+  alias Raxol.Agent.Secret
   alias Raxol.Earn.{ABI, Onchain.Hex, Onchain.RPC}
 
   @type config :: %{
           sidecar_url: String.t(),
           address: String.t(),
-          chains: %{required(pos_integer()) => String.t()},
+          chains: %{required(pos_integer()) => Secret.t()},
           req_options: keyword()
         }
 
@@ -71,7 +72,7 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
     config = %{
       sidecar_url: sidecar_url,
       address: address,
-      chains: chains,
+      chains: Map.new(chains, fn {id, url} -> {id, Secret.new(url)} end),
       req_options: Keyword.get(opts, :req_options, receive_timeout: 60_000)
     }
 
@@ -196,7 +197,7 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
 
   defp rpc_client(%{config: %{chains: chains}}, chain_id) do
     case Map.fetch(chains, chain_id) do
-      {:ok, url} -> {:ok, RPC.client(url: url)}
+      {:ok, url} -> {:ok, RPC.client(url: Secret.reveal(url))}
       :error -> {:error, {:unsupported_chain, chain_id}}
     end
   end

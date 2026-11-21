@@ -160,15 +160,28 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     * `:owner` — pid to receive inbound messages; defaults to `nil`.
     * `:cd` — working directory for the child process.
     * `:env` — list of `{name, value}` environment overrides, passed
-      straight to `Port.open/2`'s `:env` option.
+      to `Port.open/2`'s `:env` option ahead of the scrub below.
+    * `:scrub_env` — `false` to skip the credential scrub; default `true`.
+    * `:unset_env` — more variable names (strings) to unset in the child.
     * `:max_frame_bytes`, `:max_json_depth` — see "Limits".
 
-  The child inherits the node's WHOLE environment plus `:env`: this package
-  does not scrub anything. An agent is third-party code, so a caller on a
-  node that holds secrets in its environment (API keys, signing keys,
-  bearer tokens) must unset them itself, e.g. with
-  `env: [{~c"MY_API_KEY", false}]` (`Port.open/2` unsets a variable whose
-  value is `false`).
+  The child inherits the node's environment plus `:env`, minus every
+  variable whose name looks like a credential (case-insensitive): a suffix
+  of `_KEY`, `_KEY_ID`, `_APIKEY`, `_TOKEN`, `_PRIVKEY`, `_SECRET`,
+  `_PASSWORD`, `_PASS`, `_PASSPHRASE`, `_MNEMONIC`, `_SEED_PHRASE`,
+  `_CREDENTIALS`, `_DSN` or `_RPC`; an `RPC_` name segment (`RPC_BASE`,
+  `BASE_RPC_URL`), which commonly embeds a provider key; `MNEMONIC`,
+  `SEED_PHRASE`, `SSH_AUTH_SOCK`; and `OP_SESSION_*`. Names in
+  `:unset_env` are unset too. That is the whole list: this package reads no
+  application config, so a host's own secret list (raxol's
+  `Raxol.Core.ChildEnv` `extra_secrets:`/`pass:`) applies only if the host
+  passes it here.
+
+  An agent is third-party code. To hand it one of those credentials (an
+  agent that reads its own provider key, say), name it in `:env`, or pass
+  `scrub_env: false` to inherit everything. A process running as the same
+  user can still read the node's own launch environment
+  (`/proc/<pid>/environ`); the scrub only stops inheritance.
 
   Returns `{:error, :executable_not_found}` if `cmd` cannot be resolved.
   """
@@ -181,7 +194,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
       path ->
         owner = Keyword.get(opts, :owner)
-        spawn_opts = Keyword.take(opts, [:cd, :env])
+        spawn_opts = Keyword.take(opts, [:cd, :env, :scrub_env, :unset_env])
         init_arg = {:spawn, path, args, spawn_opts, owner, limits(opts)}
         {:ok, pid} = GenServer.start_link(__MODULE__, init_arg)
         {:ok, %__MODULE__{pid: pid}}
@@ -299,11 +312,36 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
   @spec build_spawn_opts(keyword()) :: keyword()
   defp build_spawn_opts(opts) do
-    Enum.flat_map(opts, fn
-      {:cd, cd} -> [cd: cd]
-      {:env, env} -> [env: env]
-      _other -> []
-    end)
+    env = Keyword.get(opts, :env, [])
+
+    unset =
+      if Keyword.get(opts, :scrub_env, true),
+        do: scrubbed_env(env, Keyword.get(opts, :unset_env, [])),
+        else: []
+
+    Keyword.take(opts, [:cd]) ++ [env: env ++ unset]
+  end
+
+  # Kept identical to `Raxol.Agent.ChildEnv`'s pattern (raxol_agent): this
+  # package has no dependency to share it through. raxol_agent's
+  # `child_env_test.exs` compares the two `credential_pattern/0`s.
+  @credential ~r/(_KEY|_KEY_ID|_APIKEY|_TOKEN|_PRIVKEY|_SECRET|_PASSWORD|_PASS|_PASSPHRASE|_MNEMONIC|_SEED_PHRASE|_CREDENTIALS|_DSN|_RPC)\z|(\A|_)RPC_|\A(MNEMONIC|SEED_PHRASE|SSH_AUTH_SOCK)\z|\AOP_SESSION_/i
+
+  @doc false
+  @spec credential_pattern() :: Regex.t()
+  def credential_pattern, do: @credential
+
+  # Every credential-looking variable of the node, plus `extra` (set or
+  # not), that the caller's `:env` does not name, unset (`false`) in the
+  # child.
+  @spec scrubbed_env(list(), [String.t()]) :: [{charlist(), false}]
+  defp scrubbed_env(env, extra) do
+    given = MapSet.new(env, fn {name, _value} -> to_string(name) end)
+    present = for {name, _value} <- System.get_env(), Regex.match?(@credential, name), do: name
+
+    for name <- Enum.uniq(present ++ Enum.map(extra, &to_string/1)),
+        name not in given,
+        do: {String.to_charlist(name), false}
   end
 
   @impl GenServer

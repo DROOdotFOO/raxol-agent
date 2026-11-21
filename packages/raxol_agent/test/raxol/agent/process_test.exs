@@ -98,6 +98,23 @@ defmodule Raxol.Agent.ProcessTest do
     end
   end
 
+  describe "redaction" do
+    test "backend_config stays out of :sys.get_status and inspect" do
+      {:ok, pid} =
+        AgentProcess.start_link(
+          agent_id: :redact_test,
+          agent_module: CounterAgent,
+          tick_ms: 50_000,
+          backend_config: [api_key: "sk-redact-test"]
+        )
+
+      refute inspect(:sys.get_status(pid)) =~ "sk-redact-test"
+      refute inspect(:sys.get_state(pid)) =~ "sk-redact-test"
+
+      GenServer.stop(pid)
+    end
+  end
+
   describe "get_status/1" do
     test "returns agent status map" do
       {:ok, pid} =

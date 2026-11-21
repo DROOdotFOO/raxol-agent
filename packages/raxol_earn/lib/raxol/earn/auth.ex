@@ -59,6 +59,9 @@ defmodule Raxol.Earn.Auth do
           req_options: keyword()
         }
 
+  # The bearer JWT stays out of inspect output and of crash reports and
+  # `:sys.get_status` (`format_status/1`).
+  @derive {Inspect, except: [:token, :req_options]}
   defstruct [:provider, :server_url, :chain_id, :req_options, token: nil, expires_at_ms: nil]
 
   # Refresh ~60s before the JWT expires.
@@ -136,6 +139,9 @@ defmodule Raxol.Earn.Auth do
 
   def handle_call(:get_state, _from, state), do: {:reply, state, state}
 
+  @impl GenServer
+  def format_status(status), do: Raxol.Agent.Secret.redact_status(status, [:token, :req_options])
+
   # -- Internals --
 
   defp ensure_valid(state) do
@@ -165,8 +171,12 @@ defmodule Raxol.Earn.Auth do
          {:ok, exp_ms} <- decode_jwt_exp_ms(token) do
       {:ok, %{state | token: token, expires_at_ms: exp_ms}}
     else
-      {:error, reason} -> {:error, reason, %{state | token: nil, expires_at_ms: nil}}
-      err -> {:error, {:auth_failed, err}, %{state | token: nil, expires_at_ms: nil}}
+      {:error, reason} ->
+        {:error, reason, %{state | token: nil, expires_at_ms: nil}}
+
+      # An unexpected 2xx body may still carry the JWT under another key.
+      {:ok, _body} ->
+        {:error, {:auth_failed, :unexpected_body}, %{state | token: nil, expires_at_ms: nil}}
     end
   end
 
