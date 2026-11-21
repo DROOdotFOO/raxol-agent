@@ -237,18 +237,31 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   end
 
   defp finish(state, id, entry, result) do
-    state = Link.drop_pending_in(state, id, entry)
+    state
+    |> Link.drop_pending_in(id, entry)
+    |> send_response(
+      id,
+      entry,
+      checked(state, entry, result),
+      &{:noreply, &1},
+      &{:stop, :normal, &1}
+    )
+  end
 
-    case Wire.handler_result(result) do
+  # A malformed result from a handler or an adopter is answered -32603 rather
+  # than crashing the Connection.
+  defp checked(state, entry, result) do
+    case Wire.handler_result(result, entry.method) do
       {:ok, response} ->
-        send_response(state, id, entry, response, &{:noreply, &1}, &{:stop, :normal, &1})
+        response
 
       :malformed ->
         Logger.error(
-          "ACP: handler #{inspect(state.handler)} returned malformed value for #{entry.method}: #{inspect(result)}"
+          "ACP: handler #{inspect(state.handler)} returned malformed value for " <>
+            "#{inspect(entry.method)}: #{inspect(result)}"
         )
 
-        internal_error(state, id)
+        {:error, Error.internal_error()}
     end
   end
 
@@ -367,7 +380,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
               state,
               id,
               entry,
-              result,
+              checked(state, entry, result),
               &{:reply, :ok, &1},
               &{:stop, :normal, :ok, &1}
             )

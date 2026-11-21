@@ -31,6 +31,10 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest.ScriptAgent do
 
   @impl true
   def prompt(req, ctx), do: Rendezvous.invoke(:prompt, req, ctx)
+
+  @impl true
+  def handle_ext_request(wire, params, ctx),
+    do: Rendezvous.invoke(:ext_request, {wire, params}, ctx)
 end
 
 defmodule Raxol.AgentClientProtocol.ConnectionTest.ScriptClient do
@@ -1784,6 +1788,52 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
                    max_inbound: bad
                  )
       end
+    end
+  end
+
+  describe "handler and adopter result validation" do
+    test "an extension request may answer with a plain map" do
+      %{peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 7, "_vendor/echo", %{"x" => 1})
+
+      handle_next_invoke(:ext_request, fn {"_vendor/echo", _params}, _ctx ->
+        {:ok, %{"echo" => true}}
+      end)
+
+      assert %{"id" => 7, "result" => %{"echo" => true}} = ScriptedPeer.recv(peer)
+    end
+
+    test "a table method answering with a plain map is -32603" do
+      %{peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 8, "session/new", new_session_params())
+      handle_next_invoke(:new_session, fn _req, _ctx -> {:ok, %{"sessionId" => "s"}} end)
+
+      assert %{"id" => 8, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
+    end
+
+    test "a malformed delegated reply is answered -32603 and the Connection survives" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 9, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          :deferred
+        end)
+
+      for bad <- [{:error, :not_an_error_struct}] do
+        assert :ok = Connection.reply(conn, ctx.reply_ref, bad)
+      end
+
+      assert %{"id" => 9, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
+      assert Process.alive?(conn)
     end
   end
 end

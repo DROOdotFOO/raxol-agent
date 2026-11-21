@@ -5,7 +5,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
   alias Raxol.AgentClientProtocol.{Error, Router}
   alias Raxol.AgentClientProtocol.Rpc.{Message, RequestId, Response}
 
-  @type result :: {:ok, struct()} | {:error, Error.t()}
+  @type result :: {:ok, map()} | {:error, Error.t()}
 
   @spec frame(Message.inner()) :: map()
   def frame(message), do: message |> Message.wrap() |> Message.to_json()
@@ -13,8 +13,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
   # A result that fails to encode becomes -32603 instead of raising in the
   # Connection.
   @spec response(RequestId.t(), result()) :: map()
-  def response(id, {:ok, %_{} = struct}) do
-    case to_wire(struct) do
+  def response(id, {:ok, result}) when is_map(result) do
+    case to_wire(result) do
       {:ok, wire_result} -> frame(Response.result(id, wire_result))
       {:error, _reason} -> frame(Response.error(id, Error.internal_error()))
     end
@@ -56,10 +56,15 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
     end
   end
 
-  # Handler return values are untrusted: anything but a struct or `Error` is
-  # malformed.
-  @spec handler_result(term()) :: {:ok, result()} | :malformed
-  def handler_result({:ok, %_{}} = ok), do: {:ok, ok}
-  def handler_result({:error, %Error{}} = err), do: {:ok, err}
-  def handler_result(_other), do: :malformed
+  # Handler return values are untrusted. Table methods must return their result
+  # struct; extension methods (no decode marker) may return any map.
+  @spec handler_result(term(), String.t()) :: {:ok, result()} | :malformed
+  def handler_result({:ok, %_{}} = ok, _method), do: {:ok, ok}
+  def handler_result({:error, %Error{}} = err, _method), do: {:ok, err}
+
+  def handler_result({:ok, map} = ok, method) when is_map(map) do
+    if match?({:decode, _}, Router.result_marker(method)), do: :malformed, else: {:ok, ok}
+  end
+
+  def handler_result(_other, _method), do: :malformed
 end
