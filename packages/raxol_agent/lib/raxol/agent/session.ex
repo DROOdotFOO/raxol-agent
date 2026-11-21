@@ -57,10 +57,10 @@ defmodule Raxol.Agent.Session do
 
   alias Raxol.Agent.Comm
   alias Raxol.Agent.SemanticTree
-  alias Raxol.Agent.Session.Lifecycle
+  alias Raxol.Agent.Session.Companions
+  alias Raxol.Agent.Session.InFlightTurns
   alias Raxol.Agent.Session.PromptTurn
   alias Raxol.Agent.Session.Registration
-  alias Raxol.Agent.Session.Turn
 
   @registry Raxol.Agent.Registry
 
@@ -91,7 +91,7 @@ defmodule Raxol.Agent.Session do
           bridge_opts: keyword(),
           owns_bridge?: boolean(),
           owns_lifecycle?: boolean(),
-          turns: %{reference() => Turn.turn()},
+          turns: %{reference() => InFlightTurns.turn()},
           agent_refs: %{reference() => reference()},
           monitors: %{reference() => reference()}
         }
@@ -104,10 +104,10 @@ defmodule Raxol.Agent.Session do
       id: {__MODULE__, id},
       start: {__MODULE__, :start_link, [opts]},
       restart: :permanent,
-      # Must exceed `Lifecycle.stop_budget_ms/0`: a standalone session stops
+      # Must exceed `Companions.stop_budget_ms/0`: a standalone session stops
       # its lifecycle in `terminate/2`, and a parent that killed it first
       # would orphan the lifecycle.
-      shutdown: Lifecycle.stop_budget_ms() + 1_000
+      shutdown: Companions.stop_budget_ms() + 1_000
     }
   end
 
@@ -207,16 +207,16 @@ defmodule Raxol.Agent.Session do
     emit_bridge =
       if owns_bridge?,
         do: start_monitored_bridge(session_id, bridge_opts),
-        else: Lifecycle.lookup_bridge(session_id)
+        else: Companions.lookup_bridge(session_id)
 
     Registration.register(session_id, id, app_module, team_id)
 
     {lifecycle_pid, lifecycle_mref} =
       if owns_lifecycle? do
-        pid = Lifecycle.start_owned(app_module, id, session_id)
+        pid = Companions.start_owned(app_module, id, session_id)
         {pid, Process.monitor(pid)}
       else
-        {Lifecycle.lookup(session_id), nil}
+        {Companions.lookup(session_id), nil}
       end
 
     Logger.info(
@@ -239,7 +239,7 @@ defmodule Raxol.Agent.Session do
   end
 
   defp start_monitored_bridge(session_id, bridge_opts) do
-    bridge = Lifecycle.start_bridge(session_id, bridge_opts)
+    bridge = Companions.start_bridge(session_id, bridge_opts)
     if bridge, do: Process.monitor(bridge)
     bridge
   end
@@ -256,7 +256,7 @@ defmodule Raxol.Agent.Session do
       )
       when is_map(metadata) do
     if state.team_id == team_id,
-      do: {:noreply, Turn.forward(state, message, metadata)},
+      do: {:noreply, InFlightTurns.forward(state, message, metadata)},
       else: {:noreply, state}
   end
 
@@ -267,7 +267,7 @@ defmodule Raxol.Agent.Session do
         state
       )
       when is_pid(caller) and is_reference(ref) and is_map(metadata) do
-    {:noreply, Turn.start(state, caller, ref, text, approver, metadata)}
+    {:noreply, InFlightTurns.start(state, caller, ref, text, approver, metadata)}
   end
 
   # Unanswerable, and passed through it would reach `update/2` and the logs
@@ -284,7 +284,7 @@ defmodule Raxol.Agent.Session do
 
   def handle_manager_cast({:send_message, {:acp_cancel, ref}, metadata}, state)
       when is_map(metadata) do
-    {_result, state} = Turn.cancel(state, ref, metadata)
+    {_result, state} = InFlightTurns.cancel(state, ref, metadata)
     {:noreply, state}
   end
 
@@ -293,13 +293,13 @@ defmodule Raxol.Agent.Session do
         state
       )
       when is_pid(caller) and is_reference(call_ref) and is_map(metadata) do
-    {result, state} = Turn.cancel(state, ref, metadata)
+    {result, state} = InFlightTurns.cancel(state, ref, metadata)
     Comm.reply(caller, call_ref, result)
     {:noreply, state}
   end
 
   def handle_manager_cast({:send_message, message, metadata}, state) when is_map(metadata),
-    do: {:noreply, Turn.forward(state, message, metadata)}
+    do: {:noreply, InFlightTurns.forward(state, message, metadata)}
 
   def handle_manager_cast(_msg, state), do: {:noreply, state}
 
@@ -310,7 +310,7 @@ defmodule Raxol.Agent.Session do
   def handle_manager_call(request, _from, state)
       when request in [:get_model, :get_view_tree, :get_semantic_view] do
     result =
-      case Lifecycle.dispatcher(state.lifecycle_pid) do
+      case Companions.dispatcher(state.lifecycle_pid) do
         nil -> {:error, :no_dispatcher}
         pid -> dispatcher_call(pid, request)
       end
@@ -333,32 +333,32 @@ defmodule Raxol.Agent.Session do
   @impl Raxol.Core.Behaviours.BaseManager
   def handle_manager_info({:agent_reply, agent_ref, reply}, %__MODULE__{agent_refs: refs} = state)
       when is_map_key(refs, agent_ref),
-      do: {:noreply, Turn.reply(state, agent_ref, reply)}
+      do: {:noreply, InFlightTurns.reply(state, agent_ref, reply)}
 
   def handle_manager_info(
         {:acp_turn_reply, agent_ref, owner, reply},
         %__MODULE__{agent_refs: refs} = state
       )
       when is_map_key(refs, agent_ref),
-      do: {:noreply, Turn.finish(state, agent_ref, owner, reply)}
+      do: {:noreply, InFlightTurns.finish(state, agent_ref, owner, reply)}
 
   def handle_manager_info({:acp_run, agent_ref, fun}, %__MODULE__{agent_refs: refs} = state)
       when is_map_key(refs, agent_ref) and is_function(fun, 0),
-      do: {:noreply, Turn.run(state, agent_ref, fun)}
+      do: {:noreply, InFlightTurns.run(state, agent_ref, fun)}
 
   def handle_manager_info(
         {:acp_turn_message, agent_ref, message},
         %__MODULE__{agent_refs: refs} = state
       )
       when is_map_key(refs, agent_ref),
-      do: {:noreply, Turn.message(state, agent_ref, message)}
+      do: {:noreply, InFlightTurns.message(state, agent_ref, message)}
 
   def handle_manager_info(
         {:acp_turn_failed, agent_ref, owner},
         %__MODULE__{agent_refs: refs} = state
       )
       when is_map_key(refs, agent_ref),
-      do: {:noreply, Turn.failed(state, agent_ref, owner)}
+      do: {:noreply, InFlightTurns.failed(state, agent_ref, owner)}
 
   # A crashed bridge is restarted under the same session id; a graceful stop
   # means the session is usually terminating too.
@@ -391,7 +391,7 @@ defmodule Raxol.Agent.Session do
         PromptTurn.failure_shape(reason)
     )
 
-    {:noreply, %{Turn.agent_down(state) | lifecycle_pid: nil, lifecycle_mref: nil}}
+    {:noreply, %{InFlightTurns.agent_down(state) | lifecycle_pid: nil, lifecycle_mref: nil}}
   end
 
   # A monitor no longer in `monitors` (its turn ended) falls to the
@@ -401,7 +401,7 @@ defmodule Raxol.Agent.Session do
         %__MODULE__{monitors: monitors} = state
       )
       when is_map_key(monitors, mref),
-      do: {:noreply, Turn.down(state, mref, reason)}
+      do: {:noreply, InFlightTurns.down(state, mref, reason)}
 
   # Standalone mode traps exits. gen_server handles the parent's exit itself,
   # so this is a non-parent link.
@@ -421,8 +421,8 @@ defmodule Raxol.Agent.Session do
   # what it published while stopping.
   @impl GenServer
   def terminate(_reason, state) do
-    if state.owns_lifecycle?, do: Lifecycle.stop(state.lifecycle_pid)
-    if state.owns_bridge?, do: Lifecycle.stop_bridge(state.emit_bridge)
+    if state.owns_lifecycle?, do: Companions.stop(state.lifecycle_pid)
+    if state.owns_bridge?, do: Companions.stop_bridge(state.emit_bridge)
     :ok
   end
 end

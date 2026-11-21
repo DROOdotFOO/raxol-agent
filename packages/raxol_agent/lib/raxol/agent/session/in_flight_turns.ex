@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.Session.Turn do
+defmodule Raxol.Agent.Session.InFlightTurns do
   @moduledoc false
   # The session's in-flight prompt turns (see "Agent turns" in
   # `Raxol.Agent.Session`). Each function takes and returns the session
@@ -9,7 +9,7 @@ defmodule Raxol.Agent.Session.Turn do
   require Logger
 
   alias Raxol.Agent.Comm
-  alias Raxol.Agent.Session.Lifecycle
+  alias Raxol.Agent.Session.Companions
   alias Raxol.Agent.Session.PromptTurn
   alias Raxol.Core.Runtime.EmitBus
 
@@ -55,7 +55,7 @@ defmodule Raxol.Agent.Session.Turn do
   # The agent gets a ref of the session's own: the caller's ref can only
   # cancel, while a holder of the agent ref can answer the turn.
   defp dispatch(state, caller, ref, text, approver, metadata) do
-    case Lifecycle.dispatcher(state.lifecycle_pid) do
+    case Companions.dispatcher(state.lifecycle_pid) do
       nil ->
         Comm.reply(caller, ref, {:error, :no_dispatcher})
         state
@@ -217,7 +217,7 @@ defmodule Raxol.Agent.Session.Turn do
   """
   @spec forward(state(), term(), map()) :: state()
   def forward(state, message, metadata) do
-    case Lifecycle.dispatcher(state.lifecycle_pid) do
+    case Companions.dispatcher(state.lifecycle_pid) do
       nil ->
         Logger.debug(
           "[Agent.Session] #{inspect(state.id)} dropped message (no dispatcher): " <>

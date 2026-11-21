@@ -102,7 +102,7 @@ defmodule Raxol.Agent.McpTools do
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.McpTools.Handlers
   alias Raxol.Agent.McpTools.Ownership
-  alias Raxol.Agent.McpTools.Schemas
+  alias Raxol.Agent.McpTools.ToolDefinitions
   alias Raxol.Agent.Session
   alias Raxol.MCP.Registry, as: MCPRegistry
   alias Raxol.MCP.Server, as: MCPServer
@@ -210,7 +210,7 @@ defmodule Raxol.Agent.McpTools do
 
   @doc "The tool definitions."
   @spec tools() :: [map()]
-  defdelegate tools, to: Schemas
+  defdelegate tools, to: ToolDefinitions
 
   @impl GenServer
   def init(opts) do
@@ -368,12 +368,12 @@ defmodule Raxol.Agent.McpTools do
       name: "Agent #{id} journal",
       description: "The last #{Handlers.journal_tail()} journal records of agent #{id}.",
       callback: fn -> Handlers.read_journal(id) end,
-      fault?: &Schemas.fault?/1
+      fault?: &ToolDefinitions.fault?/1
     }
   end
 
   defp validate_id(id) do
-    if Regex.match?(@id_format, id), do: :ok, else: {:error, Schemas.id_rule()}
+    if Regex.match?(@id_format, id), do: :ok, else: {:error, ToolDefinitions.id_rule()}
   end
 
   # An exposed id belongs to whoever exposed it, running or not.

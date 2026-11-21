@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.McpTools.Schemas do
+defmodule Raxol.Agent.McpTools.ToolDefinitions do
   @moduledoc false
   # The MCP tool definitions of `Raxol.Agent.McpTools`.
 

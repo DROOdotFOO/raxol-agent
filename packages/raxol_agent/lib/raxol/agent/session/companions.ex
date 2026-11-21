@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.Session.Lifecycle do
+defmodule Raxol.Agent.Session.Companions do
   @moduledoc false
   # The two processes a session runs beside: its `Raxol.Core.Runtime.Lifecycle`
   # (the agent's TEA runtime) and its `Raxol.Agent.EmitBridge` (the journal

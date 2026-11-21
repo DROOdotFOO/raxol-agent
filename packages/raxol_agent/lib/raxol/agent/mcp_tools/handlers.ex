@@ -7,7 +7,7 @@ defmodule Raxol.Agent.McpTools.Handlers do
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.McpTools
   alias Raxol.Agent.McpTools.Ownership
-  alias Raxol.Agent.McpTools.Schemas
+  alias Raxol.Agent.McpTools.ToolDefinitions
   alias Raxol.Agent.Session
 
   @journal_tail 200
@@ -57,14 +57,14 @@ defmodule Raxol.Agent.McpTools.Handlers do
   def ask(_arguments), do: {:error, "id and message are required strings"}
 
   defp timeout_ms(%{"timeout_ms" => ms}) when is_integer(ms) and ms >= 1 do
-    if ms <= Schemas.max_timeout_ms(), do: {:ok, ms}, else: timeout_refusal()
+    if ms <= ToolDefinitions.max_timeout_ms(), do: {:ok, ms}, else: timeout_refusal()
   end
 
   defp timeout_ms(%{"timeout_ms" => _other}), do: timeout_refusal()
-  defp timeout_ms(_arguments), do: {:ok, Schemas.max_timeout_ms()}
+  defp timeout_ms(_arguments), do: {:ok, ToolDefinitions.max_timeout_ms()}
 
   defp timeout_refusal,
-    do: {:error, "timeout_ms is an integer from 1 to #{Schemas.max_timeout_ms()}"}
+    do: {:error, "timeout_ms is an integer from 1 to #{ToolDefinitions.max_timeout_ms()}"}
 
   defp askable(id) do
     case Ownership.target(id) do
