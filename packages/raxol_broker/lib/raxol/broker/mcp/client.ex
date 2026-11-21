@@ -362,7 +362,9 @@ defmodule Raxol.Broker.MCP.Client do
   def format_status(status) do
     Map.new(status, fn
       {:reason, reason} -> {:reason, Redact.collapse(reason)}
-      {key, value} when key in [:state, :message] -> {key, scrub(value)}
+      # Its tag only: an `{:EXIT, _, reason}` can carry the spec in a struct.
+      {:message, message} -> {:message, Redact.shape(message)}
+      {:state, state} -> {:state, scrub(state)}
       # `:sys` debug events carry the messages this process handled.
       {:log, _events} -> {:log, []}
       other -> other

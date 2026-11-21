@@ -31,6 +31,18 @@ defmodule Raxol.Broker.RedactTest do
              {:refresh_failed, {:token_rejected, 500}}
   end
 
+  test "collapse/1 is idempotent" do
+    for reason <- [
+          {:refresh_failed, {:token_rejected, 500, "Bearer leak"}},
+          {:connect_failed, {:initialization_failed, {:http, 401}}},
+          {:port_exited, {%RuntimeError{message: "x"}, []}},
+          {:start, {"x", [headers: []]}}
+        ] do
+      once = Redact.collapse(reason)
+      assert Redact.collapse(once) == once
+    end
+  end
+
   describe "shape/1" do
     test "keeps only a tuple's tag" do
       assert Redact.shape({:token, "Bearer leak"}) == "{:token, ...}"

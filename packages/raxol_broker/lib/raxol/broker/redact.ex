@@ -11,14 +11,20 @@ defmodule Raxol.Broker.Redact do
 
   @doc """
   `reason` with every argument-carrying term removed: nested `{atom, inner}`
-  tags are kept (to depth 4), and the innermost reason becomes an atom, an
-  HTTP status or a module; anything else becomes `:error`.
+  tags are kept (to depth 4), `{tag, status, body}` keeps `{tag, status}`,
+  and the innermost reason becomes an atom, an HTTP status or a module;
+  anything else becomes `:error`. Collapsing twice gives the same term.
   """
   @spec collapse(term()) :: term()
   def collapse(reason), do: collapse(reason, 4)
 
   defp collapse(reason, _depth) when is_atom(reason), do: reason
   defp collapse({:http, status}, _depth) when is_integer(status), do: {:http, status}
+
+  # What the next clause leaves of `{tag, status, body}`, kept as it is so a
+  # second collapse (a reply that is logged too) changes nothing.
+  defp collapse({tag, status}, _depth) when is_atom(tag) and is_integer(status),
+    do: {tag, status}
 
   # `{:token_rejected, 500, body}`: the tag and status, not the body.
   defp collapse({tag, status, _detail}, _depth) when is_atom(tag) and is_integer(status),
