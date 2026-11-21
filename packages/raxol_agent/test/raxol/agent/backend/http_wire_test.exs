@@ -387,12 +387,11 @@ defmodule Raxol.Agent.Backend.HTTPWireTest do
   end
 
   describe "blocking tool_calls honesty (parity with streaming)" do
-    test "undecodable arguments surface an honest marker, never a silent %{} (#652)" do
+    test "undecodable arguments surface an honest marker, never a silent %{}" do
       # The blocking parse must match the streaming path: a tool_call whose
       # arguments string is not valid JSON keeps a map-shaped `%{}` but rides
       # an `arguments_error` alongside, so the tool is never invoked under
-      # silently-empty args. Previously the blocking path coerced to `%{}`
-      # with no trace.
+      # silently empty args.
       body = %{
         "choices" => [
           %{

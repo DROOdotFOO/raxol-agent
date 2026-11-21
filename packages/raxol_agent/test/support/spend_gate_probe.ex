@@ -1,32 +1,23 @@
-defmodule Raxol.Agent.Red.SpendGateProbe do
+defmodule Raxol.Agent.SpendGateProbe do
   @moduledoc """
-  Support harness for the U7-R red suite (SpendGate reserve-before-call, AD-6a).
+  Test harness for `Raxol.Agent.SpendGate.ReserveBeforeCallTest` and its
+  controls.
 
-  Everything the red suite folds and the negative controls mutate lives here:
+    * cost journal - the `context.emit` sink, a serialized Agent so
+      concurrent `around/4` calls yield one ordered record stream;
+    * provider stub - a `:counters` call counter, which catches a provider
+      call on a refused reserve;
+    * budget - an atomic `try_reserve` in the `Ledger.try_spend` shape. The
+      real gate and every injector reserve through `try_reserve_fun/1`;
+    * checkers - folds over the records: order, fail-closed,
+      no-over-reserve (peak concurrent, not cumulative), no-double-settle,
+      dangling-reserve-visible;
+    * fired counters - each injector arms a site that must fire, or
+      `assert_all_fired!/2` fails;
+    * injectors - gates with one deliberate bug each, which the matching
+      checker must flag.
 
-    * **cost journal** — the injectable `context.emit` sink and the fold source.
-      A serialized recorder (Agent) so concurrent `around/4` calls under one
-      budget still yield a total-ordered record stream.
-    * **provider stub** — a `:counters` call-counter. The fail-closed contour is
-      caught by this counter (a provider invocation on a refused reserve bumps
-      it past the expected count).
-    * **budget** — an atomic `try_reserve` reference in the `Ledger.try_spend`
-      shape (serialized get_and_update). The single source of truth for the
-      run/session cap; the dual-truth dead injector deliberately bypasses it.
-      `try_reserve_fun/1` closes over it as the frozen `context.try_reserve`
-      seam (`Raxol.Agent.SpendGate` context shape) — BOTH the real gate and
-      every injector below reserve through this SAME closure, so the
-      atomicity guarantee binds the context contract, not this probe module.
-    * **checkers** — pure folds over the record stream: reserve→call→settle
-      order, fail-closed, no-over-reserve (PEAK concurrent, not cumulative),
-      no-double-settle, dangling-reserve-visible.
-    * **fired counters** (meta-invariant m1) — every dead injector arms a site
-      and must fire; `assert_all_fired!/2` fails on a dead injector.
-    * **dead injectors** — wrong SpendGate implementations (settle-only,
-      call-on-refused, dual-truth, crash-loses-reserve). Each is a one-mutation
-      negative control (m4): the matching checker MUST flag it.
-
-  Record shape (the frozen observable):
+  Record shape:
 
       %{kind: :reserve | :reserve_refused | :call | :settle,
         cost_ref: String.t(),
@@ -299,8 +290,8 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
   def fired(probe), do: Agent.get(probe, & &1.fired)
 
   @doc """
-  meta-invariant m1: fail if any armed injector never fired (a dead injector =
-  a green lie). `schedule` is dumped in the message for seed reproduction (m2).
+  Fail if any armed injector never fired. `schedule` is included in the
+  message so a failing seed can be reproduced.
   """
   def assert_all_fired!(probe, schedule \\ nil) do
     %{armed: armed, fired: fired} = Agent.get(probe, & &1)
@@ -323,8 +314,8 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
   # context.probe / context.budget exactly as the real gate would.
 
   defmodule SettleOnlyInjector do
-    @moduledoc "Post-hoc accounting: settles without reserving. Fails the ORDER red."
-    alias Raxol.Agent.Red.SpendGateProbe, as: P
+    @moduledoc "Post-hoc accounting: settles without reserving. Fails the order check."
+    alias Raxol.Agent.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, _estimate, call_fun) do
       P.fire(ctx.probe, :settle_only)
@@ -336,8 +327,8 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
   end
 
   defmodule CallOnRefusedInjector do
-    @moduledoc "Calls the provider on a refused reserve. Fails the FAIL-CLOSED red."
-    alias Raxol.Agent.Red.SpendGateProbe, as: P
+    @moduledoc "Calls the provider on a refused reserve. Fails the fail-closed check."
+    alias Raxol.Agent.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :call_on_refused)
@@ -365,9 +356,9 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
     @moduledoc """
     Reserves against a stale/second counter (here: nothing) instead of the one
     atomic budget, so concurrent calls over-reserve past the cap. Fails the
-    NO-OVER-RESERVE red.
+    no-over-reserve check.
     """
-    alias Raxol.Agent.Red.SpendGateProbe, as: P
+    alias Raxol.Agent.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :dual_truth)
@@ -384,10 +375,10 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
     @moduledoc """
     Reserves the SAME cost_ref TWICE before calling (e.g. a naive retry that
     re-reserves instead of checking for an already-dangling reservation).
-    Fails the ORDER red: `[:reserve, :reserve, :call, :settle]` is not a
+    Fails the order check: `[:reserve, :reserve, :call, :settle]` is not a
     legal prefix of reserve → call → settle.
     """
-    alias Raxol.Agent.Red.SpendGateProbe, as: P
+    alias Raxol.Agent.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :duplicate_reserve)
@@ -409,9 +400,9 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
     Settles the same reservation TWICE — a reservation-token replay. Each
     `:settle` independently refunds `estimate - actual`, so double-settling
     refunds twice: money inflation (the budget ends up with more available
-    capacity than the true accounting allows). Fails the DOUBLE-SETTLE red.
+    capacity than the true accounting allows). Fails the double-settle check.
     """
-    alias Raxol.Agent.Red.SpendGateProbe, as: P
+    alias Raxol.Agent.SpendGateProbe, as: P
 
     def around(ctx, cost_ref, estimate, call_fun) do
       P.fire(ctx.probe, :double_settle)
@@ -432,9 +423,9 @@ defmodule Raxol.Agent.Red.SpendGateProbe do
     @moduledoc """
     Loses the reserve on a crash: the reservation is in-memory only, never
     journaled, so a crash before the call silently drops it. Fails the
-    DANGLING-RESERVE-VISIBLE red.
+    dangling-reserve-visible check.
     """
-    alias Raxol.Agent.Red.SpendGateProbe, as: P
+    alias Raxol.Agent.SpendGateProbe, as: P
 
     def reserve(ctx, cost_ref, estimate) do
       P.fire(ctx.probe, :crash_loses_reserve)

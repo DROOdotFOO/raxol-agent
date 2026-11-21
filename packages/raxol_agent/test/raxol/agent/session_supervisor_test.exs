@@ -1,8 +1,6 @@
 defmodule Raxol.Agent.Session.SupervisorTest do
   @moduledoc """
-  SS — the per-session OTP tree + `session_id → pid` registry.
-
-  Proves:
+  The per-session OTP tree and the `session_id → pid` registry:
 
     1. `start_session/2` brings up one supervised subtree (sink + session), both
        registered; `stop_session/1` tears it down cleanly and closes the journal.
@@ -240,7 +238,7 @@ defmodule Raxol.Agent.Session.SupervisorTest do
     end
   end
 
-  describe "lifecycle ownership (RED 1 — no leak, no reattach-to-dead)" do
+  describe "lifecycle ownership (no leak, no reattach to a dead lifecycle)" do
     test "stop_session tears down the tree-owned lifecycle — no orphaned runtime" do
       base = tmp_base()
       sid = "ss-lifeleak-#{uniq()}"

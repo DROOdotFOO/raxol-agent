@@ -1,12 +1,12 @@
 defmodule Raxol.Agent.Invariants.TurnInvariantsTest do
   @moduledoc """
-  Tier-1 invariant I4 — turn attribution under GENERATED overlapping async
+  Invariant I4 — turn attribution under GENERATED overlapping async
   turns (see `docs/harness/architecture.md`'s "Journal and projection"
   section for the turn-bucketing model).
 
   The known hole: a single-threaded sequential-turn generator never fires
   the emit-time-stamp bug, making the property vacuous. Every generated
-  schedule here is async-crossing BY CONSTRUCTION (m5): each parked async
+  schedule here is async-crossing BY CONSTRUCTION: each parked async
   delta is released only after at least one LATER turn has started AND
   completed, so a `state.turn_id` read at emit time would stamp nil or the
   wrong turn. The property: every event carries nil or its ORIGINATING turn's
@@ -87,7 +87,7 @@ defmodule Raxol.Agent.Invariants.TurnInvariantsTest do
 
         :ok = SessionStreamer.subscribe(session_id)
 
-        # Phase 1 — parking turns: each mints a turn, dispatches an async
+        # Parking turns: each mints a turn, dispatches an async
         # command, and COMPLETES while the command's delta is still pending.
         parked =
           for k <- 1..n_parking do
@@ -102,9 +102,9 @@ defmodule Raxol.Agent.Invariants.TurnInvariantsTest do
             {tag, started.turn_id, task}
           end
 
-        # Phase 2 — trailing turns start AND complete while every parked delta
+        # Trailing turns start AND complete while every parked delta
         # is still pending: the async-crossing pattern, present by
-        # construction in every run (m5).
+        # construction in every run.
         trailing_turn_ids =
           for _ <- 1..n_trailing do
             :ok = Session.send_message(agent_id(sess), :noop)
@@ -118,7 +118,7 @@ defmodule Raxol.Agent.Invariants.TurnInvariantsTest do
         assert Enum.uniq(parked_ids ++ trailing_turn_ids) ==
                  parked_ids ++ trailing_turn_ids
 
-        # Phase 3 — release the parked tasks in a generated order; every late
+        # Release the parked tasks in a generated order; every late
         # delta must be stamped with its ORIGINATING turn's id — not a trailing
         # turn's, not another parked turn's, not nil.
         release_order = seeded_shuffle(parked, shuffle_seed)

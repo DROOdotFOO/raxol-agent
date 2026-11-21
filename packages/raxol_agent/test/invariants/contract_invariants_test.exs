@@ -1,6 +1,6 @@
 defmodule Raxol.Agent.Invariants.ContractInvariantsTest do
   @moduledoc """
-  Tier-1 invariant I9 — the contract only grows, DEEP (see the `raxol_journal`
+  Invariant I9 — the contract only grows, DEEP (see the `raxol_journal`
   README's "The contract only grows" rule).
 
   `fixtures/contract_snapshot.json` is the checked-in floor: per-type payload
