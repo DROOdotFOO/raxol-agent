@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: no silent `Backend.Mock` fallback.** `Raxol.Agent.Stream.run/2`
+  and `react/2` with neither an `:executor` nor a `:backend` (including an
+  `auto_provider: true` that resolves nothing) now yield `{:error,
+  :no_backend}` instead of a mock answer, and an executor no backend can
+  serve yields `{:error, {:backend_unavailable, reason}}` instead of falling
+  back to `:backend` or Mock. A scheduled fire with no provider returns that
+  error. `Raxol.Agent.Process` no longer defaults `:backend` to Mock; a
+  `:strategy` without a `:backend` refuses to start with
+  `{:missing_option, :backend}`.
 - **Breaking: directive shell commands no longer inherit provider API keys
   or any other credential-named variable.** On top of `Raxol.Core.ChildEnv`'s
   list, `Raxol.Agent.ChildEnv` unsets every variable whose name ends in

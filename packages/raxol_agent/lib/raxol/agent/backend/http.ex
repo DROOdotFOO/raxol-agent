@@ -169,7 +169,14 @@ defmodule Raxol.Agent.Backend.HTTP do
     end
   end
 
+  # `:sse_done` follows a response or a rescued raise, never an exit, so a
+  # transport exit is not collected as a finished stream.
   defp stream_request(url, headers, body, timeout, caller, ref, plugins) do
+    post_stream(url, headers, body, timeout, caller, ref, plugins)
+    send(caller, {:sse_done, ref})
+  end
+
+  defp post_stream(url, headers, body, timeout, caller, ref, plugins) do
     req =
       Req.new(
         url: url,
@@ -190,8 +197,6 @@ defmodule Raxol.Agent.Backend.HTTP do
     end
   rescue
     e -> send(caller, {:sse_error, ref, Exception.message(e)})
-  after
-    send(caller, {:sse_done, ref})
   end
 
   defp stream_next(%{buffer: :halt} = state), do: {:halt, state}

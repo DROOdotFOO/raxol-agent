@@ -48,7 +48,8 @@ defmodule Raxol.Agent.Stream do
 
   - `:executor` -- `Raxol.Agent.ExecutorConfig` selecting backend + model + auth
     (takes precedence over `:backend`)
-  - `:backend` -- AIBackend module; ignored when `:executor` is given
+  - `:backend` -- AIBackend module; ignored when `:executor` is given, even
+    when no backend can serve that executor
   - `:auto_provider` -- when `true` and no `:executor` is given, resolve one from
     the environment via `Raxol.Agent.Backend.Resolver` (op-ref ->
     provider-env -> `AI_API_KEY`). An optional `:provider` pins a specific
@@ -617,12 +618,16 @@ defmodule Raxol.Agent.Stream do
 
       nil ->
         explicit_backend(opts)
+
+      # Named by shape only: the value may carry credentials.
+      _other ->
+        {:error, {:invalid_executor, :not_an_executor_config}}
     end
   end
 
   defp explicit_backend(opts) do
     case Keyword.get(opts, :backend) do
-      backend when is_atom(backend) and not is_nil(backend) -> {:ok, backend, []}
+      backend when is_atom(backend) and backend not in [nil, true, false] -> {:ok, backend, []}
       _none -> {:error, :no_backend}
     end
   end

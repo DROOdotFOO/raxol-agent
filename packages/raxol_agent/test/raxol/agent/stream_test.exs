@@ -643,6 +643,18 @@ defmodule Raxol.Agent.StreamTest do
                "hi" |> AgentStream.run(executor: cfg, stream: false) |> AgentStream.collect()
     end
 
+    test "a malformed :executor is refused without echoing its value" do
+      events =
+        "hi" |> AgentStream.run(executor: [auth: "sk-SECRET123"]) |> Enum.to_list()
+
+      assert [{:error, {:invalid_executor, :not_an_executor_config}}] = events
+      refute inspect(events) =~ "sk-SECRET123"
+    end
+
+    test "a boolean :backend is {:error, :no_backend}" do
+      assert [{:error, :no_backend}] = "hi" |> AgentStream.run(backend: false) |> Enum.to_list()
+    end
+
     test "no executor and no :backend is {:error, :no_backend}" do
       assert [{:error, :no_backend}] = "hi" |> AgentStream.run([]) |> Enum.to_list()
       assert [{:error, :no_backend}] = "hi" |> AgentStream.react([]) |> Enum.to_list()

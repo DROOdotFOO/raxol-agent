@@ -1,4 +1,4 @@
-defmodule Raxol.Agent.SpendGate.ReserveBeforeCallControlsTest do
+defmodule Raxol.Agent.SpendGate.ControlsTest do
   @moduledoc """
   Negative controls for `ReserveBeforeCallTest`: each injector is a gate with
   one deliberate bug, and its checker must flag it. The last tests show the
