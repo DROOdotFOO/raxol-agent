@@ -107,6 +107,15 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
 
       %{adopter: {apid, _mon}, reply_ref: rref} = entry ->
         send(apid, {:acp_reply_cancelled, rref})
+
+        if state.cancel_reply_ms != :infinity,
+          do:
+            Process.send_after(
+              self(),
+              {:cancel_reply_timeout, cancel_id, rref},
+              state.cancel_reply_ms
+            )
+
         {:noreply, put_in(state.pending_in[cancel_id], %{entry | cancelled?: true})}
 
       entry ->

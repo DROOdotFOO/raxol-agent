@@ -2088,6 +2088,103 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
     end
   end
 
+  describe "cancel reply timeout" do
+    test "an adopter that never replies after a cancel: -32800 after the timeout, slot freed, late reply quiet" do
+      test_pid = self()
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :cancel_timeout_sup)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :agent,
+            transport: {Paired, conn_handle},
+            handler: ScriptAgent,
+            handler_arg: self(),
+            task_sup: task_sup,
+            cancel_reply_timeout_ms: 100
+          )
+        )
+
+      complete_handshake(peer)
+      ScriptedPeer.send_request(peer, 60, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          send(test_pid, :delegated)
+          :deferred
+        end)
+
+      assert_receive :delegated
+      ScriptedPeer.send_cancel_request(peer, 60)
+      assert_receive {:acp_reply_cancelled, _ref}
+
+      assert %{"id" => 60, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
+      assert :sys.get_state(conn).pending_in == %{}
+
+      # A late reply is a quiet no-op (no dup_reply, no second frame).
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
+      ScriptedPeer.assert_no_frame(peer, 150)
+      assert :sys.get_state(conn).expired == %{}
+    end
+
+    test "the tombstone is dropped when the silent adopter exits" do
+      test_pid = self()
+      task_sup = start_supervised!({Task.Supervisor, []}, id: :cancel_timeout_sup2)
+      {conn_handle, peer} = ScriptedPeer.new()
+
+      conn =
+        start_supervised!(
+          connection_child_spec(
+            role: :agent,
+            transport: {Paired, conn_handle},
+            handler: ScriptAgent,
+            handler_arg: self(),
+            task_sup: task_sup,
+            cancel_reply_timeout_ms: 50
+          )
+        )
+
+      complete_handshake(peer)
+      adopter = spawn(fn -> receive do: (:stop -> :ok) end)
+      ScriptedPeer.send_request(peer, 61, "session/prompt", prompt_params("s1"))
+
+      handle_next_invoke(:prompt, fn _req, ctx ->
+        :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, adopter)
+        send(test_pid, :delegated)
+        :deferred
+      end)
+
+      assert_receive :delegated
+      ScriptedPeer.send_cancel_request(peer, 61)
+      assert %{"id" => 61, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
+
+      send(adopter, :stop)
+
+      wait_until(fn ->
+        match?(%{expired: e, reply_refs: r} when e == %{} and r == %{}, :sys.get_state(conn))
+      end)
+
+      ScriptedPeer.assert_no_frame(peer, 100)
+    end
+
+    test "an invalid :cancel_reply_timeout_ms refuses to start" do
+      Process.flag(:trap_exit, true)
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      assert {:error, {:invalid_option, :cancel_reply_timeout_ms, -1}} =
+               Connection.start_link(
+                 role: :agent,
+                 transport: {Paired, conn_handle},
+                 handler: ScriptAgent,
+                 handler_arg: self(),
+                 task_sup: self(),
+                 cancel_reply_timeout_ms: -1
+               )
+    end
+  end
+
   @doc false
   def forward_telemetry(event, _measurements, metadata, pid),
     do: send(pid, {:telemetry, event, metadata})

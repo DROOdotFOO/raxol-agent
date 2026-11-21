@@ -43,6 +43,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # in-flight inbound request is answered, or after this bound.
   @default_close_drain_ms 300_000
 
+  # How long an adopter told of a `$/cancel_request` may take to reply before
+  # the request is answered -32800 and its inbound slot freed.
+  @default_cancel_reply_timeout_ms 30_000
+
   defstruct role: :agent,
             transport_mod: nil,
             transport_state: nil,
@@ -68,6 +72,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
             notif_tasks: 0,
             close_drain_ms: @default_close_drain_ms,
             draining?: false,
+            cancel_reply_ms: @default_cancel_reply_timeout_ms,
+            expired: %{},
             turns: %{},
             turn_ids: %{},
             oot_seq: %{}
@@ -101,6 +107,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
           notif_tasks: non_neg_integer(),
           close_drain_ms: pos_integer() | :infinity,
           draining?: boolean(),
+          cancel_reply_ms: pos_integer() | :infinity,
+          expired: %{reference() => reference()},
           turns: %{String.t() => TurnState.t()},
           turn_ids: map(),
           oot_seq: %{String.t() => non_neg_integer()}
@@ -123,7 +131,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   `{:invalid_option, :max_inbound, value}`), `:max_notification_tasks` (likewise,
   default #{@default_max_notification_tasks}), `:close_drain_ms` (how long, after the
   peer closes, in-flight requests may still be answered; a positive integer or
-  `:infinity`, default #{@default_close_drain_ms}), and either `:parent_sup` or
+  `:infinity`, default #{@default_close_drain_ms}), `:cancel_reply_timeout_ms` (how long
+  an adopter told of a cancel may take to reply, likewise, default
+  #{@default_cancel_reply_timeout_ms}), and either `:parent_sup` or
   `:task_sup`/`:session_sup`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -227,7 +237,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
     with {:ok, max_in} <- positive_option(opts, :max_inbound, @default_max_inbound),
          {:ok, max_notif} <-
            positive_option(opts, :max_notification_tasks, @default_max_notification_tasks),
-         {:ok, close_drain_ms} <- drain_option(opts),
+         {:ok, close_drain_ms} <- timeout_option(opts, :close_drain_ms, @default_close_drain_ms),
+         {:ok, cancel_reply_ms} <-
+           timeout_option(opts, :cancel_reply_timeout_ms, @default_cancel_reply_timeout_ms),
          {:ok, handler_state} <- init_handler(handler, Keyword.get(opts, :handler_arg)) do
       {mod, handle} = Keyword.fetch!(opts, :transport)
 
@@ -242,7 +254,8 @@ defmodule Raxol.AgentClientProtocol.Connection do
         handler_state: handler_state,
         max_in: max_in,
         max_notif: max_notif,
-        close_drain_ms: close_drain_ms
+        close_drain_ms: close_drain_ms,
+        cancel_reply_ms: cancel_reply_ms
       }
 
       {:ok, state, {:continue, :boot}}
@@ -258,10 +271,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
     end
   end
 
-  defp drain_option(opts) do
-    case Keyword.get(opts, :close_drain_ms, @default_close_drain_ms) do
+  defp timeout_option(opts, key, default) do
+    case Keyword.get(opts, key, default) do
       :infinity -> {:ok, :infinity}
-      other -> positive_option([close_drain_ms: other], :close_drain_ms, nil)
+      other -> positive_option([{key, other}], key, nil)
     end
   end
 
@@ -380,6 +393,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   # -- Messages ---------------------------------------------------------------
 
   defp on_info({:outbound_timeout, id}, state), do: {:noreply, Outbound.timeout(state, id)}
+
+  defp on_info({:cancel_reply_timeout, id, reply_ref}, state),
+    do: Inbound.cancel_reply_timeout(state, id, reply_ref)
 
   defp on_info({:acp_transport, ref, _event}, %{transport_ref: current} = state)
        when ref != current do
