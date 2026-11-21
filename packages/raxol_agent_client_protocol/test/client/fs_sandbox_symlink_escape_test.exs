@@ -1,20 +1,6 @@
-# Regression: DROOdotFOO #624 review HIGH -- the pre-#613 `real_path` bug that
-# `FsSandbox` had inherited byte-for-byte. Two failure modes, both reproduced
-# here against the real filesystem (no mocks):
-#
-#   1. A RELATIVE symlink target resolved against the *lexical* parent of the
-#      requested path instead of the resolved-real directory the link lives in,
-#      letting `root/loop -> "."` + `root/esc -> "../secret.txt"` requested as
-#      `loop/loop/esc` fold an out-of-root target back inside the sandbox
-#      (returned `{:ok, root/secret.txt}` instead of `:symlink_escape`).
-#   2. The depth guard advanced on every DIRECTORY recursion, so a deeply
-#      nested but symlink-free path (>40 components) wrongly tripped
-#      `:too_many_symlinks`.
-#
-# The shared-vector drift guard (`fs_sandbox_vectors_test.exs`) never fired on
-# (1) because no vector covered the relative-symlink-under-symlinked-ancestor
-# class; a matching reject vector was added alongside this fix. This file is the
-# belt-and-suspenders explicit witness for both classes.
+# FsSandbox symlink resolution against the real filesystem: a relative link
+# under a symlinked ancestor must not fold back inside the root, and deep
+# symlink-free nesting must not trip the symlink depth cap.
 defmodule Raxol.AgentClientProtocol.Client.FsSandboxSymlinkEscapeTest do
   use ExUnit.Case, async: false
 

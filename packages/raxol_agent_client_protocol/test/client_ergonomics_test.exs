@@ -1,14 +1,6 @@
-# Tests for the client-role ergonomics layer added to
-# `Raxol.AgentClientProtocol.Client`: `subscribe/3`/`unsubscribe/3`,
-# `prompt/3` (collect variant), `prompt_stream/4` (callback variant),
-# `decode_update/1`'s tolerant passthrough, the `fs_sandbox:` use-option,
-# and the `caps` snapshot exposed via `Connection.Ctx`.
-#
-# Driving mechanism: `Raxol.AgentClientProtocol.Test.ScriptedPeer` plays the
-# *agent* peer at the raw wire-map level against a real, directly-started
-# `Raxol.AgentClientProtocol.Connection` (`role: :client`) -- same technique
-# as `connection_test.exs`'s `start_client_conn/1`, reimplemented locally
-# here (that file is owned by another agent; not touched).
+# Client ergonomics: `subscribe/3`, `prompt/3`, `prompt_stream/4`,
+# `decode_update/1`, the `fs_sandbox:` option and `ctx.caps`, against a real
+# client-role Connection driven by `ScriptedPeer`.
 defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
   # async: false -- the fs_sandbox tests share one real filesystem directory
   # (module attribute, fixed at compile time -- `fs_sandbox:` is a `use`-time

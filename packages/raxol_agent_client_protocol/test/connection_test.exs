@@ -1,22 +1,7 @@
-# Adversarial-independent test suite for `Raxol.AgentClientProtocol.Connection`,
-# derived from `scratchpad/specs/acp-connection-design.md` v2 (the numbered
-# invariants Inv-1..Inv-21, the §9 failure-mode table, and the §8 sequence
-# diagrams) -- NOT from `connection.ex`'s implementation. Only mechanical
-# wiring (start_link option names, the handler behaviour contract generated
-# by `use Agent`/`use Client`) was read from the source; every assertion
-# below is what the design document claims must be observably true from the
-# wire, not what the shipped code happens to do.
-#
-# Driving mechanism: `Raxol.AgentClientProtocol.Test.ScriptedPeer` plays the
-# peer at the raw wire-map level (never constructs `Rpc.*` structs). Handler
-# behavior is scripted via `Rendezvous.invoke/3`: every generated callback
-# blocks and asks the test process (`ctx.handler_state`, set via
-# `handler_arg`) what to do, by sending a closure back to run *inside the
-# handler task*. This lets a test script exactly what a real handler would do
-# for a given dispatch (including calling `Connection.request/4` back into
-# the same Connection mid-turn, or delegating a reply) without hand-rolling a
-# bespoke handler module per scenario.
-
+# Connection invariants Inv-1..Inv-21 (INVARIANTS.md), asserted from the wire.
+# `ScriptedPeer` plays the peer with raw wire maps; handlers ask the test
+# process what to do via `Rendezvous.invoke/3`, so each test scripts its
+# handler behaviour inline.
 defmodule Raxol.AgentClientProtocol.ConnectionTest.Rendezvous do
   @moduledoc false
 

@@ -1,7 +1,5 @@
-# Ported from the MIT `f1729/agent_client_protocol` test suite
-# (`test/acp/plan_test.exs`, c) 2025 f1729; see NOTICE.md. Adapted to
-# `Raxol.AgentClientProtocol.Schema.{Plan,PlanEntry}`, and extended with
-# total-decode / forward-compat coverage for this port's defect fixes.
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Extended with decode-totality and `_meta` pass-through coverage.
 defmodule Raxol.AgentClientProtocol.Schema.PlanTest do
   use ExUnit.Case, async: true
 

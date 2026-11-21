@@ -1,15 +1,6 @@
-# Drives the acpx (openclaw/acpx, MIT) v1 conformance corpus --
-# `test/conformance/cases/*.json`, copied verbatim, see cases/NOTICE.md -- through
-# `Raxol.AgentClientProtocol.Test.Conformance.CaseRunner`. See that module's
-# moduledoc for the step/check engine this ports, the fixture agent/client,
-# and the compliance notes found while porting.
-#
-# `async: false`: every case starts its own `Agent`/`Client` connection
-# pair, but they all share the ONE package-level `SessionRegistry` name
-# (`Raxol.AgentClientProtocol.SessionRegistry`, `MIX_ENV=test`'s empty
-# `RaxolAgentClientProtocol.Application` tree does not start it -- see
-# `session_test.exs`'s identical `setup`), so two cases racing to
-# `start_supervised!` it under the same fixed atom name would collide.
+# Runs the acpx v1 conformance corpus (`test/conformance/cases/*.json`, MIT,
+# see cases/NOTICE.md) through `Test.Conformance.CaseRunner`. Not async:
+# every case shares the one `SessionRegistry` name.
 defmodule Raxol.AgentClientProtocol.Conformance.AcpxCasesTest do
   use ExUnit.Case, async: false
   use Raxol.AgentClientProtocol.Test.InvariantSentinel

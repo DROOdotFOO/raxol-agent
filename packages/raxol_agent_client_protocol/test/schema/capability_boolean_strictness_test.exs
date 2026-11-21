@@ -1,16 +1,5 @@
-# Regression: DROOdotFOO #624 review MEDIUM/LOW (schema strictness).
-#
-#   * Capability boolean fields were decoded with a bare
-#     `Map.get(map, key, false)`, so a truthy-in-Elixir non-boolean wire value
-#     (`0`, `""`, `"false"`, `[]`, a nested object) silently ENABLED the
-#     capability. The fix (`AgentTypes.decode_bool/2`) is least-permissive:
-#     only a literal boolean survives; anything else reads as `false`.
-#
-# (The review also flagged `Version.from_json`/`coerce` accepting an
-# unsupported-high integer; that is by-design faithful decode -- negotiation
-# happens at the response layer, the agent replies with the version it speaks
-# -- and is already covered end-to-end by `wire_torture_test.exs`'s
-# "forward-compat skew" handshake test. No change; not re-tested here.)
+# Capability booleans decode least-permissively: only a literal boolean
+# survives; `0`, `""`, `"false"`, `[]` or an object read as `false`.
 defmodule Raxol.AgentClientProtocol.Schema.CapabilityBooleanStrictnessTest do
   use ExUnit.Case, async: true
 
@@ -22,7 +11,7 @@ defmodule Raxol.AgentClientProtocol.Schema.CapabilityBooleanStrictnessTest do
   }
 
   describe "capability booleans reject non-boolean wire values (least-permissive)" do
-    test "PromptCapabilities: 0 / \"\" / \"false\" do not enable" do
+    test ~S(PromptCapabilities: 0 / "" / "false" do not enable) do
       assert {:ok, caps} =
                PromptCapabilities.from_json(%{
                  "image" => 0,

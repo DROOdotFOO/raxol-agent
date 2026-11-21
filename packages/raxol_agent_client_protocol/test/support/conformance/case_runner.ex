@@ -35,30 +35,16 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.CaseRunner do
 
   ## Compliance notes (found while porting)
 
-    * FIXED (G6 finding-14, C6 -- STRICT ruling): `Schema.AgentTypes.
-      NewSessionRequest.from_json/1` (and several sibling `from_json/1`s
-      across `agent_types.ex` + `LifecycleExtras.SessionNotification`) used
-      to fetch a field's *presence* but never check its *type* against the
-      oracle schema -- `cwd: 12345` and `cwd: null` decoded successfully as
-      `%NewSessionRequest{cwd: 12345 | nil}` instead of failing at
-      `Router.decode/4` with `-32602` the way a schema-validating peer (the
-      upstream TS SDK's own Zod-validated `AgentSideConnection`) would.
-      `AgentTypes.fetch/3` (mirroring the `WireFields.require/3` pattern
-      `ClientTypes`/`Content` already used) now type-checks `cwd`,
-      `sessionId`, `modeId`, and `methodId` on every struct the ruling
-      named as load-bearing, so `acp.v1.errors.invalid_params` /
-      `.invalid_params.cwd_null` / `.invalid_prompt_session_type` (cases
-      006, 011, 015) now pass for the *right* reason -- a real `-32602` at
-      decode, before any handler is invoked. `MockAgent.new_session/2`'s
-      own `valid_cwd?/1` guard is kept as a belt (it still catches the
-      empty-string edge `is_binary/1` alone doesn't reject), not the sole
-      defense it used to be.
+    * Cases 006, 011 and 015 (`invalid_params`, `cwd_null`,
+      `invalid_prompt_session_type`) pass because `AgentTypes.fetch/3`
+      type-checks `cwd`/`sessionId`/`modeId`/`methodId`, giving `-32602` at
+      decode before any handler runs.
 
     * `acp.v1.session.prompt.post_success_drain` assumes an agent that
       violates protocol ordering (emits `session/update` notifications
       *after* the terminal `session/prompt` response for that turn) --
       this package's `Session` enforces that ordering as a real invariant
-      (I3, the "straggler-task guard", `session.ex` §3.3): a `post_update/2`
+      (I3, the straggler-task guard): a `post_update/2`
       once the turn has closed is dropped, not delivered. `MockAgent`
       reproduces the same *observable update set* the case checks for via
       `Session.spawn_task/2` (the turn-group hold-open primitive) instead

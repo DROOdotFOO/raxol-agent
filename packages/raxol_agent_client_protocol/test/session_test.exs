@@ -8,6 +8,8 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
   use Raxol.AgentClientProtocol.Test.InvariantSentinel
 
   alias Raxol.AgentClientProtocol.Error
+  alias Raxol.AgentClientProtocol.Ext.Journal.Mem
+  alias Raxol.AgentClientProtocol.Ext.Journal.Writer
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.PromptResponse
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.SessionMode
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.SessionModeState
@@ -15,8 +17,6 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
   alias Raxol.AgentClientProtocol.Schema.ClientTypes.SelectedPermissionOutcome
   alias Raxol.AgentClientProtocol.Schema.CurrentModeUpdate
   alias Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification
-  alias Raxol.AgentClientProtocol.Ext.Journal.Mem
-  alias Raxol.AgentClientProtocol.Ext.Journal.Writer
   alias Raxol.AgentClientProtocol.Session
   alias Raxol.AgentClientProtocol.Session.Emitter
   alias Raxol.AgentClientProtocol.Session.Supervisor, as: SessionSup
@@ -870,7 +870,7 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
       refute_receive :b_ran, 100
       assert turn_state(sb) == :idle
       assert length(kinds(j, "turn_started")) == 1
-      assert length(kinds(j, "turn_completed")) == 0
+      assert kinds(j, "turn_completed") == []
 
       # A finishes cleanly: exactly one turn_started + one turn_completed. No
       # interleave, no double completion, latch released.

@@ -39,7 +39,7 @@ file is.**
 
 Home: `test/session_test.exs` (Session GenServer over `FakeConnection`), except
 the two new method-parity rows I18/I19 (see their entries). Moduledoc: the
-`Session` gloss in `lib/raxol/agent_client_protocol/session.ex:57`.
+`Session` moduledoc in `lib/raxol/agent_client_protocol/session.ex`.
 
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
@@ -75,7 +75,7 @@ via `Router`, not through the Session GenServer.
 ## Family `Inv`: Connection correlation/dispatch (Inv-1..Inv-21, contiguous)
 
 Home: `test/connection_test.exs`, `describe "invariants"`. Moduledoc: the
-`Connection` "Correctness spine" at `lib/raxol/agent_client_protocol/connection.ex:41`.
+`Connection` moduledoc in `lib/raxol/agent_client_protocol/connection.ex`.
 
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
@@ -151,12 +151,11 @@ unit + `Client.prompt/3`/`prompt_stream/4`'s direct turn-delivery channel);
 `client_ergonomics_test.exs`'s `prompt_stream/4` describe block already covers
 D6's positive case. D4 (the bounded broadcast-path Reorder engine) is
 **RESERVED** here: no `Delivery.Reorder` module exists yet; a later unit owns
-it. Registered per the transport-ordering design
-(`TRANSPORT_ORDERING_DESIGN.md` §4/§8, ADR-0030 clauses 1/2/3/5/9): the
-Connection stamps a receiver-assigned, contiguous per-turn ordinal at the
-demux point (`dispatch_inbound_notification/3`) and delivers
+it. Registered per ADR-0030 (`docs/adr/0030-acp-session-update-delivery-ordering.md`,
+clauses 1-5): the Connection stamps a receiver-assigned, contiguous per-turn
+ordinal at the demux point (`Connection.Turns.stamp_update/3`) and delivers
 `{:acp_turn_update, tag, ordinal, notification}` to the turn's owner DIRECTLY,
-itself (the same single-sender operation `deliver_outcome/2` already uses for
+itself (the same single-sender operation `Connection.Link.deliver/2` uses for
 the terminal result), so the owner's mailbox order is wire order with no
 reorder buffer and no settle timer needed on this path.
 

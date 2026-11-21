@@ -153,7 +153,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
       text == "echo" ->
         # `echo` with no argument would otherwise emit an EMPTY text chunk,
         # which `Session`'s streaming guard #1 rejects outright
-        # (`empty_chunk?/1`, session.ex "no empty chunks" -- W17-ctx). A
+        # (`Session.Turn.empty_chunk?/1`). A
         # non-empty placeholder keeps this fixture inside that guard rather
         # than silently losing the update.
         emit_chunk(session_pid, session_id, "(empty)")
@@ -261,28 +261,22 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
   defp do_late_tool(session_pid, session_id, text) do
     rest = text |> String.replace_prefix("late-tool ", "") |> String.trim()
 
-    case String.split(rest, " ", parts: 2) do
-      [ms_str, late_text] ->
-        case Integer.parse(ms_str) do
-          {ms, ""} ->
-            emit_chunk(session_pid, session_id, "writing now")
+    with [ms_str, late_text] <- String.split(rest, " ", parts: 2),
+         {ms, ""} <- Integer.parse(ms_str) do
+      emit_chunk(session_pid, session_id, "writing now")
 
-            {:ok, _ref} =
-              Session.spawn_task(session_pid, fn ->
-                Process.sleep(ms)
-                tool_call_id = unique_id()
-                emit_tool_call(session_pid, session_id, tool_call_id, late_text)
-                Process.sleep(5)
-                emit_tool_call_update(session_pid, session_id, tool_call_id, late_text)
-              end)
+      {:ok, _ref} =
+        Session.spawn_task(session_pid, fn ->
+          Process.sleep(ms)
+          tool_call_id = unique_id()
+          emit_tool_call(session_pid, session_id, tool_call_id, late_text)
+          Process.sleep(5)
+          emit_tool_call_update(session_pid, session_id, tool_call_id, late_text)
+        end)
 
-            emit_chunk(session_pid, session_id, "late-tool scheduled: " <> late_text)
-
-          _invalid ->
-            emit_chunk(session_pid, session_id, "error: usage: late-tool <milliseconds> <text>")
-        end
-
-      _other ->
+      emit_chunk(session_pid, session_id, "late-tool scheduled: " <> late_text)
+    else
+      _invalid ->
         emit_chunk(session_pid, session_id, "error: usage: late-tool <milliseconds> <text>")
     end
 
