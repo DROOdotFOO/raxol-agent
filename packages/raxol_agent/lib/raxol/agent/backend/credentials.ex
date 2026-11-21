@@ -395,9 +395,10 @@ defmodule Raxol.Agent.Backend.Credentials do
   @doc """
   Create a 1Password item holding `key` and return its `op://...` reference.
 
-  The secret is written to a `0600` temp template and passed to
+  The secret is written to a `0600` template in a fresh `0700` directory
+  under `$XDG_RUNTIME_DIR` (or the system temp directory) and passed to
   `op item create` via `--template` (never on argv, so it can't leak to the
-  process list), then the temp file is removed. The vault defaults to
+  process list), then the directory is removed. The vault defaults to
   `$RAXOL_OP_VAULT` or `Private`. Returns `{:ok, ref}` or `{:error, reason}`.
   """
   @spec create_item(atom() | String.t(), String.t(), keyword()) ::
@@ -420,26 +421,77 @@ defmodule Raxol.Agent.Backend.Credentials do
 
     template = op_template(harness, key)
 
-    path =
-      Path.join(
-        System.tmp_dir!(),
-        "raxol-op-#{System.unique_integer([:positive])}.json"
-      )
-
-    # Exclusive create, then tighten to 0600 while still EMPTY, then
-    # write the secret — the default-permission window never contains
-    # key material, and a pre-planted file/symlink at the (guessable)
-    # name fails the exclusive open instead of receiving the key.
-    with {:ok, io} <- File.open(path, [:write, :exclusive]),
-         _ <- File.chmod(path, 0o600),
-         :ok <- IO.binwrite(io, template),
-         :ok <- File.close(io) do
+    with {:ok, dir} <- template_dir() do
       try do
-        run_op_create(path, vault, Keyword.get(opts, :timeout_ms))
+        path = Path.join(dir, "op.json")
+
+        # The directory is new, 0700 and ours, so the file is created there
+        # with nobody else able to name it; 0600 is set while it is empty.
+        with {:ok, io} <- File.open(path, [:write, :exclusive]),
+             :ok <- File.chmod(path, 0o600),
+             :ok <- write_close(io, template) do
+          run_op_create(path, vault, Keyword.get(opts, :timeout_ms))
+        end
       after
-        File.rm(path)
+        File.rm_rf(dir)
       end
     end
+  end
+
+  defp write_close(io, data) do
+    IO.binwrite(io, data)
+  after
+    File.close(io)
+  end
+
+  @stale_template_s 600
+
+  @doc false
+  # A fresh `raxol-op-<random>` directory (0700, ours, created exclusively)
+  # for one template, under `$XDG_RUNTIME_DIR` when it is set (per-user,
+  # tmpfs) and the system temp directory otherwise: both are cleared at
+  # boot and kept out of backups, unlike `~/.raxol`, which also holds the
+  # ciphertext a broker wrapping key protects. `op` reads the template from
+  # a path, its stdin being `/dev/null`. Directories a killed VM left behind
+  # are removed once they are ten minutes old.
+  @spec template_dir() :: {:ok, String.t()} | {:error, term()}
+  def template_dir do
+    base = template_base()
+    sweep_stale_templates(base)
+    name = "raxol-op-" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    dir = Path.join(base, name)
+
+    with :ok <- File.mkdir(dir),
+         :ok <- File.chmod(dir, 0o700),
+         {:ok, %File.Stat{type: :directory} = stat} <- File.lstat(dir),
+         :ok <- OperatorFile.owned_unshared(stat) do
+      {:ok, dir}
+    else
+      {:ok, %File.Stat{type: type}} -> {:error, {:template_dir, {:not_a_directory, type}}}
+      {:error, reason} -> {:error, {:template_dir, reason}}
+    end
+  end
+
+  defp template_base do
+    case System.get_env("XDG_RUNTIME_DIR") do
+      "/" <> _ = dir -> if File.dir?(dir), do: dir, else: System.tmp_dir!()
+      _ -> System.tmp_dir!()
+    end
+  end
+
+  defp sweep_stale_templates(base) do
+    cutoff = System.os_time(:second) - @stale_template_s
+
+    for dir <- Path.wildcard(Path.join(base, "raxol-op-*")),
+        {:ok, %File.Stat{type: :directory, mtime: mtime} = stat} <- [
+          File.lstat(dir, time: :posix)
+        ],
+        mtime < cutoff,
+        OperatorFile.owned_unshared(stat) == :ok do
+      File.rm_rf(dir)
+    end
+
+    :ok
   end
 
   defp run_op_create(template_path, vault, timeout_ms) do

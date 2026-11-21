@@ -34,6 +34,19 @@ defmodule Raxol.Agent.Backend.HTTP do
   Each plugin is a function `(Req.Request.t() -> Req.Request.t())` applied
   before the request is sent. This keeps Backend.HTTP agnostic to payment
   details while letting callers wire in transparent 402 handling.
+
+  ## Streaming limits
+
+  `stream/2` ends with `{:error, message}` when the whole response passes
+  `:max_stream_bytes` (default 16 MiB, counted as it arrives, whether or not
+  the stream is being read), when its unframed remainder passes
+  `:max_sse_buffer_bytes` (default 1 MiB), when streamed tool-call arguments
+  together pass `:max_tool_call_bytes` (default 1 MiB), or when it streams
+  more than `:max_tool_calls` (default 128) calls. Each is an option to
+  `stream/2`.
+
+  The stream's events are delivered to the process that called `stream/2`,
+  which must also be the one that reads it.
   """
 
   @behaviour Raxol.Agent.AIBackend
@@ -50,6 +63,13 @@ defmodule Raxol.Agent.Backend.HTTP do
   @default_max_tokens 4_096
   @default_ollama_port "11434"
   @stream_idle_ms 60_000
+  # Streaming input limits. A provider (or anything in the path to one) that
+  # never sends an event boundary, or streams tool-call fragments without
+  # end, would otherwise grow the caller's memory without bound.
+  @max_sse_buffer_bytes 1_048_576
+  @max_stream_bytes 16_777_216
+  @max_tool_call_bytes 1_048_576
+  @max_tool_calls 128
 
   # An unparseable body or an empty length-truncated turn is an error, never
   # assistant prose.
@@ -140,10 +160,11 @@ defmodule Raxol.Agent.Backend.HTTP do
       body = Map.put(body, :stream, true)
       caller = self()
       ref = make_ref()
+      limits = stream_limits(opts)
 
       task_pid =
         spawn_link(fn ->
-          stream_request(url, headers, body, timeout(opts), caller, ref, plugins)
+          stream_request(url, headers, body, timeout(opts), {caller, ref, limits}, plugins)
         end)
 
       stream =
@@ -151,16 +172,18 @@ defmodule Raxol.Agent.Backend.HTTP do
           fn ->
             %{
               ref: ref,
+              owner: caller,
               task_pid: task_pid,
               buffer: "",
               provider: provider,
               content: "",
               usage: %{},
-              tool_calls_acc: %{}
+              tool_calls_acc: %{},
+              limits: limits
             }
           end,
           &stream_next/1,
-          fn %{task_pid: pid} -> if Process.alive?(pid), do: Process.exit(pid, :normal) end
+          &stop_request/1
         )
 
       {:ok, stream}
@@ -171,22 +194,19 @@ defmodule Raxol.Agent.Backend.HTTP do
 
   # `:sse_done` follows a response or a rescued raise, never an exit, so a
   # transport exit is not collected as a finished stream.
-  defp stream_request(url, headers, body, timeout, caller, ref, plugins) do
-    post_stream(url, headers, body, timeout, caller, ref, plugins)
+  defp stream_request(url, headers, body, timeout, {caller, ref, _limits} = target, plugins) do
+    post_stream(url, headers, body, timeout, target, plugins)
     send(caller, {:sse_done, ref})
   end
 
-  defp post_stream(url, headers, body, timeout, caller, ref, plugins) do
+  defp post_stream(url, headers, body, timeout, {caller, ref, limits}, plugins) do
     req =
       Req.new(
         url: url,
         json: body,
         headers: headers,
         receive_timeout: timeout,
-        into: fn {:data, data}, acc ->
-          send(caller, {:sse_data, ref, data})
-          {:cont, acc}
-        end
+        into: &forward(&1, &2, caller, ref, limits.stream_bytes)
       )
       |> apply_plugins(plugins)
 
@@ -199,13 +219,41 @@ defmodule Raxol.Agent.Backend.HTTP do
     e -> send(caller, {:sse_error, ref, Exception.message(e)})
   end
 
+  # The total is counted here, in the request process, so the cap holds while
+  # nobody reads the stream: the caller's mailbox never holds more than it.
+  # A `:sse_stop` from a reader that is not the owner ends the request too.
+  defp forward({:data, data}, {req, resp}, caller, ref, max_bytes) do
+    total = Req.Response.get_private(resp, :raxol_stream_bytes, 0) + byte_size(data)
+
+    receive do
+      {:sse_stop, ^ref} -> {:halt, {req, resp}}
+    after
+      0 ->
+        if total > max_bytes do
+          send(caller, {:sse_error, ref, "streamed response exceeded #{max_bytes} bytes"})
+          {:halt, {req, resp}}
+        else
+          send(caller, {:sse_data, ref, data})
+          {:cont, {req, Req.Response.put_private(resp, :raxol_stream_bytes, total)}}
+        end
+    end
+  end
+
   defp stream_next(%{buffer: :halt} = state), do: {:halt, state}
 
   defp stream_next(%{ref: ref} = state) do
     receive do
       {:sse_data, ^ref, data} ->
-        {events, buffer} = SSE.parse(state.buffer <> data, state.provider)
-        {stream_events(events), fold_events(%{state | buffer: buffer}, events)}
+        {events, buffer} = parse(state, data)
+        state = fold_events(%{state | buffer: buffer}, events)
+
+        case check_limits(state) do
+          :ok ->
+            {stream_events(events), state}
+
+          {:error, error} ->
+            {stream_events(events) ++ [{:error, error}], %{state | buffer: :halt}}
+        end
 
       {:sse_error, ^ref, error} ->
         {[{:error, error}], %{state | buffer: :halt}}
@@ -221,6 +269,64 @@ defmodule Raxol.Agent.Backend.HTTP do
         {[{:done, done}], %{state | buffer: :halt}}
     after
       @stream_idle_ms -> {:halt, state}
+    end
+  end
+
+  # Re-parsing the whole buffer for every chunk is quadratic in small chunks,
+  # so a chunk that cannot complete an event is only appended.
+  defp parse(%{buffer: buffer, provider: provider}, data) do
+    if SSE.boundary?(buffer, data, provider),
+      do: SSE.parse(buffer <> data, provider),
+      else: {[], buffer <> data}
+  end
+
+  # `:normal` would not stop the linked request process, which then keeps
+  # reading the response into the owner's mailbox. The owner unlinks first
+  # so the kill does not come back to it, waits for the process to be gone,
+  # then drops what it sent. Another process halting the stream holds no
+  # link to undo, and killing would take the owner down over it, so it asks
+  # the request to stop instead.
+  defp stop_request(%{owner: owner, task_pid: pid, ref: ref}) when owner == self() do
+    monitor = Process.monitor(pid)
+    Process.unlink(pid)
+    Process.exit(pid, :kill)
+
+    receive do
+      {:DOWN, ^monitor, :process, ^pid, _} -> :ok
+    after
+      5_000 -> Process.demonitor(monitor, [:flush])
+    end
+
+    flush_request(ref)
+  end
+
+  defp stop_request(%{task_pid: pid, ref: ref}), do: send(pid, {:sse_stop, ref})
+
+  defp flush_request(ref) do
+    receive do
+      {:sse_data, ^ref, _} -> flush_request(ref)
+      {:sse_error, ^ref, _} -> flush_request(ref)
+      {:sse_done, ^ref} -> flush_request(ref)
+    after
+      0 -> :ok
+    end
+  end
+
+  defp stream_limits(opts) do
+    %{
+      stream_bytes: Keyword.get(opts, :max_stream_bytes, @max_stream_bytes),
+      buffer_bytes: Keyword.get(opts, :max_sse_buffer_bytes, @max_sse_buffer_bytes),
+      tool_call_bytes: Keyword.get(opts, :max_tool_call_bytes, @max_tool_call_bytes),
+      tool_calls: Keyword.get(opts, :max_tool_calls, @max_tool_calls)
+    }
+  end
+
+  defp check_limits(%{buffer: buffer, limits: limits} = state) do
+    if byte_size(buffer) > limits.buffer_bytes do
+      {:error,
+       "streamed response exceeded #{limits.buffer_bytes} bytes without an event boundary"}
+    else
+      ToolCalls.check_size(state.tool_calls_acc, limits.tool_call_bytes, limits.tool_calls)
     end
   end
 
@@ -246,10 +352,14 @@ defmodule Raxol.Agent.Backend.HTTP do
         nil -> state.usage
       end
 
+    max_calls = state.limits.tool_calls
+
+    # Merging stops once past the call limit, which `check_limits/1` then
+    # reports, so one large chunk costs at most that many calls of work.
     acc =
       for {:tool_call_delta, frags} <- events,
           reduce: state.tool_calls_acc,
-          do: (acc -> ToolCalls.merge(acc, frags))
+          do: (acc -> ToolCalls.merge(acc, frags, max_calls))
 
     %{state | content: state.content <> text, usage: usage, tool_calls_acc: acc}
   end

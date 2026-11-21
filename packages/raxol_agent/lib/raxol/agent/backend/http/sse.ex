@@ -13,6 +13,22 @@ defmodule Raxol.Agent.Backend.HTTP.SSE do
           | {:marker, String.t()}
 
   @doc """
+  Whether appending `data` to `buffer` can complete an event: a newline for
+  Ollama, a blank line otherwise, CRLF read as LF as `parse/2` does. Only the buffer's last three
+  bytes are looked at, for a separator split across chunks.
+  """
+  @spec boundary?(String.t(), String.t(), atom()) :: boolean()
+  def boundary?(buffer, data, provider) do
+    size = byte_size(buffer)
+    window = binary_part(buffer, max(size - 3, 0), min(size, 3)) <> data
+
+    case provider do
+      :ollama -> String.contains?(window, "\n")
+      _ -> window |> String.replace("\r\n", "\n") |> String.contains?("\n\n")
+    end
+  end
+
+  @doc """
   Split `raw` into complete events and the unterminated remainder, which the
   caller prepends to the next chunk. Ollama streams newline-delimited JSON;
   the others stream `data:` records separated by a blank line.

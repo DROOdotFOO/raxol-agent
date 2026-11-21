@@ -356,6 +356,51 @@ defmodule Raxol.Agent.Backend.CredentialsTest do
     end
   end
 
+  describe "template_dir/0" do
+    setup do
+      base = tmp_dir("raxol-runtime")
+      prev = System.get_env("XDG_RUNTIME_DIR")
+      System.put_env("XDG_RUNTIME_DIR", base)
+
+      on_exit(fn ->
+        if prev,
+          do: System.put_env("XDG_RUNTIME_DIR", prev),
+          else: System.delete_env("XDG_RUNTIME_DIR")
+      end)
+
+      {:ok, base: base}
+    end
+
+    @tag :unix_only
+    test "is a fresh 0700 directory under the runtime dir, needing no home", %{base: base} do
+      prev_home = System.get_env("HOME")
+      System.delete_env("HOME")
+      on_exit(fn -> if prev_home, do: System.put_env("HOME", prev_home) end)
+
+      assert {:ok, dir} = Credentials.template_dir()
+      assert {:ok, other} = Credentials.template_dir()
+      assert Path.dirname(dir) == base
+      assert dir != other
+      assert {:ok, %File.Stat{mode: mode}} = File.stat(dir)
+      assert Bitwise.band(mode, 0o777) == 0o700
+    end
+
+    @tag :unix_only
+    test "sweeps a leftover directory once it is stale, and only then", %{base: base} do
+      stale = Path.join(base, "raxol-op-stale")
+      fresh = Path.join(base, "raxol-op-fresh")
+      File.mkdir_p!(stale)
+      File.mkdir_p!(fresh)
+      File.chmod!(stale, 0o700)
+      File.chmod!(fresh, 0o700)
+      File.touch!(stale, System.os_time(:second) - 3_600)
+
+      assert {:ok, _dir} = Credentials.template_dir()
+      refute File.exists?(stale)
+      assert File.exists?(fresh)
+    end
+  end
+
   describe "run_executable/3" do
     # With no `:in` the port's stdin pipe never delivers and never closes, so
     # if the `</dev/null` redirect is lost a stdin-reading child blocks until
