@@ -152,8 +152,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
   @doc """
   Transfers an inbound request's reply obligation to `adopter`, which the
   Connection then monitors. Must return before the handler returns `:deferred`.
+  Returns `{:error, :cancelled}` when the peer already cancelled the request.
   """
-  @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref}
+  @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref | :cancelled}
   def delegate_reply(conn, reply_ref, adopter)
       when is_pid(conn) and is_reference(reply_ref) and is_pid(adopter) do
     call(conn, {:delegate_reply, reply_ref, adopter})

@@ -127,8 +127,8 @@ defmodule Raxol.AgentClientProtocol.Session do
   @doc """
   Begins a prompt turn; called from the `session/prompt` handler task. Adopts the
   reply obligation and returns `:ok` (the handler then returns `:deferred`). A
-  session with a live turn returns `{:error, %Error{}}` without adopting, and the
-  handler replies with it.
+  session with a live turn, or a request the peer already cancelled, returns
+  `{:error, %Error{}}` without starting a turn, and the handler replies with it.
   """
   @spec begin_prompt(GenServer.server(), struct(), reference(), non_neg_integer()) ::
           :ok | {:error, Error.t()}
@@ -208,13 +208,19 @@ defmodule Raxol.AgentClientProtocol.Session do
   @impl true
   def handle_call({:begin_prompt, req, reply_ref, rx_seq}, _from, %{turn: :idle} = state) do
     # Adopt first: the call returns before the handler can return :deferred.
-    _ = state.conn_mod.delegate_reply(state.conn, reply_ref, self())
+    # If the peer already cancelled (or the request is gone), run nothing.
+    case state.conn_mod.delegate_reply(state.conn, reply_ref, self()) do
+      :ok when rx_seq < state.last_cancel_seq ->
+        _ = state.conn_mod.reply(state.conn, reply_ref, {:ok, PromptResponse.new(:cancelled)})
+        {:reply, :ok, arm_idle(state)}
 
-    if rx_seq < state.last_cancel_seq do
-      _ = state.conn_mod.reply(state.conn, reply_ref, {:ok, PromptResponse.new(:cancelled)})
-      {:reply, :ok, arm_idle(state)}
-    else
-      {:reply, :ok, start_turn(state, req, reply_ref, rx_seq)}
+      :ok ->
+        {:reply, :ok, start_turn(state, req, reply_ref, rx_seq)}
+
+      {:error, reason} ->
+        {:reply,
+         {:error, Error.with_data(Error.new(-32_800, "Request cancelled"), inspect(reason))},
+         arm_idle(state)}
     end
   end
 

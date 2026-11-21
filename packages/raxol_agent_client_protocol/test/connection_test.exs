@@ -1815,6 +1815,51 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 8, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
     end
 
+    test "delegating a request the peer already cancelled fails" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 20, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, _ctx ->
+          send(test_pid, :blocked)
+          receive do: (:never -> :ok)
+        end)
+
+      assert_receive :blocked
+      ScriptedPeer.send_cancel_request(peer, 20)
+
+      wait_until(fn ->
+        case :sys.get_state(conn).pending_in do
+          %{20 => %{cancelled?: false}} -> false
+          _ -> true
+        end
+      end)
+
+      assert {:error, _} = Connection.delegate_reply(conn, ctx.reply_ref, self())
+      ScriptedPeer.assert_no_frame(peer, 150)
+    end
+
+    test "a handler crash after delegating leaves the reply to the adopter" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 21, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          exit(:boom)
+        end)
+
+      ScriptedPeer.assert_no_frame(peer, 150)
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      assert %{"id" => 21, "result" => %{"stopReason" => "end_turn"}} = ScriptedPeer.recv(peer)
+    end
+
     test "a malformed delegated reply is answered -32603 and the Connection survives" do
       test_pid = self()
       %{conn: conn, peer: peer} = start_agent_conn()

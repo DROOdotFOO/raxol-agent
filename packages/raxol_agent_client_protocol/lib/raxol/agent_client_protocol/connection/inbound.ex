@@ -293,31 +293,26 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   end
 
   defp request_crash(state, id, reason) do
-    case Map.pop(state.pending_in, id) do
-      {nil, _} ->
+    case Map.get(state.pending_in, id) do
+      nil ->
         {:noreply, state}
 
-      {entry, pending_in} ->
-        state = %{
-          state
-          | pending_in: pending_in,
-            reply_refs: Map.delete(state.reply_refs, entry.reply_ref)
-        }
+      # The adopter owns the reply now; it answers (or its DOWN does).
+      %{adopter: {_pid, _mon}} = entry ->
+        entry = %{entry | task_ref: nil, task_pid: nil}
+        {:noreply, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
 
-        if entry.cancelled? or reason == :normal do
-          {:noreply, state}
-        else
-          Logger.error(
-            "ACP: request handler crashed (#{entry.method}, id #{RequestId.display(id)}): #{inspect(reason)}"
-          )
+      %{cancelled?: cancelled?} = entry when cancelled? or reason == :normal ->
+        {:noreply, Link.drop_pending_in(state, id, entry)}
 
-          Telemetry.execute([:raxol, :acp, :handler_crash], %{
-            kind: :request,
-            method: entry.method
-          })
+      entry ->
+        Logger.error(
+          "ACP: request handler crashed (#{inspect(entry.method)}, id #{RequestId.display(id)}): " <>
+            inspect(reason)
+        )
 
-          internal_error(state, id)
-        end
+        Telemetry.execute([:raxol, :acp, :handler_crash], %{kind: :request, method: entry.method})
+        state |> Link.drop_pending_in(id, entry) |> internal_error(id)
     end
   end
 
@@ -347,15 +342,23 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   # -- Delegated replies ------------------------------------------------------
 
-  @spec delegate(state(), reference(), pid()) :: {:ok, state()} | {:error, :unknown_ref}
+  @spec delegate(state(), reference(), pid()) ::
+          {:ok, state()} | {:error, :unknown_ref | :cancelled}
   def delegate(state, reply_ref, adopter) do
     case Map.get(state.reply_refs, reply_ref) do
       nil ->
         {:error, :unknown_ref}
 
       id ->
-        entry = %{Map.fetch!(state.pending_in, id) | adopter: {adopter, Process.monitor(adopter)}}
-        {:ok, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
+        case Map.fetch!(state.pending_in, id) do
+          # The peer already cancelled it; the would-be adopter must not run it.
+          %{cancelled?: true} ->
+            {:error, :cancelled}
+
+          entry ->
+            entry = %{entry | adopter: {adopter, Process.monitor(adopter)}}
+            {:ok, %{state | pending_in: Map.put(state.pending_in, id, entry)}}
+        end
     end
   end
 
