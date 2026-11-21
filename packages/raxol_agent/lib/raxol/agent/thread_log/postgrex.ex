@@ -284,6 +284,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec insert_sql(String.t()) :: String.t()
   def insert_sql(table) do
     table = quote_identifier!(table)
 
@@ -299,6 +300,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec select_latest_sql(String.t()) :: String.t()
   def select_latest_sql(table) do
     table = quote_identifier!(table)
 
@@ -312,6 +314,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec truncate_sql(String.t()) :: String.t()
   def truncate_sql(table) do
     table = quote_identifier!(table)
     "DELETE FROM #{table} WHERE thread_id = $1 AND sequence < $2\n"

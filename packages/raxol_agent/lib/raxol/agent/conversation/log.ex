@@ -37,6 +37,12 @@ defmodule Raxol.Agent.Conversation.Log do
 
   defstruct store: nil, subscribers: %{}, monitors: %{}
 
+  @type t :: %__MODULE__{
+          store: term(),
+          subscribers: %{optional(conversation_id()) => MapSet.t(pid())},
+          monitors: %{optional({pid(), conversation_id()}) => reference()}
+        }
+
   @type server :: GenServer.server()
   @type conversation_id :: binary()
 
