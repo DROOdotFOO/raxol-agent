@@ -33,6 +33,12 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
   alias Raxol.AgentClientProtocol.Connection.TurnState
   alias Raxol.AgentClientProtocol.Delivery
 
+  @max_oot_sessions 10_000
+
+  @doc false
+  @spec max_oot_sessions() :: 10_000
+  def max_oot_sessions, do: @max_oot_sessions
+
   @type state :: %{
           :turns => %{String.t() => TurnState.t()},
           :turn_ids => %{term() => String.t()},
@@ -134,9 +140,24 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
         {Delivery.new(token, n, rx_seq), put_in(state.turns[session_id].next_ordinal, n + 1)}
 
       nil ->
-        ordinal = Map.get(state.oot_seq, session_id, 0)
-        state = %{state | oot_seq: Map.put(state.oot_seq, session_id, ordinal + 1)}
-        {Delivery.new(nil, ordinal, rx_seq), state}
+        stamp_out_of_turn(state, session_id, rx_seq)
+    end
+  end
+
+  # Out-of-turn counters are kept for at most @max_oot_sessions sessions, so a
+  # peer inventing session ids cannot grow the map without bound. Updates for
+  # sessions beyond the cap are stamped ordinal 0 and not tracked.
+  defp stamp_out_of_turn(state, session_id, rx_seq) do
+    case Map.fetch(state.oot_seq, session_id) do
+      {:ok, ordinal} ->
+        {Delivery.new(nil, ordinal, rx_seq),
+         %{state | oot_seq: Map.put(state.oot_seq, session_id, ordinal + 1)}}
+
+      :error when map_size(state.oot_seq) < @max_oot_sessions ->
+        {Delivery.new(nil, 0, rx_seq), %{state | oot_seq: Map.put(state.oot_seq, session_id, 1)}}
+
+      :error ->
+        {Delivery.new(nil, 0, rx_seq), state}
     end
   end
 
