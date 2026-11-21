@@ -61,7 +61,9 @@ MAC and are bound to their scope.
   needs an authorizer. `raxol mcp`'s stdio authorizer allows them (see
   [ADR-0042](../../docs/adr/0042-lean-on-omp.md)), so a network deployment must supply a
   restrictive one. `raw_request` has no tool.
-- `Raxol.Web3.MCP.FXTools`: `web3_fx_stables`, `web3_fx_stable`, `web3_fx_corridors`.
+- `Raxol.Web3.MCP.FXTools`: `web3_fx_stables`, `web3_fx_stable`, `web3_fx_corridors`. Also
+  `sensitive: true`, because they spend the operator's Sleuth key and RPC budget, and the same
+  authorizer caveat applies.
 - The agent tool is `Raxol.Agent.Actions.Web3` in `raxol_agent`: one tool with an `operation`
   enum.
 
@@ -72,7 +74,8 @@ Base, the sequencer. EUR reads Base and falls back to Ethereum, CHF reads Ethere
 exactly 1. `FX.Sleuth` supplies market data under a bearer key that never reaches a URL or a log.
 `FX.Quality` judges each asset against the Chainlink rate: `:yield_bearing`, `:no_rate`,
 `:suspect` or `:ok`. Callers supply the RPC URLs and the key, and the package reads no
-environment.
+environment. Treat RPC URLs as secrets, since they can carry credentials: `inspect/1` never
+renders them, and neither should callers.
 
 ## Tests
 

@@ -38,6 +38,12 @@ Every event follows these rules:
    arguments, file contents, addresses and credentials appear nowhere.
 6. Any value the emitter did not build itself goes through `Telemetry.bound/1`, which keeps the
    shape of a term and redacts long binaries, structs, pids and funs.
+7. An argument is identified by `Telemetry.digest/1`: HMAC-SHA256 under a 32-byte key generated
+   once per VM run and never persisted, so an audit log cannot be used to confirm a guessed
+   argument offline. A digest joins events within one run, never across runs or nodes. It is
+   computed once per operation. Measured on Apple M1 with pre-built terms, OTP 28, two runs:
+   3 us at 1 KB, 90 us at 100 KB, 1.1 ms at 1 MB, of which the key costs about 40% over an
+   unkeyed hash.
 
 ## Consequences
 

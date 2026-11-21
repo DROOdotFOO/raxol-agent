@@ -29,7 +29,7 @@ Ledger records the spend
 
 Two wallet implementations behind the `Raxol.Payments.Wallet` behaviour:
 
-- `Wallets.Env`: private key from an environment variable. Simple, good for dev and CI. In a deployed release it refuses to load (a plaintext key in an env var lands in process listings and crash dumps) unless the operator opts in with `RAXOL_ALLOW_ENV_WALLET=true` or `config :raxol_payments, :allow_env_wallet, true`. Use `Wallets.Op` in production.
+- `Wallets.Env`: private key from an environment variable. Simple, good for dev and CI. When `Raxol.Payments.Deployment.production?/0` is true (`RELEASE_NAME` is set, as `mix release` does, or `RAXOL_PAYMENTS_DEPLOYMENT=production`) it refuses to load (a plaintext key in an env var lands in process listings and crash dumps) unless the operator opts in with `RAXOL_ALLOW_ENV_WALLET=true` or `config :raxol_payments, :allow_env_wallet, true`. Use `Wallets.Op` in production.
 - `Wallets.Op`: private key fetched from 1Password via a GenServer. No plaintext key on disk. The key is fetched once at first use, wrapped in a `Secret`, and signed with locally, so signing does not round-trip 1Password per request.
 
 Both implement the `Raxol.Payments.Wallet` callbacks: `address/0`, `chain_id/0`, and three signing functions: `sign_message/1` (raw message), `sign_typed_data/3` (EIP-712 typed data), and `sign_hash/1` (precomputed 32-byte digest). The behaviour has no balance callback.

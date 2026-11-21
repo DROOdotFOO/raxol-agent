@@ -3,7 +3,8 @@
 ## Status
 
 Accepted, 2026-10-24. Supersedes ADRs 0022, 0024, 0026, 0027, 0028 and 0035, which are deleted.
-Narrows 0021, 0032 (deleted), [0034](0034-foreign-coding-agent-seams.md) and
+Narrows [0021](0021-self-improving-agents-skills-curation.md), 0032 (a sandboxed-spawn design that was never
+built, since deleted), [0034](0034-foreign-coding-agent-seams.md) and
 [0036](0036-agent-telemetry-coverage-and-shape.md). Amends
 [ADR-0012](https://github.com/DROOdotFOO/raxol/blob/master/docs/adr/0012-mcp-as-rendering-target.md)
 in the runtime repository: derived tool names are session-scoped, and a session's tool set
@@ -55,10 +56,21 @@ chat).
    surface's authenticated user. A surface without an authenticated user refuses to start an OMP
    session.
 7. Raxol agents into OMP: agent and team tools in `raxol mcp`, limited to an allowlist of apps.
-   Payment tools go through `Raxol.Payments.Actions.SpendGate` and a durable ledger owned by a
-   single process. Recipients must be explicit and approved, caps never come from tool
-   arguments, and an amount that needs confirmation is refused, because OMP cannot ask a human
-   through MCP.
+   Payment tools (not built) have these preconditions:
+   - They go through `Raxol.Payments.Actions.SpendGate`, not the LLM-cost
+     `Raxol.Agent.SpendGate`.
+   - Limits must survive restarts: the ledger and idempotency store must be files in an
+     operator-owned state directory, and only the process holding that directory's lock
+     registers payment tools. Today's `Raxol.Payments.Ledger` is in memory (ETS), so every new
+     `raxol mcp` process would start with a fresh budget.
+   - The exported tools are an explicit list that excludes mandate signing, raw transfers and
+     deposit routes.
+   - Recipients must be explicit and approved for their chain. The currency comes from the
+     token, and caps never come from tool arguments.
+   - The fail-closed defaults are set explicitly, because `Raxol.Payments.Deployment` detects
+     production by `RELEASE_NAME`, which the Burrito binary may not set. Crash dumps are
+     switched off, since a dump would contain the key.
+   - An amount that needs confirmation is refused, because OMP cannot ask a human through MCP.
 
 ## Consequences
 

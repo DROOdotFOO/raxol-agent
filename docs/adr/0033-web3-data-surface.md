@@ -12,6 +12,18 @@ chains we need: Blockscout is EVM-only and declined Tron, Solana, Canton and Azt
 relicensed its MCP server and indexer in 2026, so forking them is ruled out. Calling its public
 REST API carries no licence obligation.
 
+Three gaps in the code at the time:
+
+1. There was no block-explorer client. Every on-chain read was a hand-rolled `eth_call`,
+   `balanceOf` or `eth_getLogs`, so historical transfers, token lists and verified ABIs had
+   nowhere to come from.
+2. RPC URLs were resolved five different ways (`RPC_<NAME>`, `DERIVE_RPC_<chain_id>`,
+   `ORDER_RPC_<chain_id>`, `XOCHI_ORDER_RPC_<chain_id>`, `GATE_RPC_<chain_id>`), and chain 4663
+   had no public RPC default in library code; its only URL lived in a shell script.
+3. Two read paths could not share code: `Raxol.Payments.ChainReader` hand-rolled a JSON-RPC
+   adapter because using `raxol_earn`'s `Onchain.RPC` would be a dependency cycle. The read
+   layer sat at the wrong level of the graph.
+
 ## Decision
 
 1. `Raxol.MCP.Aggregator`, which would re-serve an upstream MCP server's own tools, is not built.
@@ -31,7 +43,10 @@ REST API carries no licence obligation.
    Chains are identified by CAIP-2 strings. `Raxol.Web3.Router` resolves a chain to an ordered
    fallback list of backends, with health tracked by `Raxol.MCP.CircuitBreaker`. Reference
    implementations ship in `lib/`.
-4. The served surface is read-only. Every MCP tool is marked `readOnlyHint: true` and
+4. The served surface is read-only. MCP `tool_def` maps are written directly. The existing
+   `Raxol.MCP.AgentBridge` is not used: it had no caller, it drops the `sensitive` flag instead
+   of emitting an annotation, and it formats results with `inspect/2` rather than JSON. Every MCP
+   tool is marked `readOnlyHint: true` and
    `sensitive: true`, so the server must have an authorizer. `raw_request/2` is limited to a
    compile-time allowlist of read methods in each backend. Writes stay behind the spend-gated
    actions in `raxol_payments`.
@@ -40,7 +55,9 @@ REST API carries no licence obligation.
    Splice Scan/ccscan for Canton.
 6. Reuse the existing primitives: `Raxol.MCP.Client`, `Raxol.MCP.CircuitBreaker`, and
    `Raxol.Core.TokenBucket` keyed by upstream origin. The response cache is rebuilt as
-   `Raxol.Web3.Cache` (ETS).
+   `Raxol.Web3.Cache` (ETS). One pattern is adopted by analogy from
+   `Raxol.Agent.Backend.Resolver`, which refuses to auto-select a metered provider: a free
+   endpoint may be chosen automatically, a metered one only when explicitly configured.
 7. Security constraints on every outbound request (enforced by ADR-0038's guarded client):
    1. `https` only.
    2. Every resolved address, IP literals included, is checked against loopback, link-local,
@@ -48,6 +65,7 @@ REST API carries no licence obligation.
    3. The checked address is the address dialled.
    4. Redirects are refused.
    5. Timeout, size and concurrency are bounded per target.
+   6. Requests identify honestly with a fixed `User-Agent` (format in ADR-0038 decision 9).
 
    Credentials a caller supplies are held only for the request and never logged, cached or
    stored. Upstream errors are rebuilt from the status plus a redacted reason. Upstream tool
@@ -60,3 +78,5 @@ REST API carries no licence obligation.
 - Rate-limit buckets and the cache are local to each node, so a fleet of N nodes spends N times
   the upstream budget.
 - Free upstream sources can change terms, so the fallback chains are load-bearing.
+- The dated upstream survey (`docs/proposals/web3-upstream-survey.md`) was removed. Each
+  backend's moduledoc keeps the probe results it depends on, and the survey is in git history.

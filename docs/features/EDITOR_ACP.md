@@ -60,7 +60,8 @@ runs without `approver` is neither shown nor gated.
   `<sessions dir>/<first 8 hex of sha256(root)>/<id>`.
 - A prompt is one agent turn, answered as one `agent_message_chunk`. There is no token streaming.
 - Each tool call that passes `approver` is reported as a `tool_call` with bounded `rawInput`.
-  When the turn ends it is closed as `completed` or `failed`.
+  When the turn ends it is closed as `completed` or `failed`. An allowed call closed by a
+  cancelled or failed turn is `failed` with "Outcome unknown": the action may have run.
 - A `sensitive` action sends one `session/request_permission` (allow once or reject once). A
   rejection, no answer within 600 s, a disconnect or a client without the method denies the call.
 - `session/cancel` answers the prompt `cancelled` once the turn's process is down.
@@ -68,7 +69,9 @@ runs without `approver` is neither shown nor gated.
 - The agent lives as long as the connection.
 - `RAXOL_MAX_TURNS` and `RAXOL_MAX_COST_USD` cap one connection. A cost cap needs
   `RAXOL_COST_PER_MTOK_IN` and `RAXOL_COST_PER_MTOK_OUT`. Past a cap, a prompt gets a
-  `budget_exhausted` error.
+  `budget_exhausted` error. A cancelled or failed turn reports no usage, so its tokens are not
+  under the cost cap; only the turn cap bounds them. The turn that crosses the cost cap runs to
+  its end. If the cap process is gone, every prompt is refused.
 - The wire is UTF-8 whatever the locale.
 - `mcpServers` in `session/new` is ignored.
 - Journals live in `$RAXOL_SESSIONS_DIR` (default `~/.raxol/sessions`). On Windows every
@@ -83,10 +86,11 @@ root, the journal directory, but neither can see the other's agents.
 
 `authMethods` offers "Sign in with OpenRouter". It mints an OpenRouter key, stores it in a new
 1Password item (vault `$RAXOL_OP_VAULT`, default `Private`), and writes the `op://` reference to
-the [provider store](AGENT_FRAMEWORK.md#credentials). The key never stays on disk. Without the
-`op` CLI the sign-in fails. OpenRouter is billed in API credits, so `auto_provider: true` skips it
+the [provider store](AGENT_FRAMEWORK.md#credentials). The key passes through a `0600` temporary file
+that is deleted afterwards. Without the `op` CLI the sign-in fails. OpenRouter is billed in API credits, so `auto_provider: true` skips it
 unless `RAXOL_ALLOW_PAID_API=1` is set. Remove it with `Raxol.Agent.Setup.remove(:openrouter)` or
-by editing `~/.raxol/providers.json`.
+by editing `~/.raxol/providers.json`. Neither deletes the 1Password item or revokes the key at
+OpenRouter.
 
 ### Verifying an integration
 

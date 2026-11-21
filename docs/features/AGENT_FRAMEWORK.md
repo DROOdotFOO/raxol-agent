@@ -1,6 +1,6 @@
 # Agent Framework
 
-An agent is a TEA module (`init/update/view`) whose input comes from models, tools and other
+An agent is a TEA (The Elm Architecture) module (`init/update/view`) whose input comes from models, tools and other
 agents instead of a keyboard. It runs as a supervised, crash-isolated process. For wallets and
 spending limits, see [Agentic Commerce](AGENTIC_COMMERCE.md).
 
