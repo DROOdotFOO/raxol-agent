@@ -13,46 +13,16 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdate do
   `sse` variants with a sibling `"type"` key. Discriminator dispatch on
   decode uses explicit, whitelisted `"sessionUpdate"` string clauses (never
   `String.to_atom/1`); an unrecognized or missing discriminator is a
-  `{:error, _}`, not a raise or a silent default.
+  `{:error, _}`, not a raise or a silent default. `from_json/1` never raises.
 
-  `from_json/1` is total: it never raises, always returning `{:ok, t}` or
-  `{:error, reason}`. `to_json/1` delegates to each variant payload
-  module's own `to_json/1` and adds the `"sessionUpdate"` tag; per package
-  convention, tagged-tuple unions like this one (see also `ContentBlock`,
-  `McpServer`, `ToolCallContent`) do not get a `Jason.Encoder` impl of
-  their own -- only genuine structs do.
+  Variants: `:user_message_chunk`, `:agent_message_chunk`, `:agent_thought_chunk`
+  (`ContentChunk`), `:tool_call` (`ToolCall`), `:tool_call_update`
+  (`ToolCallUpdate`), `:plan` (`Plan`), `:available_commands_update`,
+  `:current_mode_update`, `:usage_update` (`UsageUpdate`), and the unstable
+  `:config_option_update` and `:session_info_update`. Tagged unions like this
+  one have no `Jason.Encoder` impl; only structs do.
 
-  ## Variants ported (all ten f1729 defines, plus the oracle's eleventh)
-
-    * `:user_message_chunk` / `:agent_message_chunk` / `:agent_thought_chunk`
-      -- `ContentChunk` payload
-    * `:tool_call` -- `Raxol.AgentClientProtocol.Schema.ToolCall`
-    * `:tool_call_update` -- `Raxol.AgentClientProtocol.Schema.ToolCallUpdate`
-    * `:plan` -- `Raxol.AgentClientProtocol.Schema.Plan`
-    * `:available_commands_update` -- `AvailableCommandsUpdate`
-    * `:current_mode_update` -- `CurrentModeUpdate`
-    * `:config_option_update` (unstable) --
-      `Raxol.AgentClientProtocol.Schema.Unstable.ConfigOptionUpdate`
-    * `:session_info_update` (unstable) --
-      `Raxol.AgentClientProtocol.Schema.Unstable.SessionInfoUpdate`
-    * `:usage_update` -- `Raxol.AgentClientProtocol.Schema.UsageUpdate`, the
-      pinned v1.19.0 oracle's eleventh variant (context-window/cost update),
-      absent from f1729; ported straight from `priv/schema-oracle/v1/schema.json`
-      `$defs/UsageUpdate` (+ its nested `$defs/Cost`), no upstream attribution.
-
-  ## Closed gap: `ContentChunk.messageId`
-
-  The pinned oracle documents an additional optional `messageId` wire field
-  on `ContentChunk` (groups chunks belonging to the same streamed message)
-  that f1729's `ACP.ContentChunk` lacked; it is now ported below as
-  `ContentChunk.message_id` (optional, absent-safe on both decode and
-  encode).
-
-  The `{"sessionId", "update", "_meta"}` envelope that wraps a
-  `SessionUpdate` for the wire is
-  `Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification`.
-  There is no `AgentNotification` routing union: `"session/update"` is
-  routed by its `Raxol.AgentClientProtocol.MethodTable` row.
+  The wire envelope is `Schema.LifecycleExtras.SessionNotification`.
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
@@ -110,12 +80,8 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdate do
   defp tag(json, session_update), do: Map.put(json, "sessionUpdate", session_update)
 
   @doc """
-  Total: never raises. Dispatches on the `"sessionUpdate"` discriminator via
-  explicit whitelisted string clauses (no `String.to_atom/1`); an
-  unrecognized discriminator value, a map with none at all, or a non-map
-  argument all return a descriptive `{:error, _}`. `"sessionUpdate"` is
-  stripped before delegating to the variant payload's own `from_json/1` so
-  it never leaks into that payload's `_meta`.
+  Dispatches on `"sessionUpdate"`, which is stripped before the payload decodes.
+  A missing or unknown discriminator, or a non-map, is `{:error, _}`.
   """
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(%{"sessionUpdate" => "user_message_chunk"} = map),
@@ -173,14 +139,8 @@ defmodule Raxol.AgentClientProtocol.Schema.ContentChunk do
   `SessionUpdate` `user_message_chunk`/`agent_message_chunk`/
   `agent_thought_chunk` variants.
 
-  Carries the pinned v1.19.0 oracle's optional `messageId` wire field
-  (`message_id` here -- groups chunks belonging to the same streamed
-  message; a change in `message_id` signals a new message has started).
-  f1729's `ACP.ContentChunk` has no such field; it is new to this port,
-  absent-safe on both decode (`nil` when omitted or non-string) and encode
-  (omitted, never emitted as `null`).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
+  The optional `message_id` (`messageId`) groups chunks of one streamed
+  message; it is `nil` when absent or not a string and omitted on encode.
   """
 
   alias Raxol.AgentClientProtocol.Schema.ContentBlock
@@ -237,8 +197,6 @@ defmodule Raxol.AgentClientProtocol.Schema.CurrentModeUpdate do
   @moduledoc """
   Payload for the `SessionUpdate` `current_mode_update` variant: the
   session's active mode has changed.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
@@ -292,8 +250,6 @@ defmodule Raxol.AgentClientProtocol.Schema.AvailableCommandsUpdate do
   `x-deserialize-default-on-error` + `x-deserialize-skip-invalid-items`: a
   missing/wrong-typed list defaults to `[]`, and items that individually
   fail to decode are skipped rather than aborting the whole update.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AvailableCommand
@@ -345,8 +301,6 @@ defmodule Raxol.AgentClientProtocol.Schema.AvailableCommand do
   @moduledoc """
   A single command the agent can execute, as advertised via
   `AvailableCommandsUpdate`.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AvailableCommandInput
@@ -409,8 +363,6 @@ defmodule Raxol.AgentClientProtocol.Schema.AvailableCommandInput do
   single documented variant, `unstructured` (free text typed after the
   command name). Per package convention, tagged-tuple unions don't get a
   `Jason.Encoder` impl of their own.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.UnstructuredCommandInput
@@ -423,7 +375,7 @@ defmodule Raxol.AgentClientProtocol.Schema.AvailableCommandInput do
   @doc """
   Total: never raises. A map carrying `"hint"` delegates to
   `UnstructuredCommandInput.from_json/1`; any other map still decodes as
-  `:unstructured` with an empty hint (matching upstream's fallback), so
+  `:unstructured` with an empty hint, so
   only a non-map argument fails.
   """
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
@@ -444,8 +396,6 @@ defmodule Raxol.AgentClientProtocol.Schema.UnstructuredCommandInput do
   @moduledoc """
   Unstructured command input: raw free text typed after the command name,
   as a `hint` for what's expected.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
@@ -494,12 +444,8 @@ defmodule Raxol.AgentClientProtocol.Schema.UsageUpdate do
   the total context window size (`size`), and an optional cumulative
   session `cost`.
 
-  Not present in f1729; ported straight from the pinned v1.19.0 oracle
-  schema (`priv/schema-oracle/v1/schema.json`, `$defs/UsageUpdate`), no
-  upstream attribution. `used`/`size` are required non-negative integers
-  per the oracle (no `x-deserialize-default-on-error` on either); `cost` is
-  optional and decode-lenient, defaulting to `nil` on an absent or
-  unparseable value.
+  `used` and `size` are required non-negative integers; an absent or invalid
+  `cost` decodes as `nil`.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Cost
@@ -536,11 +482,6 @@ defmodule Raxol.AgentClientProtocol.Schema.UsageUpdate do
   defp encode_cost(nil), do: nil
   defp encode_cost(cost), do: Cost.to_json(cost)
 
-  @doc """
-  Total: never raises. A missing/non-non-negative-integer `used` or `size`
-  is the only failure mode (both required); an absent or unparseable
-  optional `cost` defaults to `nil` rather than failing the whole object.
-  """
   @spec from_json(term()) :: {:ok, t()} | {:error, term()}
   def from_json(map) when is_map(map) do
     with {:ok, used} <- WireFields.require(map, "used", &non_neg_integer?/1),
@@ -571,12 +512,8 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.Cost do
   @moduledoc """
   Cumulative session cost information -- the optional `cost` field of
-  `UsageUpdate`.
-
-  Not present in f1729; ported straight from the pinned v1.19.0 oracle
-  schema (`priv/schema-oracle/v1/schema.json`, `$defs/Cost`), no upstream
-  attribution. `amount`/`currency` are both required (no
-  `x-deserialize-default-on-error` on either in the oracle).
+  `UsageUpdate`. Both `amount` and `currency` are
+  required.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields

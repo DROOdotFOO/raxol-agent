@@ -1,45 +1,15 @@
 defmodule Raxol.AgentClientProtocol.Capabilities do
   @moduledoc """
-  The negotiated-capability PREDICATE: given a `Connection`'s snapshotted
-  capability tree, decide whether a wire method is negotiated and therefore
-  permitted.
+  Decides whether a gated method is negotiated, against the receiver's own
+  capability snapshot: an agent checks the `AgentCapabilities` it sent in its
+  `initialize` response, a client the `ClientCapabilities` it sent in its
+  `initialize` request. `MethodTable` says which methods are gated by which
+  field path.
 
-  This is the security-relevant half of the capability gate. `MethodTable`
-  owns the `:capability` column (which method is gated, by which struct-field
-  path — see its `capability` typedoc and the ORACLE-DIVERGENCE note); this
-  module resolves a path against a live snapshot.
-
-  ## Which snapshot
-
-  The gate lives on the **receiver** and checks the receiver's OWN advertised
-  capabilities (`Connection.capability_denied?/2`, before `Router.decode/4`):
-
-    * an **agent** rejects an inbound client→agent method it never advertised
-      (`session/load` unless it advertised `loadSession`, …) — the snapshot is
-      the agent's own `AgentCapabilities` (from the `initialize` RESPONSE it
-      sent);
-    * a **client** rejects an inbound agent→client callback it never advertised
-      (`terminal/*` unless it advertised `terminal`, `fs/write_text_file`
-      unless it advertised `fileSystem.writeTextFile`, …) — the snapshot is the
-      client's own `ClientCapabilities` (from the `initialize` REQUEST it sent).
-
-  Because every gated wire method is single-direction and its `MethodTable`
-  capability tag (`:agent` / `:client`) matches the side that HANDLES it,
-  `negotiated?/2` needs only the receiver's snapshot and the method string —
-  the tag is not consulted for resolution (it is a compile-time assertion,
-  invariant 7).
-
-  ## Fail closed
-
-  Resolution walks the field path from the snapshot struct. A truthy leaf
-  (`true`, or a present nested capability struct/map) ⇒ negotiated. **Anything
-  else — a missing field, a `nil`/`false` leaf, a `nil` snapshot, or an
-  `:never`-gated method — is NOT negotiated.** Absent capability is denial, by
-  design: the `Connection` maps a non-negotiated gated method to `-32601`
-  BEFORE decode (so `-32601` beats `-32602`). Baseline methods (`capability:
-  nil` in the table — `initialize`, `session/new`, `session/prompt`,
-  `session/cancel`, …) are always available. An unknown method is NOT a
-  capability denial (`decode/4` answers it with `-32601` on its own).
+  Fails closed: only a truthy leaf (`true` or a present nested struct/map) is
+  negotiated. A missing field, `nil`/`false` leaf, `nil` snapshot or `:never`
+  gate is not, and the Connection answers `-32601` before decoding. Ungated and
+  unknown methods are never denied here.
   """
 
   alias Raxol.AgentClientProtocol.MethodTable

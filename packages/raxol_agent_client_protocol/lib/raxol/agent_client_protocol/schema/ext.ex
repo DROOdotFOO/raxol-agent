@@ -30,14 +30,11 @@ defmodule Raxol.AgentClientProtocol.Schema.Ext do
   def split_known(map, known_keys) when is_map(map) do
     method = Map.get(map, "method")
     params = Map.get(map, "params")
-    meta = map |> Map.drop(known_keys) |> Map.drop(["_meta"]) |> Map.merge(meta_of(map))
-    {method, params, meta}
+    {method, params, Raxol.AgentClientProtocol.Schema.AgentTypes.extract_meta(map, known_keys)}
   end
 
-  defp meta_of(%{"_meta" => meta}) when is_map(meta), do: meta
-  defp meta_of(_map), do: %{}
-
   @doc false
+  @spec known_request_keys() :: [String.t()]
   def known_request_keys, do: @known_request_keys
 end
 
@@ -45,8 +42,6 @@ defmodule Raxol.AgentClientProtocol.Schema.Ext.ExtRequest do
   @moduledoc """
   An arbitrary `_`-prefixed extension request, not part of the core ACP
   spec. Carries the raw JSON-RPC `method` name and already-decoded `params`.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Ext
@@ -81,8 +76,6 @@ defmodule Raxol.AgentClientProtocol.Schema.Ext.ExtNotification do
   @moduledoc """
   An arbitrary `_`-prefixed extension notification, not part of the core
   ACP spec. No reply is expected.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Ext
@@ -119,24 +112,8 @@ defmodule Raxol.AgentClientProtocol.Schema.Ext.ExtResponse do
 
   Unlike most ACP types, `ExtResponse`'s wire representation is
   *transparent*: the JSON-RPC result body IS the wrapped `data` term
-  verbatim (see `to_json/1`), not an envelope like `%{"data" => ...}`. This
-  mirrors the upstream `f1729/agent_client_protocol` behavior, since an
-  extension's response shape is defined entirely by the extension itself —
-  ACP core has no opinion on it.
-
-  ## Fixed defect
-
-  The upstream library's `__using__`-injected default implementation of
-  `ext_method/1` (in its `ACP.Client`/`ACP.Agent` behaviours) constructed
-  `%ACP.ExtResponse{value: nil}` — but the struct's only field is `:data`,
-  so that default raised `KeyError` on every un-overridden `_ext/*` request.
-  This module fixes its half of that mismatch: the struct field is `:data`
-  everywhere (construction, `to_json/1`, `from_json/1`), and `empty/0` is
-  the canonical, crash-proof "no extension implemented" response — callers
-  wiring an ACP behaviour's default `ext_method/1` should return
-  `{:ok, ExtResponse.empty()}`, never hand-roll the struct.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
+  verbatim, not an envelope: its shape is defined by the extension.
+  `empty/0` is the "no extension implemented" response.
   """
 
   @type t :: %__MODULE__{
@@ -151,8 +128,7 @@ defmodule Raxol.AgentClientProtocol.Schema.Ext.ExtResponse do
 
   @doc """
   The canonical "no extension implemented" response — safe to return from
-  an un-overridden `ext_method/1` callback. Never raises, unlike the
-  upstream library's `%ExtResponse{value: nil}` default.
+  an un-overridden `ext_method/1` callback.
   """
   @spec empty() :: t()
   def empty, do: %__MODULE__{data: nil}

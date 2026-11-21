@@ -1,36 +1,12 @@
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras do
   @moduledoc """
-  Minimal, oracle-derived param/result structs for v1.19.0 ACP methods that
-  had no home in the ported f1729 `Schema.*` layer: `session/close`,
-  `session/delete`, `logout`, `session/update` (the notification envelope),
-  and the protocol-level `$/cancel_request`.
+  Param/result structs for the v1.19.0 methods `session/close`,
+  `session/delete`, `logout`, `session/update` (the notification envelope) and
+  `$/cancel_request`, taken from the pinned schema. They follow the
+  `Schema.AgentTypes` decode conventions.
 
-  Unlike the sibling `agent_types.ex`/`client_types.ex`/`unstable.ex` files,
-  these are **not** ports of an upstream f1729 module (f1729 predates
-  `schema-v1.19.0` and never had these types) — they are read directly off
-  `priv/schema-oracle/v1/schema.json`'s `$defs` for `CloseSessionRequest`,
-  `CloseSessionResponse`, `DeleteSessionRequest`, `DeleteSessionResponse`,
-  `LogoutResponse`, `SessionNotification`, and `CancelRequestNotification`.
-  No upstream MIT attribution applies to this file.
-
-  Every struct here follows the same total-decode + `_meta` pass-through
-  convention as the rest of the package, reusing the shared decode helpers
-  from `Raxol.AgentClientProtocol.Schema.AgentTypes` (`fetch/2`,
-  `decode_optional/3`, `extract_meta/2`, `put_meta/2`) exactly as
-  `Schema.Unstable` does. `from_json/1` never raises; it always returns
-  `{:ok, t}` or `{:error, reason}`.
-
-  ## `LogoutRequest` is intentionally NOT ported here
-
-  `priv/schema-oracle/v1/schema.json`'s `LogoutRequest` def carries no
-  properties beyond the universal `_meta` envelope. The `logout` row in
-  `Raxol.AgentClientProtocol.MethodTable` declares `params: nil` for exactly
-  this reason — the Router decodes `nil` straight through and the
-  generated callback drops to arity 1 (`ctx` only, no params argument), so
-  there is no `from_json/1` call site that would ever receive a
-  `LogoutRequest` struct. `LogoutResponse` IS ported below because
-  `logout` is a `:request`-kind row and every request row needs a non-nil
-  `result` module regardless of whether its params are decoded.
+  `logout` has no request struct: its params carry only `_meta`, so its
+  `MethodTable` row has `params: nil`.
   """
 
   alias Raxol.AgentClientProtocol.Rpc.RequestId
@@ -43,8 +19,7 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.CloseSessionRequest do
   @moduledoc """
   Request parameters for `session/close`: closes an active session, best-
-  effort cancelling any in-flight work first. Oracle-derived (schema.json
-  `CloseSessionRequest`); not a port of any upstream f1729 module.
+  effort cancelling any in-flight work first.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes
@@ -85,8 +60,7 @@ end
 
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.CloseSessionResponse do
   @moduledoc """
-  The (empty, besides `_meta`) response to `session/close`. Oracle-derived
-  (schema.json `CloseSessionResponse`).
+  The (empty, besides `_meta`) response to `session/close`.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes
@@ -123,8 +97,7 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.DeleteSessionRequest do
   @moduledoc """
   Request parameters for `session/delete`: deletes an existing session from
-  `session/list`. Oracle-derived (schema.json `DeleteSessionRequest`); not a
-  port of any upstream f1729 module.
+  `session/list`.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes
@@ -165,8 +138,7 @@ end
 
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.DeleteSessionResponse do
   @moduledoc """
-  The (empty, besides `_meta`) response to `session/delete`. Oracle-derived
-  (schema.json `DeleteSessionResponse`).
+  The (empty, besides `_meta`) response to `session/delete`.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes
@@ -202,9 +174,7 @@ end
 
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.LogoutResponse do
   @moduledoc """
-  The (empty, besides `_meta`) response to `logout`. Oracle-derived
-  (schema.json `LogoutResponse`). See the module doc above for why there is
-  no sibling `LogoutRequest` in this file.
+  The (empty, besides `_meta`) response to `logout`.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes
@@ -241,11 +211,7 @@ defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification d
   @moduledoc """
   The `session/update` notification envelope: `{sessionId, update, _meta}`,
   where `update` is the `Raxol.AgentClientProtocol.Schema.SessionUpdate`
-  discriminated union (ported separately, `session_update.ex`).
-  Oracle-derived (schema.json `SessionNotification`); not a port of any
-  upstream f1729 module — upstream's `ACP.SessionNotification` envelope was
-  explicitly left unported by `agent_types.ex`'s and `session_update.ex`'s
-  own moduledocs pending whoever wired the routing union it belongs to.
+  discriminated union.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes
@@ -299,14 +265,7 @@ defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.CancelRequestNotifica
   @moduledoc """
   The protocol-level `$/cancel_request` notification: `{requestId, _meta}`,
   where `requestId` is a JSON-RPC request id (`null | integer | string`,
-  see `Raxol.AgentClientProtocol.Rpc.RequestId`). Oracle-derived
-  (schema.json `CancelRequestNotification`); not a port of any upstream
-  f1729 module (f1729 has no `$/cancel_request` support).
-
-  This struct exists for `MethodTable.rows/0`
-  completeness and for whichever layer (`Connection`) pre-filters this wire
-  method before `Router.decode/4` — `Router` itself never generates a
-  decode clause for this `layer: :protocol` row.
+  see `Raxol.AgentClientProtocol.Rpc.RequestId`). Handled by the Connection before routing.
   """
 
   alias Raxol.AgentClientProtocol.Rpc.RequestId

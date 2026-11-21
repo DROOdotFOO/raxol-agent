@@ -1,17 +1,9 @@
 defmodule Raxol.AgentClientProtocol.Schema.WireFields do
   @moduledoc false
-  # Shared decode/encode helpers for the ACP schema layer (Content, Plan,
-  # ToolCall and friends). These are NOT ported from upstream f1729 -- they
-  # are new glue code implementing the total-decode + forward-compat
-  # defect fixes uniformly across every schema struct in this namespace.
-  #
-  # Leniency here mirrors the official ACP JSON Schema's own
-  # `x-deserialize-default-on-error` / `x-deserialize-skip-invalid-items`
-  # vendor extensions (see `priv/schema-oracle/v1/schema.json`): optional
-  # fields fall back to their absent value on a decode error instead of
-  # failing the whole object, and list items that fail to decode are
-  # skipped rather than aborting the whole list. Required fields still make
-  # the *enclosing* object's decode fail.
+  # Decode/encode helpers for Content, Plan, ToolCall and friends. Optional
+  # fields fall back to absent on a decode error and invalid list items are
+  # skipped (the schema's `x-deserialize-default-on-error` and
+  # `x-deserialize-skip-invalid-items`); required fields fail the object.
 
   @doc """
   Split a raw wire map into its `_meta` bucket: the wire object's own
@@ -139,8 +131,6 @@ defmodule Raxol.AgentClientProtocol.Schema.Annotations do
   Optional annotations for the client (audience, priority, last-modified).
   Every field is optional and decode-lenient: a malformed value defaults to
   absent rather than failing the whole `Annotations`.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Role
@@ -198,8 +188,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.TextContent do
   @moduledoc """
   Text provided to or from an LLM.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Annotations
@@ -256,8 +244,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.ImageContent do
   @moduledoc """
   An image provided to or from an LLM.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Annotations
@@ -322,8 +308,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.AudioContent do
   @moduledoc """
   Audio provided to or from an LLM.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Annotations
@@ -385,8 +369,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.TextResourceContents do
   @moduledoc """
   Text-based resource contents.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
@@ -444,8 +426,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.BlobResourceContents do
   @moduledoc """
   Binary resource contents.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.WireFields
@@ -504,8 +484,6 @@ defmodule Raxol.AgentClientProtocol.Schema.EmbeddedResourceResource do
   @moduledoc """
   Resource content that can be embedded in a message (untagged union,
   discriminated by the presence of a `"text"` or `"blob"` wire key).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.BlobResourceContents
@@ -531,8 +509,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.EmbeddedResource do
   @moduledoc """
   The contents of a resource, embedded into a prompt or tool call result.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Annotations
@@ -591,8 +567,6 @@ end
 defmodule Raxol.AgentClientProtocol.Schema.ResourceLink do
   @moduledoc """
   A resource that the server is capable of reading.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.Annotations
@@ -682,8 +656,6 @@ defmodule Raxol.AgentClientProtocol.Schema.ContentBlock do
   `BlobResourceContents`, `EmbeddedResourceResource`, `EmbeddedResource`,
   `ResourceLink` -- are separate, bare `Schema.*` modules, not nested under
   this one).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.AudioContent
