@@ -42,9 +42,15 @@ defmodule Raxol.AgentClientProtocol.Rpc do
     end
   end
 
+  @doc "`printable/1` for a string; any other term unchanged (for telemetry metadata)."
+  @spec safe(term()) :: term()
+  def safe(value) when is_binary(value), do: printable(value)
+  def safe(value), do: value
+
   @doc "A term from the peer for a log line: quoted `printable/1` for strings, capped `inspect/2` otherwise."
   @spec loggable(term()) :: String.t()
   def loggable(value) when is_binary(value), do: ~s("#{printable(value)}")
+  def loggable(value) when is_integer(value), do: value |> Integer.to_string() |> printable()
   def loggable(value), do: inspect(value, limit: 10, printable_limit: @max_printable)
 
   defp cap_bytes(string) when byte_size(string) <= @max_printable_bytes, do: string

@@ -480,7 +480,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.Writer do
   defp emit_non_holder_rejected(%__MODULE__{session_id: sid}, turn_id) do
     Raxol.AgentClientProtocol.Telemetry.execute(
       [:raxol, :acp, :journal, :non_holder_turn_completed],
-      %{session_id: sid, turn_id: turn_id}
+      %{session_id: Rpc.safe(sid), turn_id: turn_id}
     )
   end
 

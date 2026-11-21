@@ -21,7 +21,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
   end
 
   def response(id, {:error, %Error{} = err}) do
-    case Jason.encode(err) do
+    case encode(err) do
       {:ok, _json} -> frame(Response.error(id, err))
       {:error, _reason} -> frame(Response.error(id, Error.internal_error()))
     end
@@ -37,10 +37,18 @@ defmodule Raxol.AgentClientProtocol.Connection.Wire do
   def to_wire(nil), do: {:ok, nil}
 
   def to_wire(params) do
-    case Jason.encode(params) do
+    case encode(params) do
       {:ok, json} -> {:ok, Jason.decode!(json)}
       {:error, reason} -> {:error, {:encode, reason}}
     end
+  end
+
+  # Jason.encode/1 still raises on some shapes (improper lists, tuple map
+  # keys), so the exception is caught here too.
+  defp encode(term) do
+    Jason.encode(term)
+  rescue
+    e -> {:error, e}
   end
 
   @spec decode_result(Response.t(), String.t()) ::

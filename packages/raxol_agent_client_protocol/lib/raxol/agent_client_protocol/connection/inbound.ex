@@ -221,14 +221,23 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         state = %{state | task_index: Map.delete(state.task_index, ref)}
 
         case tag do
-          {:request, id} -> request_result(state, id, result)
+          {:request, id} -> request_result(state, id, ref, result)
           {:notification, _method} -> {:noreply, state}
         end
     end
   end
 
-  defp request_result(state, id, result) do
+  # The entry for `id` only if it still belongs to the task `ref`: once replied
+  # to, the id can be reused by a new request the stale task must not touch.
+  defp own_entry(state, id, ref) do
     case Map.get(state.pending_in, id) do
+      %{task_ref: ^ref} = entry -> entry
+      _other -> nil
+    end
+  end
+
+  defp request_result(state, id, ref, result) do
+    case own_entry(state, id, ref) do
       nil ->
         {:noreply, state}
 
@@ -305,7 +314,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         notification_crash(%{state | task_index: task_index}, method, reason)
 
       {{:request, id}, task_index} ->
-        request_crash(%{state | task_index: task_index}, id, reason)
+        request_crash(%{state | task_index: task_index}, id, ref, reason)
     end
   end
 
@@ -322,8 +331,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
     {:noreply, state}
   end
 
-  defp request_crash(state, id, reason) do
-    case Map.get(state.pending_in, id) do
+  defp request_crash(state, id, ref, reason) do
+    case own_entry(state, id, ref) do
       nil ->
         {:noreply, state}
 

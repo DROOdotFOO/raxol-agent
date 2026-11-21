@@ -146,9 +146,10 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
     end
   end
 
-  # Out-of-turn counters are kept for at most @max_oot_sessions sessions with ids
-  # of at most @max_tracked_id_bytes bytes, so a peer inventing session ids
-  # cannot grow the map without bound. Updates for
+  # Sessions first seen in a peer's update are tracked only while there are
+  # fewer than @max_oot_sessions and their id is at most @max_tracked_id_bytes,
+  # so a peer inventing session ids cannot grow the map without bound. Sessions
+  # this side named itself (`track/2`) are always tracked. Updates for
   # sessions beyond the cap are stamped ordinal 0, not tracked, and reported as
   # `[:raxol, :acp, :oot_untracked]`.
   defp stamp_out_of_turn(state, session_id, rx_seq) do
@@ -168,6 +169,19 @@ defmodule Raxol.AgentClientProtocol.Connection.Turns do
         Telemetry.execute([:raxol, :acp, :oot_untracked], %{session_id: Rpc.printable(session_id)})
 
         {Delivery.new(nil, 0, rx_seq), state}
+    end
+  end
+
+  @doc false
+  # Sessions this side names in its own requests (or receives from session/new)
+  # are always tracked, so a peer flooding invented ids cannot push them past
+  # the cap.
+  @spec track(state(), term()) :: state()
+  def track(state, params) do
+    case prompt_session_id(params) do
+      nil -> state
+      session_id when is_map_key(state.oot_seq, session_id) -> state
+      session_id -> %{state | oot_seq: Map.put(state.oot_seq, :binary.copy(session_id), 0)}
     end
   end
 

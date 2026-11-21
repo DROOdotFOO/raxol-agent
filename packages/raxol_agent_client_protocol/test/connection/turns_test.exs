@@ -36,4 +36,13 @@ defmodule Raxol.AgentClientProtocol.Connection.TurnsTest do
     [key] = Map.keys(s.oot_seq)
     assert :binary.referenced_byte_size(key) == byte_size(key)
   end
+
+  test "sessions this side names are tracked even after a flood fills the cap" do
+    full = Map.new(1..Turns.max_oot_sessions(), &{"junk#{&1}", 0})
+    s = state(full) |> Turns.track(%{session_id: "mine"})
+
+    {a, s} = Turns.stamp_update(s, %{session_id: "mine"}, 1)
+    {b, _s} = Turns.stamp_update(s, %{session_id: "mine"}, 2)
+    assert {a.ordinal, b.ordinal} == {0, 1}
+  end
 end

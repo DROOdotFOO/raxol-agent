@@ -1805,6 +1805,19 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 7, "result" => %{"echo" => true}} = ScriptedPeer.recv(peer)
     end
 
+    test "an extension result Jason cannot encode is -32603, not a crash" do
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      for {id, bad} <- [{70, %{{1, 2} => 1}}, {71, %{"a" => [1 | 2]}}] do
+        ScriptedPeer.send_request(peer, id, "_vendor/echo", %{})
+        handle_next_invoke(:ext_request, fn _wire_params, _ctx -> {:ok, bad} end)
+        assert %{"id" => ^id, "error" => %{"code" => -32_603}} = ScriptedPeer.recv(peer)
+      end
+
+      assert Process.alive?(conn)
+    end
+
     test "a table method answering with a plain map is -32603" do
       %{peer: peer} = start_agent_conn()
       complete_handshake(peer)
@@ -1865,6 +1878,39 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
       ScriptedPeer.assert_no_frame(peer, 150)
       assert :sys.get_state(conn).pending_in == %{}
+    end
+
+    test "a stale handler result does not touch a newer request that reused its id" do
+      test_pid = self()
+      %{conn: conn, peer: peer} = start_agent_conn()
+      complete_handshake(peer)
+
+      ScriptedPeer.send_request(peer, 30, "session/prompt", prompt_params("s1"))
+
+      %{ctx: ctx, task_pid: old_task} =
+        handle_next_invoke(:prompt, fn _req, ctx ->
+          :ok = Connection.delegate_reply(ctx.conn, ctx.reply_ref, test_pid)
+          send(test_pid, :delegated)
+          receive do: (:go -> :deferred)
+        end)
+
+      assert_receive :delegated
+      :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:end_turn)})
+      assert %{"id" => 30, "result" => _} = ScriptedPeer.recv(peer)
+
+      ScriptedPeer.send_request(peer, 30, "session/new", new_session_params())
+
+      %{task_pid: new_task} =
+        handle_next_invoke(:new_session, fn _req, _ctx ->
+          receive do: (:go ->
+                         {:ok,
+                          Raxol.AgentClientProtocol.Schema.AgentTypes.NewSessionResponse.new("s2")})
+        end)
+
+      send(old_task, :go)
+      ScriptedPeer.assert_no_frame(peer, 150)
+      send(new_task, :go)
+      assert %{"id" => 30, "result" => %{"sessionId" => "s2"}} = ScriptedPeer.recv(peer)
     end
 
     test "a handler crash after delegating leaves the reply to the adopter" do

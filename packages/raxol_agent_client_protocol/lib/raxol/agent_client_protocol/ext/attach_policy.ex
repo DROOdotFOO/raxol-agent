@@ -238,7 +238,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
       [:raxol, :acp, :attach, :granted],
       %{},
       %{
-        session_id: ctx[:session_id],
+        session_id: Rpc.safe(ctx[:session_id]),
         surface: ctx[:surface],
         via: grant.via
       }
@@ -258,7 +258,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
       [:raxol, :acp, :attach, :denied],
       %{},
       %{
-        session_id: ctx[:session_id],
+        session_id: Rpc.safe(ctx[:session_id]),
         surface: ctx[:surface],
         reason: reason
       }
