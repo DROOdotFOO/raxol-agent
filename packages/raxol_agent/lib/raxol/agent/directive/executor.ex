@@ -80,21 +80,38 @@ defimpl Raxol.Core.Runtime.Directive.Executor,
       # stdin is /dev/null via the script prefix, so a command that reads it
       # sees EOF. Not `:in`: that makes the child inherit the BEAM's fd 0 (the
       # user's tty under the TUI); see `Raxol.Agent.SpawnedPort`.
-      port_opts =
-        [
-          :binary,
-          :exit_status,
-          :use_stdio,
-          :stderr_to_stdout,
-          args: ["-c", Raxol.Agent.SpawnedPort.null_stdin_command(command)]
-        ]
-        |> maybe_add_port_opt(:cd, cd)
-        |> maybe_add_port_opt(:env, Raxol.Agent.ChildEnv.port_env(charlist_env))
+      result =
+        case child_env(charlist_env) do
+          {:ok, child_env} ->
+            port_opts =
+              [
+                :binary,
+                :exit_status,
+                :use_stdio,
+                :stderr_to_stdout,
+                args: ["-c", Raxol.Agent.SpawnedPort.null_stdin_command(command)]
+              ]
+              |> maybe_add_port_opt(:cd, cd)
+              |> maybe_add_port_opt(:env, child_env)
 
-      port = Port.open({:spawn_executable, "/bin/sh"}, port_opts)
-      result = collect_port_output(port, [], timeout)
+            port = Port.open({:spawn_executable, "/bin/sh"}, port_opts)
+            collect_port_output(port, [], timeout)
+
+          {:error, message} ->
+            %{exit_status: :error, output: message}
+        end
+
       send(context.pid, {:command_result, {:shell_result, result}, meta})
     end)
+  end
+
+  # A malformed `Raxol.Core.ChildEnv` config raises; the agent gets that as
+  # the command's result instead of waiting on a task that died. The message
+  # shows the bad value's shape, never its contents.
+  defp child_env(env) do
+    {:ok, Raxol.Agent.ChildEnv.port_env(env)}
+  rescue
+    e in ArgumentError -> {:error, Exception.message(e)}
   end
 
   defp maybe_add_port_opt(opts, _key, nil), do: opts

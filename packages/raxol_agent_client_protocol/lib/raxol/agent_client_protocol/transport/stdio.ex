@@ -175,7 +175,10 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   `:unset_env` are unset too. That is the whole list: this package reads no
   application config, so a host's own secret list (raxol's
   `Raxol.Core.ChildEnv` `extra_secrets:`/`pass:`) applies only if the host
-  passes it here.
+  passes it here. Names only raxol_core's wider pattern catches
+  (`DATABASE_URL`, `PGPASSWORD`, `API_KEYS`, `SECRET_KEY_BASE`,
+  `RELEASE_COOKIE`) are inherited; raxol_agent's
+  `Raxol.Agent.ChildEnv.unset_names/0`, passed as `:unset_env`, adds them.
 
   An agent is third-party code. To hand it one of those credentials (an
   agent that reads its own provider key, say), name it in `:env`, or pass
@@ -322,9 +325,10 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     Keyword.take(opts, [:cd]) ++ [env: env ++ unset]
   end
 
-  # Kept identical to `Raxol.Agent.ChildEnv`'s pattern (raxol_agent): this
-  # package has no dependency to share it through. raxol_agent's
-  # `child_env_test.exs` compares the two `credential_pattern/0`s.
+  # This package has no dependency on raxol_core to share
+  # `Raxol.Core.ChildEnv`'s wider pattern through. raxol_agent's
+  # `child_env_test.exs` checks that every name matched here is one
+  # `Raxol.Agent.ChildEnv` denies; `stdio_test.exs` pins what this matches.
   @credential ~r/(_KEY|_KEY_ID|_APIKEY|_TOKEN|_PRIVKEY|_SECRET|_PASSWORD|_PASS|_PASSPHRASE|_MNEMONIC|_SEED_PHRASE|_CREDENTIALS|_DSN|_RPC)\z|(\A|_)RPC_|\A(MNEMONIC|SEED_PHRASE|SSH_AUTH_SOCK)\z|\AOP_SESSION_/i
 
   @doc false

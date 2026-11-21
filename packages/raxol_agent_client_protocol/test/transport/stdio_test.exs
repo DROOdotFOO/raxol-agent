@@ -86,6 +86,28 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioTest do
                      2_000
     end
 
+    # Pinned, so this transport's scrub does not drift with raxol_agent's,
+    # which follows raxol_core's wider pattern.
+    test "the credential pattern scrubs exactly these names" do
+      pattern = Stdio.credential_pattern()
+
+      scrubbed =
+        ~w(OPENAI_API_KEY AWS_ACCESS_KEY_ID ALCHEMY_APIKEY GH_TOKEN WALLET_PRIVKEY APP_SECRET
+           DB_PASSWORD SMTP_PASS GPG_PASSPHRASE WALLET_MNEMONIC WALLET_SEED_PHRASE
+           GOOGLE_CREDENTIALS SENTRY_DSN MAINNET_RPC RPC_BASE BASE_RPC_URL MNEMONIC
+           SEED_PHRASE SSH_AUTH_SOCK OP_SESSION_me my_api_key)
+
+      # The credentials among these (DATABASE_URL onwards) are known misses:
+      # only raxol_core's pattern catches them, and this package does not
+      # depend on it. A spawner adds them through `:unset_env`.
+      kept =
+        ~w(PATH HOME KEYBOARD TOKENIZERS_PARALLELISM GRPC_TRACE DATABASE_URL PGPASSWORD
+           API_KEYS SECRET_KEY_BASE RELEASE_COOKIE KEY TOKEN)
+
+      for name <- scrubbed, do: assert(Regex.match?(pattern, name), name)
+      for name <- kept, do: refute(Regex.match?(pattern, name), name)
+    end
+
     test ":unset_env names are unset too, even without a credential name" do
       name = "ACP_STDIO_TEST_#{System.unique_integer([:positive])}_HOST"
       System.put_env(name, "v")

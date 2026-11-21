@@ -77,7 +77,9 @@ defmodule Raxol.Agent.Directive do
     @moduledoc """
     Run a shell command via Port. Returns a single
     `{:command_result, {:shell_result, %{exit_status: status, output: binary}}}`
-    message when the command completes or the timeout elapses.
+    message when the command completes or the timeout elapses. `status` is
+    the exit code, `:timeout`, or `:error` when the command was not started
+    because `Raxol.Core.ChildEnv`'s config is malformed (`output` says why).
 
     Options: `:timeout` (default from `Raxol.Core.Defaults`), `:cd`, `:env`.
     """
