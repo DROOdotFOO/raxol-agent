@@ -31,7 +31,7 @@ if role == "collector" and File.exists?(Path.join(directory, "started")) do
 
   receive do
     :cooperative_drain -> :ok
-    :stop -> System.stop(0)
+    :stop -> System.halt(0)
   end
 end
 
@@ -102,7 +102,7 @@ report = %{
   handoff_protocol: 1,
   executor_port_ready: role != "collector",
   nonce:
-    if(role == "bad_nonce",
+    if(role in ["bad_nonce", "cleanup_bad_nonce"],
       do: "wrong-fixture-nonce",
       else: System.get_env("BROKER_HANDOFF_NONCE")
     )
@@ -112,6 +112,10 @@ path =
   if role == "collector",
     do: Path.join(directory, "status.json"),
     else: System.fetch_env!("BROKER_HANDOFF_READY")
+
+if role in ["cleanup_ready", "cleanup_bad_nonce"] do
+  File.write!(Path.join(directory, "handoff-request.json"), "invalid fixture cleanup document")
+end
 
 File.write!(path <> ".tmp", Jason.encode!(report))
 File.chmod!(path <> ".tmp", 0o600)
@@ -124,7 +128,7 @@ receive do
 
     receive do
       :cooperative_drain -> :ok
-      :stop -> System.stop(0)
+      :stop -> System.halt(0)
     end
 
     :quiesced = Raxol.Broker.CollectorHandoff.quiesce(directory, root)

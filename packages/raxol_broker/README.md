@@ -844,6 +844,10 @@ consistent export-local pseudonyms. Accounts, order/approval/reference IDs,
 actors, symbols, amounts, balances, raw payloads, prompts and free text never
 appear as originals; pseudonyms are not stable across exports.
 
+Intent risk classes follow `Intent.kinds/0`, including refused option/advanced
+requests. This classification neither exports their parameters nor enables
+unsupported execution.
+
 `journal_integrity: VERIFIED` certifies only the stored chain. Overall result,
 live transport, current broker state and genuine cursor traversal remain
 `UNVERIFIED`. Missing stages and unmatched fills stay unverified/unlinked.
@@ -882,9 +886,11 @@ containing the target OS PID, nonce and deadline. A signal alone grants nothing.
 The handler calls `CollectorHandoff.quiesce(directory, root)`: it admits only
 a read-only root's children, suspends restart/refresh processing, refuses an
 armed or non-ready/unpersisted client, then stops the client and journal.
-Use a directly owned root with no external automatic restart. The caller
-stays alive after publishing `handoff-quiesced.json`, so launchd cannot restart
-the collector between drain and unload.
+Use a directly owned root with no external automatic restart. After a
+`:quiesced` result, call `CollectorHandoff.wait_for_unload(directory)`.
+It keeps the caller alive until unload, but exits non-successfully if abandoned
+past the original deadline plus eleven minutes (maximum recovery plus OS margin).
+Only this already-drained caller can expire; no unstored token remains.
 
 **Only a matching acknowledgement of stopped client and closed journal permits
 `launchctl bootout`.** Its finite forced-kill fallback then has no unstored token
@@ -903,10 +909,17 @@ including persisted credentials; a receipt is not a substitute for verification.
 The controller preflights executable/log/temp paths before stopping services.
 Its `.candidate` PID artifact permits cleanup of failed isolated rehearsals.
 Failure JSON includes the phase and whether system state may have changed.
+Cleanup failures set `cleanup_incomplete` on the original result/error instead
+of replacing readiness or a live-candidate warning; failures retain the actual
+`candidate_process_id`. These require owner cleanup, not another refresher.
 
-If startup exits unsuccessfully, restore one read-only collector, wait through
-missing/intermediate health until a fresh report matches launchd's actual PID,
-then restore the notifier. Recovery remains bounded even after consent expires.
+SIGTERM/SIGHUP run bounded recovery instead of abandoning it. Exit events are
+retained even while waiting for acknowledgement; an unexpectedly exited managed
+collector is restarted without forcing any surviving process. If startup exits
+unsuccessfully, restore one read-only collector, wait through missing/intermediate
+health until its report matches launchd, then restore the notifier. A refused or
+failed recovery also restores this alert-only notifier so missing collection
+is not silent. Recovery remains bounded even after consent expires.
 If an old or candidate process survives its bound, **do not force-stop it,
 delete locks or start another refresher**. Report an owner-action incident
 instead. A successfully handed-off full runtime needs its own monitoring;

@@ -10,9 +10,10 @@ defmodule Raxol.Broker.Journal.Evidence do
   """
 
   alias Raxol.Agent.Journal.FileStore
-  alias Raxol.Broker.Journal
+  alias Raxol.Broker.{Intent, Journal}
   alias Raxol.Broker.Journal.Groups
 
+  @intent_kinds Enum.map(Intent.kinds(), &Atom.to_string/1)
   @unverified "UNVERIFIED"
   @states ~w(pending queued unconfirmed confirmed partially_filled filled rejected canceled cancelled failed expired approved auto_approved auto-approved declined pending_cancel)
   @outcomes ~w(placed pending_approval failed unknown deny absent approved declined expired)
@@ -118,11 +119,7 @@ defmodule Raxol.Broker.Journal.Evidence do
       base(record)
       |> Map.merge(%{
         "intent_id" => identifier("intent", intent["id"]),
-        "intent_kind" =>
-          allowed(
-            intent["kind"],
-            ~w(buy_usd buy_shares sell limit stop_limit stop_market cancel decline)
-          ),
+        "intent_kind" => allowed(intent["kind"], @intent_kinds),
         "side" => allowed(intent["side"], ~w(buy sell)),
         "symbol_id" => identifier("symbol", intent["symbol"]),
         "order_id" => identifier("order", intent["order_id"]),

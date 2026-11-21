@@ -174,6 +174,29 @@ defmodule Raxol.Broker.Journal.EvidenceTest do
     assert report["result"] == "UNVERIFIED"
   end
 
+  test "option and advanced risk classes remain visible without exposing params", %{path: path} do
+    write_records(
+      path,
+      for kind <- ["option", "advanced", "unrecognized-private-kind"] do
+        rec("private-#{kind}", "intent", %{
+          "intent" => %{
+            "id" => "private-#{kind}",
+            "kind" => kind,
+            "params" => %{"raw" => "private-contract-details"}
+          }
+        })
+      end
+    )
+
+    assert {:ok, report} = Evidence.run(path, @date)
+    kinds = for group <- report["groups"], event <- group["events"], do: event["intent_kind"]
+    assert kinds == ["option", "advanced", "UNVERIFIED"]
+    assert report["result"] == "UNVERIFIED"
+    json = Jason.encode!(report)
+    refute json =~ "private-contract-details"
+    refute json =~ "unrecognized-private-kind"
+  end
+
   test "empty verified history is not a passing live checkpoint", %{path: path} do
     write_records(path, [])
     assert {:ok, report} = Evidence.run(path, @date)

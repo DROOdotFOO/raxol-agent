@@ -140,6 +140,23 @@ defmodule Raxol.Broker.CollectorHandoffTest do
     assert Process.alive?(GenServer.whereis(ctx.client))
   end
 
+  test "an abandoned drained caller exits after its deadline and recovery grace", ctx do
+    request(ctx.directory)
+
+    assert :quiesced =
+             CollectorHandoff.quiesce(ctx.directory, ctx.root,
+               client: ctx.client,
+               journal: ctx.journal
+             )
+
+    expired = DateTime.utc_now() |> DateTime.add(-661, :second) |> DateTime.to_iso8601()
+    report = Map.put(acknowledgement(ctx.directory), "deadline", expired)
+    File.write!(Path.join(ctx.directory, "handoff-quiesced.json"), Jason.encode!(report))
+    {pid, monitor} = spawn_monitor(fn -> CollectorHandoff.wait_for_unload(ctx.directory) end)
+
+    assert_receive {:DOWN, ^monitor, :process, ^pid, :collector_handoff_abandoned}
+  end
+
   defp request(directory, override \\ %{}) do
     fields =
       Map.merge(

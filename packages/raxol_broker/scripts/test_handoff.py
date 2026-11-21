@@ -23,13 +23,18 @@ spec.loader.exec_module(handoff)
 pytestmark = pytest.mark.skipif(not hasattr(select, "kqueue"), reason="macOS launchd integration")
 
 
-def await_file(path, predicate=lambda _: True):
+def await_file(path, predicate=lambda _: True, *, controller=None):
     events = handoff.Events()
     events.directory(path.parent)
+    if controller is not None:
+        events.process(controller.pid)
     try:
         while True:
             if path.exists() and predicate(path):
                 return
+            if controller is not None and controller.poll() is not None:
+                output, error = controller.communicate()
+                raise AssertionError(f"fixture coordinator exited before publication: {output} {error}")
             if not events.queue.control(None, 8, 60):
                 logs = "\n".join(log.read_text() for log in path.parent.glob("*.log"))
                 for plist in path.parent.glob("*.plist"):
@@ -109,7 +114,7 @@ def install(private_directory):
         # teardown. All PIDs below belong only to this credential-free fixture.
         for controller in controllers:
             if controller.poll() is None:
-                controller.terminate()
+                controller.kill()  # Credential-free coordinator only; prevent recovery during teardown.
             controller.wait(timeout=30)
         candidate = base / "ready.json.candidate"
         if candidate.exists():
@@ -175,7 +180,7 @@ def test_failed_start_waits_for_healthy_recovery_before_notifier(install):
     old = handoff.service_pid(config.collector_label)
     controller = run_controller(install)
     release_drain(install)
-    await_file(base / "recovering")
+    await_file(base / "recovering", controller=controller)
     assert controller.poll() is None
     assert not handoff.service_loaded(config.notifier_label)
     recovering = json.loads(config.collector_status.read_text())
@@ -221,6 +226,80 @@ def test_unresponsive_drain_never_unloads_or_replaces_old_collector(install):
     assert json.loads(error)["state_changed"] is True
     assert handoff.service_pid(config.collector_label) == old
     assert not (base / "ready.json.candidate").exists()
+    assert handoff.service_loaded(config.notifier_label)
+
+
+@pytest.mark.parametrize("signal_number", [signal.SIGTERM, signal.SIGHUP])
+def test_controller_interrupt_restores_monitoring_without_unloading_busy_collector(install, signal_number):
+    config, base, _, _ = install
+    config.recovery_timeout_seconds = 1
+    old = handoff.service_pid(config.collector_label)
+    controller = run_controller(install)
+    await_file(base / "stopping")
+    os.kill(controller.pid, signal_number)
+    _, error = controller.communicate(timeout=10)
+    assert controller.returncode == 1
+    assert json.loads(error)["phase"] == "recover_collector_drain"
+    assert handoff.service_pid(config.collector_label) == old
+    assert handoff.service_loaded(config.notifier_label)
+    assert not (base / "ready.json.candidate").exists()
+
+
+def test_collector_exit_during_drain_is_not_lost(install):
+    config, base, _, _ = install
+    old = handoff.service_pid(config.collector_label)
+    controller = run_controller(install)
+    await_file(base / "stopping")
+    finish_fixture(old)
+    await_file(base / "recovering", controller=controller)
+    recovering = json.loads(config.collector_status.read_text())
+    os.kill(int(recovering["process_id"]), signal.SIGUSR2)
+    _, error = controller.communicate(timeout=60)
+    assert controller.returncode == 1
+    restored = handoff.health(config.collector_status)
+    assert int(restored.process_id) != old
+    assert handoff.service_loaded(config.notifier_label)
+    assert not (base / "ready.json.candidate").exists()
+
+
+@pytest.mark.parametrize("role", ["cleanup_ready", "cleanup_bad_nonce"])
+def test_cleanup_failure_preserves_ready_or_live_candidate_result(install, role):
+    config, base, _, _ = install
+    config.command[-1] = role
+    controller = run_controller(install)
+    release_drain(install)
+    output, error = controller.communicate(timeout=60)
+    report = json.loads(output if controller.returncode == 0 else error)
+    assert report["cleanup_incomplete"] is True
+    if role == "cleanup_ready":
+        assert controller.returncode == 0 and report["status"] == "disarmed_handoff_ready"
+        actual = report["process_id"]
+    else:
+        assert controller.returncode == 1 and "candidate still alive" in report["reason"]
+        actual = report["candidate_process_id"]
+    assert actual == json.loads((base / "ready.json.candidate").read_text())["process_id"]
+    assert not handoff.service_loaded(config.collector_label)
+    assert not handoff.service_loaded(config.notifier_label)
+    events = handoff.Events()
+    try:
+        assert events.process(actual)
+    finally:
+        events.close()
+
+
+def test_exec_uses_the_verified_target_not_a_swapped_symlink(install):
+    config, base, _, _ = install
+    link = base / "launcher"
+    link.symlink_to(config.command[0])
+    config.command[0] = str(link)
+    controller = run_controller(install)
+    await_file(base / "stopping")
+    link.unlink()
+    link.symlink_to("/usr/bin/false")
+    os.kill(handoff.service_pid(config.collector_label), signal.SIGUSR2)
+    output, error = controller.communicate(timeout=60)
+    assert controller.returncode == 0, error
+    assert json.loads(output)["status"] == "disarmed_handoff_ready"
 
 
 def test_evidence_reader_does_not_wait_on_the_running_runtime_build_lock(install):

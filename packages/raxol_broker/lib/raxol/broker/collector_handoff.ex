@@ -37,6 +37,38 @@ defmodule Raxol.Broker.CollectorHandoff do
     end
   end
 
+  @doc """
+  Bound the drained caller's wait if its controller disappears.
+
+  Call only after `quiesce/3` returns `:quiesced`. The acknowledgement carries
+  the original request deadline; eleven extra minutes cover the controller's
+  maximum recovery budget and launchd operations. Missing/unreadable proof
+  exits immediately: the client and journal have already stopped.
+  """
+  @spec wait_for_unload(Path.t()) :: no_return()
+  def wait_for_unload(directory) do
+    path = Path.join(directory, "handoff-quiesced.json")
+
+    timeout =
+      with :ok <- OperatorFile.trusted?(path),
+           {:ok, %{size: size}} when size <= 4096 <- File.lstat(path),
+           {:ok, data} <- File.read(path),
+           {:ok, %{"status" => "quiesced", "process_id" => pid, "deadline" => deadline}} <-
+             Jason.decode(data),
+           true <- pid == System.pid(),
+           true <- is_binary(deadline),
+           {:ok, until, _offset} <- DateTime.from_iso8601(deadline) do
+        max(DateTime.diff(until, DateTime.utc_now(), :millisecond) + 660_000, 0)
+      else
+        _invalid -> 0
+      end
+
+    receive do
+    after
+      timeout -> exit(:collector_handoff_abandoned)
+    end
+  end
+
   defp request(directory) do
     path = Path.join(directory, "handoff-request.json")
 
@@ -113,6 +145,7 @@ defmodule Raxol.Broker.CollectorHandoff do
     document = %{
       process_id: System.pid(),
       nonce: request["nonce"],
+      deadline: request["deadline"],
       status: Atom.to_string(status),
       observed_at: DateTime.to_iso8601(DateTime.utc_now()),
       client_stopped: status == :quiesced,

@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["typer==0.24.1", "pydantic==2.12.5"]
 # ///
-"""Owner-local macOS collector handoff. Never arms, signals or kills a broker."""
+"""Owner-local macOS handoff. Only the verified read-only collector is signalled."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -29,6 +29,8 @@ class Refused(RuntimeError):
         super().__init__(reason)
         self.phase = phase
         self.state_changed = state_changed
+        self.cleanup_incomplete = False
+        self.candidate_process_id: int | None = None
 
 
 class Config(BaseModel):
@@ -55,7 +57,7 @@ class Health(BaseModel):
     executor_started: StrictBool
     strategies_started: StrictBool
     baseline_verified: StrictBool
-    handoff_protocol: int = 0
+    handoff_protocol: int = Field(default=0, strict=True)
 
     @model_validator(mode="after")
     def safe_readiness(self) -> Health:
@@ -111,6 +113,7 @@ class Events:
     def __init__(self) -> None:
         self.queue = select.kqueue()
         self.handles: list[int] = []
+        self.exited: set[int] = set()
 
     def directory(self, path: Path) -> None:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
@@ -127,18 +130,23 @@ class Events:
             return True
         except OSError as error:
             if error.errno == errno.ESRCH:
+                self.exited.add(pid)
                 return False  # Already exited, not a liveness guess.
             raise
 
+    def wait(self, timeout: float) -> list:
+        events = self.queue.control(None, 8, timeout)
+        self.exited.update(int(event.ident) for event in events
+            if event.filter == select.KQ_FILTER_PROC and event.fflags & select.KQ_NOTE_EXIT)
+        return events
+
     def wait_exit(self, pid: int, timeout: float) -> None:
         limit = time.monotonic() + timeout
-        while True:
+        while pid not in self.exited:
             left = limit - time.monotonic()
             if left <= 0:
                 raise Refused("old process did not exit; no replacement started")
-            events = self.queue.control(None, 8, left)
-            if any(event.filter == select.KQ_FILTER_PROC and event.ident == pid for event in events):
-                return
+            self.wait(left)
 
     def close(self) -> None:
         self.queue.close()
@@ -187,7 +195,7 @@ def await_health(config: Config, old_pid: int | None, timeout: float = 300) -> N
                 # accept it; retain the bound and wait for another publication.
                 pass
             left = limit - time.monotonic()
-            if left <= 0 or not events.queue.control(None, 8, left):
+            if left <= 0 or not events.wait(left):
                 raise Refused("read-only recovery did not publish fresh healthy status")
     finally:
         events.close()
@@ -196,6 +204,8 @@ def await_health(config: Config, old_pid: int | None, timeout: float = 300) -> N
 def await_quiesced(path: Path, pid: int, nonce: str, events: Events, timeout: float) -> bool:
     limit = time.monotonic() + timeout
     while True:
+        if pid in events.exited:
+            raise Refused("collector exited during cooperative shutdown")
         if path.exists():
             trusted(path)
             report = json.loads(path.read_text())
@@ -208,7 +218,7 @@ def await_quiesced(path: Path, pid: int, nonce: str, events: Events, timeout: fl
                 return True
             raise Refused("collector did not confirm safe credential shutdown")
         left = limit - time.monotonic()
-        if left <= 0 or not events.queue.control(None, 8, left):
+        if left <= 0 or not events.wait(left):
             raise Refused("collector did not acknowledge cooperative shutdown")
 
 
@@ -250,15 +260,26 @@ def run(config: Config, deadline: datetime) -> dict:
         raise Refused("collector health does not name its launchd process")
     events = Events()
     notifier_stop_attempted = False
-    collector_stop_attempted = False
     requested = False
     quiesced = False
     exited = False
     child: subprocess.Popen | None = None
     log = None
     phase = "preflight"
+    result: dict | None = None
+    failure: Refused | None = None
+    previous_signals = {}
+
+    def interrupted(_number: int, _frame) -> None:
+        # Finish one bounded recovery even if the terminal sends another signal.
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            signal.signal(number, signal.SIG_IGN)
+        raise Refused("controller interrupted")
+
     nonce = secrets.token_hex(24)
     try:
+        for number in (signal.SIGTERM, signal.SIGHUP):
+            previous_signals[number] = signal.signal(number, interrupted)
         # Fail on a reused log before touching any service.
         log = open(config.ready_file.parent / (config.ready_file.name + ".log"),
             "x", opener=private_open)
@@ -278,13 +299,18 @@ def run(config: Config, deadline: datetime) -> dict:
             output.flush()
             os.fsync(output.fileno())
         requested = True
+        events.wait(0)
+        if pid in events.exited or service_pid(config.collector_label) != pid:
+            raise Refused("collector exited or changed before the drain signal")
         os.kill(pid, signal.SIGUSR2)
         quiesced = await_quiesced(acknowledgement, pid, nonce, events,
             remaining(deadline, config.drain_timeout_seconds))
         if not quiesced:
             raise Refused("collector credential shutdown is blocked; no unload attempted")
         phase = "unload_quiesced_collector"
-        collector_stop_attempted = True
+        events.wait(0)
+        if pid in events.exited or service_pid(config.collector_label) != pid:
+            raise Refused("collector exited or changed before unload")
         launchctl("bootout", f"gui/{os.getuid()}/{config.collector_label}")
         events.wait_exit(pid, remaining(deadline, 60))
         exited = True
@@ -292,7 +318,7 @@ def run(config: Config, deadline: datetime) -> dict:
         remaining(deadline, 30)
         environment = dict(os.environ, BROKER_HANDOFF_DEADLINE=deadline.isoformat(),
             BROKER_HANDOFF_NONCE=nonce, BROKER_HANDOFF_READY=str(config.ready_file))
-        child = subprocess.Popen(config.command, stdin=subprocess.DEVNULL,
+        child = subprocess.Popen([str(executable), *config.command[1:]], stdin=subprocess.DEVNULL,
             stdout=log, stderr=log, env=environment, start_new_session=True)
         with open(candidate_file, "x", opener=private_open) as output:
             json.dump({"process_id": child.pid}, output)
@@ -309,14 +335,15 @@ def run(config: Config, deadline: datetime) -> dict:
                     raise Refused("readiness receipt does not belong to this runtime")
                 if not alive or child.poll() is not None:
                     raise Refused("candidate exited instead of remaining ready")
-                return {"status": "disarmed_handoff_ready", "process_id": child.pid,
-                    "armed": False, "strategies_started": False}
+                result = {"status": "disarmed_handoff_ready", "process_id": child.pid,
+                    "armed": False, "strategies_started": False, "cleanup_incomplete": False}
+                return result
             if not alive or child.poll() is not None:
                 raise Refused("candidate startup failed")
             wait = min(remaining(deadline, config.ready_timeout_seconds), ready_limit - time.monotonic())
             if wait <= 0:
                 raise Refused("candidate readiness timed out")
-            batch = events.queue.control(None, 8, wait)
+            batch = events.wait(wait)
             if not batch:
                 raise Refused("candidate readiness timed out")
             if any(event.filter == select.KQ_FILTER_PROC and event.ident == child.pid for event in batch):
@@ -325,34 +352,64 @@ def run(config: Config, deadline: datetime) -> dict:
         failed_phase = phase
         changed = notifier_stop_attempted or requested
         if child is not None and child.poll() is None:
-            raise Refused("candidate still alive: leave disarmed, do not force-stop or restart collector",
-                phase=failed_phase, state_changed=True) from error
+            failure = Refused("candidate still alive: leave disarmed, do not force-stop or restart collector",
+                phase=failed_phase, state_changed=True)
+            failure.candidate_process_id = child.pid
+            raise failure from error
         try:
             # No bootout is allowed until the client has stopped and the journal
             # closed. launchd's finite SIGKILL fallback then cannot lose a token.
-            if requested and not quiesced:
+            if requested and not quiesced and pid not in events.exited:
                 phase = "recover_collector_drain"
-                quiesced = await_quiesced(acknowledgement, pid, nonce, events,
-                    config.recovery_timeout_seconds)
-            if quiesced:
-                phase = "restore_collector"
-                if not collector_stop_attempted or service_loaded(config.collector_label):
-                    collector_stop_attempted = True
-                    launchctl("bootout", f"gui/{os.getuid()}/{config.collector_label}")
-                if not exited:
-                    events.wait_exit(pid, config.recovery_timeout_seconds)
-                launchctl("bootstrap", f"gui/{os.getuid()}", str(config.collector_plist))
+                try:
+                    quiesced = await_quiesced(acknowledgement, pid, nonce, events,
+                        config.recovery_timeout_seconds)
+                except Refused:
+                    if pid not in events.exited:
+                        raise
+            events.wait(0)
+            if pid in events.exited:
+                phase = "restore_exited_collector"
+                if service_loaded(config.collector_label):
+                    # No -k: launchd starts only an inactive job, never a second refresher.
+                    launchctl("kickstart", f"gui/{os.getuid()}/{config.collector_label}")
+                else:
+                    launchctl("bootstrap", f"gui/{os.getuid()}", str(config.collector_plist))
                 await_health(config, pid, config.recovery_timeout_seconds)
+            elif quiesced:
+                phase = "restore_collector"
+                loaded = service_loaded(config.collector_label)
+                if loaded and service_pid(config.collector_label) != pid:
+                    # A managed replacement already exists: never unload its client.
+                    await_health(config, pid, config.recovery_timeout_seconds)
+                else:
+                    if loaded:
+                        launchctl("bootout", f"gui/{os.getuid()}/{config.collector_label}")
+                    if not exited:
+                        events.wait_exit(pid, config.recovery_timeout_seconds)
+                    launchctl("bootstrap", f"gui/{os.getuid()}", str(config.collector_plist))
+                    await_health(config, pid, config.recovery_timeout_seconds)
+        except Exception as recovery_error:
+            failure = Refused("read-only recovery blocked; owner action required",
+                phase=phase, state_changed=changed)
+            raise failure from recovery_error
+        finally:
+            # Alert-only monitoring must also return after a refused/stalled drain.
             if notifier_stop_attempted:
                 phase = "restore_notifier"
-                if not service_loaded(config.notifier_label):
-                    launchctl("bootstrap", f"gui/{os.getuid()}", str(config.notifier_plist))
-        except Exception as recovery_error:
-            raise Refused("read-only recovery blocked; owner action required",
-                phase=phase, state_changed=changed) from recovery_error
+                try:
+                    if not service_loaded(config.notifier_label):
+                        launchctl("bootstrap", f"gui/{os.getuid()}", str(config.notifier_plist))
+                except Exception as notifier_error:
+                    failure = Refused("notifier recovery blocked; owner action required",
+                        phase=phase, state_changed=changed)
+                    raise failure from notifier_error
         reason = str(error) if isinstance(error, Refused) else "handoff operation failed"
-        raise Refused(reason, phase=failed_phase, state_changed=changed) from error
+        failure = Refused(reason, phase=failed_phase, state_changed=changed)
+        raise failure from error
     finally:
+        for number in previous_signals:
+            signal.signal(number, signal.SIG_IGN)
         events.close()
         if log is not None:
             log.close()
@@ -362,9 +419,17 @@ def run(config: Config, deadline: datetime) -> dict:
                     path.unlink()
             except FileNotFoundError:
                 pass  # Not published, or already consumed by the owner worker.
-            except (json.JSONDecodeError, OSError) as cleanup_error:
-                raise Refused("cannot safely clean handoff artifacts",
-                    phase="cleanup", state_changed=requested) from cleanup_error
+            except (json.JSONDecodeError, OSError):
+                # Preserve readiness or the live-candidate instruction, never mask it.
+                if result is not None:
+                    result["cleanup_incomplete"] = True
+                elif failure is not None:
+                    failure.cleanup_incomplete = True
+                else:
+                    typer.echo(json.dumps({"status": "cleanup_incomplete",
+                        "phase": "cleanup", "state_changed": requested}), err=True)
+        for number, handler in previous_signals.items():
+            signal.signal(number, handler)
 
 
 def private_open(path: str, flags: int) -> int:
@@ -385,6 +450,8 @@ def main(config: Path, deadline: str) -> None:
         typer.echo(json.dumps({"status": "refused", "error_type": type(error).__name__,
             "phase": error.phase if isinstance(error, Refused) else "preflight",
             "state_changed": error.state_changed if isinstance(error, Refused) else False,
+            "cleanup_incomplete": error.cleanup_incomplete if isinstance(error, Refused) else False,
+            "candidate_process_id": error.candidate_process_id if isinstance(error, Refused) else None,
             "reason": str(error) if isinstance(error, Refused) else "invalid or unreadable handoff input"}), err=True)
         raise typer.Exit(1) from error
 
