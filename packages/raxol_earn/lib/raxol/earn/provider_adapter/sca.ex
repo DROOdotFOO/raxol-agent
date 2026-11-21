@@ -59,6 +59,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
 
   @behaviour Raxol.Earn.ProviderAdapter
 
+  alias Raxol.Agent.Secret
   alias Raxol.Earn.ABI
   alias Raxol.Earn.Onchain.Hex
   alias Raxol.Earn.Onchain.RPC
@@ -66,7 +67,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
 
   @type config :: %{
           wallet: module(),
-          chains: %{required(pos_integer()) => String.t()},
+          chains: %{required(pos_integer()) => Secret.t()},
           wallet_opts: keyword(),
           auto_provision: boolean()
         }
@@ -97,7 +98,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
 
     config = %{
       wallet: wallet,
-      chains: chains,
+      chains: Map.new(chains, fn {id, url} -> {id, Secret.new(url)} end),
       wallet_opts: Keyword.get(opts, :wallet_opts, []),
       auto_provision: Keyword.get(opts, :auto_provision, true)
     }
@@ -268,7 +269,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
   # app config. No private key is ever involved on this path.
   defp node_client(%{chains: chains}, chain_id) do
     case Map.fetch(chains, chain_id) do
-      {:ok, url} -> {:ok, RPC.client(url: url)}
+      {:ok, url} -> {:ok, RPC.client(url: Secret.reveal(url))}
       :error -> {:error, {:unsupported_chain, chain_id}}
     end
   end

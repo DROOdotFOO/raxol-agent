@@ -15,6 +15,10 @@ defmodule RaxolEarn.MixProject do
       deps: deps(),
       releases: releases(),
       dialyzer: [
+        # raxol_agent reaches this app through raxol_payments, where it is
+        # `runtime: false`, so it is not in the derived application tree.
+        # Earn calls it directly (`Raxol.Agent.Secret`, `Raxol.Agent.ChildEnv`).
+        plt_add_apps: [:raxol_agent],
         ignore_warnings: ".dialyzer_ignore.exs"
       ],
       description: description(),

@@ -173,7 +173,8 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
       min_fee_atomic: min_fee_atomic,
       settle_fn: Keyword.get(opts, :settle_fn, &default_settle/1),
       history_fn: Keyword.get(opts, :history_fn),
-      xochi_config: Keyword.get(opts, :xochi_config, %{})
+      xochi_config:
+        Raxol.Payments.Xochi.Client.protect_config(Keyword.get(opts, :xochi_config, %{}))
     }
 
     :ok = Agent.subscribe(state.agent)

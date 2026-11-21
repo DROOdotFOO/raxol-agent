@@ -112,6 +112,7 @@ defmodule Raxol.Earn.Seller.Queue do
         :raxol_earn
         |> Application.get_env(:xochi_transfer_settler, [])
         |> Keyword.get(:xochi_config)
+        |> Raxol.Payments.Xochi.Client.protect_config()
     }
   end
 

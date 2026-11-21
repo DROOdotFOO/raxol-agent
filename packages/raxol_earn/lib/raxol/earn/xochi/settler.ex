@@ -120,7 +120,10 @@ defmodule Raxol.Earn.Xochi.Settler do
   """
   @spec build(keyword()) :: (map() -> {:ok, map()} | {:error, term()})
   def build(opts) do
-    xochi_config = Keyword.fetch!(opts, :xochi_config)
+    # Captured by the returned closure, so the member token is wrapped first.
+    xochi_config =
+      opts |> Keyword.fetch!(:xochi_config) |> Raxol.Payments.Xochi.Client.protect_config()
+
     poll_timeout = Keyword.get(opts, :poll_timeout_ms, 120_000)
     poll_interval = Keyword.get(opts, :poll_interval_ms, 2_000)
     store = Keyword.get(opts, :checkpoint)

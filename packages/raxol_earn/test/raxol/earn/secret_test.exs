@@ -31,7 +31,7 @@ defmodule Raxol.Earn.SecretTest do
   describe "redaction" do
     test "inspect/1 of a secret never exposes the bytes" do
       out = inspect(Secret.new(@key))
-      assert out == "#Raxol.Earn.Secret<redacted>"
+      assert out == "#Raxol.Agent.Secret<redacted>"
       refute out =~ @key_hex_lower
       refute out =~ @key_hex_upper
     end
