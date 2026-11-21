@@ -25,10 +25,10 @@ defmodule Raxol.Console.Bench.Adapter do
         prompt: "Introduce yourself in one sentence and state your purpose.",
         timeout_ms: 120_000
 
-  `:agent_opts` is the executor every turn runs under; an unconfigured
-  environment falls back to the agent's own backend resolution (Mock without
-  credentials), which boots but makes the prompt check non-meaningful, so a real
-  `bench_validated` deployment configures a real backend.
+  `:agent_opts` is the executor every turn runs under. Without it the agent
+  resolves a provider from the environment; with no credentials the prompt
+  check fails with `{:error, :no_backend}`, so a `bench_validated` deployment
+  configures a real backend.
 
   Evidence shape matches the behaviour:
   `%{checks: [{:boot | :prompt | :task_dry_run, :ok}], transcript: binary()}`.

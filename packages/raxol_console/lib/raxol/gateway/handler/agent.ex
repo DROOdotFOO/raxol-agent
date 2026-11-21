@@ -16,8 +16,9 @@ defmodule Raxol.Gateway.Handler.Agent do
       (`:backend`, `:backend_opts`, `:executor`, `:provider`, `:model`, ...).
       When neither `:backend` nor `:executor` is pinned, `auto_provider: true`
       is added so the executor resolves from the environment (1Password ref ->
-      provider env vars -> `AI_API_KEY`); resolution failure falls through to
-      the Mock backend rather than crashing.
+      provider env vars -> `AI_API_KEY`). When nothing resolves, every turn
+      is answered with a notice naming the variables to set; there is no
+      mock fallback.
     * `:max_turns_per_window` -- per-chat fixed-window turn cap. Unset means
       no throttle. When the cap is hit, the event is answered with a short
       rate-limit notice: no backend call is made and history is untouched,
@@ -51,6 +52,9 @@ defmodule Raxol.Gateway.Handler.Agent do
 
   @default_max_history 40
   @default_window_ms 60_000
+  @provider_hint "Set ANTHROPIC_API_KEY, OPENAI_API_KEY or another " <>
+                   "provider key (or AI_API_KEY, optionally with AI_BASE_URL), " <>
+                   "or pin :backend in :agent_opts."
 
   @impl true
   @spec init(Raxol.Gateway.Route.t(), keyword()) :: {:ok, map()}
@@ -202,15 +206,16 @@ defmodule Raxol.Gateway.Handler.Agent do
   defp put_system_prompt(opts, prompt),
     do: Keyword.put_new(opts, :system_prompt, prompt)
 
-  # An unresolved auto_provider silently answers from the Mock backend; make
-  # that loud once at session start. :resolve_probe is the injectable seam so
-  # tests never touch real credential resolution (which may shell out to op).
+  # Logged once at session start so an unconfigured deployment is visible
+  # before the first chat. :resolve_probe is the injectable seam so tests
+  # never touch real credential resolution (which may shell out to op).
   defp warn_if_unresolved(agent_opts, probe) do
     if Keyword.get(agent_opts, :auto_provider, false) and
          is_nil(probe.(agent_opts)) do
       Logger.warning(
         "no agent provider resolved from the environment; " <>
-          "replies will come from the Mock backend"
+          "replies will report that no provider is configured. " <>
+          @provider_hint
       )
     end
 
@@ -228,6 +233,9 @@ defmodule Raxol.Gateway.Handler.Agent do
     |> Enum.reverse()
     |> Enum.drop_while(&(&1.role == :assistant))
   end
+
+  defp error_text(:no_backend),
+    do: "No agent provider is configured. " <> @provider_hint
 
   defp error_text(reason) when is_atom(reason),
     do: "Agent error (#{reason}). Try again."

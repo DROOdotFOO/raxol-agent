@@ -51,14 +51,15 @@ defmodule Raxol.Gateway.Handler.AgentTest do
       assert Keyword.get(state.agent_opts, :auto_provider) == true
     end
 
-    test "warns when auto_provider resolves nothing (Mock fallback is loud)" do
+    test "warns, naming the variables to set, when auto_provider resolves nothing" do
       log =
         capture_log(fn ->
           init!(resolve_probe: fn _opts -> nil end)
         end)
 
       assert log =~ "no agent provider resolved"
-      assert log =~ "Mock backend"
+      assert log =~ "ANTHROPIC_API_KEY"
+      refute log =~ "Mock"
     end
 
     test "does not warn when a provider resolves" do
@@ -178,6 +179,22 @@ defmodule Raxol.Gateway.Handler.AgentTest do
                %{role: :user, content: "two"},
                %{role: :assistant, content: "r"}
              ]
+    end
+
+    test "with no provider, the reply says so and names how to configure one" do
+      # auto_provider: false skips environment resolution, so this reaches the
+      # real `{:error, :no_backend}` from `Raxol.Agent.Stream` on any machine.
+      state = init!(agent_opts: [auto_provider: false])
+
+      capture_log(fn ->
+        assert {:reply, reply, state} =
+                 Handler.Agent.handle_event(%{text: "hi"}, state)
+
+        assert reply =~ "No agent provider is configured"
+        assert reply =~ "ANTHROPIC_API_KEY"
+        assert reply =~ "AI_API_KEY"
+        assert state.messages == [%{role: :user, content: "hi"}]
+      end)
     end
 
     test "backend error replies with a short message and keeps the user turn" do
