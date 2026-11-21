@@ -116,9 +116,9 @@ def install(private_directory):
             if controller.poll() is None:
                 controller.kill()  # Credential-free coordinator only; prevent recovery during teardown.
             controller.wait(timeout=30)
-        candidate = base / "ready.json.candidate"
-        if candidate.exists():
-            finish_fixture(int(json.loads(candidate.read_text())["process_id"]))
+        for candidate in (base / "ready.json.candidate", base / "trace-candidate.json"):
+            if candidate.exists():
+                finish_fixture(int(json.loads(candidate.read_text())["process_id"]))
         for label in labels.values():
             if handoff.service_loaded(label):
                 result = subprocess.run(["/bin/launchctl", "print", f"gui/{os.getuid()}/{label}"],
@@ -130,14 +130,18 @@ def install(private_directory):
                     finish_fixture(pid)
 
 
-def run_controller(context):
+def run_controller(context, spawn_interrupt=None):
     config, base, environment, controllers = context
     path = base / "config.json"
     path.write_text(config.model_dump_json())
     path.chmod(0o600)
     deadline = (datetime.now(timezone.utc) + timedelta(minutes=3)).isoformat()
-    controller = subprocess.Popen([sys.executable, str(PACKAGE / "scripts/handoff.py"), str(path), deadline],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=dict(os.environ, **environment))
+    command = [sys.executable, str(PACKAGE / "scripts/handoff.py"), str(path), deadline]
+    if spawn_interrupt is not None:
+        command = [sys.executable, str(PACKAGE / "test/support/handoff_signal_fixture.py"),
+            str(int(spawn_interrupt)), *command[1:]]
+    controller = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=dict(os.environ, **environment))
     controllers.append(controller)
     return controller
 
@@ -280,6 +284,28 @@ def test_cleanup_failure_preserves_ready_or_live_candidate_result(install, role)
     assert actual == json.loads((base / "ready.json.candidate").read_text())["process_id"]
     assert not handoff.service_loaded(config.collector_label)
     assert not handoff.service_loaded(config.notifier_label)
+    events = handoff.Events()
+    try:
+        assert events.process(actual)
+    finally:
+        events.close()
+
+
+@pytest.mark.parametrize("signal_number", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_signal_after_real_spawn_before_pid_assignment_never_restores_refresher(install, signal_number):
+    config, base, _, _ = install
+    controller = run_controller(install, spawn_interrupt=signal_number)
+    release_drain(install)
+    _, error = controller.communicate(timeout=20)
+    report = json.loads(error)
+    assert controller.returncode == 1
+    assert report["launch_outcome_unknown"] is True
+    assert report["candidate_process_id"] is None
+    assert not handoff.service_loaded(config.collector_label)
+    assert handoff.service_loaded(config.notifier_label)
+    await_file(config.ready_file)
+    actual = json.loads((base / "trace-candidate.json").read_text())["process_id"]
+    assert actual == int(handoff.Ready.model_validate_json(config.ready_file.read_text()).process_id)
     events = handoff.Events()
     try:
         assert events.process(actual)

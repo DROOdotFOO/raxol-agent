@@ -912,6 +912,10 @@ Failure JSON includes the phase and whether system state may have changed.
 Cleanup failures set `cleanup_incomplete` on the original result/error instead
 of replacing readiness or a live-candidate warning; failures retain the actual
 `candidate_process_id`. These require owner cleanup, not another refresher.
+If interruption makes process creation uncertain before its PID is returned,
+`launch_outcome_unknown: true` refuses collector restoration and restores only
+alerting. This can require owner intervention even after a failed spawn; it is
+safer than overlapping refreshers. Signals cannot interrupt recovery a second time.
 
 SIGTERM/SIGHUP run bounded recovery instead of abandoning it. Exit events are
 retained even while waiting for acknowledgement; an unexpectedly exited managed

@@ -7,6 +7,7 @@ owner = self()
 {:ok, _} =
   System.trap_signal(:sigterm, fn ->
     send(owner, :stop)
+    System.stop(0)
     :ok
   end)
 
@@ -133,10 +134,7 @@ receive do
 
     :quiesced = Raxol.Broker.CollectorHandoff.quiesce(directory, root)
 
-    receive do
-      :stop -> :ok
-      :cooperative_drain -> :ok
-    end
+    Raxol.Broker.CollectorHandoff.wait_for_unload(directory)
 
   :stop ->
     :ok

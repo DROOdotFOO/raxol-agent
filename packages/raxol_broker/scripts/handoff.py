@@ -31,6 +31,7 @@ class Refused(RuntimeError):
         self.state_changed = state_changed
         self.cleanup_incomplete = False
         self.candidate_process_id: int | None = None
+        self.launch_outcome_unknown = False
 
 
 class Config(BaseModel):
@@ -264,11 +265,12 @@ def run(config: Config, deadline: datetime) -> dict:
     quiesced = False
     exited = False
     child: subprocess.Popen | None = None
+    launch_started = False
     log = None
     phase = "preflight"
     result: dict | None = None
     failure: Refused | None = None
-    previous_signals = {}
+    previous_signals = {signal.SIGINT: signal.getsignal(signal.SIGINT)}
 
     def interrupted(_number: int, _frame) -> None:
         # Finish one bounded recovery even if the terminal sends another signal.
@@ -318,6 +320,7 @@ def run(config: Config, deadline: datetime) -> dict:
         remaining(deadline, 30)
         environment = dict(os.environ, BROKER_HANDOFF_DEADLINE=deadline.isoformat(),
             BROKER_HANDOFF_NONCE=nonce, BROKER_HANDOFF_READY=str(config.ready_file))
+        launch_started = True
         child = subprocess.Popen([str(executable), *config.command[1:]], stdin=subprocess.DEVNULL,
             stdout=log, stderr=log, env=environment, start_new_session=True)
         with open(candidate_file, "x", opener=private_open) as output:
@@ -349,8 +352,20 @@ def run(config: Config, deadline: datetime) -> dict:
             if any(event.filter == select.KQ_FILTER_PROC and event.ident == child.pid for event in batch):
                 alive = False
     except BaseException as error:
+        for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(number, signal.SIG_IGN)
         failed_phase = phase
         changed = notifier_stop_attempted or requested
+        if launch_started and child is None:
+            failure = Refused("candidate launch outcome unknown: do not force-stop or restart collector; owner action required",
+                phase=failed_phase, state_changed=True)
+            failure.launch_outcome_unknown = True
+            try:
+                if notifier_stop_attempted and not service_loaded(config.notifier_label):
+                    launchctl("bootstrap", f"gui/{os.getuid()}", str(config.notifier_plist))
+            except Exception as notifier_error:
+                raise failure from notifier_error
+            raise failure from error
         if child is not None and child.poll() is None:
             failure = Refused("candidate still alive: leave disarmed, do not force-stop or restart collector",
                 phase=failed_phase, state_changed=True)
@@ -372,7 +387,11 @@ def run(config: Config, deadline: datetime) -> dict:
                 phase = "restore_exited_collector"
                 if service_loaded(config.collector_label):
                     # No -k: launchd starts only an inactive job, never a second refresher.
-                    launchctl("kickstart", f"gui/{os.getuid()}/{config.collector_label}")
+                    try:
+                        launchctl("kickstart", f"gui/{os.getuid()}/{config.collector_label}")
+                    except Refused:
+                        if service_pid(config.collector_label) == pid:
+                            raise
                 else:
                     launchctl("bootstrap", f"gui/{os.getuid()}", str(config.collector_plist))
                 await_health(config, pid, config.recovery_timeout_seconds)
@@ -452,6 +471,7 @@ def main(config: Path, deadline: str) -> None:
             "state_changed": error.state_changed if isinstance(error, Refused) else False,
             "cleanup_incomplete": error.cleanup_incomplete if isinstance(error, Refused) else False,
             "candidate_process_id": error.candidate_process_id if isinstance(error, Refused) else None,
+            "launch_outcome_unknown": error.launch_outcome_unknown if isinstance(error, Refused) else False,
             "reason": str(error) if isinstance(error, Refused) else "invalid or unreadable handoff input"}), err=True)
         raise typer.Exit(1) from error
 
