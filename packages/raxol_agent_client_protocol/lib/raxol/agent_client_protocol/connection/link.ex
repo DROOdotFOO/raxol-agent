@@ -5,7 +5,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
 
   require Logger
 
-  alias Raxol.AgentClientProtocol.Connection.{Turns, Wire}
+  alias Raxol.AgentClientProtocol.Connection.{Notifications, Turns, Wire}
   alias Raxol.AgentClientProtocol.Rpc.{Notification, RequestId}
 
   @type state :: Raxol.AgentClientProtocol.Connection.t()
@@ -85,7 +85,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
   def down(%{phase: :closed} = state), do: state
 
   def down(state) do
-    state = fail_outbound(state)
+    state = state |> fail_outbound() |> Notifications.discard_backlog()
 
     Enum.each(state.pending_in, fn {_id, entry} -> stop_inbound(state, entry) end)
 

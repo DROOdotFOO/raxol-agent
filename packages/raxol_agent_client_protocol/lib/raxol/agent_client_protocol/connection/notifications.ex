@@ -5,7 +5,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
 
   require Logger
 
-  alias Raxol.AgentClientProtocol.Connection.{Dispatch, Link, Turns, Wire}
+  alias Raxol.AgentClientProtocol.Connection.{Dispatch, Link, NotificationPool, Turns, Wire}
   alias Raxol.AgentClientProtocol.Error
   alias Raxol.AgentClientProtocol.{Router, Telemetry}
   alias Raxol.AgentClientProtocol.Rpc
@@ -61,29 +61,76 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
     end
   end
 
-  # No reply obligation, so an over-capacity spawn is dropped, not answered.
+  # At the handler cap a notification waits in the pool's backlog; only one
+  # arriving with the backlog full is dropped (there is no reply obligation).
   defp spawn_notification(state, method, dispatchable, stamp) do
-    ctx = %{Dispatch.ctx(state) | delivery_stamp: stamp}
+    item = {method, dispatchable, %{Dispatch.ctx(state) | delivery_stamp: stamp}}
 
-    case Dispatch.start(state, dispatchable, ctx, state.notif_sup) do
-      {:error, reason} ->
-        shed(state, method, "notification pool full (#{inspect(reason)})")
+    case NotificationPool.admit(state.notif_pool, item) do
+      {:run, pool} ->
+        {:noreply, start_all(%{state | notif_pool: pool}, [item])}
 
-      {:ok, task} ->
-        {:noreply,
-         %{
-           state
-           | task_index: Map.put(state.task_index, task.ref, {:notification, method})
-         }}
+      {:queued, pool} ->
+        Telemetry.execute([:raxol, :acp, :notification_queued], %{queued: pool.queued}, %{
+          method: Rpc.printable(method)
+        })
+
+        {:noreply, %{state | notif_pool: pool}}
+
+      :full ->
+        report_shed(method, "notification backlog full")
+        {:noreply, state}
     end
   end
 
-  # A finished handler's result can still sit behind queued frames; count those
-  # as done before deciding the pool is full.
-  defp shed(state, method, why) do
+  # A notification handler finished (its result or its exit was read): its
+  # slot goes to the backlog.
+  @spec finished(Raxol.AgentClientProtocol.Connection.t()) ::
+          Raxol.AgentClientProtocol.Connection.t()
+  def finished(state) do
+    {ready, pool} = NotificationPool.release(state.notif_pool)
+    start_all(%{state | notif_pool: pool}, ready)
+  end
+
+  # The link went down: waiting notifications will never run.
+  @spec discard_backlog(Raxol.AgentClientProtocol.Connection.t()) ::
+          Raxol.AgentClientProtocol.Connection.t()
+  def discard_backlog(state) do
+    {dropped, pool} = NotificationPool.reset(state.notif_pool)
+
+    if dropped != [] do
+      Logger.warning("ACP: #{length(dropped)} queued notification(s) dropped: connection closed")
+
+      Enum.each(dropped, fn {method, _, _} ->
+        Telemetry.execute([:raxol, :acp, :notification_shed], %{method: Rpc.printable(method)})
+      end)
+    end
+
+    %{state | notif_pool: pool}
+  end
+
+  # Each item is already counted as running. The notification supervisor has
+  # no `max_children`, so a start fails only if it is gone; such an item gives
+  # its slot back, which may admit more from the backlog.
+  defp start_all(state, []), do: state
+
+  defp start_all(state, [{method, dispatchable, ctx} | rest]) do
+    case Dispatch.start(state, dispatchable, ctx, state.notif_sup) do
+      {:ok, task} ->
+        state
+        |> Map.update!(:task_index, &Map.put(&1, task.ref, {:notification, method}))
+        |> start_all(rest)
+
+      {:error, reason} ->
+        report_shed(method, "handler failed to start (#{inspect(reason)})")
+        {ready, pool} = NotificationPool.release(state.notif_pool)
+        start_all(%{state | notif_pool: pool}, rest ++ ready)
+    end
+  end
+
+  defp report_shed(method, why) do
     Logger.warning("ACP: notification #{Rpc.printable(method)} dropped: #{why}")
     Telemetry.execute([:raxol, :acp, :notification_shed], %{method: Rpc.printable(method)})
-    {:noreply, state}
   end
 
   # Marks the entry cancelled first, then stops its task or tells its adopter.
