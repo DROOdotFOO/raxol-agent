@@ -1,16 +1,10 @@
 # Skill Authoring
 
-A skill is procedural memory: a reusable `SKILL.md` file that teaches an agent how to do
-something. Raxol uses the [agentskills.io](https://agentskills.io) `SKILL.md` format, so a
-skill you write here sits alongside the ones under `~/.agents/skills` and is portable to
-other tools that speak the same format.
+A skill is a reusable `SKILL.md` that teaches an agent a procedure. Raxol uses the
+[agentskills.io](https://agentskills.io) format, so skills under `~/.agents/skills` are read
+as-is.
 
-Agents author skills through the `skill_manage` tool, and you can author them by hand.
-This guide is the hand-authoring contract.
-
-## The format
-
-A `SKILL.md` is YAML frontmatter followed by a markdown body:
+## Format
 
 ```markdown
 ---
@@ -25,50 +19,37 @@ category: git
 Use this when a test passed at some older commit and fails now.
 
 1. `git bisect start`
-2. `git bisect bad` at the current (broken) commit.
+2. `git bisect bad` at the current commit.
 3. `git bisect good <known-good-sha>`.
-4. For each commit git checks out, run the failing test and mark
-   `git bisect good` or `git bisect bad`.
+4. For each commit, run the failing test and mark it `good` or `bad`.
 5. When git prints the first bad commit, run `git bisect reset`.
-
-Keep the working tree clean before you start; stash or commit first.
 ```
 
-### Frontmatter fields
-
 | Field | Required | Notes |
-|-------|:---:|-------|
-| `name` | yes | A kebab-case identifier, unique within a store. |
-| `description` | no | One line. This is what an agent sees in `skills_list` before opening the skill. |
+| --- | :---: | --- |
+| `name` | yes | Kebab-case, unique within a store. |
+| `description` | no | One line, shown by `skills_list`. |
 | `version` | no | A string. |
-| `category` | no | Groups the skill on disk (`<root>/<category>/<name>/`). |
-| `created_by` | no | `agent` or `user`. Set by the writer: `skill_manage` tags what it creates `user`. |
+| `category` | no | Directory on disk: `<root>/<category>/<name>/`. |
+| `created_by` | no | `agent` or `user`. `skill_manage` sets `user`. |
 
-Any other frontmatter key is preserved under the skill's metadata, so fields another tool
-depends on survive a round trip. Nothing from a `SKILL.md` is ever turned into an atom.
+Other frontmatter keys are kept as metadata. Nothing from a `SKILL.md` becomes an atom. Write the
+body for an LLM that will act on it: when to use the skill, then the steps, then the caveats. Keep
+each skill to one task.
 
-### Body
+## Store
 
-Write the body for the reader that will act on it: an LLM with tools. Be concrete and
-procedural. State the trigger ("use this when..."), then the steps, then the caveats. Keep
-it focused on one task; a skill that tries to cover everything gets opened for nothing.
+`Raxol.Agent.Skills.Store` indexes two places:
 
-## Where skills live
+- the managed root (writable, default `~/.raxol/skills`), where new skills are written;
+- external dirs (read-only, default `~/.agents/skills`), scanned for `**/SKILL.md`. A managed
+  skill wins over an external one with the same name.
 
-`Raxol.Agent.Skill` parses and renders the format. `Raxol.Agent.Skills.Store` is the warm
-index over the files (a supervised GenServer), and reads from two places:
+Skills are re-read from disk on every boot. Usage counts, lifecycle state (`active`, `stale`,
+`archived`) and pins persist to DETS. Nothing ages skills automatically. A host can do it with
+`set_state/3`, `pin/2`, `archive/2` and `telemetry/1`.
 
-- **Managed root** (writable, default `~/.raxol/skills`): skills the agent or you author
-  here. New skills are written here.
-- **External dirs** (read-only, default `~/.agents/skills`): shared skills, scanned for
-  `**/SKILL.md`. A managed skill wins over an external one of the same name.
-
-Skill content is re-read from disk on every boot, so disk is the source of truth and stale
-content cannot outlive its file. Usage telemetry (`use_count`, `view_count`,
-`last_used_at`, `created_at`, `state`, `pinned`) is persisted to DETS and replayed on boot.
-
-Bring the store up under supervision through app config, and return it from the agent
-module's `skills_provider/0`:
+## Enabling skills on an agent
 
 ```elixir
 config :raxol_agent,
@@ -76,34 +57,31 @@ config :raxol_agent,
   skills_root: "~/.raxol/skills"
 ```
 
-## Authoring from an agent
+```elixir
+defmodule MyAgent do
+  use Raxol.Agent
 
-Three tools let an agent manage its own procedures:
+  def skills_provider, do: Raxol.Agent.Skills.Store
+end
+```
+
+An agent that does not define `available_actions/0` gets the three skill tools from
+`skills_provider/0` alone. The tools read the store from the call context:
+
+```elixir
+Raxol.Agent.Stream.react("which skills do you have?",
+  backend: backend,
+  actions: Raxol.Agent.Actions.Skills.actions(),
+  context: %{skills: Raxol.Agent.Skills.provider_context(MyAgent.skills_provider())}
+)
+```
 
 | Tool | Input | Returns |
-|------|-------|---------|
-| `skills_list` | none | skill metadata only (the cheap disclosure level) |
-| `skill_view` | `name`, optional `path` | the `SKILL.md` body, or one supporting file |
+| --- | --- | --- |
+| `skills_list` | none | metadata only |
+| `skill_view` | `name`, optional `path` | the body, or one supporting file |
 | `skill_manage` | `action` (`create`/`patch`/`edit`/`delete`), `name`, fields | `ok`, `name` |
 
-A supporting-file read through `skill_view` is path-guarded: absolute paths and `..` are
-rejected, so a skill cannot read outside its own directory.
-
-## Lifecycle state
-
-The store records a lifecycle state per skill (`active`, `stale`, `archived`) and a pin.
-`Skills.Store.set_state/3`, `pin/2`, `archive/2` and `telemetry/1` are what a host uses to
-age skills; nothing in Raxol ages them on its own.
-
-## The safety dimension
-
-A tool call made while following a skill is a tool call like any other. An action marked
-`sensitive` is denied unless the context of the call carries a `:tool_authorizer` that
-allows it (see the [Tool Catalog](../reference/TOOL_CATALOG.md#authorization)), on whichever
-[surface](https://github.com/DROOdotFOO/raxol/blob/master/docs/guides/SURFACES.md) the agent is running, so a skill cannot smuggle in a privileged
-action.
-
-## See also
-
-- [Build Your First Agent](../getting-started/BUILD_AN_AGENT.md): enabling the skills store.
-- [Tool Catalog](../reference/TOOL_CATALOG.md): the built-in tools skills can drive.
+`skill_view` rejects absolute paths and `..`, so a skill cannot read outside its directory. A tool
+call made while following a skill is gated like any other: a `sensitive` action is denied
+without a `:tool_authorizer` that allows it.

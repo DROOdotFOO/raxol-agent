@@ -1,30 +1,22 @@
 # Releasing the Hex packages
 
-Three packages of this repository are published to Hex by hand, always in this
-order, because Hex refuses a requirement on a version it does not have:
+Three packages are published to Hex by hand, in this order, because Hex refuses a requirement on
+a version it does not yet have:
 
-1. `raxol_agent_client_protocol` (tag `raxol_agent_client_protocol-v<version>`),
-   which requires no other package of this repository;
-2. `raxol_agent` (tag `raxol_agent-v<version>`), which requires
-   `raxol_agent_client_protocol ~> 0.1.0`;
-3. `raxol_payments` (tag `raxol_payments-v<version>`), which requires
-   `raxol_agent ~> 3.0`.
+1. `raxol_agent_client_protocol` (tag `raxol_agent_client_protocol-v<version>`);
+2. `raxol_agent` (tag `raxol_agent-v<version>`), which requires the protocol package;
+3. `raxol_payments` (tag `raxol_payments-v<version>`), which requires `raxol_agent`.
 
-Publish only the packages whose `@version` the release changes, still in that
-order. This release is `raxol_agent_client_protocol` 0.1.0 (its first publish)
-and `raxol_agent` 3.1.0; `raxol_payments` stays at 0.3.0, which is already on
-Hex, so step 5 is skipped. The runtime packages they require (`raxol`,
-`raxol_core`, `raxol_mcp`, `raxol_journal`, all `~> 2.8`) come from the runtime
-repository and must already be on Hex.
+Publish only the packages whose `@version` changed, in that order. The runtime packages they
+require (`raxol`, `raxol_core`, `raxol_mcp`, `raxol_journal`) come from the runtime repository and
+must already be on Hex.
 
-`HEX_BUILD=1` gives each `mix.exs` its Hex form: sibling packages become Hex
-requirements, and the unpublished `raxol_web3` drops out. Every `mix` command
-below that builds or publishes needs it.
+`HEX_BUILD=1` switches each `mix.exs` to its Hex form: sibling packages become Hex requirements,
+and the unpublished `raxol_web3` is dropped. Every `mix` command below needs it.
 
 ## 1. Check out the release commit
 
-Merge the release pull request first. Then publish from `main` exactly as
-merged:
+Merge the release pull request, then publish from `main` as merged:
 
 ```sh
 git fetch origin
@@ -34,114 +26,59 @@ git status --short    # must print nothing
 
 ## 2. Toolchain
 
-Use the pinned Elixir and Erlang from `mise.toml`, either with `mise exec --`
-in front of every `mix` command or with this environment. Put the install's
-`bin` first in `PATH`; otherwise a Homebrew `mix` runs Hex:
+Use the Elixir and Erlang pinned in `mise.toml`, with the mise install's `bin` first in `PATH`
+(otherwise a Homebrew `mix` runs Hex):
 
 ```sh
-export PATH="$HOME/.local/share/mise/installs/elixir/1.20.2-otp-29/bin:$HOME/.local/share/mise/installs/erlang/29.0.3/bin:$PATH"
-export MIX_HOME="$HOME/.local/share/mise/installs/elixir/1.20.2-otp-29/.mix"
-export MIX_ARCHIVES="$MIX_HOME/archives"
 unset MIX_ENV RAXOL_PATH
 which mix               # the mise path
 mix hex.info            # Hex 2.7.0 or later
-mix hex.user whoami     # the account that owns raxol_agent and raxol_payments; it becomes the owner of raxol_agent_client_protocol on first publish
+mix hex.user whoami     # the account that owns the packages
 ```
 
-## 3. Publish the protocol package
+## 3. Publish each package
+
+For each package, in order, with `<pkg>` and `<version>` filled in:
 
 ```sh
-cd packages/raxol_agent_client_protocol
-cp mix.lock /tmp/raxol_agent_client_protocol.mix.lock
+cd packages/<pkg>
+cp mix.lock /tmp/<pkg>.mix.lock
 HEX_BUILD=1 mix deps.get
 HEX_BUILD=1 mix hex.publish --dry-run
-```
-
-Read the file list it prints: nothing under `priv/` may appear (the schema
-oracle is a dev/test file under the Apache-2.0 licence and never ships). Then:
-
-```sh
-git tag -a raxol_agent_client_protocol-v0.1.0 -m "raxol_agent_client_protocol 0.1.0"
-test "$(git rev-parse HEAD)" = "$(git rev-parse 'raxol_agent_client_protocol-v0.1.0^{commit}')"
-git push origin raxol_agent_client_protocol-v0.1.0
+git tag -a <pkg>-v<version> -m "<pkg> <version>"
+test "$(git rev-parse HEAD)" = "$(git rev-parse '<pkg>-v<version>^{commit}')"
+git push origin <pkg>-v<version>
 HEX_BUILD=1 mix hex.publish --wait
-cp /tmp/raxol_agent_client_protocol.mix.lock mix.lock
+cp /tmp/<pkg>.mix.lock mix.lock
 git status --short      # must print nothing
 cd ../..
 ```
 
-The docs link source files at the tag, so it is pushed first. hex.pm may hold a
-release for approval: the task prints the approval URL; approve it there, and
-`--wait` returns once it is published.
+Check the dry run before tagging:
 
-## 4. Dry run, tag and publish the agent
+- `raxol_agent_client_protocol`: nothing under `priv/` may be listed. The schema oracle is
+  Apache-2.0 and must never ship.
+- `raxol_agent`: every requirement must already be on Hex, and `raxol_agent_client_protocol` must
+  be listed and not optional.
 
-The agent's dry run cannot resolve until the protocol package is published.
-Once `raxol_agent_client_protocol` 0.1.0 shows at
-`https://hex.pm/packages/raxol_agent_client_protocol`:
-
-```sh
-cd packages/raxol_agent
-cp mix.lock /tmp/raxol_agent.mix.lock
-HEX_BUILD=1 mix deps.get
-HEX_BUILD=1 mix hex.publish --dry-run
-```
-
-Read the dependency list it prints: every requirement must already be on Hex,
-optional ones included, and `raxol_agent_client_protocol ~> 0.1.0` must be
-there and not optional. Then:
-
-```sh
-git tag -a raxol_agent-v3.1.0 -m "raxol_agent 3.1.0"
-test "$(git rev-parse HEAD)" = "$(git rev-parse 'raxol_agent-v3.1.0^{commit}')"
-git push origin raxol_agent-v3.1.0
-HEX_BUILD=1 mix hex.publish --wait
-cp /tmp/raxol_agent.mix.lock mix.lock
-git status --short      # must print nothing
-cd ../..
-```
-
-## 5. Dry run, tag and publish payments
-
-Only when the release changes `raxol_payments`' `@version`. Once the
-`raxol_agent` version it requires shows at `https://hex.pm/packages/raxol_agent`,
-with `<version>` the new `@version`:
-
-```sh
-cd packages/raxol_payments
-cp mix.lock /tmp/raxol_payments.mix.lock
-HEX_BUILD=1 mix deps.get
-HEX_BUILD=1 mix hex.publish --dry-run
-git tag -a raxol_payments-v<version> -m "raxol_payments <version>"
-test "$(git rev-parse HEAD)" = "$(git rev-parse 'raxol_payments-v<version>^{commit}')"
-git push origin raxol_payments-v<version>
-HEX_BUILD=1 mix hex.publish --wait
-cp /tmp/raxol_payments.mix.lock mix.lock
-git status --short      # must print nothing
-```
+A package's dry run cannot resolve until the package it requires shows on hex.pm. Push the tag
+before publishing, because the docs link source files at the tag. If hex.pm holds the release for
+approval, approve it at the URL the task prints, and `--wait` returns once the package is
+published.
 
 ## If something fails
 
-- `HEX_BUILD=1 mix deps.get` cannot find a version right after it was
-  published: the registry has not caught up. Wait a minute and run it again.
-- The package published but its docs did not: `HEX_BUILD=1 mix hex.publish docs`.
-- A published version is wrong: `HEX_BUILD=1 mix hex.publish --revert <version>`
-  works within 24 hours of a new package's first publish
-  (`raxol_agent_client_protocol` 0.1.0) and within one hour of a new version of
-  an existing package (`raxol_agent` 3.1.0) (`mix help hex.publish`, Hex 2.7.0).
-  Revert in the reverse order of publishing: reverting
-  `raxol_agent_client_protocol` 0.1.0 after `raxol_agent` 3.1.0 is out breaks
-  `raxol_agent`, so revert the agent first. Once the agent's hour has passed it
-  can no longer be reverted, so do not revert `raxol_agent_client_protocol`
-  0.1.0 either (that would leave `raxol_agent` 3.1.0 unresolvable): publish a
-  fixed 0.1.1 instead.
+- `deps.get` cannot find a version that was just published: the registry has not caught up yet.
+  Wait a minute and retry.
+- The package was published but its docs were not: `HEX_BUILD=1 mix hex.publish docs`.
+- A published version is wrong: `HEX_BUILD=1 mix hex.publish --revert <version>` works within 24
+  hours of a package's first publish, and within one hour of a new version. Revert in the reverse
+  order of publishing. If a dependent can no longer be reverted, publish a fixed patch version of
+  the dependency instead of reverting it.
 
 ## After publishing
 
-- `https://hexdocs.pm/raxol_agent_client_protocol/0.1.0/` and
-  `https://hexdocs.pm/raxol_agent/3.1.0/` load, and a source link on each
-  lands on its tag under `packages/<pkg>/`.
-- In a scratch project, `{:raxol_agent, "~> 3.1"}` with `mix deps.get` and
-  `mix compile` resolves `raxol_agent_client_protocol` 0.1.0 from Hex, and
+- `https://hexdocs.pm/<pkg>/<version>/` loads, and its source links land on the tag.
+- In a scratch project, `{:raxol_agent, "~> <version>"}` resolves from Hex, and
   `mix run --no-start -e 'IO.inspect(Code.ensure_loaded?(Raxol.Agent.ClientProtocol.StdioAgent))'`
   prints `true`.
