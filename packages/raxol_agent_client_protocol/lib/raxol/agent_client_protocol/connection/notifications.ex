@@ -63,7 +63,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
 
   # No reply obligation, so an over-capacity spawn is dropped, not answered.
   defp spawn_notification(
-         %{notif_tasks: n, max_notif: max} = state,
+         %{notif_tasks: n, max_notification_tasks: max} = state,
          method,
          _dispatchable,
          _stamp
@@ -108,12 +108,12 @@ defmodule Raxol.AgentClientProtocol.Connection.Notifications do
       %{adopter: {apid, _mon}, reply_ref: rref} = entry ->
         send(apid, {:acp_reply_cancelled, rref})
 
-        if state.cancel_reply_ms != :infinity,
+        if state.cancel_reply_timeout_ms != :infinity,
           do:
             Process.send_after(
               self(),
               {:cancel_reply_timeout, cancel_id, rref},
-              state.cancel_reply_ms
+              state.cancel_reply_timeout_ms
             )
 
         {:noreply, put_in(state.pending_in[cancel_id], %{entry | cancelled?: true})}

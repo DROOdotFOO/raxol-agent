@@ -46,4 +46,13 @@ defmodule Raxol.AgentClientProtocol.Client.SubscriptionsTest do
     :ok = Client.subscribe(sleeper(), "s")
     assert Subscriptions.start_link() == :ignore
   end
+
+  test "unsubscribing the last registration releases the monitor" do
+    conn = sleeper()
+    :ok = Client.subscribe(conn, "s")
+    :ok = Client.unsubscribe(conn, "s")
+    monitored = :sys.get_state(Subscriptions).monitored
+    refute Map.has_key?(monitored, self())
+    refute Map.has_key?(monitored, conn)
+  end
 end

@@ -57,7 +57,7 @@ the two new method-parity rows I18/I19 (see their entries). Moduledoc: the
 | I12 | Busy-prompt isolation: a second prompt on a prompting session errors; the first is undisturbed. | `session_test.exs:520` |
 | I13 | Backstop: a runner that ignores `:acp_cancel` still resolves cancelled via kill; a stale backstop (wrong `turn_ref`) never touches the live turn. | `session_test.exs:543` |
 | I14 | No atom is created from session data: `session_id` churn does not grow the atom table. | `session_test.exs:658` |
-| I15 | Two sessions on one connection are independent: each session's updates precede its OWN response; turns don't interfere. | `session_test.exs:792` |
+| I15 | Two sessions on one connection are independent: each session's updates precede its OWN response; turns don't interfere. | `session_test.exs:787` |
 | I16 | Wire-order commutation: a prompt wire-ordered before a latched cancel is born-cancelled; one ordered after (higher `rx_seq`) runs unaffected. | `session_test.exs:397` |
 | I17 | `$/cancel_request` on the prompt id: the drain still calls `reply/3`, and that `cancelled` reply is the id's one response (S7). | `session_test.exs:691` |
 | I18 | `session/resume` gates fail-closed on `session_capabilities.resume` AND dispatches (decode → `resume_session/2`). Capability-parity + dispatch-parity for the resume method. | gate: `capabilities_test.exs` describe `"I18 session/resume gates ..."`; dispatch: `router_test.exs` describe `"I18 session/resume decode + dispatch"` |
@@ -82,16 +82,16 @@ Home: `test/connection_test.exs`, `describe "invariants"`. Moduledoc: the
 | Inv-7 | No atom is created from wire input (unknown methods, notifications, session ids). | `connection_test.exs:711` |
 | Inv-8 | A handler calling `Connection.request/4` back into the same Connection completes promptly (no self-deadlock). | `connection_test.exs:752` |
 | Inv-9 | `conn == self()` raises `ArgumentError` on every public API function. | `connection_test.exs:778` |
-| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:792`, `:814` |
+| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:792`, `:815` |
 | Inv-11 | `caps` is written exactly once at handshake and never mutated after. | `connection_test.exs:835` |
-| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent). | `connection_test.exs:877` |
+| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent: the transport is gone, so nothing can be answered). | `connection_test.exs:877` |
 | Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_test.exs:909` |
 | Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_test.exs:941` |
 | Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1021` |
 | Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1055` |
 | Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1068` |
 | Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1102` |
-| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings. | `connection_test.exs:1120` |
+| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings; a reply after a cancel is the id's one frame. | `connection_test.exs:1120` |
 | Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1161` |
 | Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1194` |
 

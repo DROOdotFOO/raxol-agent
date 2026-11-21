@@ -68,12 +68,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
             handler_state: nil,
             task_sup: nil,
             max_in: @default_max_inbound,
-            max_notif: @default_max_notification_tasks,
+            max_notification_tasks: @default_max_notification_tasks,
             notif_tasks: 0,
             close_drain_ms: @default_close_drain_ms,
             draining?: false,
-            cancel_reply_ms: @default_cancel_reply_timeout_ms,
-            expired: %{},
+            cancel_reply_timeout_ms: @default_cancel_reply_timeout_ms,
+            timed_out_adopters: %{},
             turns: %{},
             turn_ids: %{},
             oot_seq: %{}
@@ -103,12 +103,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
           handler_state: term(),
           task_sup: GenServer.server() | nil,
           max_in: pos_integer(),
-          max_notif: pos_integer(),
+          max_notification_tasks: pos_integer(),
           notif_tasks: non_neg_integer(),
           close_drain_ms: pos_integer() | :infinity,
           draining?: boolean(),
-          cancel_reply_ms: pos_integer() | :infinity,
-          expired: %{reference() => reference()},
+          cancel_reply_timeout_ms: pos_integer() | :infinity,
+          timed_out_adopters: %{reference() => reference()},
           turns: %{String.t() => TurnState.t()},
           turn_ids: map(),
           oot_seq: %{String.t() => non_neg_integer()}
@@ -181,10 +181,12 @@ defmodule Raxol.AgentClientProtocol.Connection do
   @doc """
   Transfers an inbound request's reply obligation to `adopter`, which the
   Connection then monitors. Must return before the handler returns `:deferred`.
-  Returns `{:error, :cancelled}` when the peer already cancelled the request.
-  If the peer cancels later, the adopter receives `{:acp_reply_cancelled, reply_ref}`
-  and must still call `reply/3` (its reply is sent) or exit, which answers -32800;
-  until then the request holds an inbound slot.
+  Returns `{:error, :unknown_ref}` once the peer has cancelled (and the
+  Connection answered) an undelegated request, and `{:error, :cancelled}` for a
+  request already delegated and cancelled. If the peer cancels after delegation,
+  the adopter receives `{:acp_reply_cancelled, reply_ref}` and should reply (its
+  reply is sent) or exit (-32800 is sent); after `:cancel_reply_timeout_ms` the
+  request is answered -32800 and later replies are ignored.
   """
   @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref | :cancelled}
   def delegate_reply(conn, reply_ref, adopter)
@@ -193,9 +195,11 @@ defmodule Raxol.AgentClientProtocol.Connection do
   end
 
   @doc """
-  Discharges a delegated reply. An unknown, consumed or cancelled `reply_ref` is
-  a no-op that emits `[:raxol, :acp, :dup_reply]`. A malformed result is
-  answered `-32603`; extension methods may reply with a plain map.
+  Discharges a delegated reply. An unknown or consumed `reply_ref` is a no-op
+  that emits `[:raxol, :acp, :dup_reply]`. A reply after a cancel is sent, unless
+  `:cancel_reply_timeout_ms` already answered -32800, in which case it is a quiet
+  no-op. A malformed result is answered `-32603`; extension methods may reply
+  with a plain map.
   """
   @spec reply(pid(), reference(), {:ok, map()} | {:error, Error.t()}) :: :ok
   def reply(conn, reply_ref, result_or_error) when is_pid(conn) and is_reference(reply_ref) do
@@ -235,10 +239,10 @@ defmodule Raxol.AgentClientProtocol.Connection do
     handler = Keyword.fetch!(opts, :handler)
 
     with {:ok, max_in} <- positive_option(opts, :max_inbound, @default_max_inbound),
-         {:ok, max_notif} <-
+         {:ok, max_notification_tasks} <-
            positive_option(opts, :max_notification_tasks, @default_max_notification_tasks),
          {:ok, close_drain_ms} <- timeout_option(opts, :close_drain_ms, @default_close_drain_ms),
-         {:ok, cancel_reply_ms} <-
+         {:ok, cancel_reply_timeout_ms} <-
            timeout_option(opts, :cancel_reply_timeout_ms, @default_cancel_reply_timeout_ms),
          {:ok, handler_state} <- init_handler(handler, Keyword.get(opts, :handler_arg)) do
       {mod, handle} = Keyword.fetch!(opts, :transport)
@@ -253,9 +257,9 @@ defmodule Raxol.AgentClientProtocol.Connection do
         handler: handler,
         handler_state: handler_state,
         max_in: max_in,
-        max_notif: max_notif,
+        max_notification_tasks: max_notification_tasks,
         close_drain_ms: close_drain_ms,
-        cancel_reply_ms: cancel_reply_ms
+        cancel_reply_timeout_ms: cancel_reply_timeout_ms
       }
 
       {:ok, state, {:continue, :boot}}
@@ -264,17 +268,15 @@ defmodule Raxol.AgentClientProtocol.Connection do
 
   # A non-integer cap would compare greater than any count and silently
   # disable its guard, so it is refused.
-  defp positive_option(opts, key, default) do
-    case Keyword.get(opts, key, default) do
-      n when is_integer(n) and n > 0 -> {:ok, n}
-      other -> {:stop, {:invalid_option, key, other}}
-    end
-  end
+  defp positive_option(opts, key, default), do: positive(key, Keyword.get(opts, key, default))
+
+  defp positive(_key, n) when is_integer(n) and n > 0, do: {:ok, n}
+  defp positive(key, other), do: {:stop, {:invalid_option, key, other}}
 
   defp timeout_option(opts, key, default) do
     case Keyword.get(opts, key, default) do
       :infinity -> {:ok, :infinity}
-      other -> positive_option([{key, other}], key, nil)
+      other -> positive(key, other)
     end
   end
 

@@ -3,8 +3,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   # Inbound frame classification, request dispatch, and the reply obligations
   # handler tasks (or their adopters) discharge.
   #
-  # At most one response frame is sent per inbound id: exactly one, unless the
-  # peer cancelled it with `$/cancel_request` (then none). Malformed frames
+  # Exactly one response frame is sent per inbound id; a cancelled request is
+  # answered -32800, or by its adopter's reply when delegated. Malformed frames
   # never tear the connection down.
 
   require Logger
@@ -358,9 +358,12 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
     })
   end
 
-  defp adopter_down(%{expired: expired} = state, mon_ref) when is_map_key(expired, mon_ref) do
+  defp adopter_down(%{timed_out_adopters: expired} = state, mon_ref)
+       when is_map_key(expired, mon_ref) do
     {rref, expired} = Map.pop(expired, mon_ref)
-    {:noreply, %{state | expired: expired, reply_refs: Map.delete(state.reply_refs, rref)}}
+
+    {:noreply,
+     %{state | timed_out_adopters: expired, reply_refs: Map.delete(state.reply_refs, rref)}}
   end
 
   defp adopter_down(state, mon_ref) do
@@ -398,7 +401,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
       nil ->
         {:error, :unknown_ref}
 
-      :expired ->
+      {:expired, _mon} ->
         {:error, :cancelled}
 
       id ->
@@ -428,8 +431,8 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         state = %{
           state
           | pending_in: Map.delete(state.pending_in, id),
-            reply_refs: Map.put(state.reply_refs, reply_ref, :expired),
-            expired: Map.put(state.expired, mon, reply_ref)
+            reply_refs: Map.put(state.reply_refs, reply_ref, {:expired, mon}),
+            timed_out_adopters: Map.put(state.timed_out_adopters, mon, reply_ref)
         }
 
         Link.emit(state, Wire.response(id, {:error, Error.request_cancelled()}))
@@ -449,10 +452,15 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
         {:reply, :ok, state}
 
       # Too late: the cancelled request was already answered -32800.
-      {:expired, reply_refs} ->
-        {mon, _rref} = Enum.find(state.expired, fn {_mon, rref} -> rref == reply_ref end)
+      {{:expired, mon}, reply_refs} ->
         Process.demonitor(mon, [:flush])
-        {:reply, :ok, %{state | reply_refs: reply_refs, expired: Map.delete(state.expired, mon)}}
+
+        {:reply, :ok,
+         %{
+           state
+           | reply_refs: reply_refs,
+             timed_out_adopters: Map.delete(state.timed_out_adopters, mon)
+         }}
 
       {id, reply_refs} ->
         {entry, pending_in} = Map.pop(state.pending_in, id)

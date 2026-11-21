@@ -2123,10 +2123,22 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert %{"id" => 60, "error" => %{"code" => -32_800}} = ScriptedPeer.recv(peer)
       assert :sys.get_state(conn).pending_in == %{}
 
-      # A late reply is a quiet no-op (no dup_reply, no second frame).
+      assert map_size(:sys.get_state(conn).timed_out_adopters) == 1
+
+      # A late reply is a quiet no-op: no dup_reply, no second frame.
+      :telemetry.attach(
+        "late-reply",
+        [:raxol, :acp, :dup_reply],
+        &__MODULE__.forward_telemetry/4,
+        self()
+      )
+
+      on_exit(fn -> :telemetry.detach("late-reply") end)
+
       :ok = Connection.reply(conn, ctx.reply_ref, {:ok, PromptResponse.new(:cancelled)})
       ScriptedPeer.assert_no_frame(peer, 150)
-      assert :sys.get_state(conn).expired == %{}
+      refute_receive {:telemetry, [:raxol, :acp, :dup_reply], _}
+      assert :sys.get_state(conn).timed_out_adopters == %{}
     end
 
     test "the tombstone is dropped when the silent adopter exits" do
@@ -2163,7 +2175,10 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       send(adopter, :stop)
 
       wait_until(fn ->
-        match?(%{expired: e, reply_refs: r} when e == %{} and r == %{}, :sys.get_state(conn))
+        match?(
+          %{timed_out_adopters: e, reply_refs: r} when e == %{} and r == %{},
+          :sys.get_state(conn)
+        )
       end)
 
       ScriptedPeer.assert_no_frame(peer, 100)
@@ -2173,15 +2188,37 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       Process.flag(:trap_exit, true)
       {conn_handle, _peer} = ScriptedPeer.new()
 
-      assert {:error, {:invalid_option, :cancel_reply_timeout_ms, -1}} =
+      for bad <- [-1, 0, nil, "5s"] do
+        assert {:error, {:invalid_option, :cancel_reply_timeout_ms, ^bad}} =
+                 Connection.start_link(
+                   role: :agent,
+                   transport: {Paired, conn_handle},
+                   handler: ScriptAgent,
+                   handler_arg: self(),
+                   task_sup: self(),
+                   cancel_reply_timeout_ms: bad
+                 )
+      end
+    end
+
+    test ":infinity is accepted for both timeout options" do
+      {conn_handle, _peer} = ScriptedPeer.new()
+
+      assert {:ok, conn} =
                Connection.start_link(
                  role: :agent,
                  transport: {Paired, conn_handle},
                  handler: ScriptAgent,
                  handler_arg: self(),
                  task_sup: self(),
-                 cancel_reply_timeout_ms: -1
+                 close_drain_ms: :infinity,
+                 cancel_reply_timeout_ms: :infinity
                )
+
+      assert %{close_drain_ms: :infinity, cancel_reply_timeout_ms: :infinity} =
+               :sys.get_state(conn)
+
+      :ok = Connection.close(conn)
     end
   end
 

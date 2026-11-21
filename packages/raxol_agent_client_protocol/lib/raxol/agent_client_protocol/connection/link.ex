@@ -84,7 +84,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
     Enum.each(state.pending_in, fn {_id, entry} -> stop_inbound(state, entry) end)
 
     if state.transport_monitor, do: Process.demonitor(state.transport_monitor, [:flush])
-    Enum.each(state.expired, fn {mon, _rref} -> Process.demonitor(mon, [:flush]) end)
+    Enum.each(state.timed_out_adopters, fn {mon, _rref} -> Process.demonitor(mon, [:flush]) end)
 
     Turns.reset(%{
       state
@@ -94,7 +94,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Link do
         task_index: %{},
         notif_tasks: 0,
         reply_refs: %{},
-        expired: %{},
+        timed_out_adopters: %{},
         phase: :closed
     })
   end

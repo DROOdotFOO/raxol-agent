@@ -60,9 +60,9 @@ defmodule Raxol.AgentClientProtocol.Client.Subscriptions do
     {:reply, :ok, state |> monitor(pid) |> monitor(conn)}
   end
 
-  def handle_call({:unsubscribe, key, pid}, _from, state) do
+  def handle_call({:unsubscribe, {conn, _sid} = key, pid}, _from, state) do
     :ets.delete_object(@table, {key, pid})
-    {:reply, :ok, state}
+    {:reply, :ok, state |> release(pid) |> release(conn)}
   end
 
   # A dead process is pruned both as a subscriber and as a connection.
@@ -74,6 +74,21 @@ defmodule Raxol.AgentClientProtocol.Client.Subscriptions do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Drops the monitor once a process neither subscribes nor hosts subscriptions.
+  defp release(state, pid) do
+    in_use? =
+      :ets.match(@table, {:_, pid}) != [] or :ets.match(@table, {{pid, :_}, :_}) != []
+
+    case Map.pop(state.monitored, pid) do
+      {ref, monitored} when is_reference(ref) and not in_use? ->
+        Process.demonitor(ref, [:flush])
+        %{state | monitored: monitored}
+
+      _other ->
+        state
+    end
+  end
 
   defp monitor(state, pid) when is_map_key(state.monitored, pid), do: state
   defp monitor(state, pid), do: put_in(state.monitored[pid], Process.monitor(pid))
