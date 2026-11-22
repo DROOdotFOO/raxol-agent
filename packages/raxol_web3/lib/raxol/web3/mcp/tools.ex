@@ -23,10 +23,9 @@ defmodule Raxol.Web3.MCP.Tools do
 
   ## Why thirteen tools and not one
 
-  The survey's own finding is that 268 pass-through tools from two servers
-  consume a large share of a context window, and that Helius reached ten router
-  tools for all of Solana instead. Thirteen typed tools is the normalized
-  contract that finding argues for: each one names its arguments, so a model
+  268 pass-through tools from two servers consume a large share of a context
+  window, and Helius covers all of Solana with ten router tools. Thirteen
+  typed tools is the normalized contract that argues for: each one names its arguments, so a model
   does not have to be told the shape of an untyped `params` map in prose. The
   agent Action surface makes the opposite trade for the opposite reason, and
   `Raxol.Agent.Actions.Web3` says why.

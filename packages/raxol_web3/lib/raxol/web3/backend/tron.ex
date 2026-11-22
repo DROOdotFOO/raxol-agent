@@ -2,13 +2,9 @@ defmodule Raxol.Web3.Backend.Tron do
   @moduledoc """
   The Tron backend, over three MCP upstreams with three different session models.
 
-  ADR-0033 decision 3 and ADR-0039 for the contract, ADR-0037 for the client
-  that reaches a stateful MCP origin. Every figure below was measured on
-  2026-09-14 unless it says otherwise, and the ones that are guesses say so.
-
-  Tron matters more here than its position in the survey suggests: ADR-0033's
-  motivating case is an FX venue, and Tron carries a disproportionate share of
-  the stablecoin supply that venue settles in.
+  ADR-0033 decision 3 and ADR-0039 for the contract; `Raxol.MCP.Client` reaches
+  the stateful MCP origins. Every figure below was measured on 2026-09-14
+  unless it says otherwise, and the ones that are guesses say so.
 
   ## Three sources, three session models, one contract
 
@@ -19,7 +15,7 @@ defmodule Raxol.Web3.Backend.Tron do
   | TronScan (`mcp.tronscan.org/mcp`) | legacy, `mcp-session-id` | `:serialized` | 119 |
 
   The concurrency policy is passed to `Raxol.MCP.Client` rather than
-  reimplemented here (ADR-0037 decision 6). TronScan is the reason the policy
+  reimplemented here. TronScan is the reason the policy
   exists: two parallel calls on one session answered 500 for both, reproducibly,
   while sequential calls immediately after succeeded and the session survived.
 
@@ -299,8 +295,6 @@ defmodule Raxol.Web3.Backend.Tron do
   def health_key(%__MODULE__{source: :sqd} = state), do: {:origin, origin_id(state)}
   def health_key(%__MODULE__{} = state), do: {:origin, Era.origin(uri(state))}
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{source: :sqd} = state) do
     with {:ok, body} <- call(state, "portal_get_network_info", network(state), :chain_stats),
@@ -392,8 +386,6 @@ defmodule Raxol.Web3.Backend.Tron do
        }}
     end
   end
-
-  # -- optional ----------------------------------------------------------------
 
   @impl Backend
   def get_transaction(%__MODULE__{source: :trongrid} = state, hash) when is_binary(hash) do
@@ -529,8 +521,6 @@ defmodule Raxol.Web3.Backend.Tron do
     end
   end
 
-  # -- the outbound path -------------------------------------------------------
-
   # `class` names the cache class, or `nil` for a request that must not be
   # cached. The key fragment is built from the tool name and the argument map
   # this module composed, never from an assembled URI, so a credential cannot
@@ -619,16 +609,8 @@ defmodule Raxol.Web3.Backend.Tron do
   # SQD announces a refusal as a nested object with a machine-readable code,
   # and it puts that object in both places a tool result can carry one: an
   # `isError: true` result, and a plain result whose payload is the object.
-  # The code is read in both arms because it is the same refusal in both,
-  # and reading one arm only was the bug: both RECORDED refusals from this
-  # source carry `isError: true`, so every one of them collapsed to
-  # `{:upstream_refused, :unknown}` and became final.
-  #
-  # The reading itself is `Raxol.Web3.Backend.SQD`'s rather than this
-  # module's, because `Raxol.Web3.Backend.Solana` reads the same endpoint and
-  # the two copies of this had already disagreed twice: once about
-  # `unknown_network` and once about which arm carries the object. One
-  # endpoint, one reading.
+  # Both arms are read, and the reading is `Raxol.Web3.Backend.SQD`'s so that
+  # this backend and `Raxol.Web3.Backend.Solana` classify the endpoint alike.
   defp sqd_result(state, payload) do
     case SQD.refusal(payload, network_name(state)) do
       nil -> Errors.payload_result(payload)
@@ -653,8 +635,6 @@ defmodule Raxol.Web3.Backend.Tron do
   # was answered about something else is a misconfiguration worth failing on.
   defp confirm_network(%{"vm" => "tron", "network_type" => "mainnet"}), do: :ok
   defp confirm_network(_body), do: {:error, {:decode_failed, :network_identity}}
-
-  # -- pagination --------------------------------------------------------------
 
   # TronGrid pages on an opaque `fingerprint`. `meta.links.next` is a full
   # upstream URL carrying that fingerprint, and it is read only as the signal
@@ -722,10 +702,6 @@ defmodule Raxol.Web3.Backend.Tron do
     end
   end
 
-  # -- normalization -----------------------------------------------------------
-
-  # -- reading the upstream shapes ---------------------------------------------
-
   defp sample_block(state, height) when height > 0 do
     call(state, "getBlock", %{"detail" => false, "id_or_num" => to_string(height)}, :block)
   end
@@ -741,8 +717,6 @@ defmodule Raxol.Web3.Backend.Tron do
     end
   end
 
-  # -- the account reference ---------------------------------------------------
-
   defp client(%{stateful?: false}, _opts), do: {:ok, nil}
 
   defp client(%{stateful?: true}, opts) do
@@ -751,6 +725,4 @@ defmodule Raxol.Web3.Backend.Tron do
       client -> {:ok, client}
     end
   end
-
-  # -- scalars -----------------------------------------------------------------
 end

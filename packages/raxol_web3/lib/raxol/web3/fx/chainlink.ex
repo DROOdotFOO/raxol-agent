@@ -333,8 +333,6 @@ defmodule Raxol.Web3.FX.Chainlink do
   defp now(%__MODULE__{now: nil}), do: System.os_time(:second)
   defp now(%__MODULE__{now: now}), do: now.()
 
-  # -- ABI -----------------------------------------------------------------------
-
   @doc false
   # `latestRoundData()` returns five 32-byte words: roundId, answer (int256),
   # startedAt, updatedAt, answeredInRound.

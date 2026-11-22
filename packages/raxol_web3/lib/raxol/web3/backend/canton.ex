@@ -8,12 +8,10 @@ defmodule Raxol.Web3.Backend.Canton do
   an after-cursor, which is a fourth scheme beside Blockscout's keyset, a
   `start`/`limit` ceiling and a signature cursor.
 
-  ## The keyless story, corrected 2026-09-14
+  ## What answers without a credential
 
-  ADR-0033 and the upstream survey both record that Canton has **no fully
-  keyless path**, and call that a first for this package. Measured on
-  2026-09-14, that is too pessimistic, and the correction is large enough to
-  change which source answers what:
+  Measured 2026-09-14, every read this backend declares except `raw_request/2`
+  answers keyless:
 
     * `GET /v0/round-of-latest-data` answers 200 with no credential, carrying
       `{"round": 113141, "effectiveAt": "2026-09-14T10:39:37Z"}`.
@@ -25,9 +23,7 @@ defmodule Raxol.Web3.Backend.Canton do
       reads are keyless too and not only the two required callbacks.
     * `GET /v0/updates/{update_id}` answers 200 with no credential.
 
-  So every callback this backend declares except `raw_request/2` answers without
-  a credential, and the ccscan account is needed only for the passthrough. The
-  survey's "there is no fully keyless path" line needs amending.
+  The ccscan account is needed only for the passthrough.
 
   Two path guesses from the Splice specification were wrong on the same host,
   which is why the table below is probe-derived rather than ported:
@@ -146,7 +142,7 @@ defmodule Raxol.Web3.Backend.Canton do
 
   ## `list_transactions/3` is not declared, and that is a measurement
 
-  No surveyed source lists transactions by party. `POST /v0/transactions`
+  No probed source lists transactions by party. `POST /v0/transactions`
   answers 200 keyless and is chain-wide, taking only `page_end_event_id`,
   `sort_order` and `page_size`; `POST /v0/updates` is chain-wide too; and
   ccscan's `get_transactions` takes only a `limit`. `get_transaction/2` is
@@ -367,8 +363,6 @@ defmodule Raxol.Web3.Backend.Canton do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, Paging.origin_id(state.scan_url)}
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
     with {:ok, body} <- Scan.dso(state) do
@@ -401,8 +395,6 @@ defmodule Raxol.Web3.Backend.Canton do
        }}
     end
   end
-
-  # -- optional ----------------------------------------------------------------
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, update_id) when is_binary(update_id) do
@@ -456,10 +448,6 @@ defmodule Raxol.Web3.Backend.Canton do
 
   def raw_request(%__MODULE__{}, _call), do: {:error, {:unsupported, :raw_request}}
 
-  # -- the outbound path -------------------------------------------------------
-
-  # -- ccscan ------------------------------------------------------------------
-
   # The credential is composed into a header here, per call, and nowhere else.
   # It is not in the cache options, because `raw_request/2` is not cached, and
   # it is not in any error term, because none of them carries a header.
@@ -504,8 +492,6 @@ defmodule Raxol.Web3.Backend.Canton do
       (is_binary(value) or is_number(value) or is_boolean(value))
   end
 
-  # -- the DSO reference read --------------------------------------------------
-
   defp tick_duration_ms(body) do
     case dig(body, ["latest_mining_round", "contract", "payload", "tickDuration"]) do
       %{"microseconds" => micros} -> div_or_nil(int(micros), 1000)
@@ -515,12 +501,6 @@ defmodule Raxol.Web3.Backend.Canton do
 
   defp div_or_nil(nil, _divisor), do: nil
   defp div_or_nil(value, divisor), do: div(value, divisor)
-
-  # -- the ACS snapshot a party-scoped read is taken against -------------------
-
-  # -- holdings pagination -----------------------------------------------------
-
-  # -- normalization -----------------------------------------------------------
 
   defp account(party, body) do
     summary = body |> field("summaries") |> rows_of() |> List.first()

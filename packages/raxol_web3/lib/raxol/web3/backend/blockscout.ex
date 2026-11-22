@@ -184,8 +184,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
 
   defp origin_id(state), do: Paging.origin_id("https://#{state.host}/")
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
     with {:ok, body} <- get(state, "/api/v2/stats", %{}, :chain_stats),
@@ -272,8 +270,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
     end
   end
 
-  # -- optional ----------------------------------------------------------------
-
   @impl Backend
   def get_block(%__MODULE__{} = state, number) do
     with {:ok, body} <- get(state, "/api/v2/blocks/#{segment(number)}", %{}, :block),
@@ -353,8 +349,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
     RPC.eth_call(url, call, Map.get(call, :block, "latest"), state.http_opts)
   end
 
-  # -- the outbound path -------------------------------------------------------
-
   # `class` names the cache class, or `nil` for a request that must not be
   # cached. The key fragment is built here, from the endpoint's own path and
   # its own query map, and never from the assembled URI: that is what keeps a
@@ -398,8 +392,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
        }}
     end
   end
-
-  # -- normalization -----------------------------------------------------------
 
   defp transaction(item) when is_map(item) do
     fee = item |> field("fee") |> object()

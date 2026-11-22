@@ -209,8 +209,6 @@ defmodule Raxol.Web3.Backend.TronTest do
     envelope |> Map.put("result", changed_result) |> Jason.encode!()
   end
 
-  # -- handles -----------------------------------------------------------------
-
   defp stateful(source, routes, opts \\ []) do
     eras = :ets.new(:eras, [:public, :set])
     breakers = Keyword.get_lazy(opts, :breakers, fn -> :ets.new(:breakers, [:public, :set]) end)
@@ -290,8 +288,6 @@ defmodule Raxol.Web3.Backend.TronTest do
     end
   end
 
-  # -- the height fixtures, shared by several describes ------------------------
-
   defp trongrid_height_routes do
     %{
       "getBlock" => "trongrid_block.sse",
@@ -335,7 +331,7 @@ defmodule Raxol.Web3.Backend.TronTest do
     test "a stateful source refuses to build a handle without a client" do
       # The alternative would be a handle that looks usable and fails on first
       # read, and there is no honest default: this module opens no socket of
-      # its own and ADR-0037's client is the only sanctioned path to a session.
+      # its own and `Raxol.MCP.Client` is the only sanctioned path to a session.
       assert {:error, :client_required} = Tron.new(:trongrid)
       assert {:error, :client_required} = Tron.new(:tronscan)
       assert {:ok, _handle} = Tron.new(:sqd)

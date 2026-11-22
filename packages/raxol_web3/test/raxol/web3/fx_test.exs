@@ -29,8 +29,6 @@ defmodule Raxol.Web3.FXTest do
     ]
   end
 
-  # -- Sleuth --------------------------------------------------------------------
-
   defp sleuth(routes) do
     exchange = fn _vetted, request, _opts ->
       send(self(), {:request, request})
@@ -340,7 +338,7 @@ defmodule Raxol.Web3.FXTest do
               Enum.map_join(1..100, ",", fn _ -> ~s({"assets":[#{empties.(300)}]}) end) <> "]}"
         })
 
-      # 262 KB of `{}` used to decode to 87,000 assets and a 32 MB tool result.
+      # 262 KB of `{}` must not decode to 87,000 assets and a 32 MB tool result.
       assert {:ok, %{assets: assets, sleuth_fx_rates_usd: fx}} = Sleuth.stables(s)
       assert length(assets) == 300
       assert {:ok, %{assets: five}} = Sleuth.stables(s, limit: 5)
@@ -522,8 +520,6 @@ defmodule Raxol.Web3.FXTest do
       assert {"authorization", "Bearer " <> @key} in request.headers
     end
   end
-
-  # -- Chainlink -----------------------------------------------------------------
 
   @feeds ~w(eur_usd_base eur_usd_ethereum chf_usd_ethereum sequencer_base)
 
@@ -855,8 +851,6 @@ defmodule Raxol.Web3.FXTest do
       assert_received {:eth_call, "/base", @base_eur, "0xfeaf968c"}
     end
   end
-
-  # -- Quality -------------------------------------------------------------------
 
   defp asset(fields),
     do:

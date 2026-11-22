@@ -171,7 +171,7 @@ defmodule Raxol.Web3.Backend.CantonTest do
     end
 
     test "every read this chain cannot be asked is absent, not an empty page" do
-      # `list_transactions/3` because no surveyed source lists by party;
+      # `list_transactions/3` because no probed source lists by party;
       # `resolve_name/2` because the CNS directory answered empty for every
       # prefix probed; the rest because Canton has no EVM call, no contract at a
       # party, no logs and no NFT standard on this surface.
@@ -205,9 +205,7 @@ defmodule Raxol.Web3.Backend.CantonTest do
 
   describe "the required callbacks, keyless" do
     test "both answer with no credential configured, from the keyless scan host" do
-      # This is the corrected finding. ADR-0033 and the survey both say Canton
-      # has no fully keyless path; measured 2026-09-14 it has one, and these two
-      # callbacks are on it. A test rather than a comment claiming it.
+      # Measured 2026-09-14: both required callbacks answer keyless.
       handle = handle(scan_routes())
 
       assert state(handle).ccscan_key == nil
@@ -867,7 +865,7 @@ defmodule Raxol.Web3.Backend.CantonTest do
 
     @tag :live_web3
     @tag timeout: 300_000
-    test "the two required callbacks answer keyless, which is the corrected finding" do
+    test "the two required callbacks answer keyless" do
       {:ok, handle} = Canton.new("canton:global", live())
 
       assert {:ok, info} = paced(fn -> Backend.call(handle, :chain_info) end)

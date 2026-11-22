@@ -2,178 +2,58 @@ defmodule Raxol.Web3.Backend.Aztec do
   @moduledoc """
   The Aztec backend, against the Aztecscan (`chicmoz`) REST surface.
 
-  **Public state only.** Aztec's private state is notes, and a note is
-  unobservable by construction rather than by an indexer's choice. That is a
-  property of the chain and not of this source, so it bounds what any Aztec
-  backend can ever declare: every read below answers a question about the
-  public half, and the questions that need the private half are absent from
-  `capabilities/1` rather than answered emptily. ADR-0039 decision 3 is what
-  makes absence the answer, and `Raxol.Web3.Router.coverage/2` is what makes it
-  legible to an operator instead of surfacing as an error per call.
+  **Public state only.** Aztec's private state is notes, unobservable by
+  construction, so every read here answers about the public half and anything
+  that needs the private half is absent from `capabilities/1` (ADR-0039
+  decision 3) rather than answered emptily. Paths were probed on 2026-09-14
+  and the shapes are pinned by fixtures in `test/fixtures/aztec`; the
+  responses are unspecified upstream, so re-probe on upgrade.
 
-  Every path named here was probed on 2026-09-14 and the shapes are pinned by
-  recorded responses in `test/fixtures/aztec`. The route table itself is
-  published (`chicmoz` is Apache-2.0), but the responses are not specified
-  anywhere, so the mapping is probe-derived and has to be re-probed on upgrade
-  rather than read.
+  ## A temporary path, and what revocation looks like
 
-  ## The primary path is named temporary, so assume revocation
+  The default source is `https://api.aztecscan.xyz/v1/temporary-api-key`, a
+  path segment that may be withdrawn. A withdrawn prefix answers 404, which
+  `Raxol.Web3.HTTP` records as breaker success, so the failover comes from
+  classification instead:
 
-  `@sources` carries `https://api.aztecscan.xyz/v1/temporary-api-key` as data
-  with a dated comment, exactly as `Raxol.Web3.Backend.Blockscout`'s
-  chain-to-host table does. The path segment that stands where an API key would
-  stand is literally named `temporary-api-key`, so the interesting question is
-  not whether it is withdrawn but what happens on the day it is.
+    * a 404 on a parameterless endpoint (`/l2/info`, `/l2/tips`,
+      `/l2/stats/*`) is the source gone: `{:source_unavailable, :endpoint}`,
+      which fails over;
+    * a 404 on an addressed endpoint (block, transaction, contract instance)
+      is an answer: `{:upstream_refused, :not_found}`, which does not.
 
-  What happens is a handled failure rather than a predicted one. Measured
-  2026-09-14 by substituting a bogus key segment, a withdrawn prefix answers
-  **404 `text/plain`** from the edge, not 403. That matters twice:
-  `Raxol.Web3.HTTP` records a 404 as breaker *success*, because a definitive
-  answer about a missing thing is a healthy upstream, so health alone would
-  never fail a revoked prefix over. Classification is what does it, and the
-  classification is structural rather than textual:
+  A 403 stays `{:http, 403}`. The fallback is a self-hosted `chicmoz` passed
+  as `:base_url`; `chain_info/1` refuses an instance whose `l2NetworkId` is
+  not this handle's network. `backend/1` reads `:aztecscan` on the temporary
+  path and `:chicmoz` otherwise, judged from the resolved URL.
 
-    * A 404 on a **parameterless** endpoint (`/l2/info`, `/l2/tips`,
-      `/l2/stats/*`) cannot mean "that resource is absent", because there is no
-      parameter for it to be absent for. Every endpoint under a withdrawn
-      prefix answers 404, so a 404 here is this source having gone away under
-      us: `{:source_unavailable, :endpoint}`, which fails over. Not
-      `{:upstream_refused, :auth}`, which is what it was: that reason means
-      "this deployment does not hold the credential" everywhere else, and a
-      withdrawn URL prefix is not a credential anyone can hand us.
-    * A 404 on an **addressed** endpoint (a block, a transaction hash, a
-      contract instance) is an answer: `{:upstream_refused, :not_found}`, which
-      must not fail over, because the fallback would answer the same.
+  ## Heights
 
-  A 403 is left as `{:http, 403}` rather than reclassified. It is already in
-  the router's failover set and already records a breaker failure, and
-  relabelling it would take both of those away from the one response shape that
-  has them.
+  The unit is `:block`: blocks carry both a block number and a slot number,
+  and slots skip. `block_height/1` takes `height` and `finalized_height` from
+  one `l2/tips` response, so the pair is from one instant; a non-monotone
+  ladder is `{:decode_failed, :tips}`. Per-block `nativeStatus` is not used
+  because it is neither monotone nor consistent across views. `indexer`
+  reports `finished?` (not `stale`) and `lag_seconds` (`stalenessMs`) and
+  omits the measures this source does not publish; `degraded` is on `tips/1`.
 
-  The fallback is a self-hosted `chicmoz`, passed as `:base_url`. Apache-2.0
-  permits self-hosting, which is why it is the fallback with a licence that
-  allows being one. It runs the same routes, so it needs no second module.
-  `chain_info/1` checks the instance's own `l2NetworkId` against the network
-  this handle claims and refuses a mismatch, because the failure mode of a
-  configured fallback is a URL pointing at a different network, and that one
-  would otherwise answer confidently about the wrong chain.
+  ## Transactions
 
-  One module, two sources, so this backend implements `backend/1` beside
-  `backend/0`: a handle names itself `:aztecscan` on the temporary path and
-  `:chicmoz` on a configured instance, and `Raxol.Web3.Router.coverage/2`
-  reports those two names rather than `[:aztec, :aztec]`. During a revocation
-  that difference is the operator-visible half of the failover, since a count
-  of surviving sources says that one of two is left and a name says which one.
-  The label is read off the resolved URL's credential segment rather than off
-  whether a `:base_url` was passed, because the segment is the revocable
-  thing: a deployment that configures the hosted URL explicitly is on the
-  temporary path however it got there.
+  `l2/txs` is the pending pool. `get_transaction/2` reads
+  `l2/tx-effects/{hash}` and falls back to the pool on a 404, which is what
+  makes `:pending` an observation. `from`, `to` and `value` are `nil`: the
+  record carries a fee payer (possibly a paymaster) and an `initiator` whose
+  meaning is not established, and neither is a sender.
 
-  ## The unit is `:block`, and `l2/info` is not what decided it
+  ## Not declared
 
-  `l2/info` carries no unit: it answers `l2NetworkId`, `l1ChainId`,
-  `rollupVersion` and the L1 contract addresses. A block is what decides it.
-  Every block carries `header.globalVariables.blockNumber` and
-  `header.globalVariables.slotNumber` side by side, and in the recorded
-  `block.json` those read 83582 and 91350: Aztec counts both, and slots skip.
-  `l2/latest-height` returned 83590 while `l2/blocks/latest` reported
-  `blockNumber` 83590 and `slotNumber` 91360 on 2026-09-14, so the number this
-  backend reports is a block count and `:block` is the honest unit. Reporting
-  it as `:slot` would have overstated the height by the 7,770 slots that were
-  skipped by then.
-
-  ## The finalized half comes from `l2/tips`, in one request
-
-  `l2/tips` returns the whole ladder at one instant. In the recorded
-  `tips.json`, taken on 2026-09-14: `proposed` 83597, `checkpointed` 83597,
-  `proven` 83589, `finalized` 83561, plus `observedAt`, `stale`,
-  `stalenessMs`, `staleAfterMs` and `degraded`.
-  So `block_height/1` takes both numbers from that one response and
-  never composes two endpoints, which is the rule
-  `Raxol.Web3.Backend.Blockscout` spends a paragraph on: a height from one
-  moment beside a finalized height from another can report
-  `finalized_height > height`, and a consumer computing confirmation depth from
-  that pair reads a negative number. A ladder that arrives non-monotone is
-  `{:decode_failed, :tips}` rather than a repaired pair.
-
-  The per-block `nativeStatus` was the other candidate and it is not used, on
-  evidence. It is a four-value ladder (`proposed`, `checkpointed`, `proven`,
-  `finalized`) and it also emits `unknown` transiently. At 10:15Z on
-  2026-09-14, heights 83567 to 83574 read `unknown` from `l2/ui/blocks-for-table`
-  while 83575 and above read `checkpointed`, and `l2/blocks/83580` read
-  `unknown` at the same moment that table said `checkpointed` for it. By 10:30Z
-  all of them read `proven` or `finalized`. So it converges, but it is neither
-  monotone in height nor consistent between two views of the same block at one
-  moment, and "the highest block whose status says finalized" is therefore not
-  a finalized height.
-
-  `indexer` comes out of the same response. This source publishes a staleness
-  window rather than a ratio of indexed blocks, so `finished?` is `stale`
-  inverted and `lag_seconds` is `stalenessMs` (24,815 ms in the fixture), and
-  `indexed_ratio` and `lag_blocks` are **omitted** rather than computed. An
-  absent key says this source does not publish that measure, and a fabricated
-  `1.0` in the one field that exists so lag is visible would be the worst
-  available answer. `degraded`, which has no field at all in the height shape,
-  is on `tips/1`.
-
-  ## What a transaction does and does not say
-
-  `l2/txs` is the **pending pool**, not a list of mined transactions: its one
-  item on 2026-09-14 was 15 days older than the head block, and
-  `l2/txs/{hash}` answers 404 once that hash is mined. The mined record lives
-  at `l2/tx-effects/{hash}`. So `get_transaction/2` reads the effect first and
-  falls back to the pool on a 404, which is also what makes `:pending` an
-  observation rather than a guess.
-
-  `from`, `to` and `value` are `nil`, and that is the whole point of this
-  chain. The mined record carries `feePayer` and `initiator`; neither is a
-  sender. A fee payer can be a paymaster, and `initiator` is undefined by the
-  surface (it equalled the `contractAddress` of its own public call request in
-  the one case probed). Promoting either into `from` would produce a field a
-  caller cannot distinguish from a measured sender. ADR-0039 records that these
-  records carry "a fee payer and no counterparties"; the `initiator` field is
-  the part of that claim which needs qualifying, and the qualification is that
-  its meaning is not established rather than that it is a sender.
-
-  ## What is not declared, and why
-
-  `token_balances/3` is **absent**, and it is the reason ADR-0039 exists. A
-  private note is unobservable by design, so an empty page is a lie a caller
-  cannot distinguish from an account holding nothing, and nothing about a
-  balance is safe to get wrong. Probing made the refusal stronger rather than
-  weaker: a balance resource does exist, at
-  `l2/contract-instances/{address}/balance` and
-  `l2/contract-instances/with-balance`, and it is fee juice only and contract
-  instances only. It answered `null` for a deployed instance on 2026-09-14, so
-  even within its own scope "no balance recorded" and "zero" are already
-  indistinguishable at the source.
-
-  `account_info/2` and `list_transactions/3` are absent because there is no
-  account resource: `l2/accounts` and `l2/accounts/{address}` are both 404.
-  `l2/public-call-requests?senderAddress={address}` is a real per-sender filter
-  and returned 47,976 bytes for one mainnet address, but a page built from it
-  omits every private-only transaction that address made, and an incomplete
-  page is the same lie in a different shape.
-
-  `get_logs/3` is absent for the same reason: `l2/search/public-logs` exists,
-  private logs are unobservable, and a log page that silently covers half the
-  logs is worse than no callback. `read_contract/2` is absent because this
-  surface has no `eth_call` equivalent; answering it needs a PXE, which is a
-  different seam and out of scope here. `resolve_name/2`, `list_nfts/3`,
-  `list_token_transfers/3` and `raw_request/2` have no upstream at all here,
-  and declining `raw_request/2` keeps this backend's read allowlist empty by
-  construction rather than by policing.
-
-  ## Endpoints deliberately not called
-
-  `l2/contract-instances` answered 200 with 2,380,955 bytes unpaginated on
-  2026-09-14, and `l2/contract-classes` with 2,277,917 bytes. No fixed byte
-  ceiling bounds an unpaginated list, which is the same class of mistake as
-  Blockscout's 3.1 MB `/token-balances` that ADR-0038 records, so the addressed
-  form is used and the list form is not called. Nothing this backend declares
-  is paginated, which is why it adds no `Raxol.Web3.Cursor` entry: a cursor key
-  allowlist has to be measured from a live paged response, and there is no
-  paged response here to measure.
+  `token_balances/3`, `account_info/2`, `list_transactions/3` and `get_logs/3`
+  would each answer with the public half only, which a caller cannot tell from
+  a complete answer. `read_contract/2` needs a PXE. `resolve_name/2`,
+  `list_nfts/3`, `list_token_transfers/3` and `raw_request/2` have no upstream.
+  The unpaginated `l2/contract-instances` and `l2/contract-classes` lists
+  (over 2 MB each) are never called, and nothing here paginates, so there is
+  no `Raxol.Web3.Cursor` entry.
   """
 
   @behaviour Raxol.Web3.Backend
@@ -321,8 +201,6 @@ defmodule Raxol.Web3.Backend.Aztec do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, Paging.origin_id(state.base_url)}
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
     with {:ok, info} <- object(get(state, "/l2/info", :chain_stats, :fixed)),
@@ -364,8 +242,6 @@ defmodule Raxol.Web3.Backend.Aztec do
        }}
     end
   end
-
-  # -- optional ----------------------------------------------------------------
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, hash) when is_binary(hash) do
@@ -432,8 +308,6 @@ defmodule Raxol.Web3.Backend.Aztec do
     end
   end
 
-  # -- beyond the contract -----------------------------------------------------
-
   @doc """
   The finality ladder and the freshness of the view that reported it.
 
@@ -488,8 +362,6 @@ defmodule Raxol.Web3.Backend.Aztec do
        }}
     end
   end
-
-  # -- the outbound path -------------------------------------------------------
 
   # `class` names the cache class, or `nil` for a request that must not be
   # cached. `resource` decides what a 404 means, and it is the endpoint's own
@@ -607,8 +479,6 @@ defmodule Raxol.Web3.Backend.Aztec do
   # pointed at the right chain.
   defp same_network(%__MODULE__{network: network}, %{"l2NetworkId" => network}), do: :ok
   defp same_network(_state, _info), do: {:error, {:decode_failed, :network_mismatch}}
-
-  # -- normalization -----------------------------------------------------------
 
   defp ladder(%{"tips" => %{"proposed" => %{"number" => height}} = tips})
        when is_integer(height) do

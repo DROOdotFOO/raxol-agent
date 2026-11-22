@@ -216,8 +216,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
     with :ok <- check_chain_id(state),
@@ -243,8 +241,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
       {:ok, %{height: height, finalized_height: finalized, unit: :block, indexer: nil}}
     end
   end
-
-  # -- declared ----------------------------------------------------------------
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, hash) when is_binary(hash) do
@@ -318,8 +314,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   end
 
   def raw_request(%__MODULE__{}, _malformed), do: {:error, {:unsupported, :rpc_method}}
-
-  # -- the outbound path -------------------------------------------------------
 
   # One place composes a cache class onto an RPC call, as the REST backend's
   # `get/4` does for a path. The key fragment is the method and its own
@@ -399,8 +393,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
     end
   end
 
-  # -- the log walk ------------------------------------------------------------
-
   # Page one establishes the head and pins the walk to it. Every later page
   # takes both numbers from the cursor, so the walk terminates: a walk that
   # re-read the head each page would chase a chain that keeps producing blocks.
@@ -457,8 +449,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
       :rpc_logs
     )
   end
-
-  # -- normalization -----------------------------------------------------------
 
   defp transaction(item, receipt) do
     %{

@@ -459,10 +459,9 @@ defmodule Raxol.Web3.Backend.JSONRPCTest do
 
       assert from_integer == from_string
 
-      # The proof is in what the node was asked. `"62923728"` used to go out
-      # as a block tag, the node answered -32602, and `Raxol.Web3.RPC`'s
-      # classifier turned that into `{:upstream_refused, :not_found}`: a
-      # final "no such block" for a block this node has.
+      # The proof is in what the node was asked: sent as a block tag,
+      # `"62923728"` would be refused -32602 and classified as a final
+      # `{:upstream_refused, :not_found}` for a block this node has.
       assert drain() == [
                {"eth_getBlockByNumber", ["0x3bd25d0", false]},
                {"eth_getBlockByNumber", ["0x3bd25d0", false]}

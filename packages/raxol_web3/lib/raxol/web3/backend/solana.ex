@@ -125,7 +125,7 @@ defmodule Raxol.Web3.Backend.Solana do
     :get_block
   ]
 
-  # A guess. SQD publishes no rate limit anywhere, and the survey records that.
+  # A guess: SQD publishes no rate limit.
   @sqd_rate_limit [capacity: 10, refill_per_second: 2.0]
 
   # A judgement: the upstream maximum is 1000 and one page should stay small.
@@ -217,8 +217,6 @@ defmodule Raxol.Web3.Backend.Solana do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{source: :sqd} = state) do
     with {:ok, network} <- resolve(state),
@@ -282,8 +280,6 @@ defmodule Raxol.Web3.Backend.Solana do
       {:ok, %{height: height, finalized_height: finalized, unit: :slot, indexer: nil}}
     end
   end
-
-  # -- optional, on the RPC source only ----------------------------------------
 
   @doc """
   One transaction by signature, read at `confirmed`.
@@ -373,8 +369,6 @@ defmodule Raxol.Web3.Backend.Solana do
     end
   end
 
-  # -- SQD ---------------------------------------------------------------------
-
   defp resolve(state) do
     arguments = %{"vm" => "solana", "limit" => @catalog_limit}
 
@@ -434,22 +428,14 @@ defmodule Raxol.Web3.Backend.Solana do
     end
   end
 
-  # Both arms are read, because this endpoint has two places to put a refusal
-  # and `Raxol.Web3.Backend.Tron` reads both. That is the invariant now: one
-  # endpoint, two backends, one reading, in `Raxol.Web3.Backend.SQD`. A plain
-  # result carrying an error object used to come back here as a successful
-  # body, so a keyless read was reported as a decode failure or an empty
-  # catalog rather than as the missing credential it was.
+  # Both places this endpoint puts a refusal are read, through
+  # `Raxol.Web3.Backend.SQD`, as `Raxol.Web3.Backend.Tron` does.
   defp sqd_result(payload, state) do
     case SQD.refusal(payload, state.network) do
       nil -> {:ok, payload}
       reason -> {:error, reason}
     end
   end
-
-  # -- JSON-RPC ----------------------------------------------------------------
-
-  # -- paging ------------------------------------------------------------------
 
   defp page_config(params) do
     Map.merge(%{"limit" => @page_limit, "commitment" => "confirmed"}, params)
@@ -469,10 +455,6 @@ defmodule Raxol.Web3.Backend.Solana do
 
   defp signature(%{"signature" => signature}) when is_binary(signature), do: signature
   defp signature(_absent), do: nil
-
-  # -- normalization -----------------------------------------------------------
-
-  # -- ingest ------------------------------------------------------------------
 
   defp canonical_chain(chain_ref) do
     with {:ok, canonical} <- canonical(chain_ref),

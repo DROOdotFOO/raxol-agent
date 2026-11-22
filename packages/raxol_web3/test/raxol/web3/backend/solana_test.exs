@@ -157,7 +157,7 @@ defmodule Raxol.Web3.Backend.SolanaTest do
 
   describe "chain references" do
     test "the alias canonicalizes on ingest, so a handle reports one reference" do
-      # The survey's naming section: `solana:mainnet` is what a caller writes
+      # `solana:mainnet` is what a caller writes
       # and the truncated genesis hash is what CAIP-2 says. Measured
       # 2026-09-14, getGenesisHash returned
       # 5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d.

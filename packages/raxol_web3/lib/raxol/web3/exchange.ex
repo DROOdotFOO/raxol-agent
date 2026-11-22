@@ -5,8 +5,7 @@ defmodule Raxol.Web3.Exchange do
   This is ADR-0038 decision 4, and the loop itself is
   `Raxol.MCP.BoundedExchange`: the send, the four bounds, the accumulator and
   the close, in one place rather than two. The remote MCP transport needs the
-  identical loop, and the two copies this package used to carry were identical
-  down to the error taxonomy, so there was nothing to choose between them.
+  identical loop.
   `raxol_web3` depends on `raxol_mcp` outright (ADR-0033 decision 2), so the
   shared module sits on the side of the graph both callers can reach; the
   reasoning for each bound is in that module's docs.

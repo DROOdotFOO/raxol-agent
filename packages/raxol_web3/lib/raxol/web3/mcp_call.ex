@@ -59,7 +59,7 @@ defmodule Raxol.Web3.MCPCall do
   `result.structuredContent` is ignored even though SQD sends it, measured the
   same day. Two carriers for one value means two shapes to pin and a silent
   divergence when they disagree, and `content[0].text` is the one every server
-  in this package's survey emits.
+  this package calls emits.
 
   ## Two content types, one framing module
 
@@ -173,8 +173,6 @@ defmodule Raxol.Web3.MCPCall do
       do: headers,
       else: [{name, value} | headers]
   end
-
-  # -- decoding ----------------------------------------------------------------
 
   defp decode({:ok, %{status: status, body: body}}) when status in 200..299 do
     with {:ok, envelope} <- envelope(body),

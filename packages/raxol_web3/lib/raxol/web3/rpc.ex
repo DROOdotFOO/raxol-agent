@@ -27,7 +27,7 @@ defmodule Raxol.Web3.RPC do
   A JSON-RPC error object is mapped from its code onto the closed
   `{:upstream_refused, _}` set. The `message` field is upstream-authored text
   and does not travel: on an MCP surface it would land in model-visible output,
-  and the survey records upstreams echoing the failing URL, query string
+  and upstreams have been seen echoing the failing URL, query string
   included, inside exactly that field.
   """
 
