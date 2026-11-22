@@ -460,16 +460,39 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
     end
 
     test "are refused before reaching a sidecar holding another wallet" do
-      url = serve_health("0x" <> String.duplicate("ab", 20))
+      url = serve_health(@foreign_wallet)
+      provider = Privy.new(sidecar_url: url, address: @wallet, chains: %{8453 => url})
 
-      provider =
-        Privy.new(sidecar_url: url, address: "0x" <> String.duplicate("cd", 20), chains: %{})
+      job = %{
+        provider: @wallet,
+        evaluator: @wallet,
+        expired_at: 0,
+        hook_address: @wallet,
+        description: "x"
+      }
 
-      assert_raise Mix.Error, ~r/WRONG wallet/, fn ->
-        Signer.send_calls(provider, 8453, [@call])
-      end
+      assert {:error, {:sidecar_unhealthy, ^url, {:sidecar_wrong_wallet, @foreign_wallet, _}}} =
+               Signer.send_calls(provider, 8453, [@call])
+
+      assert {:error, {:sidecar_unhealthy, ^url, {:sidecar_wrong_wallet, @foreign_wallet, _}}} =
+               Signer.create_job(provider, 8453, @wallet, job)
 
       refute_received :send_calls_reached_sidecar
+    end
+
+    test "a refused fund names the live job and how to resume it" do
+      alias Mix.Tasks.RaxolEarn.Order.Errors
+
+      reason = {:sidecar_wrong_wallet, @foreign_wallet, @wallet}
+      message = Errors.write_blocked({:fund, 74_101}, "http://127.0.0.1:4048", reason)
+
+      assert message =~ "job 74101 is on chain but was NOT funded"
+      assert message =~ "--job-id 74101 --fund"
+      assert message =~ "http://127.0.0.1:4048"
+      refute message =~ "Nothing was signed"
+
+      assert Errors.write_blocked(:create_job, "http://127.0.0.1:4048", :health_timeout) =~
+               "Nothing from this run is on chain"
     end
 
     test "other backends sign locally and pass through unchecked" do
@@ -519,7 +542,4 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
     System.put_env("RAXOL_ACP_SIDECAR_URL", url)
     url
   end
-
-  defp restore_env(name, nil), do: System.delete_env(name)
-  defp restore_env(name, value), do: System.put_env(name, value)
 end

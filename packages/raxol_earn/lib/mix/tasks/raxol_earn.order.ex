@@ -255,14 +255,25 @@ defmodule Mix.Tasks.RaxolEarn.Order do
   defp create_and_resolve(cfg, resolver) do
     expired_at = System.system_time(:second) + @sla_minutes * 60 + 60
 
-    {:ok, tx} =
-      Signer.create_job(cfg.provider_adapter, cfg.from, cfg.core, %{
-        provider: cfg.provider,
-        evaluator: @zero_address,
-        expired_at: expired_at,
-        hook_address: @zero_address,
-        description: @offering
-      })
+    job = %{
+      provider: cfg.provider,
+      evaluator: @zero_address,
+      expired_at: expired_at,
+      hook_address: @zero_address,
+      description: @offering
+    }
+
+    tx =
+      case Signer.create_job(cfg.provider_adapter, cfg.from, cfg.core, job) do
+        {:ok, tx} ->
+          tx
+
+        {:error, {:sidecar_unhealthy, url, r}} ->
+          Mix.raise(Errors.write_blocked(:create_job, url, r))
+
+        err ->
+          Mix.raise("createJob failed: #{inspect(err)}")
+      end
 
     Plan.log("createJob tx: #{Plan.explorer(cfg.from)}#{tx}")
     report_actuals(cfg, "createJob", tx)
@@ -286,8 +297,11 @@ defmodule Mix.Tasks.RaxolEarn.Order do
         Plan.log("funded (#{label} batched): #{inspect(txs)} -- provider will settle + deliver")
         report_actuals(cfg, label, txs)
 
+      {:error, {:sidecar_unhealthy, url, reason}} ->
+        Mix.raise(Errors.write_blocked({:fund, job_id}, url, reason))
+
       err ->
-        Mix.raise("fund failed: #{inspect(err)}")
+        Mix.raise("fund failed for job #{job_id} (on chain, not funded): #{inspect(err)}")
     end
   end
 
