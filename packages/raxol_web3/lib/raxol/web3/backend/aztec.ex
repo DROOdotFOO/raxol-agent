@@ -63,24 +63,24 @@ defmodule Raxol.Web3.Backend.Aztec do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
-  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Origin
+  alias Raxol.Web3.Scope
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and `:base_url` carries the API key as a path
   # segment (`/v1/<key>`), so neither is something `inspect/1` may render: a
   # handle reaches an operator through `Raxol.Web3.Router.candidates/3`, and a
   # crash anywhere below formats the struct whole into a log line.
-  # `:base_digest` still identifies the handle.
   @derive {Inspect, except: [:http_opts, :base_url]}
-  @enforce_keys [:chain_ref, :base_url, :network, :source, :base_digest]
+  @enforce_keys [:chain_ref, :base_url, :network, :source]
   defstruct [
     :chain_ref,
     :base_url,
     :network,
     :source,
-    :base_digest,
+    :scope,
     http_opts: [],
     cache?: true
   ]
@@ -90,7 +90,7 @@ defmodule Raxol.Web3.Backend.Aztec do
           base_url: String.t(),
           network: String.t(),
           source: :aztecscan | :chicmoz,
-          base_digest: String.t(),
+          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -163,10 +163,11 @@ defmodule Raxol.Web3.Backend.Aztec do
         base_url: base_url,
         network: network,
         source: source,
-        base_digest: base_digest(base_url),
         http_opts: Keyword.put_new(Keyword.get(opts, :http_opts, []), :rate_limit, @rate_limit),
         cache?: Keyword.get(opts, :cache, true)
       }
+
+      state = %{state | scope: Scope.of(base_url, state.http_opts)}
 
       {:ok, {__MODULE__, state}}
     end
@@ -200,7 +201,7 @@ defmodule Raxol.Web3.Backend.Aztec do
   def capabilities(%__MODULE__{}), do: @optional
 
   @impl Backend
-  def health_key(%__MODULE__{} = state), do: {:origin, Paging.origin_id(state.base_url)}
+  def health_key(%__MODULE__{} = state), do: {:origin, Origin.for_url(state.base_url)}
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
@@ -372,20 +373,15 @@ defmodule Raxol.Web3.Backend.Aztec do
   # cached. `resource` decides what a 404 means, and it is the endpoint's own
   # shape rather than the response's text that decides it: see the moduledoc.
   #
-  # The cache key fragment is `{base_digest, path}`, never the assembled URL.
-  # On this upstream the credential is a PATH SEGMENT rather than a query
-  # parameter, so it must stay out of the key while still distinguishing the
-  # prefix it was fetched under: `Raxol.Web3.HTTP` keys on
-  # `{origin_id, fragment}` and `Raxol.Web3.Origin.canonical/1` is only
-  # `scheme://host:port`, so a bare path fragment named the prefix in neither
-  # half. Two handles on one host with different key prefixes then shared
-  # entries, and one key was served a body fetched under another. A digest
-  # rather than the prefix keeps the credential out by construction.
+  # The cache key is the path under the handle's scope, never the assembled
+  # URL. On this upstream the credential is a PATH SEGMENT, so the scope
+  # (`Raxol.Web3.Scope.id/1` of the whole base URL) is what keeps two key
+  # prefixes on one host from sharing entries, and it carries nothing back.
   defp get(state, path, class, resource) do
     url = state.base_url <> path
 
     url
-    |> HTTP.get(Cache.opts(state.http_opts, state.cache?, {state.base_digest, path}, class))
+    |> HTTP.get(Cache.opts(state.http_opts, state.scope, state.cache?, path, class))
     |> decode(resource)
   end
 
@@ -395,16 +391,6 @@ defmodule Raxol.Web3.Backend.Aztec do
   defp object({:ok, body}) when is_map(body), do: {:ok, body}
   defp object({:ok, _other}), do: {:error, {:decode_failed, :not_an_object}}
   defp object({:error, _reason} = error), do: error
-
-  # A truncated SHA-256 of the whole base URL, prefix included. ADR-0033
-  # section 7 names a cache key as one of the four places a credential leaks,
-  # so the key segment is never in the fragment itself; 128 bits of digest is
-  # enough to tell two prefixes apart and carries nothing back.
-  defp base_digest(base_url) do
-    :crypto.hash(:sha256, base_url)
-    |> Base.url_encode64(padding: false)
-    |> binary_part(0, 16)
-  end
 
   # Any JSON term, not only an object: `l2/latest-height` answers a bare
   # number and `l2/stats/average-block-time` a bare string, so requiring an

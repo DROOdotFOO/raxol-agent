@@ -8,8 +8,8 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
   alias Raxol.Web3.Backend.Tron
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.MCP.Tools
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.Router
+  alias Raxol.Web3.Scope
   alias Raxol.Web3.Tables
 
   # A Binance cold wallet, in both encodings, and they are the same account:
@@ -96,7 +96,7 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
       wrong_scope =
         Cursor.encode(
           %{"start" => 25, "limit" => 25},
-          tronscan_origin(),
+          tronscan_scope(),
           :tronscan_account_tokens
         )
 
@@ -159,10 +159,10 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
   end
 
   defp offset_cursor(start) do
-    Cursor.encode(%{"start" => start, "limit" => 25}, tronscan_origin(), :tronscan_transfer_list)
+    Cursor.encode(%{"start" => start, "limit" => 25}, tronscan_scope(), :tronscan_transfer_list)
   end
 
-  defp tronscan_origin, do: Origin.id(URI.new!(Tron.sources().tronscan.url))
+  defp tronscan_scope, do: Scope.id(Tron.sources().tronscan.url)
 
   describe "errors carry no upstream text" do
     test "the archive's nested error object is classified by its code, not its prose" do

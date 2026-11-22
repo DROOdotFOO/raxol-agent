@@ -63,6 +63,14 @@ defmodule Raxol.Web3.Origin do
     id
   end
 
+  @doc """
+  The id for a URL string. Health keys, rate-limit buckets and breakers use
+  it, since they describe a server; a cache key or a cursor describes a
+  source and uses `Raxol.Web3.Scope` instead.
+  """
+  @spec for_url(String.t() | URI.t()) :: id()
+  def for_url(url), do: url |> URI.new!() |> id()
+
   @doc "The origin behind an id, from this node's table."
   @spec resolve(id()) :: {:ok, String.t()} | :error
   def resolve(id) when is_binary(id) do

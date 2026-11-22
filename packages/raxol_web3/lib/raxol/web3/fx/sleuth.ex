@@ -65,12 +65,14 @@ defmodule Raxol.Web3.FX.Sleuth do
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Scope
 
   # `:base_url` too: per `Raxol.Web3.Origin`, a host can name an account.
   @derive {Inspect, except: [:http_opts, :base_url, :api_key]}
   @enforce_keys [:api_key]
   defstruct [
     :api_key,
+    :scope,
     base_url: "https://www.sleuthintel.io/api/mcp",
     http_opts: [],
     cache?: true
@@ -79,6 +81,7 @@ defmodule Raxol.Web3.FX.Sleuth do
   @type t :: %__MODULE__{
           api_key: String.t(),
           base_url: String.t(),
+          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -160,11 +163,18 @@ defmodule Raxol.Web3.FX.Sleuth do
         {:error, {:invalid_argument, "base_url"}}
 
       true ->
+        base_url = String.trim_trailing(base_url, "/")
+        http_opts = Keyword.get(opts, :http_opts, [])
+        # The key travels as a header, so it is part of the source: two keys on
+        # one URL are two tenants and share no cache entry.
+        headers = [{"authorization", "Bearer " <> api_key} | Keyword.get(http_opts, :headers, [])]
+
         {:ok,
          %__MODULE__{
            api_key: api_key,
-           base_url: String.trim_trailing(base_url, "/"),
-           http_opts: Keyword.get(opts, :http_opts, []),
+           base_url: base_url,
+           scope: Scope.id(base_url, headers),
+           http_opts: http_opts,
            cache?: Keyword.get(opts, :cache, true)
          }}
     end
@@ -267,7 +277,7 @@ defmodule Raxol.Web3.FX.Sleuth do
       |> Keyword.put_new(:max_bytes, @max_bytes)
       |> Backend.put_header({"authorization", "Bearer " <> sleuth.api_key})
       |> Backend.put_header({"accept", "application/json"})
-      |> put_cache(sleuth.cache?, {path, query}, decoder)
+      |> put_cache(sleuth.cache?, {sleuth.scope, path, query}, decoder)
 
     case HTTP.get(url, opts) do
       {:ok, %{status: status, body: body}} when status in 200..299 -> decoder.(body)

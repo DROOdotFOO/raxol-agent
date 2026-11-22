@@ -15,7 +15,7 @@ defmodule Raxol.Web3.CursorTest do
     "items_count" => 50
   }
 
-  @origin "a1b2c3d4e5f60708"
+  @scope "a1b2c3d4e5f60708"
 
   describe "cursor key configuration" do
     test "a configured short or malformed key is rejected instead of randomized" do
@@ -40,21 +40,21 @@ defmodule Raxol.Web3.CursorTest do
 
   describe "round trip" do
     test "what the upstream sent comes back, minus the counter" do
-      cursor = Cursor.encode(@upstream, @origin, :address_transactions)
+      cursor = Cursor.encode(@upstream, @scope, :address_transactions)
 
-      assert {:ok, params} = Cursor.decode(cursor, @origin, :address_transactions)
+      assert {:ok, params} = Cursor.decode(cursor, @scope, :address_transactions)
       assert params == Map.delete(@upstream, "items_count")
     end
 
     test "the last page has no cursor, so no caller has to branch on it" do
-      assert Cursor.encode(nil, @origin, :address_transactions) == nil
+      assert Cursor.encode(nil, @scope, :address_transactions) == nil
     end
 
     test "items_count is absent from the encoded bytes, not merely from the decode" do
       # "Opaque" is not "encrypted": anyone holding the cursor can Base64-decode
       # it. Decision 8 says no offset-like field is exposed, so the field has to
       # be absent rather than hidden.
-      cursor = Cursor.encode(@upstream, @origin, :address_transactions)
+      cursor = Cursor.encode(@upstream, @scope, :address_transactions)
 
       refute cursor =~ "items_count"
       assert payload(cursor) =~ "block_number"
@@ -65,25 +65,25 @@ defmodule Raxol.Web3.CursorTest do
   describe "the MAC" do
     test "a flipped byte in the payload is refused" do
       [version, payload, signature] =
-        @upstream |> Cursor.encode(@origin, :address_transactions) |> String.split(".")
+        @upstream |> Cursor.encode(@scope, :address_transactions) |> String.split(".")
 
       tampered = Enum.join([version, flip(payload), signature], ".")
 
       assert {:error, :bad_signature} =
-               Cursor.decode(tampered, @origin, :address_transactions)
+               Cursor.decode(tampered, @scope, :address_transactions)
     end
 
     test "a re-signed payload from another key is refused" do
       # The attack the MAC exists for: decode, add a parameter, re-encode. A
       # forger without this node's key cannot produce a signature that verifies.
-      forged = sign(%{"o" => @origin, "e" => "address_transactions", "p" => %{}}, "not-our-key")
+      forged = sign(%{"s" => @scope, "e" => "address_transactions", "p" => %{}}, "not-our-key")
 
-      assert {:error, :bad_signature} = Cursor.decode(forged, @origin, :address_transactions)
+      assert {:error, :bad_signature} = Cursor.decode(forged, @scope, :address_transactions)
     end
 
     test "a cursor with no signature at all is refused as malformed" do
       for bad <- ["", "v1", "v1.payload", "garbage", "v0.a.b", nil, 42] do
-        assert {:error, :malformed} = Cursor.decode(bad, @origin, :address_transactions)
+        assert {:error, :malformed} = Cursor.decode(bad, @scope, :address_transactions)
       end
     end
 
@@ -95,26 +95,26 @@ defmodule Raxol.Web3.CursorTest do
       # taxonomy, and `Raxol.MCP.Registry` rendered it as model-visible
       # exception text plus a breaker failure.
       [version, payload, _signature] =
-        @upstream |> Cursor.encode(@origin, :address_transactions) |> String.split(".")
+        @upstream |> Cursor.encode(@scope, :address_transactions) |> String.split(".")
 
       for bytes <- [1, 16, 31, 33, 64] do
         signature = Base.url_encode64(:binary.copy(<<0>>, bytes), padding: false)
         cursor = Enum.join([version, payload, signature], ".")
 
         assert {:error, :bad_signature} =
-                 Cursor.decode(cursor, @origin, :address_transactions),
+                 Cursor.decode(cursor, @scope, :address_transactions),
                "a #{bytes}-byte signature was not refused"
       end
     end
 
     test "a signature that is not base64 is malformed rather than unsigned" do
       [version, payload, _signature] =
-        @upstream |> Cursor.encode(@origin, :address_transactions) |> String.split(".")
+        @upstream |> Cursor.encode(@scope, :address_transactions) |> String.split(".")
 
       for garbage <- ["!!!!", "not base64 at all", "+/==", "é"] do
         cursor = Enum.join([version, payload, garbage], ".")
 
-        assert {:error, :malformed} = Cursor.decode(cursor, @origin, :address_transactions),
+        assert {:error, :malformed} = Cursor.decode(cursor, @scope, :address_transactions),
                "#{inspect(garbage)} was not refused as malformed"
       end
     end
@@ -122,16 +122,16 @@ defmodule Raxol.Web3.CursorTest do
 
   describe "scope binding" do
     test "a cursor from one endpoint is refused on another" do
-      cursor = Cursor.encode(@upstream, @origin, :address_transactions)
+      cursor = Cursor.encode(@upstream, @scope, :address_transactions)
 
-      assert {:error, :wrong_scope} = Cursor.decode(cursor, @origin, :address_logs)
+      assert {:error, :wrong_scope} = Cursor.decode(cursor, @scope, :address_logs)
     end
 
     test "a cursor from one chain is refused on another" do
       # Two Blockscout instances share a page shape, so without this a cursor
       # minted on Ethereum would page Base without complaint and return the
       # wrong chain's transactions under the right chain's reference.
-      cursor = Cursor.encode(@upstream, @origin, :address_transactions)
+      cursor = Cursor.encode(@upstream, @scope, :address_transactions)
 
       assert {:error, :wrong_scope} =
                Cursor.decode(cursor, "ffffffffffffffff", :address_transactions)
@@ -146,7 +146,7 @@ defmodule Raxol.Web3.CursorTest do
       smuggled =
         sign(
           %{
-            "o" => @origin,
+            "s" => @scope,
             "e" => "address_transactions",
             "p" => %{"block_number" => 1, "apikey" => "stolen"}
           },
@@ -154,7 +154,7 @@ defmodule Raxol.Web3.CursorTest do
         )
 
       assert {:error, {:unexpected_key, "apikey"}} =
-               Cursor.decode(smuggled, @origin, :address_transactions)
+               Cursor.decode(smuggled, @scope, :address_transactions)
     end
 
     test "each endpoint accepts only the keys it was measured to page on" do
@@ -162,12 +162,12 @@ defmodule Raxol.Web3.CursorTest do
       # would be an authentic cursor for the wrong query.
       smuggled =
         sign(
-          %{"o" => @origin, "e" => "address_token_transfers", "p" => %{"id" => 1}},
+          %{"s" => @scope, "e" => "address_token_transfers", "p" => %{"id" => 1}},
           Tables.cursor_key()
         )
 
       assert {:error, {:unexpected_key, "id"}} =
-               Cursor.decode(smuggled, @origin, :address_token_transfers)
+               Cursor.decode(smuggled, @scope, :address_token_transfers)
     end
 
     test "minting drops a key the endpoint does not page on rather than failing" do
@@ -176,11 +176,11 @@ defmodule Raxol.Web3.CursorTest do
       cursor =
         Cursor.encode(
           Map.put(@upstream, "some_new_field", "whatever"),
-          @origin,
+          @scope,
           :address_transactions
         )
 
-      assert {:ok, params} = Cursor.decode(cursor, @origin, :address_transactions)
+      assert {:ok, params} = Cursor.decode(cursor, @scope, :address_transactions)
       refute Map.has_key?(params, "some_new_field")
     end
 
@@ -197,9 +197,9 @@ defmodule Raxol.Web3.CursorTest do
       }
 
       for {endpoint, params} <- measured do
-        cursor = Cursor.encode(Map.put(params, "items_count", 50), @origin, endpoint)
+        cursor = Cursor.encode(Map.put(params, "items_count", 50), @scope, endpoint)
 
-        assert {:ok, ^params} = Cursor.decode(cursor, @origin, endpoint),
+        assert {:ok, ^params} = Cursor.decode(cursor, @scope, endpoint),
                "#{endpoint} did not round-trip its measured cursor"
       end
     end

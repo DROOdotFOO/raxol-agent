@@ -7,7 +7,7 @@ defmodule Raxol.Web3.Backend.CantonWireTest do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Canton
   alias Raxol.Web3.Cursor
-  alias Raxol.Web3.Origin
+  alias Raxol.Web3.Scope
   alias Raxol.Web3.Serialize
 
   # A real party id, from a live `POST /v0/transactions` page on 2026-09-14, and
@@ -104,7 +104,7 @@ defmodule Raxol.Web3.Backend.CantonWireTest do
 
       assert {:ok, %{next: cursor}} = Backend.call(handle, :token_balances, [@dso])
 
-      origin = Origin.id(URI.new!("https://api.cantonnodes.com/v0"))
+      origin = Scope.id("https://api.cantonnodes.com/v0")
       assert {:ok, params} = Cursor.decode(cursor, origin, :canton_holdings_state)
 
       assert params["after"] == 8_926_540_676
@@ -152,7 +152,7 @@ defmodule Raxol.Web3.Backend.CantonWireTest do
       assert {:ok, %{next: cursor}} = Backend.call(handle, :token_balances, [@dso])
       _first = drain()
 
-      origin = Origin.id(URI.new!("https://api.cantonnodes.com/v0"))
+      origin = Scope.id("https://api.cantonnodes.com/v0")
       assert {:error, :wrong_scope} = Cursor.decode(cursor, origin, :address_tokens)
     end
 
@@ -505,7 +505,7 @@ defmodule Raxol.Web3.Backend.CantonWireTest do
 
       assert is_binary(second.next)
 
-      origin = Origin.id(URI.new!("https://api.cantonnodes.com/v0"))
+      origin = Scope.id("https://api.cantonnodes.com/v0")
       assert {:ok, one} = Cursor.decode(first.next, origin, :canton_holdings_state)
       assert {:ok, two} = Cursor.decode(second.next, origin, :canton_holdings_state)
       assert two["after"] > one["after"]

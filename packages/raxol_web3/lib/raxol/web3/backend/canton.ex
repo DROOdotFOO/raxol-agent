@@ -204,8 +204,8 @@ defmodule Raxol.Web3.Backend.Canton do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Canton.Holdings
   alias Raxol.Web3.Backend.Canton.Scan
-  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.MCPCall
+  alias Raxol.Web3.Origin
 
   # The struct carries a credential, so it declares what `inspect/1` may show.
   # `Raxol.Agent.ExecutorConfig` is the precedent. It is load-bearing
@@ -224,6 +224,7 @@ defmodule Raxol.Web3.Backend.Canton do
     :ccscan_url,
     :ccscan_key,
     :migration_id,
+    :scope,
     ccscan_auth_header: "authorization",
     http_opts: [],
     cache?: true
@@ -235,6 +236,7 @@ defmodule Raxol.Web3.Backend.Canton do
           ccscan_url: String.t(),
           ccscan_key: String.t() | nil,
           migration_id: non_neg_integer() | nil,
+          scope: Raxol.Web3.Scope.t() | nil,
           ccscan_auth_header: String.t(),
           http_opts: keyword(),
           cache?: boolean()
@@ -300,6 +302,8 @@ defmodule Raxol.Web3.Backend.Canton do
         cache?: Keyword.get(opts, :cache, true)
       }
 
+      state = %{state | scope: Raxol.Web3.Scope.of(scan_url, state.http_opts)}
+
       {:ok, {__MODULE__, state}}
     end
   end
@@ -361,7 +365,7 @@ defmodule Raxol.Web3.Backend.Canton do
   # `Raxol.Web3.HTTP`; a router ordering candidates cares about the origin that
   # answers the reads every source must answer.
   @impl Backend
-  def health_key(%__MODULE__{} = state), do: {:origin, Paging.origin_id(state.scan_url)}
+  def health_key(%__MODULE__{} = state), do: {:origin, Origin.for_url(state.scan_url)}
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do

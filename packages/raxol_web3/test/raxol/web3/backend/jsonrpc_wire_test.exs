@@ -8,8 +8,8 @@ defmodule Raxol.Web3.Backend.JSONRPCWireTest do
   alias Raxol.Web3.Backend.Blockscout
   alias Raxol.Web3.Backend.JSONRPC
   alias Raxol.Web3.Cursor
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.Router
+  alias Raxol.Web3.Scope
   alias Raxol.Web3.Tables
 
   @eoa {:evm, "0xb754e001604508f841d768e64d38b7c98c859c05"}
@@ -67,26 +67,32 @@ defmodule Raxol.Web3.Backend.JSONRPCWireTest do
 
     test "the cursor carries only the two numbers the walk is made of" do
       handle = paging_handle()
-      origin = Origin.id(URI.new!("https://node.test/"))
+      scope = Scope.id("https://node.test/")
 
       assert {:ok, %{next: cursor}} = Backend.call(handle, :get_logs, [@token, []])
-      assert {:ok, params} = Cursor.decode(cursor, origin, :rpc_logs)
+      assert {:ok, params} = Cursor.decode(cursor, scope, :rpc_logs)
       assert params == %{"from_block" => 9, "to_block" => 10}
     end
 
-    test "a cursor is refused on another endpoint and on another origin" do
+    test "a cursor is refused on another endpoint and on another source" do
       handle = paging_handle()
-      origin = Origin.id(URI.new!("https://node.test/"))
+      scope = Scope.id("https://node.test/")
 
       assert {:ok, %{next: cursor}} = Backend.call(handle, :get_logs, [@token, []])
       _first_walk = drain()
 
-      assert {:error, :wrong_scope} = Cursor.decode(cursor, origin, :address_logs)
+      assert {:error, :wrong_scope} = Cursor.decode(cursor, scope, :address_logs)
 
       elsewhere = paging_handle(url: "https://other-node.test/")
 
       assert {:error, {:invalid_cursor, :wrong_scope}} =
                Backend.call(elsewhere, :get_logs, [@token, [cursor: cursor]])
+
+      # And on the same host under another path: a cursor is the source's.
+      same_host = paging_handle(url: "https://node.test/v2/OTHER-KEY")
+
+      assert {:error, {:invalid_cursor, :wrong_scope}} =
+               Backend.call(same_host, :get_logs, [@token, [cursor: cursor]])
 
       # Refused before a request is built, which is the point: a cursor's
       # contents become upstream query parameters.
@@ -227,7 +233,7 @@ defmodule Raxol.Web3.Backend.JSONRPCWireTest do
   end
 
   describe "the response cache" do
-    # Own URLs, because the cache is per node and keyed by origin.
+    # Own URLs, because the cache is per node and keyed by source.
     test "a repeated account read is served from the cache" do
       handle =
         handle(
@@ -240,6 +246,26 @@ defmodule Raxol.Web3.Backend.JSONRPCWireTest do
       assert {:ok, ^first} = Backend.call(handle, :account_info, [@eoa])
 
       assert methods() == ["eth_getBalance", "eth_getCode"]
+    end
+
+    test "two sources behind one host, told apart by path or query, share no entry" do
+      # A provider that routes chains or tenants by path keys them on one host.
+      # Keyed by host, the second handle would be answered from the first's
+      # entry: another chain's balance, or another tenant's response.
+      urls = [
+        "https://cache-tenant.test/v2/KEY-A",
+        "https://cache-tenant.test/v2/KEY-B",
+        "https://cache-tenant.test/?api-key=C"
+      ]
+
+      routes = %{"eth_getBalance" => result("balance"), "eth_getCode" => result("code_eoa")}
+
+      for url <- urls do
+        assert {:ok, _account} =
+                 Backend.call(handle(routes, cache: true, url: url), :account_info, [@eoa])
+      end
+
+      assert Enum.count(methods(), &(&1 == "eth_getBalance")) == length(urls)
     end
 
     test "a height is asked every time, whatever the cache is doing" do

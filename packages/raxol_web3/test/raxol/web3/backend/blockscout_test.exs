@@ -4,6 +4,7 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Blockscout
   alias Raxol.Web3.Cursor
+  alias Raxol.Web3.Scope
 
   @fixtures Path.expand("../../../fixtures/blockscout", __DIR__)
 
@@ -344,7 +345,7 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
       assert length(page.items) == 2
       assert is_binary(page.next)
 
-      origin = Raxol.Web3.Origin.id(URI.new!("https://eth.blockscout.com/"))
+      origin = Scope.id("https://eth.blockscout.com/")
       assert {:ok, params} = Cursor.decode(page.next, origin, :address_transactions)
       assert params["block_number"] == 25_574_152
       refute Map.has_key?(params, "items_count")

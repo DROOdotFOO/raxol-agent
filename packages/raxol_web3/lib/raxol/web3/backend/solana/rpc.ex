@@ -16,6 +16,7 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
           required(:url) => String.t(),
           required(:http_opts) => keyword(),
           required(:cache?) => boolean(),
+          required(:scope) => String.t(),
           optional(atom()) => term()
         }
 
@@ -73,7 +74,7 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
       # handle at its own gated node carries the credential for it in a
       # header there.
       |> Backend.put_header(@content_type)
-      |> Cache.opts(state.cache?, {method, params}, class)
+      |> Cache.opts(state.scope, state.cache?, {method, params}, class)
       |> classified()
 
     state.url

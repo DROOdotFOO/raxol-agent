@@ -79,7 +79,9 @@ defmodule Raxol.Web3.Backend.Blockscout do
   alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Origin
   alias Raxol.Web3.RPC
+  alias Raxol.Web3.Scope
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and `:rpc_url` often embeds a provider key, so
@@ -90,12 +92,13 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # below, never from configuration.
   @derive {Inspect, except: [:rpc_url, :http_opts]}
   @enforce_keys [:chain_ref, :host]
-  defstruct [:chain_ref, :host, :rpc_url, http_opts: [], cache?: true]
+  defstruct [:chain_ref, :host, :rpc_url, :scope, http_opts: [], cache?: true]
 
   @type t :: %__MODULE__{
           chain_ref: Backend.chain_ref(),
           host: String.t(),
           rpc_url: String.t() | nil,
+          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -157,6 +160,9 @@ defmodule Raxol.Web3.Backend.Blockscout do
         cache?: Keyword.get(opts, :cache, true)
       }
 
+      # The REST base is the chain's host and nothing else, so the scope is too.
+      state = %{state | scope: Scope.of("https://#{host}/", state.http_opts)}
+
       {:ok, {__MODULE__, state}}
     end
   end
@@ -183,7 +189,9 @@ defmodule Raxol.Web3.Backend.Blockscout do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
-  defp origin_id(state), do: Paging.origin_id("https://#{state.host}/")
+  defp origin_id(state), do: Origin.for_url("https://#{state.host}/")
+
+  defp scope(state), do: state.scope
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
@@ -360,7 +368,7 @@ defmodule Raxol.Web3.Backend.Blockscout do
   defp get(state, path, query \\ %{}, class \\ nil) do
     state
     |> url(path, query)
-    |> HTTP.get(Cache.opts(state.http_opts, state.cache?, {path, query}, class))
+    |> HTTP.get(Cache.opts(state.http_opts, scope(state), state.cache?, {path, query}, class))
     |> Decode.json_object()
   end
 
@@ -380,14 +388,14 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # one serving the other's contents.
   defp page(state, path, endpoint, opts, mapper) do
     with {:ok, query} <-
-           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
+           Paging.cursor_params(Keyword.get(opts, :cursor), scope(state), endpoint),
          {:ok, body} <- get(state, path, query, :list),
          {:ok, rows} <- page_rows(body["items"]),
          {:ok, items} <- Backend.map_rows(rows, mapper, endpoint) do
       {:ok,
        %{
          items: items,
-         next: Paging.next_cursor(body["next_page_params"], origin_id(state), endpoint)
+         next: Paging.next_cursor(body["next_page_params"], scope(state), endpoint)
        }}
     end
   end

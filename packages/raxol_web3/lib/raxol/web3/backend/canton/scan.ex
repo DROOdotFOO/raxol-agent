@@ -24,6 +24,7 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
           required(:http_opts) => keyword(),
           required(:cache?) => boolean(),
           required(:migration_id) => non_neg_integer() | nil,
+          required(:scope) => String.t(),
           optional(atom()) => term()
         }
 
@@ -111,7 +112,7 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   defp scan_opts(state, path, fragment, class) do
     state.http_opts
     |> Keyword.put_new(:rate_limit, @rate_limit)
-    |> Cache.opts(state.cache?, {path, fragment}, class)
+    |> Cache.opts(state.scope, state.cache?, {path, fragment}, class)
   end
 
   defp url(state, path, query) when map_size(query) == 0, do: state.scan_url <> path

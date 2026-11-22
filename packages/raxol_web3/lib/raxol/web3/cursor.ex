@@ -25,9 +25,11 @@ defmodule Raxol.Web3.Cursor do
     1. **A MAC** over the whole payload, under this node's key
        (`Raxol.Web3.Tables.cursor_key/0`). A cursor that does not verify is
        refused before anything is decoded.
-    2. **Scope binding**: the origin id and the endpoint travel inside the
-       signed payload and must match the call. A verified cursor from
-       `token-transfers` on chain 1 is still refused on `logs`, or on chain 8453.
+    2. **Scope binding**: the source's scope (`Raxol.Web3.Scope.id/1` of its
+       full base URL) and the endpoint travel inside the signed payload and
+       must match the call. A verified cursor from `token-transfers` on chain
+       1 is still refused on `logs`, on chain 8453, or on another path or
+       tenant behind the same host.
     3. **A per-endpoint key allowlist**, applied after verification. Signing
        proves we minted it; it does not prove the upstream will not be handed a
        parameter it never offered. The allowlist is data, a key list per
@@ -149,12 +151,12 @@ defmodule Raxol.Web3.Cursor do
   `nil` in, `nil` out: the last page has no cursor, and making the caller
   branch on that would put the same `if` in every list callback.
   """
-  @spec encode(map() | nil, String.t(), endpoint()) :: t() | nil
-  def encode(nil, _origin_id, _endpoint), do: nil
+  @spec encode(map() | nil, Raxol.Web3.Scope.t(), endpoint()) :: t() | nil
+  def encode(nil, _scope, _endpoint), do: nil
 
-  def encode(params, origin_id, endpoint) when is_map(params) do
+  def encode(params, scope, endpoint) when is_map(params) do
     payload =
-      %{"o" => origin_id, "e" => Atom.to_string(endpoint), "p" => keyset(params, endpoint)}
+      %{"s" => scope, "e" => Atom.to_string(endpoint), "p" => keyset(params, endpoint)}
       |> Jason.encode!()
       |> Base.url_encode64(padding: false)
 
@@ -167,21 +169,21 @@ defmodule Raxol.Web3.Cursor do
   Verify a cursor and return the upstream parameters it carries.
 
   Refuses, in order: a shape that is not ours, a MAC that does not verify, a
-  scope that is not this origin and endpoint, and a key the endpoint does not
+  scope that is not this source and endpoint, and a key the endpoint does not
   declare. The order matters, because every check after the first is performed
   on bytes we have already proven we minted.
   """
-  @spec decode(t(), String.t(), endpoint()) :: {:ok, map()} | {:error, reason()}
-  def decode(cursor, origin_id, endpoint) when is_binary(cursor) do
+  @spec decode(t(), Raxol.Web3.Scope.t(), endpoint()) :: {:ok, map()} | {:error, reason()}
+  def decode(cursor, scope, endpoint) when is_binary(cursor) do
     with {:ok, signed, payload} <- split(cursor),
          :ok <- verify(signed, payload),
          {:ok, decoded} <- decode_payload(signed),
-         :ok <- check_scope(decoded, origin_id, endpoint) do
+         :ok <- check_scope(decoded, scope, endpoint) do
       check_keys(decoded["p"], endpoint)
     end
   end
 
-  def decode(_cursor, _origin_id, _endpoint), do: {:error, :malformed}
+  def decode(_cursor, _scope, _endpoint), do: {:error, :malformed}
 
   defp split(cursor) do
     case String.split(cursor, ".") do
@@ -215,7 +217,7 @@ defmodule Raxol.Web3.Cursor do
 
   defp decode_payload(@version <> "." <> payload) do
     with {:ok, json} <- Base.url_decode64(payload, padding: false),
-         {:ok, %{"o" => _, "e" => _, "p" => params} = decoded} when is_map(params) <-
+         {:ok, %{"s" => _, "e" => _, "p" => params} = decoded} when is_map(params) <-
            Jason.decode(json) do
       {:ok, decoded}
     else
@@ -223,11 +225,11 @@ defmodule Raxol.Web3.Cursor do
     end
   end
 
-  defp check_scope(%{"o" => origin_id, "e" => endpoint}, origin_id, endpoint_atom) do
+  defp check_scope(%{"s" => scope, "e" => endpoint}, scope, endpoint_atom) do
     if endpoint == Atom.to_string(endpoint_atom), do: :ok, else: {:error, :wrong_scope}
   end
 
-  defp check_scope(_decoded, _origin_id, _endpoint), do: {:error, :wrong_scope}
+  defp check_scope(_decoded, _scope, _endpoint), do: {:error, :wrong_scope}
 
   defp check_keys(params, endpoint) do
     case Map.fetch(@allowed, endpoint) do
