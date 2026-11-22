@@ -81,6 +81,7 @@ defmodule Raxol.Web3.MCPCall do
   alias Raxol.MCP.Client.SSE
   alias Raxol.Web3.Backend
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.RPC.ErrorClass
 
   # Defaults, merged per name rather than assigned over the caller's list. An
   # account-gated server needs an `authorization` header, and a module that
@@ -198,7 +199,7 @@ defmodule Raxol.Web3.MCPCall do
   end
 
   defp result(%{"result" => result}) when is_map(result), do: {:ok, result}
-  defp result(%{"error" => error}), do: {:error, {:upstream_refused, class(error)}}
+  defp result(%{"error" => error}), do: {:error, {:upstream_refused, ErrorClass.of_error(error)}}
   defp result(_other), do: {:error, {:decode_failed, :jsonrpc}}
 
   defp content(%{"content" => [%{"text" => text} | _rest]} = result) when is_binary(text) do
@@ -223,12 +224,4 @@ defmodule Raxol.Web3.MCPCall do
       {:error, _reason} -> {:error, {:decode_failed, :json}}
     end
   end
-
-  # The code is a number we can reason about; the message is upstream prose and
-  # stays where it is. The same split as `Raxol.Web3.RPC` makes, over the same
-  # codes, because MCP rides on JSON-RPC.
-  defp class(%{"code" => code}) when code in [-32_601, -32_602], do: :not_found
-  defp class(%{"code" => code}) when code in [401, -32_001], do: :auth
-  defp class(%{"code" => code}) when code in [429, -32_005], do: :rate_limit
-  defp class(_error), do: :unknown
 end

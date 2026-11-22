@@ -8,6 +8,7 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.RPC.ErrorClass
 
   @typedoc "The fields of a Solana handle this module reads."
   @type state :: %{
@@ -22,6 +23,8 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
   @rate_limit [capacity: 100, refill_per_second: 10.0]
 
   @content_type {"content-type", "application/json"}
+
+  @overrides %{-32_004 => :not_found}
 
   @doc "The slot at `commitment`."
   @spec slot(state(), String.t()) :: {:ok, non_neg_integer()} | {:error, Backend.error()}
@@ -113,10 +116,11 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
   defp rpc_response({:ok, %{status: status}}), do: {:error, {:http, status}}
   defp rpc_response({:error, _reason} = error), do: error
 
-  @doc "A node error code's class in `{:upstream_refused, class}`."
-  @spec error_class(integer()) :: :not_found | :auth | :rate_limit | :unknown
-  def error_class(code) when code in [-32_601, -32_602, -32_004], do: :not_found
-  def error_class(code) when code in [401, -32_001], do: :auth
-  def error_class(code) when code in [429, -32_005], do: :rate_limit
-  def error_class(_code), do: :unknown
+  @doc """
+  A node error code's class in `{:upstream_refused, class}`: the shared
+  `Raxol.Web3.RPC.ErrorClass` table, plus -32004 ("block not available for slot"),
+  which on Solana is an answer about the slot rather than a source failure.
+  """
+  @spec error_class(term()) :: ErrorClass.class()
+  def error_class(code), do: ErrorClass.of_code(code, @overrides)
 end

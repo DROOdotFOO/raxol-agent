@@ -33,6 +33,7 @@ defmodule Raxol.Web3.RPC do
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.RPC.ErrorClass
 
   # Every method this package may speak. Additions are a deliberate act, and a
   # write method cannot be added by accident because none of them belongs to a
@@ -276,7 +277,7 @@ defmodule Raxol.Web3.RPC do
   defp handle_response({:ok, %{status: status, body: body}}) when status in 200..299 do
     case Jason.decode(body) do
       {:ok, %{"result" => result}} -> {:ok, result}
-      {:ok, %{"error" => error}} -> {:error, {:upstream_refused, rpc_class(error)}}
+      {:ok, %{"error" => error}} -> {:error, {:upstream_refused, ErrorClass.of_error(error)}}
       {:ok, _other} -> {:error, {:decode_failed, :jsonrpc}}
       {:error, _reason} -> {:error, {:decode_failed, :json}}
     end
@@ -284,14 +285,6 @@ defmodule Raxol.Web3.RPC do
 
   defp handle_response({:ok, %{status: status}}), do: {:error, {:http, status}}
   defp handle_response({:error, _reason} = error), do: error
-
-  # The code is a number we can reason about; the message is upstream prose and
-  # stays where it is.
-  defp rpc_class(%{"code" => -32_601}), do: :not_found
-  defp rpc_class(%{"code" => -32_602}), do: :not_found
-  defp rpc_class(%{"code" => code}) when code in [401, -32_001], do: :auth
-  defp rpc_class(%{"code" => code}) when code in [429, -32_005], do: :rate_limit
-  defp rpc_class(_error), do: :unknown
 
   # A node answers `null` for a transaction, receipt or block it does not have,
   # and `{:ok, nil}` is that answer rather than an error: a hash nobody has

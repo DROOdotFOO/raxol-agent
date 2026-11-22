@@ -7,6 +7,7 @@ defmodule Raxol.Web3.Backend.Tron.Errors do
   """
 
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.RPC.ErrorClass
 
   @doc """
   Decode a tool result's `content[0].text`, which holds a JSON string:
@@ -53,12 +54,7 @@ defmodule Raxol.Web3.Backend.Tron.Errors do
   def client_error(:dns_failed), do: {:dns_failed, :unknown}
 
   def client_error(%{"code" => code}) when is_integer(code),
-    do: {:upstream_refused, code_class(code)}
+    do: {:upstream_refused, ErrorClass.of_code(code)}
 
   def client_error(_other), do: {:transport, :unknown}
-
-  defp code_class(code) when code in [-32_601, -32_602], do: :not_found
-  defp code_class(code) when code in [401, -32_001], do: :auth
-  defp code_class(code) when code in [429, -32_005], do: :rate_limit
-  defp code_class(_code), do: :unknown
 end
