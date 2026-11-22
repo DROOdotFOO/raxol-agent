@@ -41,8 +41,9 @@ defmodule Raxol.Agent.ChildEnv do
 
       config :raxol_core, Raxol.Core.ChildEnv, pass: ["GH_TOKEN"]
 
-  The gap shapes are `Raxol.AgentClientProtocol.Transport.Stdio.credential_gaps/0`,
-  which this module reuses. ACP's stdio transport applies Core's scrub plus
+  The gap shapes (a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix, `SEED_PHRASE`,
+  `OP_SESSION_*`) come from ACP's stdio transport, which this module reuses
+  until raxol_core 2.9.1 covers them. ACP's stdio transport applies Core's scrub plus
   those shapes, but not this module's named list, so an ACP agent still
   inherits the Catalog key variables, the ORDER_* URLs, `PROTON_UID` and the
   sidecar URL unless its spawner passes

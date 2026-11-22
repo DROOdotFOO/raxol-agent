@@ -22,8 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
     `SSH_AUTH_SOCK`, raxol's own keys) and the operator's `extra_secrets:`;
   - on top of Core, names with a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
-    `SEED_PHRASE` and `OP_SESSION_*`, which Core 2.9's pattern misses
-    (`Transport.Stdio.credential_gaps/0`; raxol_agent reuses it).
+    `SEED_PHRASE` and `OP_SESSION_*`, which Core 2.9's pattern misses.
+    `Transport.Stdio.credential_gaps/0`, which holds them for raxol_agent to
+    reuse, is internal (`@doc false`), not public API: it goes away once
+    this package requires raxol_core 2.9.1, which covers those names.
 
   Also:
   - **Core's node-wide `pass:` list is not honoured.** A name the operator

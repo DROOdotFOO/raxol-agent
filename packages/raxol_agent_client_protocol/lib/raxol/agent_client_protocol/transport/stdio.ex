@@ -184,9 +184,9 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     * raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
       `SSH_AUTH_SOCK`, raxol's own keys) and the operator's
       `config :raxol_core, Raxol.Core.ChildEnv, extra_secrets:`, set or not;
-    * and, on top of Core, `credential_gaps/0`: a `_PASS`, `_SEED_PHRASE` or
-      `_DSN` suffix, `SEED_PHRASE`, and `OP_SESSION_*`, which raxol_core 2.9's
-      pattern misses;
+    * and, on top of Core, a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
+      `SEED_PHRASE`, and `OP_SESSION_*`, which raxol_core 2.9's pattern
+      misses;
 
   minus this call's `:pass`.
 
@@ -428,21 +428,20 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   # requires it.
   @gaps ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
 
-  @doc """
-  The names this transport scrubs on top of `Raxol.Core.ChildEnv`
-  (case-insensitive): a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
-  `SEED_PHRASE` and `OP_SESSION_*`, which raxol_core 2.9's credential
-  pattern misses. `Raxol.Agent.ChildEnv` applies the same list to directive
-  shells, so there is one copy of it.
-  """
+  # The names this transport scrubs on top of `Raxol.Core.ChildEnv`
+  # (case-insensitive). Internal: `Raxol.Agent.ChildEnv` applies the same list
+  # to directive shells, so there is one copy of it. Removed once this package
+  # requires raxol_core 2.9.1, whose pattern covers these names.
+  @doc false
   @spec credential_gaps() :: Regex.t()
   def credential_gaps, do: @gaps
 
   @doc """
   Whether a spawned agent is denied `name`: `Raxol.Core.ChildEnv` denies it
   (its pattern or named set), it is on Core's `pass:` list (which this
-  transport does not honour), or it has a `credential_gaps/0` shape, and it
-  is not in `opts[:pass]`. A spawn's `:env` and `:unset_env` are not
+  transport does not honour), or it has a shape Core 2.9 misses (a `_PASS`,
+  `_SEED_PHRASE` or `_DSN` suffix, `SEED_PHRASE`, `OP_SESSION_*`), and it is
+  not in `opts[:pass]`. A spawn's `:env` and `:unset_env` are not
   consulted. Raises like `start_spawn/3` on a malformed config or a missing
   raxol_core.
   """
