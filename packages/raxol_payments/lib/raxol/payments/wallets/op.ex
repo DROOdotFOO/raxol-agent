@@ -58,6 +58,11 @@ defmodule Raxol.Payments.Wallets.Op do
     GenServer.call(server, {:sign_hash, digest})
   end
 
+  # The key is a `Secret`, but `:sys.get_status` and an Erlang-formatted
+  # crash report print its bytes; neither sees it, nor the call that crashed.
+  @impl GenServer
+  def format_status(status), do: Secret.redact_status(status, [:privkey], failure: true)
+
   # -- BaseManager callbacks --
 
   @impl Raxol.Core.Behaviours.BaseManager

@@ -26,6 +26,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   since provider URLs embed API keys.
 - Requires `raxol_agent ~> 3.2` (was `~> 3.0`), the release that ships
   `Raxol.Agent.Secret`.
+- `Wallets.Op` hides its key and the failing call from `:sys.get_status` and
+  crash reports (`format_status/1`).
+- `Req.AutoPay`'s paid retry drops `x-payment` (and the other payment
+  headers), and `Req.Mandate` drops `x-xochi-delegation`, before following a
+  redirect to another origin: Req removes only `authorization` there, so the
+  signed payment or the delegation used to go with it. Same-origin redirects
+  keep them. The mandate step attaches only over HTTPS on the default port
+  (plain HTTP to a loopback host) and never again once a redirect chain has
+  left its first origin, so a hop to `http://api.xochi.fi`, another port or
+  another `*.xochi.fi` host does not get it back.
+- `Telemetry.LoggerHandler`'s default formatter no longer prints caller
+  data: a nested metadata map shows its keys, a tuple its scalar elements,
+  any other compound value its kind, and every URL inside a string its
+  origin; control characters are escaped. The line format changes with it:
+  a tuple prints as `{agent,7}` (was `{:agent, 7}`), a date in ISO 8601
+  (was `~U[...]`), a list as `#list`.
+- The Relay client and Xochi agent-stream refuse a base_url by its parsed
+  host, so `http://localhost@evil.example` is no longer accepted as local,
+  and the refusal names the URL's origin only.
 
 ### Added
 

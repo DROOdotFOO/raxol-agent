@@ -76,7 +76,8 @@ defmodule RaxolEarn.MixProject do
       # required directly. `runtime: false` as in raxol_payments: the agent
       # modules ship loaded, the agent tree does not start.
       raxol_dep(:raxol_agent, "~> 3.2", "../raxol_agent", runtime: false),
-      runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
+      # 2.9: the console bench's `Raxol.Agent.ChildEnv` delegates to it.
+      runtime_dep(:raxol_core, "~> 2.9", "packages/raxol_core"),
       runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp", runtime: false),
       {:req, "~> 0.5"},
       {:ex_keccak, "~> 0.7"},

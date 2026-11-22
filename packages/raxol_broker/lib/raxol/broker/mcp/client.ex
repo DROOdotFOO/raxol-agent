@@ -115,6 +115,7 @@ defmodule Raxol.Broker.MCP.Client do
   alias Raxol.Agent.Auth.Credential
   alias Raxol.Agent.Auth.Robinhood
   alias Raxol.Broker.CredentialStore
+  alias Raxol.Broker.Redact
   alias Raxol.Broker.Tools.Catalog
   alias Raxol.MCP.CircuitBreaker
   alias Raxol.MCP.Client, as: Upstream
@@ -360,7 +361,12 @@ defmodule Raxol.Broker.MCP.Client do
   @impl GenServer
   def format_status(status) do
     Map.new(status, fn
-      {key, value} when key in [:state, :message, :reason] -> {key, scrub(value)}
+      {:reason, reason} -> {:reason, Redact.collapse(reason)}
+      # Its tag only: an `{:EXIT, _, reason}` can carry the spec in a struct.
+      {:message, message} -> {:message, Redact.shape(message)}
+      {:state, state} -> {:state, scrub(state)}
+      # `:sys` debug events carry the messages this process handled.
+      {:log, _events} -> {:log, []}
       other -> other
     end)
   end
@@ -701,7 +707,9 @@ defmodule Raxol.Broker.MCP.Client do
             reconnect_ref: nil
         }
 
+      # Collapsed for the callers too: a start error can carry the spec.
       {:error, reason} ->
+        reason = Redact.collapse(reason)
         drop_tables(tables)
         log_failure("could not start the MCP client", reason)
         fail_queue(%{state | status: :ready}, {:error, reason})
@@ -764,7 +772,10 @@ defmodule Raxol.Broker.MCP.Client do
       # the next call starts a new bounded run instead of reaching it; but not
       # before a cooldown that keeps doubling across failed runs.
       true ->
-        reason = transient(result) || error_reason(result)
+        # Collapsed before it is kept as the cooldown's answer to every
+        # caller; the documented shapes (`{:http, status}`, `{:transport,
+        # kind}`, `{:timeout, phase}`) survive it.
+        reason = Redact.collapse(transient(result) || error_reason(result))
         log_failure("could not connect", reason)
 
         state
@@ -943,9 +954,10 @@ defmodule Raxol.Broker.MCP.Client do
   defp expired?(%State{credential: credential}),
     do: Credential.expired?(credential, DateTime.utc_now(), 0)
 
-  # Reasons here are closed sets (atoms, statuses); never a token or a body.
+  # Collapsed first: a start_link error can carry the client spec, and so
+  # its `{"authorization", "Bearer ..."}` header.
   defp log_failure(what, reason) do
-    Logger.warning("[Broker.MCP] #{what}: #{inspect(reason)}")
+    Logger.warning("[Broker.MCP] #{what}: #{inspect(Redact.collapse(reason), structs: false)}")
   end
 
   # -- redaction --------------------------------------------------------------

@@ -1,29 +1,29 @@
 defmodule Raxol.Agent.ChildEnv do
   @moduledoc """
   The environment for a child process that runs code a model or a third party
-  chose: `Raxol.Core.ChildEnv`'s scrub, widened.
+  chose: `Raxol.Core.ChildEnv`'s scrub plus this package's own names.
 
-  `Raxol.Core.ChildEnv` unsets a fixed list of six raxol variables (plus its
-  configured `:extra_secrets`). Every other credential in the node's
-  environment would still reach a directive's shell command or a benchmarked
-  agent package, for a prompt-injected `printenv` to read. On top of that list,
-  this module unsets, at spawn time:
+  `Raxol.Core.ChildEnv` does the matching: every variable whose name has a
+  credential segment (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_MNEMONIC`,
+  `_CREDENTIALS` and the rest), a database or broker URL, `RPC` anywhere but
+  in `GRPC`, raxol's own secrets and `SSH_AUTH_SOCK`, minus its `pass:` list.
+  On top of that, this module unsets:
 
-    * every variable whose name looks like a credential (case-insensitive): a
-      suffix of `_KEY`, `_KEY_ID`, `_APIKEY`, `_TOKEN`, `_PRIVKEY`,
-      `_SECRET`, `_PASSWORD`, `_PASS`, `_PASSPHRASE`, `_MNEMONIC`,
-      `_SEED_PHRASE`, `_CREDENTIALS`, `_DSN` or `_RPC`; an `RPC_` name
-      segment (`RPC_BASE`, `BASE_RPC_URL`, `ORDER_RPC_8453`), since a provider
-      RPC URL embeds its API key; `MNEMONIC`, `SEED_PHRASE`, `SSH_AUTH_SOCK`
-      (agent forwarding is a push credential too); and `OP_SESSION_*`
-      (1Password CLI sessions);
-    * the explicit names in `secrets/0`: the provider key variables of
-      `Raxol.Agent.Backend.Catalog` and the earn and order credentials whose
-      names no pattern catches.
+    * the names in `secrets/0` that no pattern catches: the provider key
+      variables of `Raxol.Agent.Backend.Catalog`, the ORDER_* URLs (which may
+      embed provider keys), `PROTON_UID` (paired with the Lumo tokens) and
+      the earn signing sidecar's URL;
+    * the shapes Core denies neither by pattern nor by name: a `_PASS`,
+      `_SEED_PHRASE` or `_DSN` suffix, a bare `SEED_PHRASE`, and
+      `OP_SESSION_*` (1Password CLI sessions).
+
+  Names are matched case-insensitively, as Core matches its own; `pass:`
+  is exact.
 
   So `GH_TOKEN`, `GITHUB_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-  `AWS_SESSION_TOKEN` and `SSH_AUTH_SOCK` are unset too, on purpose: a prompt-injected
-  command could otherwise push with, or spend on, the operator's account.
+  `AWS_SESSION_TOKEN` and `SSH_AUTH_SOCK` are unset too, on purpose: a
+  prompt-injected command could otherwise push with, or spend on, the
+  operator's account.
 
   ## Opting a credential back in
 
@@ -38,12 +38,18 @@ defmodule Raxol.Agent.ChildEnv do
 
       config :raxol_core, Raxol.Core.ChildEnv, pass: ["GH_TOKEN"]
 
-  The pattern is duplicated in `Raxol.AgentClientProtocol.Transport.Stdio`,
-  which cannot depend on this package; `child_env_test.exs` checks that the
-  two `credential_pattern/0`s are the same. That transport applies only the
-  pattern: `secrets/0` and `pass:` reach an ACP agent only if its spawner
-  passes them (`unset_env: Raxol.Agent.ChildEnv.secrets()`). MCP stdio
+  `Raxol.AgentClientProtocol.Transport.Stdio` cannot depend on raxol_core and
+  keeps its own, narrower suffix pattern; `child_env_test.exs` checks that
+  every name it scrubs is one this module scrubs too. An ACP agent spawned
+  with that pattern alone still inherits what only Core's pattern or this
+  module's names catch (`DATABASE_URL`, `PGPASSWORD`, `API_KEYS`,
+  `SECRET_KEY_BASE`, `PROTON_UID`, ...). A spawner that wants the shell's
+  scrub passes `unset_env: Raxol.Agent.ChildEnv.unset_names()`. MCP stdio
   servers are spawned by raxol_mcp with `Raxol.Core.ChildEnv` alone.
+
+  Every function here reads `Raxol.Core.ChildEnv`'s config and raises
+  `ArgumentError` when it is malformed (since raxol_core 2.9, an unknown or
+  repeated key too).
 
   This stops inheritance only. A process running as the same user can still
   read the node's launch environment (`/proc/<pid>/environ`, including the
@@ -52,12 +58,13 @@ defmodule Raxol.Agent.ChildEnv do
   """
 
   alias Raxol.Agent.Backend.Catalog
+  alias Raxol.Core.ChildEnv, as: CoreEnv
 
-  @credential ~r/(_KEY|_KEY_ID|_APIKEY|_TOKEN|_PRIVKEY|_SECRET|_PASSWORD|_PASS|_PASSPHRASE|_MNEMONIC|_SEED_PHRASE|_CREDENTIALS|_DSN|_RPC)\z|(\A|_)RPC_|\A(MNEMONIC|SEED_PHRASE|SSH_AUTH_SOCK)\z|\AOP_SESSION_/i
+  # ACP-stdio shapes Core denies neither by pattern nor by name (raxol_core
+  # 2.9; `child_env_test.exs` pins Core's pattern, so a change to it fails
+  # the build instead of narrowing this).
+  @gaps ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
 
-  # Credentials no pattern matches: the ORDER_* URLs may embed provider keys,
-  # PROTON_UID pairs with the Lumo tokens, and the sidecar URL reaches the
-  # earn signing sidecar.
   @named ~w(
     ORDER_BUNDLER_URL
     ORDER_XOCHI_URL
@@ -65,25 +72,43 @@ defmodule Raxol.Agent.ChildEnv do
     RAXOL_ACP_SIDECAR_URL
   )
 
-  @doc false
-  @spec credential_pattern() :: Regex.t()
-  def credential_pattern, do: @credential
-
   @doc """
-  The explicit names unset besides the pattern matches, before the
-  operator's `pass:` list is applied.
+  The names unset in every child whether or not the node has them: Core's
+  set, the Catalog key variables and this package's own. Since 3.2 the
+  operator's `pass:` names are left out, as Core leaves them out of its own.
   """
   @spec secrets() :: [String.t()]
   def secrets do
-    catalog = Enum.flat_map(Catalog.entries(), & &1.env_keys)
-    Enum.uniq(catalog ++ @named ++ Raxol.Core.ChildEnv.secrets())
+    pass = CoreEnv.pass()
+    Enum.uniq(CoreEnv.secrets() ++ Enum.reject(own_named(), &(&1 in pass)))
   end
 
-  @doc "Whether `name` is treated as a credential in a child's environment."
-  @spec secret?(String.t()) :: boolean()
-  def secret?(name) when is_binary(name), do: name in secrets() or credential_name?(name)
+  @doc """
+  Every name a child must not inherit: `secrets/0` plus each variable set in
+  the node now that `secret?/1` denies. For a spawner that does not go
+  through `port_env/1`, such as the ACP stdio transport's `:unset_env`.
+  """
+  @spec unset_names() :: [String.t()]
+  def unset_names do
+    present = System.get_env() |> Map.keys() |> Enum.filter(&secret?/1)
+    Enum.uniq(secrets() ++ present)
+  end
 
-  defp credential_name?(name), do: Regex.match?(@credential, name)
+  @doc "Whether a child is denied `name`."
+  @spec secret?(String.t()) :: boolean()
+  def secret?(name) when is_binary(name) do
+    CoreEnv.secret?(name) or (name not in CoreEnv.pass() and own?(name))
+  end
+
+  @spec own?(String.t()) :: boolean()
+  defp own?(name),
+    do: String.upcase(name) in own_named_upcase() or Regex.match?(@gaps, name)
+
+  @spec own_named() :: [String.t()]
+  defp own_named, do: Enum.flat_map(Catalog.entries(), & &1.env_keys) ++ @named
+
+  @spec own_named_upcase() :: [String.t()]
+  defp own_named_upcase, do: Enum.map(own_named(), &String.upcase/1)
 
   @doc """
   A `Port.open/2` `:env` value: `env` followed by every credential variable it
@@ -92,11 +117,11 @@ defmodule Raxol.Agent.ChildEnv do
   @spec port_env([{String.t() | charlist(), String.t() | charlist() | false}]) ::
           [{charlist(), charlist() | false}]
   def port_env(env \\ []) do
-    base = Raxol.Core.ChildEnv.port_env(env)
+    base = CoreEnv.port_env(env)
     named = MapSet.new(base, fn {name, _value} -> name end)
 
     extra =
-      for name <- unset_names(), name = String.to_charlist(name), name not in named do
+      for name <- own_unset(), name = String.to_charlist(name), name not in named do
         {name, false}
       end
 
@@ -109,30 +134,22 @@ defmodule Raxol.Agent.ChildEnv do
   """
   @spec cmd_env([{String.t(), String.t() | nil}]) :: [{String.t(), String.t() | nil}]
   def cmd_env(env \\ []) do
-    base = Raxol.Core.ChildEnv.cmd_env(env)
+    base = CoreEnv.cmd_env(env)
     named = MapSet.new(base, fn {name, _value} -> name end)
-    base ++ for(name <- unset_names(), name not in named, do: {name, nil})
+    base ++ for(name <- own_unset(), name not in named, do: {name, nil})
   end
 
-  # Names set in the node now that are credentials, plus every explicit name
-  # (set or not, so a variable exported after this call is still covered when
-  # the child starts), minus the operator's `pass:` list.
-  defp unset_names do
-    explicit = secrets()
-    present = System.get_env() |> Map.keys() |> Enum.filter(&credential_name?/1)
-    pass = pass()
+  # What Core leaves set that this module denies: its own names (set or not,
+  # so one exported after this call is still covered when the child starts)
+  # and the node's variables that are a gap shape or another case of an own
+  # name, minus `pass:`.
+  @spec own_unset() :: [String.t()]
+  defp own_unset do
+    pass = CoreEnv.pass()
+    present = System.get_env() |> Map.keys() |> Enum.filter(&own?/1)
 
-    (explicit ++ present)
+    (own_named() ++ present)
     |> Enum.uniq()
     |> Enum.reject(&(&1 in pass))
-  end
-
-  # Read after `Raxol.Core.ChildEnv.port_env/1` or `cmd_env/1`, which raise
-  # on an invalid config, so a malformed `pass:` never reaches here.
-  defp pass do
-    case Application.get_env(:raxol_core, Raxol.Core.ChildEnv, []) do
-      config when is_list(config) -> config |> Keyword.get(:pass, []) |> List.wrap()
-      _other -> []
-    end
   end
 end

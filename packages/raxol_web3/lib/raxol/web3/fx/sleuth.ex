@@ -66,7 +66,8 @@ defmodule Raxol.Web3.FX.Sleuth do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.HTTP
 
-  @derive {Inspect, except: [:api_key, :http_opts]}
+  # `:base_url` too: per `Raxol.Web3.Origin`, a host can name an account.
+  @derive {Inspect, except: [:http_opts, :base_url, :api_key]}
   @enforce_keys [:api_key]
   defstruct [
     :api_key,

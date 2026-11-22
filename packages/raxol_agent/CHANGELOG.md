@@ -14,8 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `with_revealed/2` (a raise inside becomes `{:error,
   :secret_operation_crashed}`) and `redact_status/2` for `format_status/1`.
   `Raxol.Payments.Secret` and `Raxol.Earn.Secret` delegate to it.
-- **`Raxol.Agent.ChildEnv`**, `Raxol.Core.ChildEnv` widened for children that
-  run model- or third-party-chosen code.
+- **`Raxol.Agent.ChildEnv`**, `Raxol.Core.ChildEnv` plus this package's own
+  names and a few shapes Core's pattern misses, for children that run
+  model- or third-party-chosen code. `secrets/0` leaves out `pass:` names;
+  `unset_names/0` is the full list for a spawner that takes names (the ACP
+  stdio transport's `:unset_env`).
 - `Raxol.Agent.Stream.react/2` `{:tool_result, _}` events carry the `id` of
   the `:tool_use` they answer, and `Raxol.Agent.StreamPump` journals it as
   the `tool_result` item's `call_id`.
@@ -34,12 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:strategy` without a `:backend` refuses to start with
   `{:missing_option, :backend}`.
 - **Breaking: directive shell commands no longer inherit provider API keys
-  or any other credential-named variable.** On top of `Raxol.Core.ChildEnv`'s
-  list, `Raxol.Agent.ChildEnv` unsets every variable whose name ends in
-  `_KEY`, `_KEY_ID`, `_APIKEY`, `_TOKEN`, `_PRIVKEY`, `_SECRET`, `_PASSWORD`,
-  `_PASS`, `_PASSPHRASE`, `_MNEMONIC`, `_SEED_PHRASE`, `_CREDENTIALS`, `_DSN` or
-  `_RPC` (case-insensitive), every `RPC_` name, `MNEMONIC`, `SEED_PHRASE`,
-  `SSH_AUTH_SOCK` and `OP_SESSION_*`, the `Backend.Catalog` key variables, `PROTON_UID` and the
+  or any other credential-named variable.** `Raxol.Agent.ChildEnv` unsets
+  everything `Raxol.Core.ChildEnv` (raxol_core 2.9) does -- every name with
+  a credential segment (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ...), a
+  database or broker URL, `RPC` anywhere but in `GRPC`, `SSH_AUTH_SOCK` --
+  plus a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix, `SEED_PHRASE`,
+  `OP_SESSION_*`, the `Backend.Catalog` key variables, `PROTON_UID` and the
   earn/order URLs. This reverses 3.0.0's "provider API keys are not
   scrubbed". It ships in a minor release because it removes access rather
   than changing an API, and the old behaviour exposed every key to a
@@ -56,7 +59,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crash reports (`redact_status(status, keys, failure: true)`).
 - `Directive.Shell` renders its `env` names but not their values.
 - Requires `raxol_agent_client_protocol ~> 0.2.0`, whose stdio transport
-  scrubs a spawned agent's environment the same way.
+  scrubs a spawned agent's environment by its own suffix pattern (every
+  name it matches is one `Raxol.Agent.ChildEnv` denies), and
+  `raxol_core ~> 2.9`, whose `Raxol.Core.ChildEnv` this delegates to.
+  **Upgrade note:** 2.9 also rejects an unknown or repeated key in
+  `config :raxol_core, Raxol.Core.ChildEnv` (a misspelt `extra_secret:`,
+  say). A shell directive then answers `%{exit_status: :error, output:
+  message}` instead of running.
+- `Backend.HTTP.stream/2` ends with `{:error, message}` when a response
+  passes 128 MiB of wire bytes in total (every redirect hop included,
+  counted as it arrives, so the cap holds while the stream is not being
+  read), its unframed remainder passes 1 MiB, its
+  streamed tool-call arguments pass 1 MiB, or it streams more than 128 tool
+  calls (`:max_stream_bytes`, `:max_sse_buffer_bytes`,
+  `:max_tool_call_bytes`, `:max_tool_calls`). A halted stream now kills its
+  request process and drops what it sent; it used to keep reading the
+  response into the caller's mailbox. Only a 2xx body is streamed, so a
+  redirect's or an error's body no longer surfaces as model output.
+  Enumerating the stream outside the process that called `stream/2` (which
+  never received anything) now raises `ArgumentError` and stops the request.
+- `Backend.Credentials.create_item/3` writes its 1Password template in a
+  fresh, randomly named 0700 directory under `$XDG_RUNTIME_DIR`, else the
+  system temp directory, using either only when it is ours and 0700 or
+  sticky; it removes the directory whatever happens, and sweeps ones a
+  killed VM left behind once they are older than the op timeout plus a
+  minute (at least ten minutes).
 
 ## [3.1.0] - 2026-11-14
 

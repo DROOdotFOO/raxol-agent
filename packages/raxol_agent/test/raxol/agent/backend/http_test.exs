@@ -126,6 +126,170 @@ defmodule Raxol.Agent.Backend.HTTPTest do
     end
   end
 
+  describe "stream/2 limits" do
+    defp stream_body(body, opts) do
+      plugin = fn req ->
+        Req.merge(req, plug: fn conn -> Plug.Conn.send_resp(conn, 200, body) end, retry: false)
+      end
+
+      {:ok, stream} =
+        HTTP.stream(
+          [%{role: :user, content: "hello"}],
+          [provider: :openai, api_key: "test", base_url: "http://stub", req_plugins: [plugin]] ++
+            opts
+        )
+
+      Enum.to_list(stream)
+    end
+
+    defp tool_chunk(index, args) do
+      chunk = %{
+        "choices" => [
+          %{
+            "delta" => %{
+              "tool_calls" => [%{"index" => index, "function" => %{"arguments" => args}}]
+            }
+          }
+        ]
+      }
+
+      "data: " <> Jason.encode!(chunk) <> "\n\n"
+    end
+
+    test "an unframed response past the buffer limit ends in an error" do
+      events = stream_body("data: " <> String.duplicate("x", 200), max_sse_buffer_bytes: 100)
+
+      assert [{:error, "streamed response exceeded 100 bytes without an event boundary"}] =
+               events
+    end
+
+    test "tool call arguments past the byte limit end in an error" do
+      body = Enum.map_join(1..5, fn _ -> tool_chunk(0, String.duplicate("a", 30)) end)
+      events = stream_body(body, max_tool_call_bytes: 100)
+
+      assert List.last(events) == {:error, "streamed tool call arguments exceeded 100 bytes"}
+      refute Enum.any?(events, &match?({:done, _}, &1))
+    end
+
+    test "more tool calls than the limit end in an error" do
+      body = Enum.map_join(0..3, &tool_chunk(&1, "{}"))
+
+      assert List.last(stream_body(body, max_tool_calls: 3)) ==
+               {:error, "streamed response exceeded 3 tool calls"}
+    end
+
+    test "a response past the total byte limit ends in an error" do
+      body = String.duplicate("data: {\"x\":1}\n\n", 100)
+
+      assert List.last(stream_body(body, max_stream_bytes: 500)) ==
+               {:error, "streamed response exceeded 500 bytes"}
+    end
+
+    test "one chunk of fragments past the call limit is cut short, not merged whole" do
+      frags = List.duplicate(%{}, 200_000)
+      chunk = %{"choices" => [%{"delta" => %{"tool_calls" => frags}}]}
+      body = "data: " <> Jason.encode!(chunk) <> "\n\n"
+
+      {micros, events} = :timer.tc(fn -> stream_body(body, max_sse_buffer_bytes: 4_000_000) end)
+
+      assert List.last(events) == {:error, "streamed response exceeded 128 tool calls"}
+      assert micros < 2_000_000
+    end
+
+    test "map arguments count toward the byte limit" do
+      args = %{"blob" => String.duplicate("a", 200)}
+      body = Enum.map_join(0..1, &tool_chunk(&1, args))
+
+      assert List.last(stream_body(body, max_tool_call_bytes: 300)) ==
+               {:error, "streamed tool call arguments exceeded 300 bytes"}
+    end
+
+    test "a halted stream stops its request process and leaves no messages" do
+      test_pid = self()
+
+      plugin = fn req ->
+        Req.merge(req,
+          plug: fn conn ->
+            send(test_pid, {:request_pid, self()})
+            Plug.Conn.send_resp(conn, 200, "data: " <> String.duplicate("x", 200))
+          end,
+          retry: false
+        )
+      end
+
+      {:ok, stream} =
+        HTTP.stream([%{role: :user, content: "hi"}],
+          provider: :openai,
+          api_key: "t",
+          base_url: "http://stub",
+          req_plugins: [plugin],
+          max_sse_buffer_bytes: 100
+        )
+
+      assert [{:error, _}] = Enum.to_list(stream)
+      assert_received {:request_pid, request_pid}
+      refute Process.alive?(request_pid)
+
+      refute_received {:sse_data, _, _}
+      refute_received {:sse_done, _}
+      refute_received {:sse_error, _, _}
+    end
+
+    test "a redirect's body is counted toward the total but never streamed" do
+      plugin = fn req ->
+        Req.merge(req,
+          plug: fn
+            %{request_path: "/landed"} = conn ->
+              Plug.Conn.send_resp(conn, 200, "data: [DONE]\n\n")
+
+            conn ->
+              conn
+              |> Plug.Conn.put_resp_header("location", "/landed")
+              |> Plug.Conn.send_resp(
+                307,
+                "data: " <>
+                  Jason.encode!(%{"choices" => [%{"delta" => %{"content" => "injected"}}]}) <>
+                  "\n\n"
+              )
+          end,
+          retry: false
+        )
+      end
+
+      {:ok, stream} =
+        HTTP.stream([%{role: :user, content: "hi"}],
+          provider: :openai,
+          api_key: "t",
+          base_url: "http://stub",
+          req_plugins: [plugin]
+        )
+
+      events = Enum.to_list(stream)
+      refute {:chunk, "injected"} in events
+      assert {:done, %{content: ""}} = List.last(events)
+    end
+
+    test "a stream read by another process raises instead of hanging" do
+      {:ok, stream} =
+        HTTP.stream([%{role: :user, content: "hi"}],
+          provider: :openai,
+          api_key: "t",
+          base_url: "http://127.0.0.1:9",
+          req_plugins: [&Req.merge(&1, retry: false)]
+        )
+
+      task = Task.async(fn -> catch_error(Enum.take(stream, 1)) end)
+      assert %ArgumentError{} = Task.await(task)
+    end
+
+    test "a response within the limits completes" do
+      body = tool_chunk(0, ~s({"a":1})) <> "data: [DONE]\n\n"
+
+      assert {:done, %{tool_calls: [%{"arguments" => %{"a" => 1}}]}} =
+               List.last(stream_body(body, max_tool_call_bytes: 100))
+    end
+  end
+
   describe "plugin can modify request" do
     test "plugin adds custom header" do
       test_pid = self()

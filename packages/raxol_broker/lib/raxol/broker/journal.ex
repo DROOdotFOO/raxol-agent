@@ -149,7 +149,7 @@ defmodule Raxol.Broker.Journal do
 
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.OperatorFile
-  alias Raxol.Broker.{Intent, Policy}
+  alias Raxol.Broker.{Intent, Policy, Redact}
   alias Raxol.Broker.Journal.{Codec, Groups}
   alias Raxol.Broker.Policy.Context
 
@@ -518,12 +518,12 @@ defmodule Raxol.Broker.Journal do
   def handle_info({:DOWN, ref, :process, pid, _reason}, %{claimant: {pid, ref}} = state),
     do: {:noreply, %{state | claimant: nil}}
 
-  # `structs: false`: a message from any process may hold a struct, and its
-  # Inspect implementation must not run here.
+  # Only the message's tag is logged: a message from any process may hold a
+  # credential, or a struct whose Inspect implementation must not run here.
   def handle_info(message, state) do
     Logger.warning(
       "#{inspect(__MODULE__, structs: false)} ignored an unexpected message: " <>
-        inspect(message, structs: false)
+        Redact.shape(message)
     )
 
     {:noreply, state}

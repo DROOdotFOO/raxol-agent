@@ -135,4 +135,23 @@ defmodule Raxol.Payments.Relay.ClientTest do
       Client.get_status(%{base_url: "http://evil.test", auth_token: "x"}, "t_1")
     end
   end
+
+  test "rejects a plaintext URL that only starts like a local one" do
+    for url <- ["http://localhost@evil.example/", "http://127.0.0.1.evil.example/"] do
+      assert_raise ArgumentError, fn ->
+        Client.get_status(%{base_url: url, auth_token: "x"}, "t_1")
+      end
+    end
+  end
+
+  test "the base_url refusal names the origin only" do
+    error =
+      assert_raise ArgumentError, fn ->
+        Client.get_status(%{base_url: "http://u:pw@evil.test/p?key=sek", auth_token: "x"}, "t_1")
+      end
+
+    assert error.message =~ "http://evil.test"
+    refute error.message =~ "pw"
+    refute error.message =~ "sek"
+  end
 end

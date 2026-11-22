@@ -59,6 +59,7 @@ defmodule Raxol.Payments.Req.AutoPay do
   require Logger
 
   alias Raxol.Payments.{Ledger, PolicyGate, Protocol, SpendingPolicy}
+  alias Raxol.Payments.Req.CrossOrigin
 
   @default_protocols [:x402, :mpp]
 
@@ -386,10 +387,13 @@ defmodule Raxol.Payments.Req.AutoPay do
 
   defp request_host(_), do: nil
 
+  # Req drops only `authorization` on a cross-origin redirect, so a redirect
+  # from the paid retry would carry the signed payment to the new origin.
+  # The payment headers are removed before such a redirect is followed.
   defp add_payment_headers(request, headers) do
-    Enum.reduce(headers, request, fn {key, value}, req ->
-      Req.Request.put_header(req, key, value)
-    end)
+    headers
+    |> Enum.reduce(request, fn {key, value}, req -> Req.Request.put_header(req, key, value) end)
+    |> CrossOrigin.attach(:auto_pay_cross_origin, Enum.map(headers, &elem(&1, 0)))
   end
 
   # Strip internal details from error reasons before including in response bodies.

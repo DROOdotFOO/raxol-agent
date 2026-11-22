@@ -110,6 +110,25 @@ defmodule Raxol.Agent.DirectiveTest do
       assert String.contains?(output, "hello-from-shell")
     end
 
+    test "a malformed ChildEnv config is the result, not a dead task" do
+      previous = Application.get_env(:raxol_core, Raxol.Core.ChildEnv)
+      Application.put_env(:raxol_core, Raxol.Core.ChildEnv, pas: ["GH_TOKEN"])
+
+      on_exit(fn ->
+        if previous,
+          do: Application.put_env(:raxol_core, Raxol.Core.ChildEnv, previous),
+          else: Application.delete_env(:raxol_core, Raxol.Core.ChildEnv)
+      end)
+
+      Executor.execute(Directive.shell("echo hi"), %{pid: self(), runtime_pid: self()})
+
+      assert_receive {:command_result, {:shell_result, %{exit_status: :error, output: output}},
+                      _meta},
+                     2_000
+
+      assert output =~ "Raxol.Core.ChildEnv"
+    end
+
     @tag :unix_only
     test "non-zero exit_status is returned" do
       directive = Directive.shell("exit 7")

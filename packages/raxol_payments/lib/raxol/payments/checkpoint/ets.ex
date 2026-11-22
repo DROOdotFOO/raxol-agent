@@ -9,6 +9,12 @@ defmodule Raxol.Payments.Checkpoint.ETS do
   cockpit, a `DynamicSupervisor`, or the application) so an in-flight record
   survives the agent's restart.
 
+  Being `:public`, the table is readable and writable by every process in
+  the VM, Xochi read tokens (`Raxol.Agent.Secret`-wrapped, so they do not
+  print) included. Code in the same VM can already read any process's state,
+  so `:protected` would add no secrecy, and it would make the agent's own
+  writes fail.
+
   This survives a process crash, not a VM restart. Back the same behaviour with
   DETS or a database when cross-restart durability is required.
   """

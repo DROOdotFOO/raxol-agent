@@ -1086,6 +1086,19 @@ defmodule Raxol.Broker.JournalTest do
   end
 
   describe "lifecycle" do
+    test "a stray message is logged by its tag only", %{opts: opts} do
+      pid = start!(opts)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(pid, {:token, "Bearer leak"})
+          _ = :sys.get_state(pid)
+        end)
+
+      assert log =~ "ignored an unexpected message: {:token, ...}"
+      refute log =~ "leak"
+    end
+
     test "a supervisor shutdown stops the Writer the journal started", %{opts: opts, path: path} do
       start!(opts)
       {base, session} = Journal.location(path)

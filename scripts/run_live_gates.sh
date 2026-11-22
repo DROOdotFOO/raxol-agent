@@ -451,11 +451,14 @@ run_relay() {
     "$from_chain" "$from_token" "$to_token" "$atomic" "$from_addr" "$to_addr")"
 
   log "relay preflight: probing /relay/quote for $tok (read-only, no funds)..."
-  code="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' \
-    -X POST "$RELAY_URL/relay/quote" \
-    -H "authorization: Bearer $RELAY_TOKEN" \
-    -H 'content-type: application/json' \
-    -d "$body" || true)"
+  # The bearer reaches curl on stdin (`-H @-`; printf is a builtin), never
+  # on its argv, where any local account could read it from the process list.
+  code="$(printf 'authorization: Bearer %s\n' "$RELAY_TOKEN" |
+    curl -sS -m 20 -o /dev/null -w '%{http_code}' \
+      -X POST "$RELAY_URL/relay/quote" \
+      -H @- \
+      -H 'content-type: application/json' \
+      -d "$body" || true)"
   if [[ "$code" != "200" ]]; then
     err "relay $asset: /relay/quote returned http ${code:-none}. Fix endpoint/token. No funds moved."
     return 1

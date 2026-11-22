@@ -21,23 +21,38 @@ defmodule Raxol.Agent.Backend.HTTP.ToolCalls do
   map replaces them.
   """
   @spec merge(acc(), term()) :: acc()
-  def merge(acc, frags) when is_list(frags) do
+  def merge(acc, frags), do: merge(acc, frags, :infinity)
+
+  @doc """
+  `merge/2` that stops once `acc` holds more than `max_calls` calls, so a
+  chunk of fragments costs bounded work; `check_size/3` reports the excess.
+  """
+  @spec merge(acc(), term(), pos_integer() | :infinity) :: acc()
+  def merge(acc, _frags, max_calls) when is_integer(max_calls) and map_size(acc) > max_calls,
+    do: acc
+
+  def merge(acc, frags, max_calls) when is_list(frags) do
     frags
+    |> Enum.take(if max_calls == :infinity, do: length(frags), else: max_calls + 1)
     |> Enum.with_index()
     |> Enum.reduce(acc, fn {frag, pos}, acc ->
       idx = index(acc, frag, pos)
       cur = Map.get(acc, idx, %{"id" => nil, "name" => nil, "args" => ""})
       fun = frag["function"] || %{}
 
+      args = merge_args(cur["args"], fun["arguments"])
+
+      # The size is taken once here, so `check_size/3` per chunk is a sum.
       Map.put(acc, idx, %{
         "id" => frag["id"] || cur["id"],
         "name" => fun["name"] || cur["name"],
-        "args" => merge_args(cur["args"], fun["arguments"])
+        "args" => args,
+        "bytes" => args_size(args)
       })
     end)
   end
 
-  def merge(acc, _frags), do: acc
+  def merge(acc, _frags, _max_calls), do: acc
 
   defp merge_args(cur, s) when is_binary(s) and is_binary(cur), do: cur <> s
   defp merge_args(_cur, s) when is_binary(s), do: s
@@ -60,6 +75,35 @@ defmodule Raxol.Agent.Backend.HTTP.ToolCalls do
   defp index(acc, _frag, pos), do: next_index(acc) + pos
 
   defp next_index(acc), do: Enum.max(Map.keys(acc), fn -> -1 end) + 1
+
+  @doc """
+  `:ok` while `acc` holds at most `max_calls` calls whose arguments (string
+  bytes, or a map's external size) total at most `max_bytes`, else an error
+  naming the limit. A streamed response is network input, and its fragments
+  otherwise accumulate without bound.
+  """
+  @spec check_size(acc(), pos_integer(), pos_integer()) :: :ok | {:error, String.t()}
+  def check_size(acc, max_bytes, max_calls) do
+    bytes =
+      for {_idx, call} <- acc,
+          reduce: 0,
+          do: (n -> n + Map.get_lazy(call, "bytes", fn -> args_size(call["args"]) end))
+
+    cond do
+      map_size(acc) > max_calls ->
+        {:error, "streamed response exceeded #{max_calls} tool calls"}
+
+      bytes > max_bytes ->
+        {:error, "streamed tool call arguments exceeded #{max_bytes} bytes"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp args_size(a) when is_binary(a), do: byte_size(a)
+  defp args_size(a) when is_map(a), do: :erlang.external_size(a)
+  defp args_size(_a), do: 0
 
   @doc "The accumulated calls in index order."
   @spec finalize(acc()) :: [map()]

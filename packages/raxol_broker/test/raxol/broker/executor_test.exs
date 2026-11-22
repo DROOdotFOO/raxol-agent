@@ -729,22 +729,6 @@ defmodule Raxol.Broker.ExecutorTest do
       refute inspect(status) =~ "leak"
       refute inspect(status) =~ "ACC"
     end
-
-    test "collapse/1 keeps the tag and drops stack arguments" do
-      spec = [headers: [{"authorization", "Bearer leak"}]]
-      exit = {%FunctionClauseError{module: M, function: :f, arity: 1}, [{M, :f, [spec], []}]}
-
-      assert Executor.collapse({:port_exited, exit}) == {:port_exited, FunctionClauseError}
-      assert Executor.collapse({:connect_failed, {:http, 401}}) == {:connect_failed, {:http, 401}}
-      assert Executor.collapse({:connect_failed, :nxdomain}) == {:connect_failed, :nxdomain}
-
-      assert Executor.collapse({:connect_failed, {:initialization_failed, {:http, 401}}}) ==
-               {:connect_failed, {:initialization_failed, {:http, 401}}}
-
-      assert Executor.collapse({:connect_crashed, {:start, spec}}) == {:connect_crashed, :start}
-      assert Executor.collapse({:connect_crashed, {"x", spec}}) == {:connect_crashed, :error}
-      refute inspect(Executor.collapse({:port_exited, {:killed, [spec]}})) =~ "leak"
-    end
   end
 
   describe "port" do

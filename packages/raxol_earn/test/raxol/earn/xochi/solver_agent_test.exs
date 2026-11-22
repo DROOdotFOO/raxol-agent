@@ -844,4 +844,15 @@ defmodule Raxol.Earn.Xochi.SolverAgentTest do
       assert call.data == expected
     end
   end
+
+  test "format_status/1 hides the provider and the Xochi config" do
+    state = %SolverAgent{
+      provider: %{config: %{key: "sek-1"}},
+      xochi_config: %{auth_token: "sek-2"}
+    }
+
+    status = SolverAgent.format_status(%{state: state, reason: {:boom, "sek-3"}, log: [:x]})
+
+    refute inspect(status, structs: false, limit: :infinity) =~ "sek-"
+  end
 end

@@ -41,6 +41,7 @@ defmodule Raxol.Payments.Req.Mandate do
 
   alias Raxol.Payments.Mandate
   alias Raxol.Payments.Mandate.{Check, Store}
+  alias Raxol.Payments.Req.CrossOrigin
 
   @default_hosts ["xochi.fi", "api.xochi.fi"]
   @default_path_scopes %{
@@ -59,6 +60,9 @@ defmodule Raxol.Payments.Req.Mandate do
   def attach(%Req.Request{} = req, opts) do
     req
     |> Req.Request.append_request_steps(mandate: &maybe_attach_header(&1, opts))
+    # Req drops only `authorization` on a cross-origin redirect. The request
+    # step runs again for the redirect and re-attaches only on a Xochi host.
+    |> CrossOrigin.attach(:mandate_cross_origin, ["x-xochi-delegation"])
     |> Req.Request.append_response_steps(mandate_revocation: &maybe_prune_revoked(&1, opts))
   end
 
@@ -112,13 +116,18 @@ defmodule Raxol.Payments.Req.Mandate do
   @spec maybe_attach_header(Req.Request.t(), keyword()) :: Req.Request.t()
   defp maybe_attach_header(%Req.Request{} = req, opts) do
     case resolve_envelope(req, opts) do
-      {:ok, envelope} -> Req.Request.put_header(req, "x-xochi-delegation", envelope)
-      :skip -> req
+      {:ok, envelope} ->
+        Req.Request.put_header(req, "x-xochi-delegation", envelope)
+
+      :skip ->
+        req
     end
   end
 
   defp resolve_envelope(%Req.Request{} = req, opts) do
-    with {:ok, agent_wallet} <- fetch_agent_wallet(opts),
+    with false <- CrossOrigin.stripped?(req),
+         true <- secure_origin?(req),
+         {:ok, agent_wallet} <- fetch_agent_wallet(opts),
          {:ok, host} <- request_host(req),
          true <- xochi_host?(host, Keyword.get(opts, :hosts, @default_hosts)),
          {:ok, scope} <- match_scope(req, Keyword.get(opts, :path_scopes, @default_path_scopes)),
@@ -145,6 +154,19 @@ defmodule Raxol.Payments.Req.Mandate do
       _ -> {:error, :missing_agent_wallet}
     end
   end
+
+  # The step runs again for every redirect hop, so on its own it would put
+  # the delegation back after `CrossOrigin` took it off (a hop to
+  # `http://api.xochi.fi`, another port, or any `*.xochi.fi`). It attaches
+  # only over HTTPS on the default port (plain HTTP to a loopback host, for
+  # local development) and never once the chain has left its first origin.
+  defp secure_origin?(%Req.Request{url: %URI{scheme: "https", port: port}}),
+    do: port in [nil, 443]
+
+  defp secure_origin?(%Req.Request{url: %URI{scheme: "http", host: host}}),
+    do: host in ["localhost", "127.0.0.1"]
+
+  defp secure_origin?(_req), do: false
 
   defp request_host(%Req.Request{url: %URI{host: host}}) when is_binary(host),
     do: {:ok, String.downcase(host)}
