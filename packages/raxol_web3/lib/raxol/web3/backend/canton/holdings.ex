@@ -1,11 +1,12 @@
 defmodule Raxol.Web3.Backend.Canton.Holdings do
-  @moduledoc """
-  `POST /v0/holdings/state` paging and the Amulet holding shape for
-  `Raxol.Web3.Backend.Canton`. A cursor carries the snapshot it was minted
-  against (`migration_id`, `record_time`) beside the `after` offset, so a
-  held cursor keeps walking that snapshot; `page_size` is ours and is never
-  taken from a cursor.
-  """
+  @moduledoc false
+  # Internal to `Raxol.Web3.Backend.Canton`.
+  #
+  # `POST /v0/holdings/state` paging and the Amulet holding shape for
+  # `Raxol.Web3.Backend.Canton`. A cursor carries the snapshot it was minted
+  # against (`migration_id`, `record_time`) beside the `after` offset, so a
+  # held cursor keeps walking that snapshot; `page_size` is ours and is never
+  # taken from a cursor.
 
   import Raxol.Web3.Backend.Decode, only: [dig: 2, page_rows: 1]
 
@@ -43,7 +44,8 @@ defmodule Raxol.Web3.Backend.Canton.Holdings do
   # added here rather than carried in the cursor, deliberately: it is a
   # required field and it is ours, so a held cursor cannot choose how much of
   # somebody else's budget the next request spends.
-  @doc "The `holdings/state` request body for page one (live snapshot) or a held cursor."
+  # The `holdings/state` request body for page one (live snapshot) or a held cursor.
+  @doc false
   @spec request(Scan.state(), String.t(), Cursor.t() | nil) ::
           {:ok, map()} | {:error, Backend.error()}
   def request(state, party, nil) do
@@ -70,7 +72,8 @@ defmodule Raxol.Web3.Backend.Canton.Holdings do
   # with a non-null `next_page_token`, and reading that as the end of the walk
   # would report a party as holding nothing while its holdings were one page
   # further on.
-  @doc "A `holdings/state` response as a page; `next` follows the token, not the item count."
+  # A `holdings/state` response as a page; `next` follows the token, not the item count.
+  @doc false
   @spec page(Scan.state(), map(), map(), %{symbol: term(), name: term()}) ::
           {:ok, Backend.page(Backend.token_balance())} | {:error, Backend.error()}
   def page(state, request, body, symbol) do
@@ -92,7 +95,8 @@ defmodule Raxol.Web3.Backend.Canton.Holdings do
   # The asset catalog, `:catalog` class: the amulet's name and acronym are an
   # upstream release's worth of stable and the cost of a stale row is a label
   # rather than a number.
-  @doc "The amulet's acronym and name, `:catalog` cached."
+  # The amulet's acronym and name, `:catalog` cached.
+  @doc false
   @spec names(Scan.state()) :: {:ok, %{symbol: term(), name: term()}} | {:error, Backend.error()}
   def names(state) do
     with {:ok, body} <- Scan.get(state, :instance_names, %{}, :catalog) do
@@ -125,7 +129,8 @@ defmodule Raxol.Web3.Backend.Canton.Holdings do
   # Reported in the smallest unit, the way wei and lamports are. A figure with
   # more than ten fractional digits is a shape change rather than a rounding
   # opportunity, so it is `nil`.
-  @doc "A ten-decimal amulet figure in the smallest unit, or `nil`."
+  # A ten-decimal amulet figure in the smallest unit, or `nil`.
+  @doc false
   @spec amulet(term()) :: non_neg_integer() | nil
   def amulet(nil), do: nil
 

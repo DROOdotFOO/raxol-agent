@@ -184,7 +184,7 @@ defmodule Raxol.Web3.Backend.Canton do
 
   Neither upstream publishes a figure. `api.cantonnodes.com` answered 429 after
   roughly three requests spaced a few seconds apart on 2026-09-14, and answered
-  every request spaced twelve seconds apart, so the refill rate in `Scan.rate_limit/0` is **a
+  every request spaced twelve seconds apart, so the refill rate in `rate_limit/0` is **a
   guess anchored on that observed threshold** rather than a published number.
   ccscan's limits are **unverified**, because the endpoint that would document
   them is itself account-gated, so it gets the same conservative seed.
