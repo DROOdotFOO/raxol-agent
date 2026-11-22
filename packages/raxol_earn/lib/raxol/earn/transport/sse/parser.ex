@@ -35,15 +35,39 @@ defmodule Raxol.Earn.Transport.SSE.Parser do
   Append `chunk` to the unterminated tail `buffer` and parse every frame it
   completes. Returns the parsed entries, in order, and the new tail. Frames
   that carry no data or invalid JSON are dropped.
+
+  CRLF line endings are folded to LF. A `\\r` that ends the tail is kept
+  until the next chunk shows whether a `\\n` follows it. Only the seam
+  between the tail and the new chunk is searched for a boundary, so a long
+  unterminated tail is not rescanned on every chunk.
   """
   @spec feed(binary(), binary()) :: {[map()], binary()}
   def feed(buffer, chunk) when is_binary(buffer) and is_binary(chunk) do
-    {frames, rest} = split_frames(buffer <> chunk)
+    {buffer, chunk} = carry_cr(buffer, chunk)
+    chunk = String.replace(chunk, "\r\n", "\n")
 
-    entries =
-      for frame <- frames, {:ok, entry} <- [parse_frame(frame)], do: entry
+    if boundary_at_seam?(buffer, chunk) do
+      {frames, rest} = split_frames(buffer <> chunk)
+      {for(frame <- frames, {:ok, entry} <- [parse_frame(frame)], do: entry), rest}
+    else
+      {[], buffer <> chunk}
+    end
+  end
 
-    {entries, rest}
+  defp carry_cr(buffer, chunk)
+       when byte_size(buffer) > 0 and binary_part(buffer, byte_size(buffer) - 1, 1) == "\r",
+       do: {binary_part(buffer, 0, byte_size(buffer) - 1), "\r" <> chunk}
+
+  defp carry_cr(buffer, chunk), do: {buffer, chunk}
+
+  defp boundary_at_seam?(buffer, chunk) do
+    seam =
+      case byte_size(buffer) do
+        0 -> chunk
+        n -> binary_part(buffer, n - 1, 1) <> chunk
+      end
+
+    :binary.match(seam, "\n\n") != :nomatch
   end
 
   @doc """

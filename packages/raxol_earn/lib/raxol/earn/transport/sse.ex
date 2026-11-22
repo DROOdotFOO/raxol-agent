@@ -48,6 +48,8 @@ defmodule Raxol.Earn.Transport.SSE do
   alias Raxol.Earn.Auth
   alias Raxol.Earn.Transport.SSE.Parser
 
+  @max_sse_buffer_bytes 1_048_576
+
   @doc """
   Build a transport.
 
@@ -61,6 +63,11 @@ defmodule Raxol.Earn.Transport.SSE do
   - `:supported_chain_ids` -- defaults to `[8453]`. Sent as the
     `x-supported-chains` header.
   - `:req_options` -- extra options threaded into Req (for testing).
+  - `:max_sse_buffer_bytes` -- the largest event the stream accepts, counted
+    as bytes held without an event boundary (default 1 MiB, as in
+    `Raxol.Agent.Backend.HTTP`). Past it the stream is closed and its task
+    ends `{:error, {:sse_buffer_overflow, limit}}`; the Agent reconnects with
+    backoff. A non-positive-integer value raises `ArgumentError`.
   """
   @spec new(keyword()) :: Raxol.Earn.Transport.t()
   def new(opts) do
@@ -72,6 +79,7 @@ defmodule Raxol.Earn.Transport.SSE do
       server_url: opts |> Keyword.fetch!(:server_url) |> String.trim_trailing("/"),
       supported_chain_ids: Keyword.get(opts, :supported_chain_ids, [8453]),
       req_options: Keyword.get(opts, :req_options, []),
+      max_sse_buffer_bytes: max_sse_buffer_bytes(opts),
       table: table
     }
 
@@ -92,7 +100,7 @@ defmodule Raxol.Earn.Transport.SSE do
 
         task =
           Task.async(fn ->
-            stream_loop(owner, url, headers, cfg.req_options)
+            stream_loop(owner, url, headers, cfg)
           end)
 
         :ets.insert(cfg.table, {:stream_task, task})
@@ -177,7 +185,7 @@ defmodule Raxol.Earn.Transport.SSE do
     post_message(transport, key, content, content_type)
   end
 
-  defp stream_loop(owner, url, headers, req_options) do
+  defp stream_loop(owner, url, headers, cfg) do
     opts =
       [
         url: url,
@@ -190,24 +198,61 @@ defmodule Raxol.Earn.Transport.SSE do
         receive_timeout: 600_000,
         retry: false,
         into: fn {:data, data}, {req, resp} ->
-          {:cont, {req, feed(owner, resp, data)}}
+          case feed(owner, resp, data, cfg.max_sse_buffer_bytes) do
+            {:cont, resp} -> {:cont, {req, resp}}
+            {:halt, resp} -> {:halt, {req, resp}}
+          end
         end
-      ] ++ req_options
+      ] ++ cfg.req_options
 
-    # Req blocks until the stream closes; if the server closes, we exit
-    # normally. The caller (Agent) is responsible for reconnecting.
+    # Req blocks until the stream closes. The task's result is the reason it
+    # ended; the owning Agent reconnects either way. Reasons are reduced to
+    # terms that cannot carry the bearer header.
     try do
-      Req.request(opts)
+      opts |> Req.request() |> stream_result()
     catch
-      _, _ -> :ok
+      _kind, _reason -> {:error, :stream_crashed}
     end
   end
 
+  defp stream_result({:ok, %Req.Response{} = resp}) do
+    case Req.Response.get_private(resp, :sse_error) do
+      nil -> :ok
+      reason -> {:error, reason}
+    end
+  end
+
+  defp stream_result({:error, %Req.TransportError{reason: reason}}),
+    do: {:error, {:transport, reason}}
+
+  defp stream_result({:error, %{__struct__: module}}), do: {:error, {:request_failed, module}}
+
   # The unterminated tail of the stream rides in the response's private map,
-  # the accumulator Req threads through every `:into` call.
-  defp feed(owner, resp, data) do
+  # the accumulator Req threads through every `:into` call. A tail that grows
+  # past the limit never reached an event boundary, so the stream is closed
+  # rather than buffered without bound.
+  defp feed(owner, resp, data, max_bytes) do
     {entries, rest} = Parser.feed(Req.Response.get_private(resp, :sse_buffer, ""), data)
     Enum.each(entries, &send(owner, {:transport, &1}))
-    Req.Response.put_private(resp, :sse_buffer, rest)
+
+    if byte_size(rest) > max_bytes do
+      {:halt,
+       resp
+       |> Req.Response.put_private(:sse_buffer, "")
+       |> Req.Response.put_private(:sse_error, {:sse_buffer_overflow, max_bytes})}
+    else
+      {:cont, Req.Response.put_private(resp, :sse_buffer, rest)}
+    end
+  end
+
+  defp max_sse_buffer_bytes(opts) do
+    case Keyword.get(opts, :max_sse_buffer_bytes, @max_sse_buffer_bytes) do
+      n when is_integer(n) and n > 0 ->
+        n
+
+      other ->
+        raise ArgumentError,
+              ":max_sse_buffer_bytes must be a positive integer, got: #{inspect(other)}"
+    end
   end
 end

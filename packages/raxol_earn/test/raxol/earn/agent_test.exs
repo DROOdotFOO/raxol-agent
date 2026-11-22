@@ -24,6 +24,22 @@ defmodule Raxol.Earn.AgentTest do
     {:ok, agent: agent, transport: transport, api: api}
   end
 
+  describe "reconnect_after/2" do
+    test "doubles the wait on consecutive error closes, capped at a minute" do
+      waits =
+        Enum.map_reduce(1..7, 0, fn _, failures ->
+          Agent.reconnect_after({:error, :boom}, failures)
+        end)
+        |> elem(0)
+
+      assert waits == [2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000]
+    end
+
+    test "a clean close resets to the base wait" do
+      assert Agent.reconnect_after(:ok, 9) == {2_000, 0}
+    end
+  end
+
   describe "start_stream/1" do
     test "connects the transport idempotently", %{agent: agent, transport: transport} do
       :ok = Agent.start_stream(agent)
