@@ -28,6 +28,22 @@ jobs:
       matrix:
         package: [raxol_agent, raxol_payments, raxol_broker, raxol_earn, raxol_web3, raxol_console, raxol_cli, raxol_agent_client_protocol]
 
+    # Only the raxol_agent leg gets a Postgres, for its ThreadLog adapter tests;
+    # an empty image skips the service on the other legs.
+    services:
+      postgres:
+        image: ${{ matrix.package == 'raxol_agent' && 'postgres:17-alpine' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: raxol_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
     steps:
       - uses: actions/checkout@v7
 
@@ -90,14 +106,17 @@ jobs:
           mix run --no-start --no-compile --no-deps-check ../../scripts/check_lock_path_shadows.exs
           mix deps.get --check-locked
 
-      # Retired Hex releases, then the advisory database against mix.lock.
-      # mix_audit runs as a pinned escript so no package carries it as a dep.
+      # Retired Hex releases fail the job. Advisories (mix_audit, a pinned
+      # escript so no package carries it as a dep) only warn here, so a newly
+      # published one does not fail every open PR; the nightly fails on them.
       - name: Audit dependencies
         working-directory: packages/${{ matrix.package }}
         run: |
           mix hex.audit
           mix escript.install hex mix_audit "$MIX_AUDIT_VERSION" --force
-          "$HOME/.mix/escripts/mix_audit"
+          if ! "$HOME/.mix/escripts/mix_audit"; then
+            echo "::warning title=mix_audit (${{ matrix.package }})::advisories match mix.lock; see this step's log. The nightly fails on them."
+          fi
 
       - name: Compile package
         working-directory: packages/${{ matrix.package }}
@@ -131,12 +150,22 @@ jobs:
             --exclude live_acp_dev \
             --exclude cli_signer
 
-      # `bin/raxol-acp --agent` as an OS process. Included by file: the other
-      # `:integration` suites in this package need a live Postgres.
+      # `bin/raxol-acp --agent` as an OS process. Included by file, as is the
+      # Postgres suite below: each `:integration` suite needs its own setup.
       - name: Run ACP stdio loopback
         if: matrix.package == 'raxol_agent'
         working-directory: packages/raxol_agent
         run: mix test --include integration test/raxol/agent/acp_loopback_test.exs
+
+      # The Postgrex ThreadLog adapter against the service container above.
+      - name: Run Postgres ThreadLog adapter tests
+        if: matrix.package == 'raxol_agent'
+        working-directory: packages/raxol_agent
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: '5432'
+          POSTGRES_DB: raxol_agent_test
+        run: mix test --include integration test/raxol/agent/thread_log/postgrex_test.exs
 
       # `raxol mcp` as an OS process.
       - name: Run raxol mcp subprocess tests
