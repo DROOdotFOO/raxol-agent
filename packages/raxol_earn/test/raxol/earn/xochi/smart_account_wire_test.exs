@@ -116,7 +116,7 @@ defmodule Raxol.Earn.Xochi.SmartAccountWireTest do
 
   describe "the account itself" do
     test "matches the buyer `raxol_earn.order --signer privy` signs as" do
-      alias Mix.Tasks.RaxolEarn.Order.Sma7702Wallet
+      alias Mix.Tasks.RaxolEarn.Order.Signer.Sma7702Wallet
 
       assert Wallet.address() == Sma7702Wallet.address()
       assert Wallet.chain_id() == Sma7702Wallet.chain_id()
