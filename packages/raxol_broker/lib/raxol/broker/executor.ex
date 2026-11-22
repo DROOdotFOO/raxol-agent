@@ -1,218 +1,80 @@
 defmodule Raxol.Broker.Executor do
   @moduledoc """
-  The one path every order takes: intent, policy, `review_*`, policy again,
-  `placing`, `place_*`, each step journaled before the next one runs.
+  The one path every order takes, each step journaled before the next runs:
 
-      run(intent, context)
-        open_group       intent + context (policy and counters set here)
-        verdict          :pre_review; DENY ends here
-        review           the review tool's response; its warnings feed the context
-        verdict          :post_review; DENY ends here, ASK parks the group
-        [approval]       approve/3 or decline/3 on a parked group
-        placing          Raxol.Broker.Executor.Place, with the ReviewReceipt
-        order            :placed | :pending_approval | :failed | :unknown
+      open_group   intent + context (policy and journal counters set here)
+      verdict      :pre_review; DENY ends here
+      review       the review tool's response; its warnings feed the context
+      verdict      :post_review; DENY ends here, ASK parks the group
+      [approval]   approve/3 or decline/3 on a parked group
+      placing      Raxol.Broker.Executor.Place, with the ReviewReceipt
+      order        :placed | :pending_approval | :failed | :unknown
 
-  ## Context
-
-  The executor overwrites these `Raxol.Broker.Policy.Context` fields,
-  whatever the caller passed:
-
-    * `policy`, from the `:policy` start option.
-    * `today_notional` and `orders_last_minute`, read from
-      `Raxol.Broker.Journal` at decision time.
-    * `review_warnings`, from this executor's own review call (empty
-      before it).
-
-  Every other field is trusted from the caller until #1185 sources it:
-  `quotes`, `positions`, `portfolio_value`, `start_of_day_value`,
-  `day_pnl` and `market_session`.
-
-  Trusted means its values, never its code: the intent and the context are
-  rebuilt from plain data with `Raxol.Broker.Intent.normalize/1` and
-  `Raxol.Broker.Policy.Context.normalize/1` in the caller (`run/3`) and
-  again in this process before anything else, by pattern matching only.
-  A struct, float, pid or function anywhere in them is `{:error,
-  {:invalid_intent, reason}}` or `{:error, {:invalid_context, reason}}`
-  and nothing is journaled or sent: no protocol of caller data
-  (Enumerable, Inspect, ...) ever runs in this process.
+  The executor sets the context's `policy`, `today_notional` (rolling 24 h
+  back from `:clock`), `orders_last_minute` and `review_warnings`. Intent
+  and context are rebuilt from plain data in the caller and again here.
 
   ## Guards
 
-  Everything is re-checked here, whatever the caller did:
-
-    * Decisions are serialized through this process, so two callers cannot
-      both pass the daily cap before either writes `placing`.
-    * One executor per journal: `init/1` claims the journal with
-      `Raxol.Broker.Journal.claim/1`, and a second executor on the same
-      journal fails to start with `{:journal_claimed, pid}`. The journal
-      only grants the claim to a process started as an executor, and
-      refuses `placing` from any process but the claimant.
-    * The claim lives in the journal's memory. The executor monitors the
-      journal and stops with `{:journal_down, reason}` when it goes down,
-      so its supervisor restarts it; the new executor claims again and
-      closes the groups this one left open. Queued callers get an exit
-      from their call, and an in-flight review task dies with the
-      executor.
-    * Review is mandatory: `Raxol.Broker.Executor.Place` is the only
-      module that names an order tool, and it needs a
+    * Decisions are serialized through this process. One executor per
+      journal: `init/1` takes `Raxol.Broker.Journal.claim/1`, and the
+      journal refuses group writes from any other process. The executor
+      monitors the journal and stops with `{:journal_down, reason}` with it.
+    * Only `Raxol.Broker.Executor.Place` names an order tool, and it needs a
       `Raxol.Broker.Executor.ReviewReceipt` for the same intent and group,
-      verified under a key this process generates and keeps in its own
-      process dictionary (`receipt_key/0` is nil in any other process).
-      The key is put there only after the claim succeeds. No caller code
-      runs in this process: `:journal` must be an atom or pid, and the
-      `:clock` runs in a task. The journal refuses every group write from
-      any process but the claimant, and `placing` for a group without a
-      review record and an ALLOW or an approval after it.
-    * Threat model: the BEAM cannot stop code that deliberately writes
-      into another module's private state, e.g. `Process.put` into its
-      slots or `:sys.replace_state`. The guarantee is that no path through
-      public APIs can send an order tool without this review pipeline.
-      Every remaining bypass requires impersonating the executor's private
-      process-dictionary slots on purpose.
-    * Any journal error before `placing` is written, any review error, and
-      any intent without an order tool mean no order is sent.
-    * Once the order call has been made the result is always `{:ok, map}`.
-      If the `order` record could not be written the map has
-      `journaled: false` and `journal_error: reason`; the order may exist
-      at the broker, so reconcile before retrying.
-    * Idempotency: an intent id that already has a group with a `placing`
-      record whose outcome is not `:failed` (including a crash closed as
-      `crash_outcome_unknown`) returns `{:ok, :duplicate}` and calls
-      nothing. Each place also sends a `ref_id` derived from the intent id,
-      which Robinhood deduplicates on. Intent ids must be stable for a
-      re-run to be recognised: pass `:id` to the `Raxol.Broker.Intent`
-      constructor.
-    * Trade approvals: when the review says `customer_approval_required`,
-      a successful place is `:pending_approval`, not `:placed`. Robinhood
-      holds a proposal the owner approves or declines in its app. The group
-      keeps counting toward the caps and its intent is a duplicate, since
-      the proposal can still become an order. Nothing here resolves it yet.
+      verified under a key this process generates. No caller code runs
+      here: `:journal` must be an atom or pid and `:clock` runs in a task.
+    * Once the order call is made the result is `{:ok, map}`; if its record
+      could not be written the map has `journaled: false` and
+      `journal_error`, and the order may exist at the broker.
+    * An intent id whose group reached `placing` without failing is
+      `{:ok, :duplicate}`; every place also sends a `ref_id` derived from it.
+      Pass `:id` to the `Raxol.Broker.Intent` constructor, or a re-run gets
+      a fresh id and can place twice.
+    * A review saying `customer_approval_required` makes a successful place
+      `:pending_approval`; it keeps counting and its intent stays a duplicate.
 
-  ## ASK
+  A post-review ASK parks the group and returns `{:ask, group_id, prompts}`.
+  `approve/3` re-reads the counters, journals the approval and re-runs the
+  policy (DENY ends the group); an approve refused before the approval is
+  journaled leaves the group parked. `decline/3` and `close/3` end it.
+  Parked groups live in this process; on start every open group is closed
+  with `:executor_restarted`.
 
-  A post-review ASK parks the group and returns `{:ask, group_id, prompts}`;
-  the group id is the token. `approve/3` rebuilds the counters from the
-  journal, journals the approval and runs the policy again: a DENY now (the
-  cap moved while it was parked) ends the group; an ASK (the questions the
-  human just answered) or ALLOW goes on to `placing`. `decline/3` and
-  `close/3` end the group. Routing an ASK to a person and denying on
-  timeout are #1180's.
-
-  `approve/3` and `decline/3` need a non-empty `by`, `close/3` a non-nil
-  atom reason; anything else raises `FunctionClauseError` in the caller and
-  leaves the group parked. An approve refused before the approval is
-  journaled (port down, journal unreadable, or the approval entry rejected
-  as invalid) also leaves the group parked.
-
-  Parked groups live in this process. On start, every group the journal
-  still has open is closed with `{:close, :executor_restarted}`, so a group
-  parked before a restart cannot be approved after it.
-
-  ## Concurrency
-
-  The review call runs in a task, so `parked/2` and `await_port/2` answer
-  while a review is in flight; other calls queue behind it in arrival
-  order. Each queued caller is monitored: one that dies is dropped from
-  the queue, never dispatched (a remote caller is judged by its monitor
-  alone). The place call runs in this process (the journal only accepts
-  `placing` from the claimant), so nothing answers until it returns or
-  `:place_timeout` passes. At most one queued request is dispatched per
-  callback; the next waits for a `:drain` message, so one callback never
-  runs two place calls and the shutdown bound covers the one in progress.
-
-  If the port goes down after the review but before the place (its EXIT
-  handled first), the group is closed with `:port_not_ready`, no `placing`
-  is written and nothing is sent; a re-run of the intent places once the
-  port is back.
-
-  ## Port
-
-  The port is a `Raxol.Broker.Executor.Port.MCP` session built from
-  `:session`. `init/1` only checks the spec (`Port.MCP.prepare/2`, so a
-  live spec still fails start); the client starts after `init/1`, linked
-  to this process, and a task waits for it to be ready, so the executor
-  answers while it connects. Until it is ready, `run/3` and `approve/3`
-  return `{:error, :port_not_ready}` before opening or journaling
-  anything; `await_port/2` waits for readiness.
-
-  Exits are trapped. When the client dies (also mid-connect) or fails to
-  become ready the executor stays up, logs the failure and starts a new
-  client after a backoff (`:reconnect_ms`, default 1 s, doubling to 60 s,
-  reset once ready); the client itself retries a failed connect on the
-  same schedule. A port that is down never restarts the executor, so an
-  unreachable endpoint cannot exhaust its supervisor's restart budget.
-
-  ## Mode
-
-  Only `mode: :dry_run` (the default) runs. `Raxol.Broker.Executor.Port.MCP`
-  refuses to connect a live session in dry-run (`{:error,
-  :live_port_in_dry_run}`): a dry-run `:session` must carry `sandbox: true`
-  and a URL that is not on `robinhood.com`. The intent record carries
-  `"mode": "dry_run"`. `mode: :armed` is `{:error, :not_armed}` until
-  arming exists (#1179).
+  The review runs in a task, so `parked/2` and `await_port/2` answer during
+  it; other calls queue (a dead caller is dropped). The port
+  (`Raxol.Broker.Executor.Port.MCP`) connects after `init/1`; until it is
+  ready `run/3` and `approve/3` are `{:error, :port_not_ready}`. A dead port
+  reconnects with backoff (doubling to 60 s), never restarting the executor.
 
   ## Options
 
-    * `:policy` (required) - a policy keyword list, validated with
-      `Raxol.Broker.PolicyFile.validate/1`; `{:invalid_policy, reason}`
-      otherwise.
-    * `:session` (required) - a `Raxol.MCP.Client` spec for
-      `Raxol.Broker.Executor.Port.MCP.prepare/2` and `start_client/1`.
-    * `:account_number` (required) - the account orders are sent for.
-    * `:journal` - the `Raxol.Broker.Journal` server, a registered name
-      (atom) or a pid (default that module). Anything else, such as
-      `{:via, module, name}` or `{:global, name}`, is
-      `{:invalid_journal, value}`: resolving it would run caller code in
-      this process.
-    * `:mode` - `:dry_run` (default) or `:armed`.
-    * `:clock` - zero-arity function returning the UTC `DateTime` used for
-      the counters (default `DateTime.utc_now/0`). It runs in a short-lived
-      task, never in this process, with a 5 s budget. Its result is rebuilt
-      with `Raxol.Broker.Plain.normalize/1` before any `DateTime` function
-      sees it; anything but a UTC `DateTime` in the ISO calendar fails the
-      call with `{:error, {:context, reason}}` and nothing is opened or sent.
-    * `:review_timeout`, `:place_timeout` - per tool call, an integer of
-      milliseconds in 1..4_294_000_000 (default 30 s; the cap leaves
-      headroom under the VM's timer limit); anything else is
-      `{:invalid_timeout, key, value}`.
-    * `:reconnect_ms` - the first port reconnect delay, same range
-      (default 1 s, doubling to 60 s).
-    * `:shutdown` - the child spec's shutdown bound in milliseconds, a
-      positive integer (default `place_timeout + 5_000`).
-    * `:name`.
-
-  `child_spec/1` sets `shutdown` from `:shutdown`, else `place_timeout +
-  5_000`: a supervisor stopping the executor during a place waits up to
-  that bound for the order call. A stop is handled between callbacks, so
-  a review in flight is never waited for (its task dies with the
-  executor). A journal write stalled past the bound is killed with the
-  executor; the group is then closed as `crash_outcome_unknown` on
-  restart (counted, never re-placed), and recovery reports it as such.
-
-  `today_notional` counts a rolling 24 hours back from the clock's now,
-  which counts at least as much as any calendar day would. No caller input
-  moves the window; a calendar the executor owns (New York trading day) is
-  #1185's.
+  Required: `:policy` (`{:invalid_policy, r}`), `:session` (a sandboxed
+  `Raxol.MCP.Client` spec, `:session_required`), `:account_number`.
+  Optional: `:journal` (atom or pid, `{:invalid_journal, v}`), `:mode`
+  (`:armed` is `:not_armed`), `:clock` (zero-arity, UTC `DateTime`, 5 s;
+  a bad result is `{:error, {:context, r}}`), `:review_timeout`,
+  `:place_timeout` (default 30 s) and `:reconnect_ms` (default 1 s), all ms
+  in 1..4_294_000_000 (`{:invalid_timeout, key, v}`), `:name`. These stop
+  the start; `:shutdown` (default `place_timeout + 5_000`) raises in
+  `child_spec/1`. A second executor on a journal gets `{:journal_claimed, pid}`.
   """
 
   use GenServer
 
   require Logger
 
-  alias Raxol.Broker.Executor.{Place, Port, Review, ReviewReceipt}
+  alias Raxol.Agent.Secret
+  alias Raxol.Broker.Executor.{Options, Parked, Place, Port, Review, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
-  alias Raxol.Broker.{Intent, Journal, Plain, Policy, PolicyFile}
+  alias Raxol.Broker.{Intent, Journal, Plain, Policy}
   alias Raxol.Broker.Policy.Context
   alias Raxol.Broker.Tools.Catalog
   import Raxol.Broker.Redact, only: [collapse: 1, shape: 1]
 
-  @default_timeout 30_000
-  @default_reconnect_ms 1_000
-  @max_backoff 60_000
   @clock_timeout 5_000
-  # `receive after` and `Process.send_after/3` refuse anything above
-  # 4_294_967_295 ms; the cap leaves headroom under that.
-  @max_timeout 4_294_000_000
+  @max_backoff 60_000
+  @max_timeout Options.max_timeout()
 
   @type placed :: %{
           required(:group_id) => String.t(),
@@ -228,8 +90,6 @@ defmodule Raxol.Broker.Executor do
           | {:ask, String.t(), [{Policy.rule_id(), String.t()}]}
           | {:deny, String.t(), term()}
           | {:error, term()}
-
-  # -- API ----------------------------------------------------------------------
 
   @doc "Start the executor. See the moduledoc for options."
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -280,8 +140,9 @@ defmodule Raxol.Broker.Executor do
   """
   @spec await_port(GenServer.server(), non_neg_integer()) ::
           :ok | {:error, :port_not_ready | {:invalid_timeout, :await_port, term()}}
-  def await_port(server, timeout \\ @default_timeout) when is_integer(timeout) and timeout >= 0,
-    do: GenServer.call(server, {:await_port, timeout}, :infinity)
+  def await_port(server, timeout \\ Options.default_timeout())
+      when is_integer(timeout) and timeout >= 0,
+      do: GenServer.call(server, {:await_port, timeout}, :infinity)
 
   @doc """
   A child spec whose `:shutdown` covers one place call (`place_timeout +
@@ -294,104 +155,23 @@ defmodule Raxol.Broker.Executor do
     %{
       id: __MODULE__,
       start: {__MODULE__, :start_link, [opts]},
-      shutdown: shutdown(opts)
+      shutdown: Options.shutdown(opts)
     }
   end
-
-  defp shutdown(opts) do
-    case Keyword.fetch(opts, :shutdown) do
-      {:ok, ms} when is_integer(ms) and ms > 0 ->
-        ms
-
-      {:ok, other} ->
-        raise ArgumentError,
-              "invalid :shutdown #{inspect(other, structs: false)}, expected a positive integer"
-
-      :error ->
-        place_shutdown(Keyword.get(opts, :place_timeout))
-    end
-  end
-
-  defp place_shutdown(ms) when is_integer(ms) and ms > 0 and ms <= @max_timeout, do: ms + 5_000
-  defp place_shutdown(_unset_or_refused), do: @default_timeout + 5_000
-
-  # The receipt key lives in the executor's own process dictionary, so it is
-  # nil in every other process. `Raxol.Broker.Executor.Place` verifies
-  # receipts with it, which means only this process can place.
-  @doc false
-  @spec receipt_key() :: binary() | nil
-  def receipt_key, do: Process.get({__MODULE__, :receipt_key})
-
-  # -- Server -------------------------------------------------------------------
 
   @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
 
-    with {:ok, config} <- check_opts(opts),
+    with {:ok, config} <- Options.check(opts),
          {:ok, client_spec} <- prepare_port(config),
          {:ok, journal_ref} <- monitor_journal(config.journal),
          :ok <- safe(fn -> Journal.claim(config.journal) end) do
       state = base_state(config, client_spec, journal_ref)
-      Process.put({__MODULE__, :receipt_key}, state.key)
       close_orphans(state)
       {:ok, state, {:continue, :connect}}
     else
       {:error, reason} -> {:stop, reason}
-    end
-  end
-
-  # `:journal` comes first: a `{:via, module, name}` or `{:global, name}`
-  # would run caller code in this process to resolve it.
-  defp check_opts(opts) do
-    with {:ok, journal} <- fetch_journal(opts),
-         {:ok, timeouts} <- fetch_timeouts(opts),
-         {:ok, clock} <- fetch_clock(opts),
-         :ok <- check_mode(Keyword.get(opts, :mode, :dry_run)),
-         {:ok, account} <- fetch_account(opts),
-         {:ok, policy} <- fetch_policy(opts),
-         {:ok, session} <- fetch_session(opts) do
-      {:ok,
-       Map.merge(timeouts, %{
-         journal: journal,
-         clock: clock,
-         account: account,
-         policy: policy,
-         session: session
-       })}
-    end
-  end
-
-  defp fetch_timeouts(opts) do
-    with {:ok, review_timeout} <- fetch_timeout(opts, :review_timeout),
-         {:ok, place_timeout} <- fetch_timeout(opts, :place_timeout),
-         {:ok, reconnect_ms} <- fetch_timeout(opts, :reconnect_ms, @default_reconnect_ms) do
-      {:ok,
-       %{review_timeout: review_timeout, place_timeout: place_timeout, reconnect_ms: reconnect_ms}}
-    end
-  end
-
-  defp fetch_journal(opts) do
-    case Keyword.get(opts, :journal, Journal) do
-      journal when (is_atom(journal) and not is_nil(journal)) or is_pid(journal) ->
-        {:ok, journal}
-
-      other ->
-        {:error, {:invalid_journal, other}}
-    end
-  end
-
-  defp fetch_timeout(opts, key, default \\ @default_timeout) do
-    case Keyword.get(opts, key, default) do
-      ms when is_integer(ms) and ms > 0 and ms <= @max_timeout -> {:ok, ms}
-      other -> {:error, {:invalid_timeout, key, other}}
-    end
-  end
-
-  defp fetch_clock(opts) do
-    case Keyword.get(opts, :clock, &DateTime.utc_now/0) do
-      clock when is_function(clock, 0) -> {:ok, clock}
-      other -> {:error, {:invalid_clock, other}}
     end
   end
 
@@ -425,7 +205,7 @@ defmodule Raxol.Broker.Executor do
       policy: config.policy,
       review_timeout: config.review_timeout,
       place_timeout: config.place_timeout,
-      key: :crypto.strong_rand_bytes(32),
+      key: Secret.new(:crypto.strong_rand_bytes(32)),
       client_spec: client_spec,
       port: nil,
       port_status: :connecting,
@@ -434,35 +214,10 @@ defmodule Raxol.Broker.Executor do
       reconnect_ms: config.reconnect_ms,
       backoff: config.reconnect_ms,
       port_waiters: %{},
-      parked: %{},
+      parked: Parked.new(),
       busy: nil,
       queue: :queue.new()
     }
-  end
-
-  defp check_mode(:dry_run), do: :ok
-  defp check_mode(:armed), do: {:error, :not_armed}
-  defp check_mode(other), do: {:error, {:invalid_mode, other}}
-
-  defp fetch_account(opts) do
-    case Keyword.get(opts, :account_number) do
-      account when is_binary(account) and account != "" -> {:ok, account}
-      other -> {:error, {:invalid_account_number, other}}
-    end
-  end
-
-  defp fetch_policy(opts) do
-    case PolicyFile.validate(Keyword.get(opts, :policy)) do
-      {:ok, policy} -> {:ok, policy}
-      {:error, reason} -> {:error, {:invalid_policy, reason}}
-    end
-  end
-
-  defp fetch_session(opts) do
-    case Keyword.get(opts, :session) do
-      spec when is_list(spec) and spec != [] -> {:ok, spec}
-      _ -> {:error, :session_required}
-    end
   end
 
   # A group the journal still has open was parked or mid-flight in an
@@ -481,14 +236,7 @@ defmodule Raxol.Broker.Executor do
 
   @impl GenServer
   def handle_call(:parked, _from, state) do
-    list =
-      state.parked
-      |> Enum.sort_by(fn {_id, group} -> group.seq end)
-      |> Enum.map(fn {id, group} ->
-        %{group_id: id, intent: group.intent, prompts: group.prompts}
-      end)
-
-    {:reply, list, state}
+    {:reply, Parked.list(state.parked), state}
   end
 
   def handle_call({:await_port, _timeout}, _from, %{port_status: :ready} = state),
@@ -599,8 +347,6 @@ defmodule Raxol.Broker.Executor do
   def terminate(_reason, %{port: nil}), do: :ok
   def terminate(_reason, state), do: Port.stop(state.port)
 
-  # -- Port ---------------------------------------------------------------------
-
   # The client connects on its own (retrying a failed connect with backoff
   # from `:reconnect_ms`); a task waits for it, so this process keeps
   # answering meanwhile.
@@ -684,8 +430,6 @@ defmodule Raxol.Broker.Executor do
     end)
   end
 
-  # -- Dispatch -----------------------------------------------------------------
-
   defp dispatch({:run, intent, context}, from, state) do
     case Policy.normalize(intent, context) do
       {:ok, intent, context} -> awaiting(run_intent(state, intent, context), from)
@@ -762,11 +506,9 @@ defmodule Raxol.Broker.Executor do
 
   defp request_kind(_request), do: :request
 
-  # -- Pipeline -----------------------------------------------------------------
-
   defp run_intent(state, intent, context) do
     with :ok <- port_up(state),
-         :ok <- not_parked(state, intent),
+         :ok <- Parked.check_intent(state.parked, intent),
          {:ok, nil} <- placed_before(state, intent),
          {:ok, _tool} <- Review.tool(intent),
          {:ok, context} <- fill(state, %{context | review_warnings: []}),
@@ -780,13 +522,6 @@ defmodule Raxol.Broker.Executor do
 
   defp port_up(%{port_status: :ready}), do: :ok
   defp port_up(_state), do: {:error, :port_not_ready}
-
-  defp not_parked(state, intent) do
-    case Enum.find(state.parked, fn {_id, group} -> group.intent.id == intent.id end) do
-      nil -> :ok
-      {id, _group} -> {:error, {:parked, id}}
-    end
-  end
 
   defp placed_before(state, intent),
     do: safe(fn -> Journal.placing_for_intent(intent.id, state.journal) end)
@@ -829,7 +564,7 @@ defmodule Raxol.Broker.Executor do
   end
 
   defp post_review(state, %{intent: intent, group_id: group_id} = pending) do
-    receipt = ReviewReceipt.issue(state.key, intent, group_id)
+    receipt = ReviewReceipt.issue(Secret.reveal(state.key), intent, group_id)
     verdict = Policy.evaluate(intent, pending.context)
 
     case {append(state, group_id, {:verdict, :post_review, verdict}), verdict} do
@@ -848,23 +583,14 @@ defmodule Raxol.Broker.Executor do
   end
 
   defp park(state, %{group_id: group_id} = pending, receipt, prompts) do
-    group = %{
-      intent: pending.intent,
-      context: pending.context,
-      receipt: receipt,
-      prompts: prompts,
-      customer_approval_required: pending.customer_approval_required,
-      seq: System.unique_integer([:monotonic])
-    }
-
-    parked = Map.put(state.parked, group_id, group)
+    parked = Parked.put(state.parked, group_id, pending, receipt, prompts)
     {:reply, {:ask, group_id, prompts}, %{state | parked: parked}}
   end
 
   # Everything before the approval is journaled leaves the group parked.
   defp approve_parked(state, token, by) do
     with :ok <- port_up(state),
-         {:ok, group} <- fetch_parked(state, token),
+         {:ok, group} <- Parked.fetch(state.parked, token),
          {:ok, context} <- fill(state, group.context) do
       approved(state, token, group, by, context)
     else
@@ -872,15 +598,8 @@ defmodule Raxol.Broker.Executor do
     end
   end
 
-  defp fetch_parked(state, token) do
-    case Map.fetch(state.parked, token) do
-      {:ok, group} -> {:ok, group}
-      :error -> {:error, {:not_parked, token}}
-    end
-  end
-
   defp approved(state, group_id, group, by, context) do
-    unparked = %{state | parked: Map.delete(state.parked, group_id)}
+    unparked = %{state | parked: Parked.delete(state.parked, group_id)}
 
     case append(state, group_id, {:approval, :approved, by}) do
       :ok ->
@@ -914,9 +633,9 @@ defmodule Raxol.Broker.Executor do
   # Dropped from the parked map whatever the journal says: without its
   # receipt the group can never reach `placing`.
   defp finish_parked(state, token, entry) do
-    case Map.pop(state.parked, token) do
-      {nil, _parked} -> {:reply, {:error, {:not_parked, token}}, state}
-      {_group, parked} -> {:reply, append(state, token, entry), %{state | parked: parked}}
+    case Parked.pop(state.parked, token) do
+      {:ok, parked} -> {:reply, append(state, token, entry), %{state | parked: parked}}
+      {:error, reason} -> {:reply, {:error, reason}, state}
     end
   end
 
@@ -934,6 +653,7 @@ defmodule Raxol.Broker.Executor do
       catalog: state.catalog,
       journal: state.journal,
       account: state.account,
+      key: state.key,
       timeout: state.place_timeout,
       customer_approval_required: customer_approval_required
     }
@@ -963,8 +683,6 @@ defmodule Raxol.Broker.Executor do
     {:reply, reply, state}
   end
 
-  # -- Context and journal ------------------------------------------------------
-
   # The window is a rolling 24 hours back from this executor's clock; no
   # caller input moves it.
   defp fill(state, %Context{} = context) do
@@ -980,7 +698,7 @@ defmodule Raxol.Broker.Executor do
   end
 
   # The clock is caller code, so it runs in a task: never in this process,
-  # where it would hold the executor's identity and receipt key. Its result
+  # where it would hold the executor's identity and journal claim. Its result
   # is rebuilt by pattern matching before any Calendar function sees it.
   defp now(clock) do
     task = Task.async(clock)

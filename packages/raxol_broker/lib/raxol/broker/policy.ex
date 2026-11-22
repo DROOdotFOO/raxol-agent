@@ -150,8 +150,6 @@ defmodule Raxol.Broker.Policy do
     end
   end
 
-  # -- Context shape ----------------------------------------------------------
-
   @decimal_fields [:portfolio_value, :start_of_day_value, :day_pnl, :today_notional]
 
   defp validate_context(%Context{} = context) do
@@ -182,8 +180,6 @@ defmodule Raxol.Broker.Policy do
 
   defp optional_count?(nil), do: true
   defp optional_count?(value), do: is_integer(value) and value >= 0
-
-  # -- Notional ---------------------------------------------------------------
 
   @doc """
   The USD notional of `intent` as the policy computes it: the stated amount,
@@ -227,8 +223,6 @@ defmodule Raxol.Broker.Policy do
   end
 
   defp positive(_value, field), do: {:error, {:invalid, field}}
-
-  # -- Rules ------------------------------------------------------------------
 
   # Built from @rule_ids so the evaluation order and rule_ids/0 cannot drift.
   defp rules do
@@ -279,37 +273,36 @@ defmodule Raxol.Broker.Policy do
     if type in policy.order_types, do: Verdict.allow(), else: deny(:order_type, type)
   end
 
-  defp after_hours_market(%{intent: intent, context: context, policy: policy}) do
-    cond do
-      type_of(intent) not in @market_types -> Verdict.allow()
-      policy.after_hours_market -> Verdict.allow()
-      context.market_session == :regular -> Verdict.allow()
-      is_nil(context.market_session) -> deny(:after_hours_market, missing(:market_session))
-      true -> deny(:after_hours_market, context.market_session)
-    end
+  defp after_hours_market(%{policy: %{after_hours_market: true}}), do: Verdict.allow()
+
+  defp after_hours_market(%{intent: intent, context: %Context{market_session: session}}) do
+    if type_of(intent) in @market_types, do: market_session(session), else: Verdict.allow()
   end
+
+  defp market_session(:regular), do: Verdict.allow()
+  defp market_session(nil), do: deny(:after_hours_market, missing(:market_session))
+  defp market_session(session), do: deny(:after_hours_market, session)
 
   defp drawdown_breaker(%{policy: %{drawdown_halt: :unset}}), do: Verdict.allow()
 
+  defp drawdown_breaker(%{context: %Context{start_of_day_value: nil}}),
+    do: deny(:drawdown_breaker, missing(:start_of_day_value))
+
+  defp drawdown_breaker(%{context: %Context{day_pnl: nil}}),
+    do: deny(:drawdown_breaker, missing(:day_pnl))
+
   defp drawdown_breaker(%{context: context, policy: %{drawdown_halt: halt}}) do
-    cond do
-      is_nil(context.start_of_day_value) ->
-        deny(:drawdown_breaker, missing(:start_of_day_value))
+    %Context{start_of_day_value: start, day_pnl: pnl} = context
 
-      is_nil(context.day_pnl) ->
-        deny(:drawdown_breaker, missing(:day_pnl))
+    if Decimal.gt?(start, 0),
+      do: drawdown(Decimal.div(Decimal.max(Decimal.negate(pnl), @zero), start), halt),
+      else: deny(:drawdown_breaker, {:invalid_context, :start_of_day_value})
+  end
 
-      not Decimal.gt?(context.start_of_day_value, 0) ->
-        deny(:drawdown_breaker, {:invalid_context, :start_of_day_value})
-
-      true ->
-        loss = Decimal.max(Decimal.negate(context.day_pnl), @zero)
-        drawdown = Decimal.div(loss, context.start_of_day_value)
-
-        if Decimal.gt?(drawdown, halt),
-          do: deny(:drawdown_breaker, %{drawdown: drawdown, halt: halt}),
-          else: Verdict.allow()
-    end
+  defp drawdown(drawdown, halt) do
+    if Decimal.gt?(drawdown, halt),
+      do: deny(:drawdown_breaker, %{drawdown: drawdown, halt: halt}),
+      else: Verdict.allow()
   end
 
   defp order_rate(%{policy: %{max_orders_per_minute: :unset}}), do: Verdict.allow()
@@ -386,23 +379,23 @@ defmodule Raxol.Broker.Policy do
        when provenance == :llm or
               (is_tuple(provenance) and elem(provenance, 0) == :untrusted) do
     %{notional: {:ok, notional}, policy: %{llm_ask_above: threshold}} = input
-
-    cond do
-      threshold == :unset ->
-        Verdict.ask("Model-originated order; llm_ask_above is unset.")
-
-      Decimal.gt?(notional, threshold) ->
-        Verdict.ask(
-          "Model-originated order of $#{Decimal.to_string(notional, :normal)} " <>
-            "exceeds llm_ask_above $#{Decimal.to_string(threshold, :normal)}."
-        )
-
-      true ->
-        Verdict.allow()
-    end
+    model_order(notional, threshold)
   end
 
   defp llm_ask_above(_input), do: Verdict.allow()
+
+  defp model_order(_notional, :unset),
+    do: Verdict.ask("Model-originated order; llm_ask_above is unset.")
+
+  defp model_order(notional, threshold) do
+    if Decimal.gt?(notional, threshold),
+      do:
+        Verdict.ask(
+          "Model-originated order of $#{Decimal.to_string(notional, :normal)} " <>
+            "exceeds llm_ask_above $#{Decimal.to_string(threshold, :normal)}."
+        ),
+      else: Verdict.allow()
+  end
 
   defp type_of(%Intent{kind: kind}) when kind in [:buy_usd, :buy_shares, :sell], do: :market
   defp type_of(%Intent{kind: kind}), do: kind

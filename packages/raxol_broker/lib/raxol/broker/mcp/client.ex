@@ -5,107 +5,55 @@ defmodule Raxol.Broker.MCP.Client do
 
   It owns one unregistered `Raxol.MCP.Client`, so nothing else in the VM can
   call the upstream around `call/3`'s authorization. Headers are fixed when an
-  MCP client connects, so a new bearer means a new inner client: on refresh
-  the old one is stopped and another is started with the new token.
+  MCP client connects, so a new bearer means a new inner client.
 
   ## Read-only, fail closed
 
   `call/3` admits only tools `Raxol.Broker.Tools.Catalog` classifies `:read`
-  from the frozen capture. Everything else -- orders, cancels, reviews,
-  watchlist, alert and scan mutators, and any name the capture lacks -- is
-  `{:error, {:tool_denied, name}}` before any request is made. On connect
-  the live tool list is reconciled against the capture (drift is logged);
-  `list_tools/1` returns the tools still `:read` for this session, so what is
-  offered is what may be called. `live_tools/1` returns the whole live list,
-  unfiltered, for `mix raxol.broker.capture_tools`.
+  from the frozen capture; anything else is `{:error, {:tool_denied, name}}`
+  before any request. On connect the live tool list is reconciled against
+  the capture; `list_tools/1` returns the tools still `:read`, and
+  `live_tools/1` the whole live list for `mix raxol.broker.capture_tools`.
 
   ## Tokens
 
-  * The tool list is fetched on connect and cached.
-  * A refresh is scheduled `:refresh_skew` seconds (default 300) before
-    `expires_at`; a credential without an expiry is never refreshed early.
-    A credential already expired is refreshed before it is used.
-  * A 401 (on a call, or at connect) starts ONE refresh: concurrent callers
-    wait on it, and a 401 for a request sent with an older token is retried
-    with the current one instead of refreshing again. The rotated credential
-    is persisted with `Raxol.Broker.CredentialStore` BEFORE it is used, the
-    inner client is restarted with it, and each waiting request is retried
-    once.
-  * A 401 on the retry, or on a token fresh from a refresh that has not yet
-    succeeded once, means the grant is gone: every caller gets
-    `{:error, :unauthorized}`, the inner client is stopped (so nothing keeps
-    reconnecting with a dead token), and this process stays up answering
-    `{:error, :unauthorized}` until it is restarted with a new sign-in. A
-    refresh the server rejects (`invalid_grant`) ends the same way.
-  * A 403 is never a reason to refresh; it is returned as `{:error, {:http, 403}}`.
-  * A refresh whose rotated credential cannot be stored keeps the new
-    credential in memory without using it (the old refresh token is spent),
-    answers `{:error, {:store_failed, reason}}`, and retries the write on the
-    next request.
+  A refresh is scheduled `:refresh_skew` seconds (default 300) before
+  `expires_at`; an expired credential is refreshed before use. A 401 starts
+  one refresh that concurrent callers wait on; the rotated credential is
+  persisted with `Raxol.Broker.CredentialStore` before it is used, and each
+  waiting request is retried once. A 401 on that retry, on a fresh token,
+  or a rejected refresh locks the session out: every call answers
+  `{:error, :unauthorized}` until restart. A 403 is `{:error, {:http, 403}}`.
+  A rotated credential that cannot be stored is kept in memory, unused,
+  and the write is retried on the next request (`{:error, {:store_failed,
+  reason}}` meanwhile).
 
   ## Throttling
 
-  Every call this session makes is read-only, so a `429`, `502`, `503` or
-  `504` is retried after a delay doubling from `:backoff`'s `:base_ms`
-  (default 500, with jitter of up to half the delay) up to `:max_ms`
-  (default 8000), at most `:retries` times (default 3). The throttle status
-  comes back as `{:error, {:http, status}}` when the retries run out, when the
-  next delay would pass the caller's `call/4` timeout, or when one more
-  failure would open the session's circuit breaker.
+  A `429`, `502`, `503` or `504` is retried after a jittered delay doubling
+  from `:backoff`'s `:base_ms` (default 500) up to `:max_ms` (default 8000),
+  at most `:retries` times (default 3), unless the delay would pass the
+  caller's timeout or one more failure could open the circuit breaker
+  (counting in-flight requests and scheduled retries). Sustained throttling
+  can still open it (5 failures, 30 s), and calls then answer `{:error,
+  :breaker_open}`. Order tools never take this path, so a throttled order
+  is never resent.
 
-  A connect that fails transiently, including the reconnect after each
-  refresh, is retried the same way, at most `:retries` times in a row, each
-  time on a new inner client. Transient means, from the transport's error
-  set: a throttle or other 5xx at the `initialize` handshake or the
-  `tools/list`, a dial, read or deadline timeout (`{:timeout, _}`), a
-  transport or DNS failure, a crashed exchange task; and from the inner
-  client, its request timer or an expired `:connect_timeout`. The inner
-  client runs with `fail_fast: true`, so a failed handshake is seen at once,
-  and the broker stops it, which cancels its own retry: every connect attempt
-  is the broker's, one `initialize` each, at most `:retries + 1` in a run.
-  Queued callers wait for a retry, except one whose timeout would pass before
-  the next delay plus a whole `:connect_timeout` (one attempt, tool lists
-  included, never takes longer), which is answered at once; when the retries
-  run out they all get the failure (`{:error, {:http, status}}` for an HTTP
-  status). When a run ends without connecting, whatever ended it, the last
-  inner client is stopped and the session answers every call with that
-  failure, without a connect, until a cooldown ends: `:base_ms * 2^(retries
-  + failed runs - 1)`, capped at `:max_ms`, so it doubles with each failed
-  run. The first call after it starts a new run; a connect that succeeds
-  resets it. One exception: a call that finds the credential expired still
-  refreshes, and a successful refresh connects at once. A connect retry does
-  not ask the breaker: each inner client starts on fresh breaker tables, and a
-  run is bounded by `:retries` instead. A 401 at connect refreshes or locks
-  out as before.
-
-  Throttled answers are real failures on that breaker (5 in a row, by
-  default, open it for 30 s). A call's retry is only sent if, counting every
-  request in flight and every retry already scheduled as a failure, it still
-  cannot open the breaker, checked when the retry is scheduled and again when
-  it is sent; otherwise the call answers its throttle status. Sustained
-  throttling across first attempts can still open the breaker, and calls then
-  answer `{:error, :breaker_open}` without a request until it recovers.
-  A retry keeps the request's one post-refresh retry: a 401 after a throttle
-  still locks the session out rather than refreshing again. The delay does
-  not read `Retry-After`: the transport answers a non-2xx status without its
-  headers. A caller that has exited is not retried for. Order tools never
-  take this path (see `Raxol.Broker.Executor.Port`), so a throttled order is
-  never resent. Invalid `:backoff` values stop `start_link/1` with
-  `{:invalid_backoff, value}`.
+  A transient connect failure (5xx or throttle at the handshake, a timeout,
+  a transport or DNS failure) is retried the same way on a new inner client,
+  at most `:retries` times in a run. A run that ends without connecting
+  answers every call with its failure until a cooldown of `:base_ms *
+  2^(retries + failed runs - 1)` (capped at `:max_ms`) ends; an expired
+  credential still refreshes meanwhile, and a successful connect resets it.
 
   ## Options
 
-  `:credential` (else read from the store), `:store` (options for
-  `Raxol.Broker.CredentialStore`), `:url`, `:auth` (options for
-  `Raxol.Agent.Auth.Robinhood.refresh/2`, e.g. `:http_fn`), `:mcp` (extra
-  `Raxol.MCP.Client` spec keys such as `:resolver` or `:exchange`),
-  `:refresh_skew`, `:backoff` (`:base_ms`, `:max_ms`, `:retries`),
-  `:connect_timeout`, `:clock` (a zero-arity function returning monotonic
-  milliseconds, read only for the connect cooldown; default
-  `System.monotonic_time(:millisecond)`), `:name`.
-
-  Neither `Inspect` nor `format_status/1` (what `:sys.get_status/1` and crash
-  reports print) shows the credential, and no log line here carries a token.
+  `:credential` (else read from the store), `:store`, `:url`, `:auth`
+  (options for `Raxol.Agent.Auth.Robinhood.refresh/2`), `:mcp` (extra
+  `Raxol.MCP.Client` spec keys), `:refresh_skew`, `:backoff` (`{:invalid_backoff, v}` if invalid),
+  `:connect_timeout`, `:clock` (monotonic milliseconds, read for the
+  cooldown) and `:name`. Neither `Inspect` nor `format_status/1` shows the
+  credential, and no log line carries a token.
   """
 
   use GenServer
@@ -113,8 +61,8 @@ defmodule Raxol.Broker.MCP.Client do
   require Logger
 
   alias Raxol.Agent.Auth.Credential
-  alias Raxol.Agent.Auth.Robinhood
   alias Raxol.Broker.CredentialStore
+  alias Raxol.Broker.MCP.Client.{Backoff, Refresh, State}
   alias Raxol.Broker.Redact
   alias Raxol.Broker.Tools.Catalog
   alias Raxol.MCP.CircuitBreaker
@@ -126,53 +74,10 @@ defmodule Raxol.Broker.MCP.Client do
   @default_skew 300
   @default_connect_timeout 30_000
   @default_call_timeout 60_000
-  @default_backoff %{base_ms: 500, max_ms: 8_000, retries: 3}
-  @throttle_statuses [429, 502, 503, 504]
-  # Observed 2026-10-03: the endpoint speaks 2025-06-18 (initialize +
-  # Mcp-Session-Id) and refuses `server/discover` with a plain-text 400, which
-  # the transport's probe correctly does not read as era evidence. Pinned, so
-  # the probe is never sent.
+  # The endpoint speaks 2025-06-18 (initialize + Mcp-Session-Id) and refuses
+  # `server/discover` with a plain-text 400. Pinned, so the probe is never
+  # sent.
   @era :legacy
-  # `Process.send_after/3` refuses delays past 2^32 - 1 ms.
-  @max_timer_ms 4_294_967_295
-
-  defmodule State do
-    @moduledoc false
-    defstruct [
-      :credential,
-      :inner,
-      :tables,
-      :reservations,
-      :tools,
-      :live,
-      :task,
-      :reconnect_ref,
-      :timer,
-      :unpersisted,
-      status: :connecting,
-      generation: 0,
-      reconnects: 0,
-      failed_runs: 0,
-      cooldown: nil,
-      scheduled_retries: 0,
-      fresh: false,
-      queue: [],
-      requests: %{},
-      config: %{}
-    ]
-
-    defimpl Inspect do
-      def inspect(state, _opts) do
-        "#Raxol.Broker.MCP.Client.State<status: #{inspect(state.status)}, " <>
-          "generation: #{state.generation}, tools: #{tool_count(state.tools)}>"
-      end
-
-      defp tool_count(nil), do: "nil"
-      defp tool_count(tools), do: Integer.to_string(length(tools))
-    end
-  end
-
-  # -- public API -------------------------------------------------------------
 
   @doc "Start the broker session. See the moduledoc for options."
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -218,14 +123,12 @@ defmodule Raxol.Broker.MCP.Client do
     if Catalog.classify(name) == :read, do: :ok, else: {:error, {:tool_denied, name}}
   end
 
-  # -- GenServer --------------------------------------------------------------
-
   @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
 
     with {:ok, credential} <- initial_credential(opts),
-         {:ok, backoff} <- backoff_config(Keyword.get(opts, :backoff, [])),
+         {:ok, backoff} <- Backoff.config(Keyword.get(opts, :backoff, [])),
          {:ok, clock} <- clock(Keyword.get(opts, :clock)) do
       url = Keyword.get(opts, :url, @default_url)
 
@@ -268,7 +171,7 @@ defmodule Raxol.Broker.MCP.Client do
   def handle_continue(:start, state) do
     state = schedule_refresh(state)
 
-    if expired?(state),
+    if Refresh.expired?(state.credential),
       do: {:noreply, start_refresh(state)},
       else: {:noreply, connect(state)}
   end
@@ -287,11 +190,11 @@ defmodule Raxol.Broker.MCP.Client do
       do: {:reply, {:ok, tools}, state}
 
   def handle_call({:list_tools, timeout}, from, state),
-    do: {:noreply, admit(state, from, :list_tools, attempt(timeout))}
+    do: {:noreply, admit(state, from, :list_tools, Backoff.attempt(timeout))}
 
   def handle_call({:call, name, args, timeout}, from, state) do
     case authorize_tool(name) do
-      :ok -> {:noreply, admit(state, from, {:call, name, args}, attempt(timeout))}
+      :ok -> {:noreply, admit(state, from, {:call, name, args}, Backoff.attempt(timeout))}
       denied -> {:reply, denied, state}
     end
   end
@@ -364,7 +267,7 @@ defmodule Raxol.Broker.MCP.Client do
       {:reason, reason} -> {:reason, Redact.collapse(reason)}
       # Its tag only: an `{:EXIT, _, reason}` can carry the spec in a struct.
       {:message, message} -> {:message, Redact.shape(message)}
-      {:state, state} -> {:state, scrub(state)}
+      {:state, state} -> {:state, State.scrub(state)}
       # `:sys` debug events carry the messages this process handled.
       {:log, _events} -> {:log, []}
       other -> other
@@ -373,8 +276,6 @@ defmodule Raxol.Broker.MCP.Client do
 
   defp finished(state, :connect, result), do: {:noreply, connected(state, result)}
   defp finished(state, :refresh, result), do: {:noreply, refreshed(state, result)}
-
-  # -- admission --------------------------------------------------------------
 
   defp admit(%State{status: :unauthorized} = state, from, _request, _attempt) do
     GenServer.reply(from, {:error, :unauthorized})
@@ -391,30 +292,27 @@ defmodule Raxol.Broker.MCP.Client do
   end
 
   defp admit(state, from, request, attempt) do
-    cond do
-      expired?(state) ->
-        state |> start_refresh() |> enqueue(from, request, attempt)
+    if Refresh.expired?(state.credential),
+      do: state |> start_refresh() |> enqueue(from, request, attempt),
+      else: admit_live(state, from, request, attempt)
+  end
 
-      is_nil(state.inner) and cooling?(state) ->
-        answer(state, from, {:error, state.cooldown.reason})
-
-      is_nil(state.inner) ->
-        state |> connect() |> enqueue(from, request, attempt)
-
-      spent?(state, attempt) ->
-        answer(state, from, attempt.last)
-
-      true ->
-        send_request(state, from, request, attempt)
-    end
+  defp admit_live(%State{inner: nil} = state, from, request, attempt) do
+    if cooling?(state),
+      do: answer(state, from, {:error, state.cooldown.reason}),
+      else: state |> connect() |> enqueue(from, request, attempt)
   end
 
   # A backoff retry checks the breaker again when its timer fires: calls made
   # since it was scheduled may have used the headroom it was scheduled with.
-  # Only that send is checked; a retry after a refresh or a stale answer is
-  # not a throttle retry and goes out as before.
-  defp spent?(state, %{resend: true}), do: not breaker_headroom?(state)
-  defp spent?(_state, _attempt), do: false
+  # A retry after a refresh or a stale answer is not a throttle retry.
+  defp admit_live(state, from, request, %{resend: true} = attempt) do
+    if breaker_headroom?(state),
+      do: send_request(state, from, request, attempt),
+      else: answer(state, from, attempt.last)
+  end
+
+  defp admit_live(state, from, request, attempt), do: send_request(state, from, request, attempt)
 
   # After a connect run failed, calls are answered with its failure until the
   # cooldown ends, so a caller polling an origin that keeps failing cannot
@@ -470,8 +368,6 @@ defmodule Raxol.Broker.MCP.Client do
     :exit, _reason -> {:error, :upstream_down}
   end
 
-  # -- results ----------------------------------------------------------------
-
   defp completed(state, entry, result) do
     state |> disposition(entry, result) |> act(state, entry, result)
   end
@@ -507,7 +403,7 @@ defmodule Raxol.Broker.MCP.Client do
     Process.send_after(
       self(),
       {:backoff_retry, from, request, attempt},
-      backoff_delay(state, attempt)
+      Backoff.jittered(state.config.backoff, attempt.throttled)
     )
 
     %{state | scheduled_retries: state.scheduled_retries + 1}
@@ -523,7 +419,7 @@ defmodule Raxol.Broker.MCP.Client do
       stale?(state, generation, result) -> :retry_now
       awaiting_refresh?(state, result) -> :retry_after_refresh
       retry_throttle?(state, attempt, result) -> :backoff
-      not unauthorized?(result) -> :reply
+      not Backoff.unauthorized?(result) -> :reply
       attempt.retried or state.fresh -> :lock_out
       true -> :refresh
     end
@@ -540,43 +436,17 @@ defmodule Raxol.Broker.MCP.Client do
   # process stopped to replace. None of them says anything about the new token.
   defp retryable?({:error, :upstream_down}), do: true
   defp retryable?({:error, :breaker_open}), do: true
-  defp retryable?(result), do: unauthorized?(result)
-
-  # What a request carries through the queue and its retries: whether it was
-  # already retried after a refresh (a second 401 then locks out), how often
-  # it was throttled and the last throttle answer, whether this send is a
-  # backoff retry, and the caller's deadline.
-  defp attempt(timeout) do
-    deadline = if timeout == :infinity, do: :infinity, else: now_ms() + timeout
-    %{retried: false, throttled: 0, last: nil, resend: false, deadline: deadline}
-  end
+  defp retryable?(result), do: Backoff.unauthorized?(result)
 
   # A throttle status is retried while retries remain, the next delay ends
   # before the caller's deadline, and one more failure cannot open the breaker.
-  defp retry_throttle?(state, attempt, {:error, {:http, status}})
-       when status in @throttle_statuses do
-    attempt.throttled < state.config.backoff.retries and
-      within_deadline?(attempt, max_delay(state, attempt)) and
+  defp retry_throttle?(state, attempt, result) do
+    %{backoff: backoff} = state.config
+
+    Backoff.throttled?(result) and attempt.throttled < backoff.retries and
+      Backoff.within_deadline?(attempt, Backoff.max_delay(backoff, attempt.throttled)) and
       breaker_headroom?(state)
   end
-
-  defp retry_throttle?(_state, _attempt, _result), do: false
-
-  defp max_delay(state, attempt) do
-    %{base_ms: base, max_ms: max} = state.config.backoff
-    min(base * Integer.pow(2, attempt.throttled), max)
-  end
-
-  # Between half the doubled delay and all of it, so callers throttled
-  # together do not retry together.
-  defp backoff_delay(state, attempt) do
-    delay = max_delay(state, %{attempt | throttled: attempt.throttled - 1})
-    half = div(delay, 2)
-    half + :rand.uniform(delay - half + 1) - 1
-  end
-
-  defp within_deadline?(%{deadline: :infinity}, _delay), do: true
-  defp within_deadline?(%{deadline: deadline}, delay), do: now_ms() + delay < deadline
 
   # Every request still in flight and every retry already scheduled may fail
   # too, so each counts as a failure the breaker has not seen yet.
@@ -595,24 +465,6 @@ defmodule Raxol.Broker.MCP.Client do
 
   defp caller_gone?(pid) when node(pid) == node(), do: not Process.alive?(pid)
   defp caller_gone?(_remote), do: false
-
-  defp now_ms, do: System.monotonic_time(:millisecond)
-
-  defp backoff_config(opts) do
-    with true <- Keyword.keyword?(opts),
-         %{base_ms: base, max_ms: max, retries: retries} = backoff when map_size(backoff) == 3 <-
-           Map.merge(@default_backoff, Map.new(opts)),
-         true <- valid_backoff?(base, max, retries) do
-      {:ok, backoff}
-    else
-      _invalid -> {:stop, {:invalid_backoff, opts}}
-    end
-  end
-
-  defp valid_backoff?(base, max, retries),
-    do:
-      is_integer(base) and base >= 0 and is_integer(max) and max >= base and
-        max <= @max_timer_ms and is_integer(retries) and retries >= 0
 
   defp clock(nil), do: {:ok, fn -> System.monotonic_time(:millisecond) end}
   defp clock(clock) when is_function(clock, 0), do: {:ok, clock}
@@ -634,48 +486,6 @@ defmodule Raxol.Broker.MCP.Client do
 
   defp tool_name(%{name: name}) when is_binary(name), do: name
   defp tool_name(_tool), do: ""
-
-  # The status a request or connect failed with. A connect's is wrapped in
-  # `{:connect_failed, _}`, and a handshake's in `{:initialization_failed, _}`
-  # inside that.
-  defp http_status({:error, {:http, status}}), do: status
-  defp http_status({:error, {:connect_failed, {:http, status}}}), do: status
-
-  defp http_status({:error, {:connect_failed, {:initialization_failed, {:http, status}}}}),
-    do: status
-
-  defp http_status(_result), do: nil
-
-  defp unauthorized?(result), do: http_status(result) == 401
-
-  # A connect failure worth another attempt, as queued callers are answered
-  # with it; nil for anything else (a 401, a 4xx, a refused or blocked spec).
-  # From the transport's closed error set: a 5xx or throttle status, a dial,
-  # read or deadline timeout, a transport or DNS failure, a crashed exchange
-  # task; and from the inner client, its request timer and the connect budget.
-  defp transient(result) do
-    status = http_status(result)
-
-    cond do
-      is_integer(status) and status >= 500 -> {:http, status}
-      status in @throttle_statuses -> {:http, status}
-      true -> transient_reason(connect_reason(result))
-    end
-  end
-
-  defp transient_reason({:transport, _kind} = reason), do: reason
-  defp transient_reason({:timeout, _phase} = reason), do: reason
-  defp transient_reason({:task_down, _kind} = reason), do: reason
-  defp transient_reason({:not_ready, _status} = reason), do: reason
-  defp transient_reason(reason) when reason in [:timeout, :dns_failed], do: reason
-  defp transient_reason(_reason), do: nil
-
-  defp connect_reason({:error, {:connect_failed, {:initialization_failed, reason}}}), do: reason
-  defp connect_reason({:error, {:connect_failed, reason}}), do: reason
-  defp connect_reason({:error, reason}), do: reason
-  defp connect_reason(_result), do: nil
-
-  # -- connecting -------------------------------------------------------------
 
   defp connect(state) do
     state = stop_inner(state)
@@ -716,26 +526,24 @@ defmodule Raxol.Broker.MCP.Client do
     end
   end
 
-  # A legacy session handshakes after the probe; `await_ready/2` waits for
+  # A legacy session handshakes after the probe; `Upstream.await_ready/2` waits for
   # that. The inner client is fail-fast, so a failed connect or handshake
   # (a 401, a throttle) answers the wait at once instead of after the budget.
   # The whole attempt, both tool lists included, shares one `timeout` budget,
   # which is what the queued-caller guard in `reconnect_later/2` counts on; a
   # tool list that outlasts what is left of it is `{:error, :timeout}`.
   defp await_tools(pid, timeout) do
-    deadline = now_ms() + timeout
+    deadline = Backoff.now_ms() + timeout
 
-    guarded(fn ->
-      case bounded_list_tools(pid, deadline) do
-        {:error, {:not_ready, _status}} ->
-          with {:ok, _ready} <- Upstream.await_ready(pid, remaining(deadline)),
-               do: bounded_list_tools(pid, deadline)
-
-        other ->
-          other
-      end
-    end)
+    guarded(fn -> pid |> bounded_list_tools(deadline) |> after_ready(pid, deadline) end)
   end
+
+  defp after_ready({:error, {:not_ready, _status}}, pid, deadline) do
+    with {:ok, _ready} <- Upstream.await_ready(pid, remaining(deadline)),
+         do: bounded_list_tools(pid, deadline)
+  end
+
+  defp after_ready(result, _pid, _deadline), do: result
 
   defp bounded_list_tools(pid, deadline) do
     Upstream.list_tools(pid, timeout: remaining(deadline))
@@ -743,13 +551,13 @@ defmodule Raxol.Broker.MCP.Client do
     :exit, {:timeout, _call} -> {:error, :timeout}
   end
 
-  defp remaining(deadline), do: max(deadline - now_ms(), 0)
+  defp remaining(deadline), do: max(deadline - Backoff.now_ms(), 0)
 
   # A connect that failed transiently is retried while `:retries` remain in
   # this run; any other outcome ends the run.
   defp connected(state, result) do
     if reconnect?(state, result),
-      do: reconnect_later(state, {:error, transient(result)}),
+      do: reconnect_later(state, {:error, Backoff.transient(result)}),
       else: settled(%{state | reconnects: 0}, result)
   end
 
@@ -761,41 +569,40 @@ defmodule Raxol.Broker.MCP.Client do
   end
 
   defp settled(state, result) do
-    cond do
-      unauthorized?(result) and state.fresh ->
-        lock_out(state)
+    if Backoff.unauthorized?(result),
+      do: unauthorized(state),
+      else: run_failed(state, result)
+  end
 
-      unauthorized?(result) ->
-        start_refresh(state)
+  defp unauthorized(%State{fresh: true} = state), do: lock_out(state)
+  defp unauthorized(state), do: start_refresh(state)
 
-      # The failed inner client is stopped, which cancels its own retry, so
-      # the next call starts a new bounded run instead of reaching it; but not
-      # before a cooldown that keeps doubling across failed runs.
-      true ->
-        # Collapsed before it is kept as the cooldown's answer to every
-        # caller; the documented shapes (`{:http, status}`, `{:transport,
-        # kind}`, `{:timeout, phase}`) survive it.
-        reason = Redact.collapse(transient(result) || error_reason(result))
-        log_failure("could not connect", reason)
+  # The failed inner client is stopped, which cancels its own retry, so the
+  # next call starts a new bounded run instead of reaching it; but not before
+  # a cooldown that keeps doubling across failed runs. The reason is
+  # collapsed before it is kept; the documented shapes (`{:http, status}`,
+  # `{:transport, kind}`, `{:timeout, phase}`) survive it.
+  defp run_failed(state, result) do
+    reason = Redact.collapse(Backoff.transient(result) || error_reason(result))
+    log_failure("could not connect", reason)
 
-        state
-        |> stop_inner()
-        |> cool_down(reason)
-        |> Map.put(:status, :ready)
-        |> fail_queue({:error, reason})
-    end
+    state
+    |> stop_inner()
+    |> cool_down(reason)
+    |> Map.put(:status, :ready)
+    |> fail_queue({:error, reason})
   end
 
   defp cool_down(state, reason) do
     failed_runs = state.failed_runs + 1
     retries = state.config.backoff.retries
-    delay = max_delay(state, %{throttled: retries + failed_runs - 1})
+    delay = Backoff.max_delay(state.config.backoff, retries + failed_runs - 1)
     until = state.config.clock.() + delay
     %{state | failed_runs: failed_runs, cooldown: %{until: until, reason: reason}}
   end
 
   defp reconnect?(state, result),
-    do: transient(result) != nil and state.reconnects < state.config.backoff.retries
+    do: Backoff.transient(result) != nil and state.reconnects < state.config.backoff.retries
 
   # A failed connect's backoff: the delay doubles with each failed connect in
   # the run. A queued caller whose deadline would pass before the next delay
@@ -803,17 +610,18 @@ defmodule Raxol.Broker.MCP.Client do
   # inner client is stopped, which also cancels its own retry, so the
   # broker's `:retries` bounds the run.
   defp reconnect_later(state, reply) do
-    limit = max_delay(state, %{throttled: state.reconnects}) + state.config.connect_timeout
+    backoff = state.config.backoff
+    limit = Backoff.max_delay(backoff, state.reconnects) + state.config.connect_timeout
 
     {waiting, expiring} =
       Enum.split_with(state.queue, fn {_from, _request, attempt} ->
-        within_deadline?(attempt, limit)
+        Backoff.within_deadline?(attempt, limit)
       end)
 
     state = stop_inner(fail_queue(%{state | queue: expiring}, reply))
     reconnects = state.reconnects + 1
     ref = make_ref()
-    Process.send_after(self(), {:reconnect, ref}, backoff_delay(state, %{throttled: reconnects}))
+    Process.send_after(self(), {:reconnect, ref}, Backoff.jittered(backoff, reconnects))
     %{state | queue: waiting, reconnects: reconnects, reconnect_ref: ref}
   end
 
@@ -852,37 +660,11 @@ defmodule Raxol.Broker.MCP.Client do
     :ok
   end
 
-  # -- refresh ----------------------------------------------------------------
-
   defp start_refresh(%State{status: :refreshing} = state), do: state
 
   defp start_refresh(state) do
-    task = Task.async(refresh_work(state))
+    task = Task.async(Refresh.work(state))
     %{state | status: :refreshing, task: {:refresh, task.ref}, reconnect_ref: nil}
-  end
-
-  # The persist happens inside the task, before the result reaches this
-  # process: a rotated credential is never used before it is on disk. A
-  # credential that refreshed but failed to persist is kept (the old refresh
-  # token is spent) and the next attempt only retries the write.
-  defp refresh_work(%State{unpersisted: %Credential{} = pending, config: config}) do
-    fn -> persist(pending, config.store) end
-  end
-
-  defp refresh_work(%State{credential: credential, config: config}) do
-    fn ->
-      case Robinhood.refresh(credential, config.auth) do
-        {:ok, rotated} -> persist(rotated, config.store)
-        {:error, reason} -> {:error, reason}
-      end
-    end
-  end
-
-  defp persist(credential, store_opts) do
-    case CredentialStore.put(credential, store_opts) do
-      :ok -> {:ok, credential}
-      {:error, reason} -> {:unpersisted, credential, reason}
-    end
   end
 
   defp refreshed(state, {:ok, credential}) do
@@ -928,18 +710,11 @@ defmodule Raxol.Broker.MCP.Client do
   defp schedule_refresh(state) do
     state = cancel_timer(state)
 
-    case state.credential.expires_at do
+    case Refresh.delay(state.credential, state.config.skew, DateTime.utc_now()) do
       nil ->
         state
 
-      %DateTime{} = at ->
-        delay =
-          at
-          |> DateTime.add(-state.config.skew, :second)
-          |> DateTime.diff(DateTime.utc_now(), :millisecond)
-          |> max(0)
-          |> min(@max_timer_ms)
-
+      delay ->
         %{state | timer: Process.send_after(self(), {:refresh_due, state.generation}, delay)}
     end
   end
@@ -951,39 +726,9 @@ defmodule Raxol.Broker.MCP.Client do
     %{state | timer: nil}
   end
 
-  defp expired?(%State{credential: credential}),
-    do: Credential.expired?(credential, DateTime.utc_now(), 0)
-
   # Collapsed first: a start_link error can carry the client spec, and so
   # its `{"authorization", "Bearer ..."}` header.
   defp log_failure(what, reason) do
     Logger.warning("[Broker.MCP] #{what}: #{inspect(Redact.collapse(reason), structs: false)}")
   end
-
-  # -- redaction --------------------------------------------------------------
-
-  defp scrub(%Credential{}), do: :redacted_credential
-
-  defp scrub(%State{} = state) do
-    %{
-      state
-      | credential: scrub(state.credential),
-        unpersisted: scrub(state.unpersisted),
-        config: Map.take(state.config, [:url, :skew, :connect_timeout]),
-        queue: length(state.queue),
-        requests: map_size(state.requests)
-    }
-  end
-
-  defp scrub(%_{} = struct), do: struct
-
-  defp scrub(tuple) when is_tuple(tuple),
-    do: tuple |> Tuple.to_list() |> Enum.map(&scrub/1) |> List.to_tuple()
-
-  defp scrub([_ | _] = list) do
-    if List.improper?(list), do: list, else: Enum.map(list, &scrub/1)
-  end
-
-  defp scrub(map) when is_map(map), do: Map.new(map, fn {k, v} -> {k, scrub(v)} end)
-  defp scrub(other), do: other
 end

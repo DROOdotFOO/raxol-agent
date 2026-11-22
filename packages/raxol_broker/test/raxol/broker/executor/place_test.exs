@@ -4,12 +4,13 @@ defmodule Raxol.Broker.Executor.PlaceTest do
   `Raxol.Broker.MCP.Fake` through a real port and a real journal.
 
   The test process impersonates the executor with
-  `Raxol.Broker.Test.ExecutorIdentity` (its journal claim and receipt key):
+  `Raxol.Broker.Test.ExecutorIdentity` (its journal claim):
   the deliberate-subversion path the threat model excludes, used here only
   to drive `Place.run/4` directly.
   """
   use ExUnit.Case, async: true
 
+  alias Raxol.Agent.Secret
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Broker.Executor.{Place, Port, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
@@ -34,7 +35,7 @@ defmodule Raxol.Broker.Executor.PlaceTest do
     opts = [name: name, path: path, clock: fn -> @t0 end]
     start_supervised!(Supervisor.child_spec({Journal, opts}, restart: :temporary))
     key = :crypto.strong_rand_bytes(32)
-    :ok = ExecutorIdentity.assume!(name, key: key)
+    :ok = ExecutorIdentity.assume!(name)
 
     server = Fake.start()
     {:ok, port} = PortMCP.start(Fake.session(server), mode: :dry_run)
@@ -44,6 +45,7 @@ defmodule Raxol.Broker.Executor.PlaceTest do
       catalog: Catalog.static(),
       journal: name,
       account: @account,
+      key: Secret.new(key),
       timeout: 5_000,
       customer_approval_required: false
     }
@@ -145,23 +147,35 @@ defmodule Raxol.Broker.Executor.PlaceTest do
       assert Journal.placing_for_intent("int-foreign", ctx.journal) == {:ok, nil}
     end
 
-    test "holding the journal claim without the executor key slot journals and sends nothing",
-         ctx do
-      intent = intent("int-no-slot")
+    test "a plain process with a key of its own is refused by the journal claim", ctx do
+      intent = intent("int-own-key")
       group = reviewed_group(intent, ctx.journal)
       before = records(ctx.path)
+      own = :crypto.strong_rand_bytes(32)
 
-      Process.delete({Raxol.Broker.Executor, :receipt_key})
-      assert Raxol.Broker.Executor.receipt_key() == nil
+      task =
+        Task.async(fn ->
+          receipt = ReviewReceipt.issue(own, intent, group)
+          Place.run(receipt, intent, group, %{ctx.env | key: Secret.new(own)})
+        end)
 
-      for key <- [ctx.key, :crypto.strong_rand_bytes(32)] do
-        receipt = ReviewReceipt.issue(key, intent, group)
-        assert Place.run(receipt, intent, group, ctx.env) == {:error, :invalid_receipt}
-      end
-
+      assert Task.await(task) == {:error, {:not_claimant, group}}
       assert records(ctx.path) == before
       assert Fake.calls(ctx.server) == []
-      assert Journal.placing_for_intent("int-no-slot", ctx.journal) == {:ok, nil}
+      assert Journal.placing_for_intent("int-own-key", ctx.journal) == {:ok, nil}
+    end
+
+    test "the claimant's receipt under a key other than env's journals and sends nothing",
+         ctx do
+      intent = intent("int-other-key")
+      group = reviewed_group(intent, ctx.journal)
+      before = records(ctx.path)
+      receipt = ReviewReceipt.issue(:crypto.strong_rand_bytes(32), intent, group)
+
+      assert Place.run(receipt, intent, group, ctx.env) == {:error, :invalid_receipt}
+      assert records(ctx.path) == before
+      assert Fake.calls(ctx.server) == []
+      assert Journal.placing_for_intent("int-other-key", ctx.journal) == {:ok, nil}
     end
   end
 
