@@ -63,7 +63,7 @@ defmodule Mix.Tasks.RaxolEarn.Order do
 
   alias Mix.Tasks.RaxolEarn.Order.{Budget, Errors, Plan, Preflight, Signer}
   alias Raxol.Agent.Secret
-  alias Raxol.Earn.{ABI, Agent, Auth, Chain, HookClient, JobApi, JobIdResolver, ProviderAdapter}
+  alias Raxol.Earn.{ABI, Agent, Auth, Chain, JobApi, JobIdResolver, ProviderAdapter}
   alias Raxol.Earn.Transport
   alias Raxol.Earn.Xochi.{OriginPull, PullPreflight}
   alias Raxol.Payments.Assets
@@ -255,14 +255,25 @@ defmodule Mix.Tasks.RaxolEarn.Order do
   defp create_and_resolve(cfg, resolver) do
     expired_at = System.system_time(:second) + @sla_minutes * 60 + 60
 
-    {:ok, tx} =
-      HookClient.create_job(cfg.provider_adapter, cfg.from, cfg.core, %{
-        provider: cfg.provider,
-        evaluator: @zero_address,
-        expired_at: expired_at,
-        hook_address: @zero_address,
-        description: @offering
-      })
+    job = %{
+      provider: cfg.provider,
+      evaluator: @zero_address,
+      expired_at: expired_at,
+      hook_address: @zero_address,
+      description: @offering
+    }
+
+    tx =
+      case Signer.create_job(cfg.provider_adapter, cfg.from, cfg.core, job) do
+        {:ok, tx} ->
+          tx
+
+        {:error, {:sidecar_unhealthy, url, r}} ->
+          Mix.raise(Errors.write_blocked(:create_job, url, r))
+
+        err ->
+          Mix.raise("createJob failed: #{inspect(err)}")
+      end
 
     Plan.log("createJob tx: #{Plan.explorer(cfg.from)}#{tx}")
     report_actuals(cfg, "createJob", tx)
@@ -277,7 +288,7 @@ defmodule Mix.Tasks.RaxolEarn.Order do
     label = batch_label(pull)
     Plan.log(Plan.funding_line(job_id, pull))
 
-    case ProviderAdapter.send_calls(
+    case Signer.send_calls(
            cfg.provider_adapter,
            cfg.from,
            funding_calls(cfg, job_id, budget, pull)
@@ -286,8 +297,11 @@ defmodule Mix.Tasks.RaxolEarn.Order do
         Plan.log("funded (#{label} batched): #{inspect(txs)} -- provider will settle + deliver")
         report_actuals(cfg, label, txs)
 
+      {:error, {:sidecar_unhealthy, url, reason}} ->
+        Mix.raise(Errors.write_blocked({:fund, job_id}, url, reason))
+
       err ->
-        Mix.raise("fund failed: #{inspect(err)}")
+        Mix.raise("fund failed for job #{job_id} (on chain, not funded): #{inspect(err)}")
     end
   end
 
@@ -342,9 +356,10 @@ defmodule Mix.Tasks.RaxolEarn.Order do
   end
 
   defp start_buyer(cfg) do
+    # Auth signs its login through the same sidecar: checked here, at start.
     {:ok, auth} =
       Auth.start_link(
-        provider: cfg.provider_adapter,
+        provider: Signer.verify_sidecar!(cfg.provider_adapter),
         server_url: cfg.server_url,
         chain_id: cfg.from
       )

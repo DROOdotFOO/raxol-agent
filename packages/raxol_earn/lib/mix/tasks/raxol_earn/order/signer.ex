@@ -5,7 +5,8 @@ defmodule Mix.Tasks.RaxolEarn.Order.Signer do
   # module that signs the Xochi intent.
 
   alias Mix.Tasks.RaxolEarn.Order.Errors
-  alias Raxol.Earn.{ProviderAdapter, SignerSidecar}
+  alias Raxol.Agent.Secret
+  alias Raxol.Earn.{HookClient, ProviderAdapter, SignerSidecar}
 
   # The managed SCA agent the `sca` and `privy` backends drive.
   # The nested wallets repeat it: their `use` options are read at compile time,
@@ -59,7 +60,8 @@ defmodule Mix.Tasks.RaxolEarn.Order.Signer do
   # and paymaster (Alchemy serves both on one URL). The adapter only sends
   # sponsored UserOps, so there is no unsponsored fallback.
   def build("sca", from, rpc) do
-    bundler = fetch_env!("ORDER_BUNDLER_URL")
+    # Wrapped at the read, like the RPC URLs: it embeds the provider key.
+    bundler = Secret.new(fetch_env!("ORDER_BUNDLER_URL"))
     policy = fetch_env!("ORDER_PAYMASTER_POLICY")
 
     provider =
@@ -91,17 +93,54 @@ defmodule Mix.Tasks.RaxolEarn.Order.Signer do
     do: Mix.raise("unknown --signer #{inspect(other)} (want privy | sca | eoa)")
 
   # The adapter `Sma7702Wallet` signs through, rebuilt per signature from the
-  # sidecar URL rather than held as process-global state. Fails closed: before
-  # anything is signed, whoever answers at that URL must report this account,
-  # so a missing, foreign or stale sidecar raises instead of signing.
+  # sidecar URL rather than held as process-global state, and verified first.
   @spec signing_provider() :: ProviderAdapter.adapter()
-  def signing_provider do
-    url = SignerSidecar.base_url([])
+  def signing_provider, do: @account |> privy_adapter(%{}) |> verify_sidecar!()
 
-    case SignerSidecar.await_health(url, @health_timeout_ms, @account) do
-      :ok -> privy_adapter(@account, %{})
-      {:error, reason} -> Mix.raise(Errors.sidecar({:sidecar_unhealthy, reason}))
+  # Fails closed on the Privy backend: whoever answers at the adapter's own
+  # sidecar URL must report the adapter's wallet, so a missing, foreign or
+  # stale sidecar raises instead of signing or broadcasting. Other backends
+  # sign locally and pass through.
+  @spec verify_sidecar!(ProviderAdapter.adapter()) :: ProviderAdapter.adapter()
+  def verify_sidecar!(provider) do
+    case verify_sidecar(provider) do
+      :ok -> provider
+      {:error, {:sidecar_unhealthy, url, reason}} -> Mix.raise(Errors.sidecar(reason, url))
     end
+  end
+
+  # `/health` is unauthenticated and self-reported, and it is a separate request
+  # from the write that follows: this stops a stale or foreign sidecar, not a
+  # hostile process on the same host.
+  @spec verify_sidecar(ProviderAdapter.adapter()) ::
+          :ok | {:error, {:sidecar_unhealthy, String.t(), term()}}
+  def verify_sidecar(%{
+        adapter: ProviderAdapter.Privy,
+        config: %{sidecar_url: url, address: address}
+      }) do
+    case SignerSidecar.await_health(url, @health_timeout_ms, address) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:sidecar_unhealthy, url, reason}}
+    end
+  end
+
+  def verify_sidecar(_provider), do: :ok
+
+  # The task's two writes. Each re-checks the sidecar first, as signing does,
+  # and returns a failed check as an error so the caller can say what is
+  # already on chain.
+  @spec create_job(ProviderAdapter.adapter(), pos_integer(), String.t(), map()) ::
+          {:ok, String.t()} | {:error, term()}
+  def create_job(provider, chain_id, core, params) do
+    with :ok <- verify_sidecar(provider),
+         do: HookClient.create_job(provider, chain_id, core, params)
+  end
+
+  @spec send_calls(ProviderAdapter.adapter(), pos_integer(), [ProviderAdapter.call()]) ::
+          {:ok, [String.t()]} | {:error, term()}
+  def send_calls(provider, chain_id, calls) do
+    with :ok <- verify_sidecar(provider),
+         do: ProviderAdapter.send_calls(provider, chain_id, calls)
   end
 
   defp privy_adapter(address, chains),

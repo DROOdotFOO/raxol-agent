@@ -111,10 +111,45 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
 
   def sign_intent(reason), do: "could not sign the Xochi intent: #{inspect(reason)}"
 
-  @spec sidecar(term()) :: String.t()
-  def sidecar({:sidecar_unhealthy, {:sidecar_wrong_wallet, got, want}}) do
-    url = SignerSidecar.base_url([])
+  # A write refused because the sidecar failed its identity check. What it
+  # means depends on what this run already put on chain.
+  @spec write_blocked(:create_job | {:fund, non_neg_integer()}, String.t(), term()) ::
+          String.t()
+  def write_blocked(:create_job, url, reason) do
+    """
+    createJob was not sent: #{sidecar_problem(url, reason)}
 
+    Nothing from this run is on chain; the signed intent is unused. Fix or stop
+    the sidecar (see below), then re-run.
+
+    #{sidecar(reason, url)}
+    """
+  end
+
+  def write_blocked({:fund, job_id}, url, reason) do
+    """
+    job #{job_id} is on chain but was NOT funded: #{sidecar_problem(url, reason)}
+
+    Do not re-run from scratch: that creates a second job. Fix or stop the
+    sidecar (see below), then fund this one with the same flags plus
+
+      --job-id #{job_id} --fund
+
+    #{sidecar(reason, url)}
+    """
+  end
+
+  defp sidecar_problem(url, {:sidecar_wrong_wallet, got, _want}),
+    do: "the sidecar at #{url} reports wallet #{got}."
+
+  defp sidecar_problem(url, _reason), do: "the sidecar at #{url} did not pass its /health check."
+
+  @spec sidecar(term(), String.t()) :: String.t()
+  def sidecar(reason, url \\ SignerSidecar.base_url([]))
+
+  def sidecar({:sidecar_unhealthy, reason}, url), do: sidecar(reason, url)
+
+  def sidecar({:sidecar_wrong_wallet, got, want}, url) do
     """
     #{url} answers /health for the WRONG wallet: #{got}, expected #{want}.
 
@@ -129,9 +164,9 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
     """
   end
 
-  def sidecar({:sidecar_unhealthy, :health_timeout}) do
+  def sidecar(:health_timeout, url) do
     """
-    the Privy signer sidecar at #{SignerSidecar.base_url([])} stopped answering /health.
+    the Privy signer sidecar at #{url} stopped answering /health.
 
     Nothing was signed. The sidecar passed its boot check earlier in this run, so
     it has since exited or hung. Check its output above, then re-run; the task
@@ -139,7 +174,7 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
     """
   end
 
-  def sidecar(reason) do
+  def sidecar(reason, url) do
     """
     the Privy signer sidecar did not start: #{inspect(reason)}
 
@@ -148,7 +183,7 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
 
       node --version                       # must be present on PATH
       ls priv/signer_sidecar/node_modules  # run `npm install` there if absent
-      lsof -i :#{URI.parse(SignerSidecar.base_url([])).port}   # the sidecar exits if taken
+      lsof -i :#{URI.parse(url).port}   # the sidecar exits if taken
 
     RAXOL_ACP_WALLET_ADDRESS / RAXOL_ACP_WALLET_ID / RAXOL_ACP_SIGNER_PRIVATE_KEY
     must all be set: the sidecar reads them at boot and exits if any is missing.

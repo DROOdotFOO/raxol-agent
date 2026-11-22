@@ -55,6 +55,10 @@ defmodule Raxol.Earn.Agent do
   # error). The stream is a long-lived connection that WILL drop in normal operation;
   # the Agent owns reconnection (see Transport.SSE.stream_loop's contract).
   @stream_reconnect_ms 2_000
+  # Consecutive failures (error closes and failed reconnects) double the wait up
+  # to this, so a server that keeps failing the stream is not re-dialled every
+  # 2s. Only a stream the transport reports as healthy (`:ok`) resets it.
+  @max_stream_reconnect_ms 60_000
 
   @type t :: %__MODULE__{
           provider: term(),
@@ -65,7 +69,8 @@ defmodule Raxol.Earn.Agent do
           default_role: JobSession.role(),
           sessions: %{Transport.job_key() => pid()},
           subscribers: MapSet.t(pid()),
-          started?: boolean()
+          started?: boolean(),
+          stream_failures: non_neg_integer()
         }
 
   defstruct [
@@ -77,7 +82,8 @@ defmodule Raxol.Earn.Agent do
     :default_role,
     sessions: %{},
     subscribers: MapSet.new(),
-    started?: false
+    started?: false,
+    stream_failures: 0
   ]
 
   # -- Public API --
@@ -284,11 +290,12 @@ defmodule Raxol.Earn.Agent do
   # Task delivers {ref, result}. Per the transport contract the Agent owns reconnection:
   # flush the paired :DOWN, then re-open after a short backoff, rather than crash on the
   # unhandled message. (Reconnect re-fetches the auth token via Transport.connect.)
-  def handle_info({ref, _result}, state) when is_reference(ref) do
+  def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
-    Logger.info("ACP SSE stream ended; reconnecting in #{@stream_reconnect_ms}ms")
-    Process.send_after(self(), :reconnect_stream, @stream_reconnect_ms)
-    {:noreply, %{state | started?: false}}
+    {delay, failures} = reconnect_after(result, state.stream_failures)
+    log_stream_end(result, delay)
+    Process.send_after(self(), :reconnect_stream, delay)
+    {:noreply, %{state | started?: false, stream_failures: failures}}
   end
 
   # A reconnect is already-open (e.g. start_stream ran in the interim) -- nothing to do.
@@ -300,11 +307,29 @@ defmodule Raxol.Earn.Agent do
         {:noreply, %{state | started?: true}}
 
       {:error, reason} ->
-        Logger.warning("ACP SSE reconnect failed (#{inspect(reason)}); retrying")
-        Process.send_after(self(), :reconnect_stream, @stream_reconnect_ms)
-        {:noreply, state}
+        {delay, failures} = reconnect_after({:error, reason}, state.stream_failures)
+        Logger.warning("ACP SSE reconnect failed (#{inspect(reason)}); retrying in #{delay}ms")
+        Process.send_after(self(), :reconnect_stream, delay)
+        {:noreply, %{state | stream_failures: failures}}
     end
   end
+
+  @doc false
+  # The wait before re-opening the stream, and the consecutive-failure count to
+  # carry, given how the last stream ended.
+  @spec reconnect_after(term(), non_neg_integer()) :: {pos_integer(), non_neg_integer()}
+  def reconnect_after({:error, _reason}, failures),
+    do:
+      {min(@stream_reconnect_ms * Integer.pow(2, failures), @max_stream_reconnect_ms),
+       min(failures + 1, 16)}
+
+  def reconnect_after(_result, _failures), do: {@stream_reconnect_ms, 0}
+
+  defp log_stream_end({:error, reason}, delay),
+    do: Logger.warning("ACP SSE stream closed (#{inspect(reason)}); reconnecting in #{delay}ms")
+
+  defp log_stream_end(_result, delay),
+    do: Logger.info("ACP SSE stream ended; reconnecting in #{delay}ms")
 
   # -- Stream --
 

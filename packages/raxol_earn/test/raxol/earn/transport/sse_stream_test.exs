@@ -22,6 +22,16 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
                Parser.feed("", ~s|data: {"a":1}\n\ndata: {"b":2}\n\ndata: {"c"|)
     end
 
+    test "splits CRLF-framed events" do
+      assert {[%{"a" => 1}, %{"b" => 2}], ""} =
+               Parser.feed("", ~s|data: {"a":1}\r\n\r\ndata: {"b":2}\r\n\r\n|)
+    end
+
+    test "joins a CRLF that straddles two chunks" do
+      assert {[], tail} = Parser.feed("", ~s|data: {"a":1}\r\n\r|)
+      assert {[%{"a" => 1}], ""} = Parser.feed(tail, "\n")
+    end
+
     test "drops frames without data or with invalid JSON" do
       assert {[%{"ok" => true}], ""} =
                Parser.feed("", ~s|event: ping\n\ndata: nope\n\ndata: {"ok":true}\n\n|)
@@ -30,28 +40,12 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
 
   describe "connect/2 stream" do
     test "delivers an entry split across chunks to the owner" do
-      chunks = [
-        ~s|data: {"kind":"mess|,
-        ~s|age","n":1}\n\ndata: {"kind":"message",|,
-        ~s|"n":2}\n\n|
-      ]
-
-      plug = &serve(&1, chunks)
-
-      provider = JSONRPC.new(chains: %{8453 => "http://127.0.0.1:1"}, private_key: @key)
-
-      {:ok, auth} =
-        Auth.start_link(
-          provider: provider,
-          server_url: "https://acp.test",
-          chain_id: 8453,
-          req_options: [plug: plug, retry: false]
-        )
-
       transport =
-        SSE.new(auth: auth, server_url: "https://acp.test", req_options: [plug: plug])
-
-      assert :ok = Transport.connect(transport, %{owner: self()})
+        connect!([
+          ~s|data: {"kind":"mess|,
+          ~s|age","n":1}\n\ndata: {"kind":"message",|,
+          ~s|"n":2}\n\n|
+        ])
 
       assert_receive {:transport, %{"kind" => "message", "n" => 1}}, 2_000
       assert_receive {:transport, %{"kind" => "message", "n" => 2}}, 2_000
@@ -59,6 +53,99 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
 
       assert :ok = Transport.disconnect(transport)
     end
+
+    test "closes the stream once an unterminated event passes the limit" do
+      limit = 64
+      flood = "data: " <> String.duplicate("x", limit)
+
+      transport =
+        connect!([~s|data: {"n":1}\n\n|, flood, ~s|data: {"n":2}\n\n|],
+          max_sse_buffer_bytes: limit
+        )
+
+      assert_receive {:transport, %{"n" => 1}}, 2_000
+      assert_receive {ref, {:error, {:sse_buffer_overflow, ^limit}}} when is_reference(ref), 2_000
+      refute_received {:transport, %{"n" => 2}}
+
+      assert :ok = Transport.disconnect(transport)
+    end
+
+    test "an event within the limit still arrives when split across chunks" do
+      limit = 64
+      value = String.duplicate("y", limit - byte_size(~s|data: {"v":""}|))
+      event = ~s|data: {"v":"#{value}"}|
+      {head, tail} = String.split_at(event, div(byte_size(event), 2))
+
+      transport = connect!([head, tail <> "\n\n"], max_sse_buffer_bytes: limit)
+
+      assert_receive {:transport, %{"v" => ^value}}, 2_000
+      assert_receive {ref, :ok} when is_reference(ref), 2_000
+
+      assert :ok = Transport.disconnect(transport)
+    end
+
+    test "an error status ends the task with an error and its body is not parsed" do
+      transport = connect!({502, ~s|data: {"n":1}\n\n|})
+
+      assert_receive {ref, {:error, {:http_status, 502}}} when is_reference(ref), 2_000
+      refute_received {:transport, _}
+      assert :ok = Transport.disconnect(transport)
+    end
+
+    test "a stream that closes at once with no entries is not counted healthy" do
+      transport = connect!([": keepalive\n\n"])
+
+      assert_receive {ref, {:error, :closed_early}} when is_reference(ref), 2_000
+      assert :ok = Transport.disconnect(transport)
+    end
+
+    test "an unterminated tail exactly at the limit is still held" do
+      limit = 64
+      tail = "data: " <> String.duplicate("z", limit - 6)
+      assert byte_size(tail) == limit
+
+      transport = connect!([~s|data: {"n":1}\n\n|, tail], max_sse_buffer_bytes: limit)
+
+      assert_receive {:transport, %{"n" => 1}}, 2_000
+      assert_receive {ref, :ok} when is_reference(ref), 2_000
+      assert :ok = Transport.disconnect(transport)
+    end
+
+    test "a transport failure ends the task with an error, not a clean close" do
+      transport = connect!(:econnreset)
+
+      assert_receive {ref, {:error, {:transport, :econnreset}}} when is_reference(ref), 2_000
+      assert :ok = Transport.disconnect(transport)
+    end
+  end
+
+  describe "new/1" do
+    test "rejects a buffer limit that is not a positive integer" do
+      for bad <- [0, -1, "1024", nil] do
+        assert_raise ArgumentError, ~r/:max_sse_buffer_bytes must be a positive integer/, fn ->
+          SSE.new(auth: self(), server_url: "https://acp.test", max_sse_buffer_bytes: bad)
+        end
+      end
+    end
+  end
+
+  defp connect!(chunks, opts \\ []) do
+    plug = &serve(&1, chunks)
+    provider = JSONRPC.new(chains: %{8453 => "http://127.0.0.1:1"}, private_key: @key)
+
+    {:ok, auth} =
+      Auth.start_link(
+        provider: provider,
+        server_url: "https://acp.test",
+        chain_id: 8453,
+        req_options: [plug: plug, retry: false]
+      )
+
+    transport =
+      SSE.new([auth: auth, server_url: "https://acp.test", req_options: [plug: plug]] ++ opts)
+
+    :ok = Transport.connect(transport, %{owner: self()})
+    transport
   end
 
   defp serve(%Plug.Conn{request_path: "/auth/agent"} = conn, _chunks) do
@@ -66,6 +153,12 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
     |> Plug.Conn.put_resp_content_type("application/json")
     |> Plug.Conn.send_resp(201, Jason.encode!(%{"data" => %{"token" => jwt()}}))
   end
+
+  defp serve(%Plug.Conn{request_path: "/chats/stream"} = conn, {status, body}),
+    do: Plug.Conn.send_resp(conn, status, body)
+
+  defp serve(%Plug.Conn{request_path: "/chats/stream"} = conn, reason) when is_atom(reason),
+    do: Req.Test.transport_error(conn, reason)
 
   defp serve(%Plug.Conn{request_path: "/chats/stream"} = conn, chunks) do
     Enum.reduce(chunks, Plug.Conn.send_chunked(conn, 200), fn chunk, conn ->
