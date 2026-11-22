@@ -2,14 +2,14 @@ name: Release @raxol/cli npm package
 
 # Builds the self-contained `raxol` command binaries and assembles the
 # `@raxol/cli` npm package, so `npm i -g @raxol/cli` puts `raxol` on the PATH.
-# Every binary is built natively for its arch: Linux amd64/arm64 via Docker on
-# their own runners, macOS arm64 on a macOS runner (native builds avoid the
-# termbox NIF cross-compile hazard -- see docker/Dockerfile.raxol-cli).
+# burrito-build.yml builds and smokes each native binary (Linux amd64/arm64,
+# macOS arm64, Windows x86_64).
 #
 # Manual runs build downloadable tarballs only. A matching `raxol-cli-v*` tag
-# builds and smokes every native binary, waits for release-environment approval,
-# publishes the npm packages, proves a fresh registry install, attests the
-# binaries, then publishes immutable release assets and the latest manifest.
+# needs green CI on its commit, builds and smokes every native binary, waits
+# for release-environment approval, publishes the npm packages, proves a fresh
+# registry install, attests the binaries, then publishes immutable release
+# assets and the latest manifest.
 
 on:
   push:
@@ -28,187 +28,35 @@ jobs:
   validate:
     name: validate release ref
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Match package version to tag
-        if: startsWith(github.ref, 'refs/tags/raxol-cli-v')
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          version="$(node -p 'require("./packages/raxol_cli/npm/package.json").version')"
-          expected_tag="raxol-cli-v$version"
+      - name: Release preflight
+        uses: ./.github/actions/release-preflight
+        with:
+          tag-prefix: raxol-cli-v
+          version-file: packages/raxol_cli/npm/package.json
+          require-green-ci: ${{ startsWith(github.ref, 'refs/tags/raxol-cli-v') }}
 
-          if [[ "$RELEASE_TAG" != "$expected_tag" ]]; then
-            echo "::error::$RELEASE_TAG does not match npm package version $version"
-            exit 1
-          fi
-
-  linux-build:
-    name: linux-${{ matrix.arch }}
+  build:
+    name: build
     needs: validate
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # mise.toml is the one toolchain pin; the Dockerfile's default is for local
-      # builds only.
-      - name: Read the Elixir pin
-        id: pin
-        run: |
-          elixir="$(sed -n 's/^elixir = "\(.*\)"$/\1/p' mise.toml)"
-          [[ -n "$elixir" ]] || { echo "::error::no elixir pin in mise.toml"; exit 1; }
-          echo "image=elixir:$elixir" >> "$GITHUB_OUTPUT"
-
-      # Native build for the runner's arch (no --platform): amd64 -> raxol_cli_linux,
-      # arm64 -> raxol_cli_linux_arm. Exports the binary via the `export` stage.
-      - name: Build runtime binary
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/Dockerfile.raxol-cli
-          build-args: ELIXIR_IMAGE=${{ steps.pin.outputs.image }}
-          target: export
-          outputs: type=local,dest=out
-          cache-from: type=gha,scope=cli-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=cli-${{ matrix.arch }}
-
-      # The packaged binary on the arch that built it: a run in a clean
-      # container reports the packaged build and its ACP surface, and exits 0.
-      # Catches launcher/ERTS/arch breakage before any artifact
-      # ships (local amd64 verification is impossible on Apple hosts: the
-      # x86_64 BEAM does not boot under Rosetta emulation).
-      - name: Smoke the packaged binary
-        run: |
-          bin="$(basename "$(ls out/raxol_cli_*)")"
-          docker run --rm -v "$PWD/out:/work:ro" \
-            debian:trixie sh -c \
-            "/work/$bin doctor > /tmp/doctor.txt \
-             && grep -q 'packaged binary' /tmp/doctor.txt \
-             && grep -q 'acp surface available' /tmp/doctor.txt && echo SMOKE-OK"
-
-      - name: Set up Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-
-      # `raxol mcp` through the npm launcher, from the vendored layout
-      # `scripts/pack.sh` produces: boots the runtime in MCP mode, lists the
-      # tools and drives a session over stdio.
-      - name: Smoke raxol mcp through the launcher
-        run: |
-          mkdir -p packages/raxol_cli/npm/vendor
-          cp out/raxol_cli_* packages/raxol_cli/npm/vendor/
-          chmod +x packages/raxol_cli/npm/vendor/raxol_cli_*
-          cd packages/raxol_cli/npm && node scripts/mcp_smoke.mjs
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-linux-${{ matrix.arch }}
-          path: out/raxol_cli_*
-          if-no-files-found: error
-
-  macos-build:
-    name: macos-arm64
-    needs: validate
-    runs-on: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Erlang/Elixir
-        uses: erlef/setup-beam@v1
-        with:
-          version-file: mise.toml
-          version-type: strict
-
-      - name: Install pinned Zig
-        run: |
-          curl -fsSL "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz" \
-            | tar -xJ -C "$HOME"
-          echo "$HOME/zig-aarch64-macos-0.16.0" >> "$GITHUB_PATH"
-
-      - name: Build runtime binary
-        working-directory: packages/raxol_cli
-        env:
-          MIX_ENV: prod
-          BURRITO_TARGET: macos
-        run: |
-          zig version
-          mix local.hex --force
-          mix local.rebar --force
-          mix deps.get --only prod
-          mix release raxol_cli --overwrite
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-macos-arm64
-          path: packages/raxol_cli/burrito_out/raxol_cli_macos
-          if-no-files-found: error
-
-  windows-build:
-    name: windows-x86_64
-    needs: validate
-    runs-on: windows-2022
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Set up Erlang/Elixir
-        uses: erlef/setup-beam@v1
-        with:
-          version-file: mise.toml
-          version-type: strict
-
-      - name: Install pinned Zig
-        shell: pwsh
-        run: |
-          curl.exe -fsSL -o zig.zip "https://ziglang.org/download/0.16.0/zig-x86_64-windows-0.16.0.zip"
-          Expand-Archive -Path zig.zip -DestinationPath $env:USERPROFILE
-          "$env:USERPROFILE\zig-x86_64-windows-0.16.0" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-
-      # No NIF here: raxol_terminal drops :elixir_make on {:win32, _} and the
-      # driver uses the pure-Elixir IOTerminal, which the windows-2022 test leg
-      # already covers.
-      - name: Build runtime binary
-        working-directory: packages/raxol_cli
-        shell: pwsh
-        env:
-          MIX_ENV: prod
-          BURRITO_TARGET: windows
-        run: |
-          zig version
-          mix local.hex --force
-          mix local.rebar --force
-          mix deps.get --only prod
-          mix release raxol_cli --overwrite
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: cli-windows-x86_64
-          path: packages/raxol_cli/burrito_out/raxol_cli_windows.exe
-          if-no-files-found: error
+    uses: ./.github/workflows/burrito-build.yml
+    with:
+      package: raxol_cli
+      dockerfile: docker/Dockerfile.raxol-cli
+      cache-scope: cli
+      windows: true
+      doctor-smoke: true
+      mcp-smoke: true
 
   package:
     name: assemble npm package
-    needs: [linux-build, macos-build, windows-build]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -221,9 +69,9 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download built binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          pattern: cli-*
+          pattern: raxol_cli-*
           merge-multiple: true
           path: packages/raxol_cli/burrito_out
 
@@ -243,7 +91,7 @@ jobs:
           ls -lh ./*.tgz
 
       - name: Upload npm tarballs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: raxol-npm-tarball
           path: packages/raxol_cli/npm/*.tgz
@@ -274,9 +122,9 @@ jobs:
           package-manager-cache: false
 
       - name: Download built binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          pattern: cli-*
+          pattern: raxol_cli-*
           merge-multiple: true
           path: packages/raxol_cli/burrito_out
 
@@ -375,10 +223,9 @@ jobs:
 
   # Versioned release assets have stable unauthenticated URLs. Actions
   # artifacts cannot serve installers because they require a token and expire.
-  # The root release workflow does not match the `raxol-cli-v*` tag family.
   release:
     name: attach attested release assets
-    needs: [linux-build, macos-build, windows-build, publish]
+    needs: [build, publish]
     if: startsWith(github.ref, 'refs/tags/raxol-cli-v')
     runs-on: ubuntu-latest
     permissions:
@@ -390,9 +237,9 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Download built binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          pattern: cli-*
+          pattern: raxol_cli-*
           merge-multiple: true
           path: dist
 

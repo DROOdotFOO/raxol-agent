@@ -2,14 +2,14 @@ name: Release raxol_console npm package
 
 # Builds the self-contained Console runtime binaries and assembles the
 # `raxol-console` npm package, so the Virtuals Console's acp-cli installs and runs
-# Raxol like a Node runtime. Every binary is built natively for its arch: Linux
-# amd64/arm64 via Docker on their own runners, macOS arm64 on a macOS runner (each
-# arch builds natively to avoid the termbox NIF cross-compile hazard -- see
-# docker/Dockerfile.raxol-console).
+# Raxol like a Node runtime. burrito-build.yml builds and smokes each native
+# binary (Linux amd64/arm64, macOS arm64).
 #
-# The npm tarball is always produced as an artifact. Publishing to the registry is
-# gated: a `raxol-console-v*` tag, or a manual run with `publish: true` and an
-# `NPM_TOKEN` secret.
+# The npm tarball is always produced as an artifact. Publishing needs a
+# `raxol-console-v*` tag matching npm/package.json, or a manual run with
+# `publish: true`; either way the commit needs green CI, and the publish waits
+# for release-environment approval. npm CLI 11.5.1+ uses the package's
+# configured trusted publisher and emits provenance, so no token is stored.
 
 on:
   push:
@@ -30,100 +30,49 @@ permissions:
   contents: read
 
 jobs:
-  linux-build:
-    name: linux-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
+  validate:
+    name: validate release ref
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      publish: ${{ steps.flags.outputs.publish }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # mise.toml is the one toolchain pin; the Dockerfile's default is for local
-      # builds only.
-      - name: Read the Elixir pin
-        id: pin
-        run: |
-          elixir="$(sed -n 's/^elixir = "\(.*\)"$/\1/p' mise.toml)"
-          [[ -n "$elixir" ]] || { echo "::error::no elixir pin in mise.toml"; exit 1; }
-          echo "image=elixir:$elixir" >> "$GITHUB_OUTPUT"
-
-      # Native build for the runner's arch (no --platform): amd64 -> raxol_console_linux,
-      # arm64 -> raxol_console_linux_arm. Exports the binary via the `export` stage.
-      - name: Build runtime binary
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: docker/Dockerfile.raxol-console
-          build-args: ELIXIR_IMAGE=${{ steps.pin.outputs.image }}
-          target: export
-          outputs: type=local,dest=out
-          cache-from: type=gha,scope=console-${{ matrix.arch }}
-          cache-to: type=gha,mode=max,scope=console-${{ matrix.arch }}
-
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: runtime-linux-${{ matrix.arch }}
-          path: out/raxol_console_*
-          if-no-files-found: error
-
-  macos-build:
-    name: macos-arm64
-    runs-on: macos-15
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # Precompiled, pinned OTP/Elixir for Apple Silicon (no source build).
-      - name: Set up Erlang/Elixir
-        uses: erlef/setup-beam@v1
-        with:
-          version-file: mise.toml
-          version-type: strict
-
-      # Burrito requires an exact Zig; install it pinned rather than via Homebrew,
-      # whose zig tracks latest. The macOS target builds natively here (this is an
-      # arm64 runner), so its NIF links correctly -- the reason it is not built on
-      # the Linux side (see docker/Dockerfile.raxol-console).
-      - name: Install pinned Zig
-        run: |
-          curl -fsSL "https://ziglang.org/download/0.16.0/zig-aarch64-macos-0.16.0.tar.xz" \
-            | tar -xJ -C "$HOME"
-          echo "$HOME/zig-aarch64-macos-0.16.0" >> "$GITHUB_PATH"
-
-      - name: Build runtime binary
-        working-directory: packages/raxol_console
+      # Publish only on a tag, or a manual run that opted in.
+      - name: Resolve publish flag
+        id: flags
         env:
-          MIX_ENV: prod
-          BURRITO_TARGET: macos
+          PUBLISH_INPUT: ${{ inputs.publish }}
         run: |
-          zig version
-          mix local.hex --force
-          mix local.rebar --force
-          mix deps.get --only prod
-          mix release raxol_console --overwrite
+          if [[ "$GITHUB_EVENT_NAME" == "push" || "$PUBLISH_INPUT" == "true" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Upload binary
-        uses: actions/upload-artifact@v4
+      - name: Release preflight
+        uses: ./.github/actions/release-preflight
         with:
-          name: runtime-macos-arm64
-          path: packages/raxol_console/burrito_out/raxol_console_macos
-          if-no-files-found: error
+          tag-prefix: raxol-console-v
+          version-file: packages/raxol_console/npm/package.json
+          require-green-ci: ${{ steps.flags.outputs.publish }}
+
+  build:
+    name: build
+    needs: validate
+    uses: ./.github/workflows/burrito-build.yml
+    with:
+      package: raxol_console
+      dockerfile: docker/Dockerfile.raxol-console
+      cache-scope: console
 
   package:
     name: assemble npm package
-    needs: [linux-build, macos-build]
-    environment: release
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -133,46 +82,90 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Download built binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          pattern: runtime-*
+          pattern: raxol_console-*
           merge-multiple: true
-          path: packages/raxol_console/npm/vendor
+          path: packages/raxol_console/burrito_out
 
+      # Copies every binary into vendor/ with its exec bit (artifacts drop it)
+      # and fails when none arrived.
       - name: Stage binaries
-        working-directory: packages/raxol_console/npm
-        run: |
-          chmod +x vendor/raxol_console_* || true
-          echo "Vendored binaries:"
-          ls -lh vendor/
+        run: packages/raxol_console/npm/scripts/pack.sh
 
       - name: Pack tarball
         working-directory: packages/raxol_console/npm
-        run: npm pack
+        run: |
+          npm pack
+          ls -lh vendor/ ./*.tgz
 
       - name: Upload npm tarball
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: raxol-console-npm-tarball
           path: packages/raxol_console/npm/*.tgz
           if-no-files-found: error
 
-      # Publish only on a tag, or a manual run that opted in. Needs NPM_TOKEN.
-      - name: Resolve publish flag
-        id: flags
+  # A separate job so the build finishes before the protected release
+  # environment asks for approval. It publishes the tarball `package` packed,
+  # so what was smoked is what ships.
+  publish:
+    name: publish npm package
+    needs: [validate, package]
+    if: needs.validate.outputs.publish == 'true'
+    environment: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Download npm tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: raxol-console-npm-tarball
+          path: dist
+
+      # Resumable: a version already on the registry is skipped.
+      - name: Publish to npm
         run: |
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.publish }}" = "true" ]; then
-            echo "publish=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          name="$(node -p 'require("./packages/raxol_console/npm/package.json").name')"
+          version="$(node -p 'require("./packages/raxol_console/npm/package.json").version')"
+          tarball="dist/raxol-console-$version.tgz"
+          [[ -f "$tarball" ]] || { echo "::error::$tarball was not packed"; exit 1; }
+
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published; skipping"
           else
-            echo "publish=false" >> "$GITHUB_OUTPUT"
+            npm publish "$tarball" --provenance --access public
           fi
 
-      - name: Publish to npm
-        if: steps.flags.outputs.publish == 'true'
-        working-directory: packages/raxol_console/npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          for attempt in {1..180}; do
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              break
+            fi
+            (( attempt < 180 )) || {
+              echo "::error::$name@$version was published but is not visible after 15 minutes"
+              exit 1
+            }
+            echo "Waiting for $name@$version to become visible ($attempt/180)"
+            sleep 5
+          done
+
+          predicate="$(npm view "$name@$version" dist.attestations.provenance.predicateType)"
+          [[ "$predicate" == "https://slsa.dev/provenance/v1" ]] || {
+            echo "::error::$name@$version has no SLSA provenance"
+            exit 1
+          }
