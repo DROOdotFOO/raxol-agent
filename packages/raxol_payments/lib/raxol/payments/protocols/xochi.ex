@@ -209,10 +209,13 @@ defmodule Raxol.Payments.Protocols.Xochi do
         %QuoteResponse{} = quote,
         opts \\ []
       ) do
-    caps = deposit_capabilities(config, opts)
-    version = Capabilities.deposit_attestation_version(caps)
-
-    with :ok <- ensure_deposit_route(quote),
+    # Validated here as well as in the client: this is public, and the request
+    # is half the signed message, so an unvalidated one could bind a value
+    # (e.g. a `0x`-prefixed non-hex recipient) whose case v3 cannot pin.
+    with :ok <- DepositRouteRequest.validate(request),
+         :ok <- ensure_deposit_route(quote),
+         caps = deposit_capabilities(config, opts),
+         version = Capabilities.deposit_attestation_version(caps),
          {:ok, signer} <- resolve_deposit_signer(caps, opts),
          # Also checked inside verify/3; here first, so a v1 venue is named as
          # such before a field-level refusal can mask it.
@@ -286,8 +289,9 @@ defmodule Raxol.Payments.Protocols.Xochi do
          to_token: request.to_token,
          to_amount: to_amount,
          min_to_amount: min_to_amount,
-         # Resolved as Riddler resolves it: the requested recipient, else the wallet.
-         recipient: request.recipient_address || request.wallet,
+         # Riddler signs the resolved recipient (requested, else the wallet);
+         # `DepositRouteRequest.validate/1` requires one, so it is the request's.
+         recipient: request.recipient_address,
          stealth_spending_pub_key: request.stealth_spending_pub_key,
          stealth_viewing_pub_key: request.stealth_viewing_pub_key,
          settlement_preference: request.settlement_preference

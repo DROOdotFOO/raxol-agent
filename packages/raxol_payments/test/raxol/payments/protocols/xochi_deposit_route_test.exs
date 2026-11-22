@@ -154,7 +154,7 @@ defmodule Raxol.Payments.Protocols.XochiDepositRouteTest do
     end
 
     test "binds an optional refund address and stealth meta-address as sent" do
-      refund = "TJYeasTPa6gpEEfYGfp5LQjWXmdZQBpLzX"
+      refund = d().tron_usdt
       spend = "0x02" <> String.duplicate("ab", 32)
       view = "0x03" <> String.duplicate("cd", 32)
 
@@ -180,12 +180,19 @@ defmodule Raxol.Payments.Protocols.XochiDepositRouteTest do
                verify(quote_body(signed_fields(%{deal | refund_address: nil})), req)
     end
 
-    test "binds the recipient as resolved: omitted means the wallet" do
-      req = request(%{recipient_address: nil})
+    test "validates the request itself, since it is half the signed message" do
       body = quote_body(signed_fields(%{recipient: d().tron_wallet}))
 
-      assert {:ok, %{recipient_address: wallet}} = verify(body, req)
-      assert wallet == d().tron_wallet
+      assert {:error, {:invalid_recipient_address, _}} =
+               verify(body, request(%{recipient_address: nil}))
+
+      canton = "0xAlice::1220" <> String.duplicate("3e", 32)
+
+      assert {:error, {:invalid_recipient_address, _}} =
+               verify(
+                 quote_body(signed_fields(%{recipient: canton})),
+                 request(%{recipient_address: canton})
+               )
     end
   end
 
