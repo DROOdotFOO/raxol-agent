@@ -190,10 +190,15 @@ defmodule Raxol.Agent.Backend.HTTPTest do
       chunk = %{"choices" => [%{"delta" => %{"tool_calls" => frags}}]}
       body = "data: " <> Jason.encode!(chunk) <> "\n\n"
 
-      {micros, events} = :timer.tc(fn -> stream_body(body, max_sse_buffer_bytes: 4_000_000) end)
-
+      events = stream_body(body, max_sse_buffer_bytes: 4_000_000)
       assert List.last(events) == {:error, "streamed response exceeded 128 tool calls"}
-      assert micros < 2_000_000
+
+      # The merge the stream runs on that chunk takes one call past the limit
+      # and stops. Uncapped, every index-less fragment is a call of its own
+      # (shown on a thousand: merging all 200_000 is the cost the cap avoids).
+      # Counted, not timed, so a slow host cannot fail it.
+      assert map_size(ToolCalls.merge(%{}, frags, 128)) == 129
+      assert map_size(ToolCalls.merge(%{}, Enum.take(frags, 1_000))) == 1_000
     end
 
     test "map arguments count toward the byte limit" do
