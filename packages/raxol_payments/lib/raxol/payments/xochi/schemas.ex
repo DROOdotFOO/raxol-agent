@@ -513,7 +513,7 @@ defmodule Raxol.Payments.Xochi.Schemas do
 
     @type t :: %__MODULE__{
             success: boolean(),
-            intent_id: String.t(),
+            intent_id: String.t() | nil,
             status: atom(),
             tx_hash: String.t() | nil,
             note_commitment: String.t() | nil,
