@@ -129,6 +129,16 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
     """
   end
 
+  def sidecar({:sidecar_unhealthy, :health_timeout}) do
+    """
+    the Privy signer sidecar at #{SignerSidecar.base_url([])} stopped answering /health.
+
+    Nothing was signed. The sidecar passed its boot check earlier in this run, so
+    it has since exited or hung. Check its output above, then re-run; the task
+    starts a fresh one.
+    """
+  end
+
   def sidecar(reason) do
     """
     the Privy signer sidecar did not start: #{inspect(reason)}

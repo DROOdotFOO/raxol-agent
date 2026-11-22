@@ -431,6 +431,17 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
     end
   end
 
+  describe "a sidecar that stops answering" do
+    alias Mix.Tasks.RaxolEarn.Order.Errors
+
+    test "is reported as stopped, not as failing to start" do
+      message = Errors.sidecar({:sidecar_unhealthy, :health_timeout})
+
+      assert message =~ "stopped answering /health"
+      refute message =~ "did not start"
+    end
+  end
+
   defp serve_health(address) do
     ref = make_ref()
     {:ok, _} = Plug.Cowboy.http(__MODULE__.Health, address, port: 0, ref: ref)
