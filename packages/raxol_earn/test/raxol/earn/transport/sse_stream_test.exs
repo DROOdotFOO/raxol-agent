@@ -89,6 +89,18 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
       limit = 64
       flood = "data: " <> String.duplicate("x", limit)
 
+      test_pid = self()
+      handler = "sse-dropped-#{inspect(make_ref())}"
+
+      :telemetry.attach(
+        handler,
+        [:raxol, :earn, :transport, :sse_dropped],
+        fn _event, measurements, meta, _ -> send(test_pid, {:dropped, measurements, meta}) end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+
       log =
         ExUnit.CaptureLog.capture_log(fn ->
           transport =
@@ -103,6 +115,7 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
         end)
 
       assert [_one] = Regex.scan(~r/dropped 1 event\(s\) larger than 64 bytes/, log)
+      assert_received {:dropped, %{count: 1}, %{max_bytes: 64}}
     end
 
     test "an event within the limit still arrives when split across chunks" do

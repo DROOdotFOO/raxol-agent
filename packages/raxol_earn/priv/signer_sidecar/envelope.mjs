@@ -4,6 +4,7 @@
 // node:crypto only, so it loads without the SDK installed.
 
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { isIPv4, isIPv6 } from "node:net";
 
 const CONTEXT = "raxol-earn-sidecar/v1";
 
@@ -63,8 +64,12 @@ export function verifyRequest(key, { method, path, headers, body }, now, seen) {
   return null;
 }
 
-const LOOPBACK = /^(localhost|127(\.\d{1,3}){3}|::1|\[::1\])$/i;
-
+// Same rule as SignerSidecar.check_url!/2: "localhost", 127.0.0.0/8, or ::1
+// in any spelling.
 export function isLoopback(host) {
-  return LOOPBACK.test(host);
+  const h = String(host).replace(/^\[(.*)\]$/, "$1");
+  if (h === "localhost") return true;
+  if (isIPv4(h)) return h.split(".")[0] === "127";
+  if (isIPv6(h)) return new URL(`http://[${h}]`).hostname === "[::1]";
+  return false;
 }

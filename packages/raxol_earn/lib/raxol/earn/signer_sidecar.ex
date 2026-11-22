@@ -31,7 +31,7 @@ defmodule Raxol.Earn.SignerSidecar do
   - `:port` -- sidecar listen port (default `RAXOL_ACP_SIGNER_PORT` or `4048`).
   - `:node_path` -- node executable (default: `System.find_executable("node")`).
   - `:script` -- server.mjs path (default: this app's `priv/signer_sidecar/server.mjs`).
-  - `:health_timeout_ms` -- boot health-wait budget (default `20_000`).
+  - `:health_timeout_ms` -- boot health-wait budget (default `30_000`).
   - `:expect_address` -- the wallet `GET /health` must report (default
     `RAXOL_ACP_WALLET_ADDRESS`). A listener answering for another wallet is
     rejected rather than adopted as the signer.
@@ -153,7 +153,12 @@ defmodule Raxol.Earn.SignerSidecar do
   defp loopback?("localhost"), do: true
 
   defp loopback?(host) when is_binary(host) do
-    case :inet.parse_address(String.to_charlist(String.trim(host, "[") |> String.trim("]"))) do
+    # Strict: dotted-quad IPv4 only, as `envelope.mjs` checks the bind host.
+    case host
+         |> String.trim_leading("[")
+         |> String.trim_trailing("]")
+         |> String.to_charlist()
+         |> :inet.parse_strict_address() do
       {:ok, {127, _, _, _}} -> true
       {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
       _ -> false
@@ -177,13 +182,20 @@ defmodule Raxol.Earn.SignerSidecar do
 
     script = Keyword.get(opts, :script, default_script())
     File.exists?(script) || raise("signer sidecar script not found: #{script}")
-    base_url = base_url(opts)
 
-    # Resolved before node is spawned: without a key nothing could check it.
-    case auth_key(opts) do
-      {:ok, key} -> boot(opts, node_path, script, base_url, key)
+    # Resolved before node is spawned: without a URL or a key nothing could check it.
+    with {:ok, base_url} <- resolve_url(opts),
+         {:ok, key} <- auth_key(opts) do
+      boot(opts, node_path, script, base_url, key)
+    else
       {:error, reason} -> {:stop, {:sidecar_unhealthy, reason}}
     end
+  end
+
+  defp resolve_url(opts) do
+    {:ok, base_url(opts)}
+  rescue
+    e in ArgumentError -> {:error, {:bad_sidecar_url, Exception.message(e)}}
   end
 
   defp boot(opts, node_path, script, base_url, key) do
@@ -298,17 +310,18 @@ defmodule Raxol.Earn.SignerSidecar do
     body = if payload == nil, do: "", else: Jason.encode!(payload)
     {request_sig, auth} = Envelope.request_headers(key, method, path, body)
 
+    # The forced options win: a redirect would resend the signed request past
+    # the loopback pin, and the signature covers the raw response body.
     opts =
-      [
+      Keyword.merge(req_options,
         method: method |> String.downcase() |> String.to_existing_atom(),
         url: base_url <> path,
         body: body,
         headers: [{"content-type", "application/json"} | auth],
         decode_body: false,
-        # A redirect would resend the signed request past the loopback pin.
         redirect: false,
         retry: false
-      ] ++ req_options
+      )
 
     case Req.request(opts) do
       {:ok, %Req.Response{} = resp} -> accept(resp, key, request_sig, signer)

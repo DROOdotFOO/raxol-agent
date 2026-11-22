@@ -99,7 +99,12 @@ defmodule Raxol.Earn.Telemetry do
       # the healthy signal; its ABSENCE is the alarm, and absence is what
       # external monitoring watches. Emitted via the `@telemetry_event`
       # attribute, which is why the registry test also does a text-level scan.
-      [:raxol, :earn, :xochi, :solver, :heartbeat] => :operational
+      [:raxol, :earn, :xochi, :solver, :heartbeat] => :operational,
+
+      # PEER. `Transport.SSE` emits it when the ACP server sent an event larger
+      # than `:max_sse_buffer_bytes`, which was dropped unrecovered. Only the
+      # remote party can cause it.
+      [:raxol, :earn, :transport, :sse_dropped] => :peer
     },
     # Umbrella :operational (the `dynamic:` default). Suffixes recorded so a
     # future reader knows exactly what each family hides.

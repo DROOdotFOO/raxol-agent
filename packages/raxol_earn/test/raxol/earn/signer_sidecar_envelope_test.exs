@@ -87,31 +87,41 @@ defmodule Raxol.Earn.SignerSidecar.EnvelopeTest do
   end
 
   test "the sidecar's loopback check matches the BEAM's" do
-    hosts = [
-      "127.0.0.1",
-      "127.9.9.9",
-      "localhost",
-      "::1",
-      "[::1]",
-      "0.0.0.0",
-      "10.0.0.5",
-      "signer.example"
+    # {host, loopback?}: both checks must agree on every row.
+    table = [
+      {"127.0.0.1", true},
+      {"127.9.9.9", true},
+      {"localhost", true},
+      {"::1", true},
+      {"[::1]", true},
+      {"0:0:0:0:0:0:0:1", true},
+      {"0.0.0.0", false},
+      {"10.0.0.5", false},
+      {"signer.example", false},
+      {"127.999.1.1", false},
+      {"2130706433", false},
+      {"127.1", false},
+      {"::ffff:127.0.0.1", false},
+      {"localhost.example", false}
     ]
 
+    hosts = Enum.map(table, &elem(&1, 0))
     node = node_eval("console.log(JSON.stringify(#{Jason.encode!(hosts)}.map(e.isLoopback)));")
+    elixir = Enum.map(hosts, &beam_loopback?/1)
 
-    elixir =
-      Enum.map(hosts, fn host ->
-        try do
-          SignerSidecar.check_url!("http://#{if host == "::1", do: "[::1]", else: host}:1")
+    assert node == Enum.map(table, &elem(&1, 1))
+    assert elixir == Enum.map(table, &elem(&1, 1))
+  end
 
-          true
-        rescue
-          ArgumentError -> false
-        end
-      end)
+  defp beam_loopback?(host) do
+    url =
+      if String.contains?(host, ":") and not String.starts_with?(host, "["),
+        do: "[#{host}]",
+        else: host
 
-    assert node == elixir
-    assert node == [true, true, true, true, true, false, false, false]
+    SignerSidecar.check_url!("http://#{url}:1")
+    true
+  rescue
+    ArgumentError -> false
   end
 end

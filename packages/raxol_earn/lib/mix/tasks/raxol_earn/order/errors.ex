@@ -158,6 +158,15 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
       "the request signature did not verify -- the sidecar was started with a " <>
         "different RAXOL_ACP_SIGNER_PRIVATE_KEY, or something else holds the port."
 
+  defp refusal_hint("replayed"),
+    do: "the sidecar had already served a request with this nonce -- something replayed it."
+
+  defp refusal_hint(reason) when reason in ["missing_auth", "malformed_auth"],
+    do:
+      "the request carried no valid authentication headers -- this BEAM and the " <>
+        "sidecar run different versions."
+
+  defp refusal_hint("body_too_large"), do: "the request body exceeded the sidecar's 1 MB cap."
   defp refusal_hint(reason), do: inspect(reason)
 
   @spec sidecar(term(), String.t()) :: String.t()
@@ -189,14 +198,16 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
     """
   end
 
+  def sidecar({:bad_sidecar_url, message}, _url), do: message <> "\n"
+
   def sidecar(:sidecar_unauthenticated, url) do
     """
     the process answering at #{url} could not prove it is this run's signer.
 
     Nothing was signed or sent through it. Every sidecar response must carry a
-    signature made with a key derived from RAXOL_ACP_SIGNER_PRIVATE_KEY; this one
-    did not. Either another process holds the port, or the sidecar there was
-    started with a different authorization key. Find it with
+    signature made with a key derived from RAXOL_ACP_SIGNER_PRIVATE_KEY, for this
+    run's wallet; this one did not. Another process holds the port, or the sidecar
+    there was started with a different authorization key or wallet. Find it with
 
       lsof -i :#{URI.parse(url).port}
     """

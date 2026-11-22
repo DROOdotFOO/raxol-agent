@@ -78,6 +78,20 @@ defmodule Raxol.Earn.SignerSidecarTest do
     end
   end
 
+  describe "init/1 with a bad sidecar URL" do
+    test "refuses before spawning node, naming the URL problem" do
+      assert {:error, {:sidecar_unhealthy, {:bad_sidecar_url, message}}} =
+               SignerSidecar.start_link_or_error(
+                 name: nil,
+                 base_url: "http://signer.example:4048",
+                 # Never run: the URL is refused before anything is spawned.
+                 node_path: "/nonexistent/node"
+               )
+
+      assert message =~ "not loopback"
+    end
+  end
+
   describe "start_link_or_error/1" do
     test "start_link/1 kills a caller that does not trap exits" do
       {_pid, ref} = spawn_monitor(fn -> SignerSidecar.start_link(boot_failure_opts()) end)

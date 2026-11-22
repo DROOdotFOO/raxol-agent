@@ -149,8 +149,8 @@ defmodule Raxol.Earn.Xochi.SolverApplication do
   end
 
   # Delegated (Privy + Alchemy managed wallet) when a wallet id + address are set;
-  # otherwise the legacy local-EOA path. Delegated mode holds NO signing key in the
-  # BEAM -- the sidecar does, from its own env.
+  # otherwise the legacy local-EOA path. Delegated mode signs nothing in the BEAM --
+  # the sidecar does, from its own env; the BEAM only derives its MAC key from it.
   defp privy_mode? do
     present?(System.get_env("RAXOL_ACP_WALLET_ID")) and
       present?(System.get_env("RAXOL_ACP_WALLET_ADDRESS"))

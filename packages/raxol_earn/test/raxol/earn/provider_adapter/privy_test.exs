@@ -130,6 +130,25 @@ defmodule Raxol.Earn.ProviderAdapter.PrivyTest do
       assert {:error, :sidecar_unauthenticated} = Privy.send_calls(adapter, 8453, [%{to: "0x1"}])
     end
 
+    test "caller req_options cannot switch off redirect or raw-body handling" do
+      sig_hex = String.duplicate("ab", 65)
+
+      holder =
+        TestSidecar.start(@addr, %{"/sign-message" => {200, %{"signature" => "0x" <> sig_hex}}})
+
+      adapter =
+        adapter(
+          req_options: [
+            plug: {TestSidecar, holder},
+            retry: true,
+            redirect: true,
+            decode_body: true
+          ]
+        )
+
+      assert {:ok, <<_::binary-size(65)>>} = Privy.sign_message(adapter, 8453, "x")
+    end
+
     test "an unsigned response is refused" do
       adapter = sidecar(self(), %{"/sign-message" => {200, %{"signature" => "0x00"}}}, :unsigned)
       assert {:error, :sidecar_unauthenticated} = Privy.sign_message(adapter, 8453, "x")

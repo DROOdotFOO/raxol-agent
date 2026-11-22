@@ -67,8 +67,10 @@ defmodule Raxol.Earn.Transport.SSE do
   - `:req_options` -- extra options threaded into Req (for testing).
   - `:max_sse_buffer_bytes` -- the most bytes of one event held while waiting
     for its boundary (default 1 MiB, as in `Raxol.Agent.Backend.HTTP`). An
-    event that outgrows it is dropped with one warning and the stream carries
-    on, so it is not replayed by a reconnect. An event that arrives whole in
+    event that outgrows it is dropped with one warning and a
+    `[:raxol, :earn, :transport, :sse_dropped]` telemetry event, and the stream
+    carries on, so it is not replayed by a reconnect. A dropped event is not
+    recovered; alert on the telemetry. An event that arrives whole in
     one chunk is not held and is not limited. A non-positive-integer value
     raises `ArgumentError`.
   """
@@ -256,6 +258,10 @@ defmodule Raxol.Earn.Transport.SSE do
       Logger.warning(
         "ACP SSE: dropped #{dropped} event(s) larger than #{max_bytes} bytes; stream kept open"
       )
+
+      :telemetry.execute([:raxol, :earn, :transport, :sse_dropped], %{count: dropped}, %{
+        max_bytes: max_bytes
+      })
     end
 
     resp
