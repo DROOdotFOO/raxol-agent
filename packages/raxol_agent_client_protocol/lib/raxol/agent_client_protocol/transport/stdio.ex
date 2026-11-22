@@ -449,14 +449,21 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   @spec secret?(String.t(), keyword()) :: boolean()
   def secret?(name, opts \\ []) when is_binary(name) and is_list(opts) do
     core!()
-    denied?(name, CoreEnv.pass(), names!(opts, :pass))
+    denied?(name, core_pass_upcase(), names!(opts, :pass))
   end
 
+  # Core matches its named set case-insensitively but `pass:` exactly, so
+  # `pass: ["SSH_AUTH_SOCK"]` makes Core let `ssh_auth_sock` through as well.
+  # Matching Core's `pass:` case-insensitively here denies every such variant.
   @spec denied?(String.t(), [String.t()], [String.t()]) :: boolean()
-  defp denied?(name, core_pass, pass) do
+  defp denied?(name, core_pass_upcase, pass) do
     name not in pass and
-      (name in core_pass or CoreEnv.secret?(name) or Regex.match?(@gaps, name))
+      (String.upcase(name) in core_pass_upcase or CoreEnv.secret?(name) or
+         Regex.match?(@gaps, name))
   end
+
+  @spec core_pass_upcase() :: [String.t()]
+  defp core_pass_upcase, do: Enum.map(CoreEnv.pass(), &String.upcase/1)
 
   # The caller's `env`, then, unset (`false`): `unset` and every name a child
   # is denied, set or not for Core's named set and `pass:` list, otherwise if
@@ -465,8 +472,9 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   defp scrubbed_env(env, unset, pass) do
     core!()
     core_pass = CoreEnv.pass()
+    core_pass_upcase = Enum.map(core_pass, &String.upcase/1)
     given = MapSet.new(env, fn {name, _value} -> to_string(name) end)
-    present = System.get_env() |> Map.keys() |> Enum.filter(&denied?(&1, core_pass, pass))
+    present = System.get_env() |> Map.keys() |> Enum.filter(&denied?(&1, core_pass_upcase, pass))
     named = Enum.reject(CoreEnv.secrets() ++ core_pass, &(&1 in pass))
 
     removed =

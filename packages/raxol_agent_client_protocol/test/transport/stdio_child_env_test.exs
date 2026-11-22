@@ -62,6 +62,26 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioChildEnvTest do
       for name <- all, do: assert(Stdio.secret?(name), name)
     end
 
+    # Core matches its named set case-insensitively and `pass:` exactly, so
+    # passing `SSH_AUTH_SOCK` makes Core let `ssh_auth_sock` through too.
+    test "a case variant of a Core-passed named secret is still unset" do
+      Application.put_env(:raxol_core, Raxol.Core.ChildEnv, pass: ["SSH_AUTH_SOCK"])
+      refute Raxol.Core.ChildEnv.secret?("ssh_auth_sock")
+
+      previous = Map.new(~w(SSH_AUTH_SOCK ssh_auth_sock), &{&1, System.get_env(&1)})
+
+      on_exit(fn ->
+        for {name, value} <- previous,
+            do: if(value, do: System.put_env(name, value), else: System.delete_env(name))
+      end)
+
+      seen = spawn_seen(~w(SSH_AUTH_SOCK ssh_auth_sock), [])
+
+      assert seen["SSH_AUTH_SOCK"] == "unset"
+      assert seen["ssh_auth_sock"] == "unset"
+      assert Stdio.secret?("ssh_auth_sock")
+    end
+
     test "precedence: :env, then :unset_env, then :pass, then the scrub" do
       suffix = System.unique_integer([:positive])
       given = "ACP_STDIO_#{suffix}_GIVEN_TOKEN"

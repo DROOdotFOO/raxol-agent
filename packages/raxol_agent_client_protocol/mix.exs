@@ -19,7 +19,9 @@ defmodule RaxolAgentClientProtocol.MixProject do
       name: "Raxol Agent Client Protocol",
       source_url: @source_url,
       dialyzer: [
-        plt_add_apps: [:mix, :ex_unit],
+        # raxol_core is `runtime: false` and :telemetry arrives only through it,
+        # so neither is in the PLT unless named.
+        plt_add_apps: [:mix, :ex_unit, :raxol_core, :telemetry],
         flags: [:error_handling, :underspecs],
         ignore_warnings: ".dialyzer_ignore.exs"
       ]
