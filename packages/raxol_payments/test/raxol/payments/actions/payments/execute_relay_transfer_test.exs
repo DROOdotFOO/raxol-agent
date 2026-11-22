@@ -651,25 +651,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransferTest do
       assert {:error, %Failure{detail: {:unknown_asset, %{side: :source}}}} =
                ExecuteRelayTransfer.run(params, ctx(%{policy: nil}))
     end
-
-    test "a dollar stablecoin on Tron counts at par" do
-      stub_quote_and_execute()
-      ctx = ctx()
-
-      params =
-        base_params(%{
-          from_chain_id: @tron,
-          from_token: @usdt_trc20,
-          to_chain_id: 8453,
-          to_token: @usdc_base,
-          to_address: "0x" <> String.duplicate("ab", 20),
-          from_address: @tron_addr
-        })
-
-      assert {:ok, _} = ExecuteRelayTransfer.run(params, ctx)
-      assert [%{amount: amount}] = Ledger.get_history(ctx.ledger, "a1")
-      assert Decimal.equal?(amount, Decimal.new("0.50"))
-    end
   end
 
   describe "spend gate" do

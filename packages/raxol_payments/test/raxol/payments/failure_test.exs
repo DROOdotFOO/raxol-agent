@@ -108,6 +108,31 @@ defmodule Raxol.Payments.FailureTest do
     end
   end
 
+  describe "from/1 unpriced assets" do
+    test "a failed price source is a retryable :invalid_request" do
+      f = Failure.from({:unpriced_asset, %{reason: :price_source_error, unit: "USD"}})
+      assert f.reason == :invalid_request
+      assert f.retryable?
+      assert f.message =~ "price_source_error"
+    end
+
+    test "a missing or stale price and a currency mismatch are not retryable" do
+      for reason <- [:no_price_source, :no_price, :fx_unsupported] do
+        f = Failure.from({:unpriced_asset, %{reason: reason, unit: "USD"}})
+        assert f.reason == :invalid_request
+        refute f.retryable?
+        assert f.message =~ Atom.to_string(reason)
+      end
+    end
+
+    test "a non-USD destination asks for min_to_amount" do
+      f = Failure.from({:unpriced_asset, %{side: :destination, peg: "EUR"}})
+      assert f.reason == :invalid_request
+      refute f.retryable?
+      assert f.message =~ "min_to_amount"
+    end
+  end
+
   describe "from/1 stealth and validation" do
     test "missing meta-address maps to :stealth_keys_required" do
       assert Failure.from(:stealth_meta_address_required).reason == :stealth_keys_required
