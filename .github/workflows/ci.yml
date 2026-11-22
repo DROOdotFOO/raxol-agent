@@ -16,6 +16,7 @@ permissions:
 env:
   MIX_ENV: test
   TMPDIR: /tmp
+  MIX_AUDIT_VERSION: 2.1.5
 
 jobs:
   package-tests:
@@ -75,27 +76,52 @@ jobs:
           )"
           echo "XOCHI_SPEC_DIR=$package_root" >> "$GITHUB_ENV"
 
+      # No package's .formatter.exs imports deps, so this needs nothing fetched
+      # and fails a misformatted change before the compile is paid for.
+      - name: Check formatting
+        working-directory: packages/${{ matrix.package }}
+        run: mix format --check-formatted
+
       # The shadow guard runs first: a Hex entry for a path sibling unpins that
       # entry's whole subtree, and `mix deps.get` does not remove it.
-      - name: Compile package
+      - name: Fetch dependencies
         working-directory: packages/${{ matrix.package }}
         run: |
           mix run --no-start --no-compile --no-deps-check ../../scripts/check_lock_path_shadows.exs
           mix deps.get --check-locked
-          mix compile --warnings-as-errors
+
+      # Retired Hex releases, then the advisory database against mix.lock.
+      # mix_audit runs as a pinned escript so no package carries it as a dep.
+      - name: Audit dependencies
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          mix hex.audit
+          mix escript.install hex mix_audit "$MIX_AUDIT_VERSION" --force
+          "$HOME/.mix/escripts/mix_audit"
+
+      - name: Compile package
+        working-directory: packages/${{ matrix.package }}
+        run: mix compile --warnings-as-errors
+
+      # The packages listed here are credo-clean; the rest carry findings that
+      # predate this gate and join the list as they are cleared.
+      - name: Credo
+        if: contains(fromJSON('["raxol_agent_client_protocol", "raxol_broker", "raxol_cli", "raxol_console", "raxol_web3"]'), matrix.package)
+        working-directory: packages/${{ matrix.package }}
+        run: mix credo
 
       # Stated here, not left to each test_helper: raxol_payments computes its
-      # exclusions from which environment variables are present.
+      # exclusions from which environment variables are present. A parent tag
+      # covers the tests tagged inside its module (`live_xochi` covers
+      # `live_xochi_matrix`/`live_xochi_preflight`, `live_xochi_order` covers
+      # `live_xochi_order_settle`).
       - name: Run package tests
         working-directory: packages/${{ matrix.package }}
         run: |
           mix test \
             --exclude live_xochi \
-            --exclude live_xochi_matrix \
-            --exclude live_xochi_preflight \
             --exclude live_xochi_order \
             --exclude live_xochi_order_preflight \
-            --exclude live_xochi_order_settle \
             --exclude live_relay \
             --exclude live_property \
             --exclude live_parity \
@@ -103,8 +129,7 @@ jobs:
             --exclude live_chain \
             --exclude live_bundler \
             --exclude live_acp_dev \
-            --exclude cli_signer \
-            --exclude skip_on_ci
+            --exclude cli_signer
 
       # `bin/raxol-acp --agent` as an OS process. Included by file: the other
       # `:integration` suites in this package need a live Postgres.
@@ -118,7 +143,3 @@ jobs:
         if: matrix.package == 'raxol_cli'
         working-directory: packages/raxol_cli
         run: mix test --include integration test/raxol/cli/mcp_integration_test.exs
-
-      - name: Check formatting
-        working-directory: packages/${{ matrix.package }}
-        run: mix format --check-formatted
