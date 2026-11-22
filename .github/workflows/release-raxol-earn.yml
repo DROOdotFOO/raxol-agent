@@ -1,7 +1,8 @@
 name: Release raxol_earn sidecar image
 
 # Builds and publishes the read-only settlement-accounting sidecar image to GHCR.
-# A successful image build IS the compile gate here.
+# A push (a `raxol-earn-v*` tag, or a manual run with `push: true`) needs green CI
+# on its commit, which runs the raxol_earn suite; a dry run only builds.
 #
 # Publishes to ghcr.io/droodotfoo/raxol-earn. The repo lives under DROOdotFOO, so the
 # job's GITHUB_TOKEN can push natively -- no PAT needed. The ops side pulls by digest;
@@ -29,6 +30,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       packages: write
     steps:
@@ -41,12 +43,21 @@ jobs:
       # Push on a tag, or on manual dispatch only when the push input is true.
       - name: Resolve push flag
         id: flags
+        env:
+          PUSH_INPUT: ${{ inputs.push }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.push }}" = "true" ]; then
+          if [[ "$GITHUB_EVENT_NAME" == "push" || "$PUSH_INPUT" == "true" ]]; then
             echo "push=true" >> "$GITHUB_OUTPUT"
           else
             echo "push=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Release preflight
+        uses: ./.github/actions/release-preflight
+        with:
+          tag-prefix: raxol-earn-v
+          version-file: packages/raxol_earn/mix.exs
+          require-green-ci: ${{ steps.flags.outputs.push }}
 
       - name: Log in to GHCR
         if: steps.flags.outputs.push == 'true'
@@ -87,8 +98,8 @@ jobs:
           push: ${{ steps.flags.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=earn
+          cache-to: type=gha,mode=max,scope=earn
 
       - name: Record digest
         if: steps.flags.outputs.push == 'true'
