@@ -1,0 +1,133 @@
+name: Nightly
+
+# Suites no pull request runs, each needing a local service and no secret:
+#   - raxol_agent's mutation controls (`:mutation`), whose anchors rot silently
+#     when the guarded production line moves, and its Postgres ThreadLog
+#     adapter (`:integration`) against a real server;
+#   - raxol_earn's anvil-fork suites (`:live_chain`, `:live_bundler`), which
+#     fork Base mainnet through its public RPC and move no real funds.
+# Secret-gated suites (`:live_parity`, `:live_property`, `:live_acp_dev`,
+# `:live_longcat`) and fund-moving ones stay with scripts/run_live_gates.sh.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  MIX_ENV: test
+  TMPDIR: /tmp
+
+jobs:
+  raxol-agent:
+    name: raxol_agent (mutation controls, Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: raxol_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: packages/raxol_agent
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: mise.toml
+          version-type: strict
+
+      # ci.yml's key, so the nightly restores what the last CI run saved.
+      - name: Cache package dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            packages/raxol_agent/deps
+            packages/raxol_agent/_build
+          key: pkg-raxol_agent-${{ runner.os }}-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('packages/raxol_agent/mix.lock') }}-${{ hashFiles('packages/*/mix.exs') }}
+
+      - name: Fetch and compile
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+
+      # On unmutated code these check only that each guarded line still exists;
+      # a failure means a control's anchor needs updating, not a regression.
+      - name: Mutation controls
+        run: mix test test/invariants/mutation_controls_test.exs --only mutation
+
+      - name: Postgres ThreadLog adapter
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: '5432'
+          POSTGRES_DB: raxol_agent_test
+        run: mix test test/raxol/agent/thread_log/postgrex_test.exs --include integration
+
+  raxol-earn-anvil:
+    name: raxol_earn (anvil fork)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: packages/raxol_earn
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Elixir
+        id: beam
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: mise.toml
+          version-type: strict
+
+      - name: Cache package dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            packages/raxol_earn/deps
+            packages/raxol_earn/_build
+          key: pkg-raxol_earn-${{ runner.os }}-${{ steps.beam.outputs.elixir-version }}-${{ steps.beam.outputs.otp-version }}-${{ hashFiles('packages/raxol_earn/mix.lock') }}-${{ hashFiles('packages/*/mix.exs') }}
+
+      # anvil + cast; the harness spawns its own fork per suite.
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.10.0
+
+      - name: Fetch and compile
+        run: |
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get --check-locked
+          mix compile --warnings-as-errors
+
+      # The harness forks https://mainnet.base.org unless RAXOL_ACP_FORK_URL is
+      # set; an optional repository secret of that name points it at a
+      # dedicated RPC when the public one rate-limits.
+      - name: Anvil-fork suites
+        env:
+          FORK_URL: ${{ secrets.RAXOL_ACP_FORK_URL }}
+        run: |
+          if [[ -n "$FORK_URL" ]]; then export RAXOL_ACP_FORK_URL="$FORK_URL"; fi
+          mix test --only live_chain --only live_bundler

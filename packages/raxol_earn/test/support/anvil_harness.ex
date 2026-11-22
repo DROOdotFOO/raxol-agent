@@ -181,11 +181,11 @@ defmodule Raxol.Earn.Test.AnvilHarness do
   def assert_tx_success!(rpc, tx_hash) do
     {status, 0} = cast(["receipt", tx_hash, "status", "--rpc-url", rpc])
 
-    # `cast receipt <tx> status` prints e.g. "1 (success)" / "0 (failure)"; the
-    # leading token is the raw status.
+    # `cast receipt <tx> status` prints "1 (success)" / "0 (failure)" before
+    # Foundry 1.10 and "true" / "false" from it on; the leading token decides.
     leading = status |> String.trim() |> String.split() |> List.first()
 
-    if leading in ["1", "0x1"] do
+    if leading in ["1", "0x1", "true"] do
       :ok
     else
       ExUnit.Assertions.flunk("tx #{tx_hash} reverted (status #{status})")
