@@ -170,6 +170,16 @@ defmodule Raxol.Payments.EIP712 do
   end
 
   @doc """
+  Whether `value` is an EVM address in clean form: `0x` (or `0X`) and exactly
+  40 hex digits, with no surrounding whitespace.
+  """
+  @spec address?(term()) :: boolean()
+  def address?(value) when is_binary(value),
+    do: Regex.match?(~r/\A0[xX][0-9a-fA-F]{40}\z/, value)
+
+  def address?(_value), do: false
+
+  @doc """
   Canonicalize an EVM address for comparison: trim, downcase, and strip a
   leading `0x`. Returns the lowercase hex body (no `0x`).
   """

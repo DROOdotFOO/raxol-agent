@@ -581,4 +581,23 @@ defmodule Raxol.Payments.EIP712Test do
       assert Raxol.Payments.EIP712.normalize_address("deadBEEF") == "deadbeef"
     end
   end
+
+  describe "address?/1" do
+    test "accepts only 0x/0X + 40 hex with no surrounding whitespace" do
+      hex = String.duplicate("aB", 20)
+      assert EIP712.address?("0x" <> hex)
+      assert EIP712.address?("0X" <> hex)
+
+      for value <- [
+            hex,
+            "0x" <> hex <> "\n",
+            " 0x" <> hex,
+            "0x0x" <> hex,
+            "0x" <> hex <> "00",
+            nil,
+            1
+          ],
+          do: refute(EIP712.address?(value))
+    end
+  end
 end
