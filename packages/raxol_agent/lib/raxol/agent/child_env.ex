@@ -4,18 +4,15 @@ defmodule Raxol.Agent.ChildEnv do
   chose: `Raxol.Core.ChildEnv`'s scrub plus this package's own names.
 
   `Raxol.Core.ChildEnv` does the matching: every variable whose name has a
-  credential segment (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_MNEMONIC`,
-  `_CREDENTIALS` and the rest), a database or broker URL, `RPC` anywhere but
-  in `GRPC`, raxol's own secrets and `SSH_AUTH_SOCK`, minus its `pass:` list.
-  On top of that, this module unsets:
-
-    * the names in `secrets/0` that no pattern catches: the provider key
-      variables of `Raxol.Agent.Backend.Catalog`, the ORDER_* URLs (which may
-      embed provider keys), `PROTON_UID` (paired with the Lumo tokens) and
-      the earn signing sidecar's URL;
-    * the shapes Core denies neither by pattern nor by name: a `_PASS`,
-      `_SEED_PHRASE` or `_DSN` suffix, a bare `SEED_PHRASE`, and
-      `OP_SESSION_*` (1Password CLI sessions).
+  credential segment (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, `_PASS`,
+  `_PAT`, `_MNEMONIC`, `_SEED_PHRASE`, `_DSN`, `_CREDENTIALS` and the rest),
+  `OP_SESSION_*` and the Bitwarden and LastPass sessions, a database, broker
+  or mail URL, a webhook URL, `RPC` anywhere but in `GRPC`, raxol's own
+  secrets and `SSH_AUTH_SOCK`, minus its `pass:` list. On top of that, this
+  module unsets the names in `secrets/0` that no pattern catches: the
+  provider key variables of `Raxol.Agent.Backend.Catalog`, the ORDER_* URLs
+  (which may embed provider keys), `PROTON_UID` (paired with the Lumo
+  tokens) and the earn signing sidecar's URL.
 
   Names are matched case-insensitively, as Core matches its own; `pass:`
   is exact.
@@ -41,16 +38,12 @@ defmodule Raxol.Agent.ChildEnv do
 
       config :raxol_core, Raxol.Core.ChildEnv, pass: ["GH_TOKEN"]
 
-  The gap shapes (a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix, `SEED_PHRASE`,
-  `OP_SESSION_*`) come from ACP's stdio transport, which this module reuses
-  until raxol_core 2.9.1 covers them. ACP's stdio transport applies Core's scrub plus
-  those shapes, but not this module's named list, so an ACP agent still
-  inherits the Catalog key variables, the ORDER_* URLs, `PROTON_UID` and the
-  sidecar URL unless its spawner passes
+  ACP's stdio transport applies Core's scrub but not this module's named
+  list, so an ACP agent still inherits the Catalog key variables, the
+  ORDER_* URLs, `PROTON_UID` and the sidecar URL unless its spawner passes
   `unset_env: Raxol.Agent.ChildEnv.unset_names()`. MCP stdio servers are
-  spawned by raxol_mcp with `Raxol.Core.ChildEnv` alone, so they still
-  inherit gap-shaped variables (`SMTP_PASS`, `SENTRY_DSN`, `OP_SESSION_*`)
-  until raxol_core covers them.
+  spawned by raxol_mcp with `Raxol.Core.ChildEnv` alone, so they inherit
+  those names too.
 
   Every function here reads `Raxol.Core.ChildEnv`'s config and raises
   `ArgumentError` when it is malformed (since raxol_core 2.9, an unknown or
@@ -63,7 +56,6 @@ defmodule Raxol.Agent.ChildEnv do
   """
 
   alias Raxol.Agent.Backend.Catalog
-  alias Raxol.AgentClientProtocol.Transport.Stdio
   alias Raxol.Core.ChildEnv, as: CoreEnv
 
   @named ~w(
@@ -102,8 +94,7 @@ defmodule Raxol.Agent.ChildEnv do
   end
 
   @spec own?(String.t()) :: boolean()
-  defp own?(name),
-    do: String.upcase(name) in own_named_upcase() or Regex.match?(Stdio.credential_gaps(), name)
+  defp own?(name), do: String.upcase(name) in own_named_upcase()
 
   @spec own_named() :: [String.t()]
   defp own_named, do: Enum.flat_map(Catalog.entries(), & &1.env_keys) ++ @named

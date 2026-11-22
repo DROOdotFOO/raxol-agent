@@ -29,33 +29,63 @@ defmodule Raxol.Agent.ChildEnvTest do
         do: refute(ChildEnv.secret?(name), name)
   end
 
-  test "secret?/1 covers Core's shapes and the gap shapes, in any case" do
+  test "secret?/1 covers Core's shapes, in any case" do
     for name <- ~w(DATABASE_URL REDIS_URL PGPASSWORD API_KEYS SECRET_KEY_BASE RELEASE_COOKIE
                    SMTP_PASS SENTRY_DSN WALLET_SEED_PHRASE SEED_PHRASE OP_SESSION_abc
                    smtp_pass x_dsn seed_phrase op_session_x proton_uid Order_Bundler_Url),
         do: assert(ChildEnv.secret?(name), name)
   end
 
-  # The gap list (`Raxol.AgentClientProtocol.Transport.Stdio.credential_gaps/0`,
-  # pinned there too) is only right for this Core pattern. A raxol_core
+  # raxol_core 2.9.1's pattern, pinned (in ACP's `stdio_test.exs` too): a
   # release that changes it fails here, before it can narrow what shells
   # inherit.
-  test "Core's credential pattern is the one the gap list was written against" do
+  test "Core's credential pattern is the 2.9.1 one" do
     core = Raxol.Core.ChildEnv.credential_pattern()
 
     # Whitespace is insignificant in an `x` regex.
     assert String.replace(Regex.source(core), ~r/\s+/, "") ==
-             ~S"(\A|_)(APIKEYS?|KEYS?|PRIVKEY|TOKENS?|SECRETS?|PASSWORD|PASSWD|PASSPHRASE|MNEMONIC|CREDENTIALS?)(_|\z)" <>
-               ~S"|(\A|_)(DATABASE|POSTGRES|POSTGRESQL|MYSQL|REDIS|MONGO|MONGODB|AMQP|RABBITMQ)_UR[LI]" <>
-               ~S"|(\A|_)PG\w*PASSWORD|(?<!G)RPC"
+             ~S"(\A|_)(APIKEYS?|KEYS?|PRIVKEY|PRIVATEKEY|TOKENS?|SECRETS?|CLIENTSECRET|AUTHTOKEN|AUTHKEY" <>
+               ~S"|APITOKEN|ACCESSTOKEN|CREDENTIALS?|DSN|PAT|CONNECTION_STRING|PASSWORD|PASSWD" <>
+               ~S"|PASSPHRASE|PASS|MNEMONICS?|SEEDPHRASE|SEED_PHRASE|(WALLET|MASTER|HD|TOTP)_SEED)" <>
+               ~S"(_|\d|\z)" <>
+               ~S"|(\A|_)PK\d*\z|_PWD(_|\d|\z)|WEBHOOK|\AOP_SESSION_|(\A|_)(BW|LPASS)_SESSION(_|\z)" <>
+               ~S"|(\A|_)(DATABASE|POSTGRES|POSTGRESQL|MYSQL|MARIADB|MSSQL|REDIS|REDISCLOUD|REDISTOGO" <>
+               ~S"|VALKEY|MEMCACHED|MONGO|MONGODB|AMQP|AMQPS|CLOUDAMQP|RABBITMQ|ELASTICSEARCH" <>
+               ~S"|OPENSEARCH|CLICKHOUSE|COUCHDB|MONGOHQ|MONGOLAB)(_\w+)?_UR[LI]" <>
+               ~S"|(\A|_)(DB|PG|BROKER|SMTP|MAIL|EMAIL)_UR[LI]|(\A|_)PG\w*PASSWORD|(?<!G)RPC"
 
     assert Enum.sort(Regex.opts(core)) == [:caseless, :extended]
   end
 
-  # `Raxol.AgentClientProtocol.Transport.Stdio` applies Core's scrub plus the
-  # gap shapes this module reuses, so this mostly guards against the two
-  # diverging in how they apply `pass:` or case. The concrete-name test above
-  # is the one independent of both regexes.
+  # Before raxol_core 2.9.1 this module added these shapes on top of Core.
+  # Every name they matched must still be denied by Core alone.
+  test "every name the removed gap pattern covered is still denied" do
+    removed_gaps = ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
+
+    names =
+      for prefix <- ["X_", "MY_APP_", "A1_", "x_", "my_app_"],
+          stem <- ~w(PASS SEED_PHRASE DSN WALLET_SEED_PHRASE SMTP_PASS SENTRY_DSN),
+          name = prefix <> stem,
+          variant <- [name, String.downcase(name)],
+          do: variant
+
+    names =
+      names ++
+        ~w(SEED_PHRASE seed_phrase Seed_Phrase OP_SESSION_ OP_SESSION_me op_session_x
+           OP_SESSION_my_team_1 Op_Session_abc)
+
+    covered = Enum.filter(names, &Regex.match?(removed_gaps, &1))
+    assert length(covered) == length(names)
+
+    for name <- covered do
+      assert Raxol.Core.ChildEnv.secret?(name), name
+      assert ChildEnv.secret?(name), name
+    end
+  end
+
+  # `Raxol.AgentClientProtocol.Transport.Stdio` applies Core's scrub too, so
+  # this mostly guards against the two diverging in how they apply `pass:` or
+  # case. The concrete-name test above is the one independent of the regex.
   test "every name the ACP stdio transport denies is denied here" do
     corpus =
       for prefix <- ["", "X_", "MY_APP_", "x_"],
