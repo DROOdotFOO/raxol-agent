@@ -44,22 +44,22 @@ the two new method-parity rows I18/I19 (see their entries). Moduledoc: the
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
 | I1 | **RESERVED**: no in-repo canonical statement (external design-spec ref); intentionally unfilled. | - |
-| I2 | A session resolves in the Registry (`:via` name minted) BEFORE `start_link/1` returns: register-before-respond by construction. | `session_test.exs:142` |
-| I3 | Every `session/update` frame of a turn precedes that turn's response frame (updates and reply share one FIFO lane). | `session_test.exs:183` |
-| I4 | The prompt response waits until every turn-group task is DOWN (hold-turn-open; drain fires at monitor-count zero). | `session_test.exs:217` |
-| I5 | A cancel landing after the root task is DOWN but before the last subagent is DOWN still yields `stopReason: cancelled` (cancel outranks a landed root result). | `session_test.exs:256` |
-| I6 | Cancel-of-idle emits NO frame: only the latch moves; a later prompt runs normally. | `session_test.exs:379` |
-| I7 | A mid-turn cancel yields exactly ONE cancelled reply; a double-cancel adds nothing. | `session_test.exs:288` |
-| I8 | Permission is fail-closed: ONLY a decoded `{:selected, _}` outcome yields allow; every other row denies. | `session_test.exs:468` |
-| I9 | A turn cancel aborts a parked permission ask promptly via the cancel path (deny), not by waiting out the backstop. | `session_test.exs:308` |
+| I2 | A session resolves in the Registry (`:via` name minted) BEFORE `start_link/1` returns: register-before-respond by construction. | `session_test.exs:45` |
+| I3 | Every `session/update` frame of a turn precedes that turn's response frame (updates and reply share one FIFO lane). | `session_test.exs:89` |
+| I4 | The prompt response waits until every turn-group task is DOWN (hold-turn-open; drain fires at monitor-count zero). | `session_test.exs:123` |
+| I5 | A cancel landing after the root task is DOWN but before the last subagent is DOWN still yields `stopReason: cancelled` (cancel outranks a landed root result). | `session_test.exs:162` |
+| I6 | Cancel-of-idle emits NO frame: only the latch moves; a later prompt runs normally. | `session_test.exs:285` |
+| I7 | A mid-turn cancel yields exactly ONE cancelled reply; a double-cancel adds nothing. | `session_test.exs:194` |
+| I8 | Permission is fail-closed: ONLY a decoded `{:selected, _}` outcome yields allow; every other row denies. | `session_isolation_test.exs:62` |
+| I9 | A turn cancel aborts a parked permission ask promptly via the cancel path (deny), not by waiting out the backstop. | `session_test.exs:214` |
 | I10 | **RESERVED**: no in-repo canonical statement (external design-spec ref); intentionally unfilled. | - |
-| I11 | No stale registry entries: a dead session's key is pruned by the Registry monitor. | `session_test.exs:509` |
-| I12 | Busy-prompt isolation: a second prompt on a prompting session errors; the first is undisturbed. | `session_test.exs:520` |
-| I13 | Backstop: a runner that ignores `:acp_cancel` still resolves cancelled via kill; a stale backstop (wrong `turn_ref`) never touches the live turn. | `session_test.exs:543` |
-| I14 | No atom is created from session data: `session_id` churn does not grow the atom table. | `session_test.exs:658` |
-| I15 | Two sessions on one connection are independent: each session's updates precede its OWN response; turns don't interfere. | `session_test.exs:787` |
-| I16 | Wire-order commutation: a prompt wire-ordered before a latched cancel is born-cancelled; one ordered after (higher `rx_seq`) runs unaffected. | `session_test.exs:397` |
-| I17 | `$/cancel_request` on the prompt id: the drain still calls `reply/3`, and that `cancelled` reply is the id's one response (S7). | `session_test.exs:691` |
+| I11 | No stale registry entries: a dead session's key is pruned by the Registry monitor. | `session_isolation_test.exs:103` |
+| I12 | Busy-prompt isolation: a second prompt on a prompting session errors; the first is undisturbed. | `session_isolation_test.exs:114` |
+| I13 | Backstop: a runner that ignores `:acp_cancel` still resolves cancelled via kill; a stale backstop (wrong `turn_ref`) never touches the live turn. | `session_isolation_test.exs:137` |
+| I14 | No atom is created from session data: `session_id` churn does not grow the atom table. | `session_isolation_test.exs:252` |
+| I15 | Two sessions on one connection are independent: each session's updates precede its OWN response; turns don't interfere. | `session_isolation_test.exs:381` |
+| I16 | Wire-order commutation: a prompt wire-ordered before a latched cancel is born-cancelled; one ordered after (higher `rx_seq`) runs unaffected. | `session_test.exs:303` |
+| I17 | `$/cancel_request` on the prompt id: the drain still calls `reply/3`, and that `cancelled` reply is the id's one response (S7). | `session_isolation_test.exs:285` |
 | I18 | `session/resume` gates fail-closed on `session_capabilities.resume` AND dispatches (decode → `resume_session/2`). Capability-parity + dispatch-parity for the resume method. | gate: `capabilities_test.exs` describe `"I18 session/resume gates ..."`; dispatch: `router_test.exs` describe `"I18 session/resume decode + dispatch"` |
 | I19 | `session/set_config_option` decodes to `SetSessionConfigOptionRequest` AND dispatches to `set_session_config_option/2` (baseline method, no capability gate). | `router_test.exs` describe `"I19 session/set_config_option decode + dispatch"` |
 
@@ -73,27 +73,27 @@ Home: `test/connection_test.exs`, `describe "invariants"`. Moduledoc: the
 
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
-| Inv-1 | Exactly one answer per accepted outbound submission; ZERO deliveries after the owner's own `cancel_request/2`. | `connection_test.exs:390` |
-| Inv-2 | No stale `pending_out`/`out_tags` entry survives any exit path. | `connection_test.exs:445` |
-| Inv-3 | A timeout answers AND deletes atomically; a late response after it is a pure no-op. | `connection_test.exs:500` |
-| Inv-4 | **alias of IC-6**: the response-count invariant. Enforcing test renamed to lead with IC-6. | `connection_test.exs:543` (test `"IC-6 (Inv-4 alias): response-count invariant ..."`) |
-| Inv-5 | Notifications never produce a wire frame, incl. under decode failure and handler crash. | `connection_test.exs:595` |
-| Inv-6 | Response id echo is byte-exact across error classes, string and integer ids. | `connection_test.exs:620` |
-| Inv-7 | No atom is created from wire input (unknown methods, notifications, session ids). | `connection_test.exs:711` |
-| Inv-8 | A handler calling `Connection.request/4` back into the same Connection completes promptly (no self-deadlock). | `connection_test.exs:752` |
-| Inv-9 | `conn == self()` raises `ArgumentError` on every public API function. | `connection_test.exs:778` |
-| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:792`, `:815` |
-| Inv-11 | `caps` is written exactly once at handshake and never mutated after. | `connection_test.exs:835` |
-| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent: the transport is gone, so nothing can be answered). | `connection_test.exs:877` |
-| Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_test.exs:909` |
-| Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_test.exs:941` |
-| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_test.exs:1021` |
-| Inv-16 | Handler crash detail never reaches the wire. | `connection_test.exs:1055` |
-| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_test.exs:1068` |
-| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_test.exs:1102` |
-| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings; a reply after a cancel is the id's one frame. | `connection_test.exs:1120` |
-| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_test.exs:1161` |
-| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_test.exs:1194` |
+| Inv-1 | Exactly one answer per accepted outbound submission; ZERO deliveries after the owner's own `cancel_request/2`. | `connection_test.exs:218` |
+| Inv-2 | No stale `pending_out`/`out_tags` entry survives any exit path. | `connection_test.exs:273` |
+| Inv-3 | A timeout answers AND deletes atomically; a late response after it is a pure no-op. | `connection_test.exs:328` |
+| Inv-4 | **alias of IC-6**: the response-count invariant. Enforcing test renamed to lead with IC-6. | `connection_test.exs:371` (test `"IC-6 (Inv-4 alias): response-count invariant ..."`) |
+| Inv-5 | Notifications never produce a wire frame, incl. under decode failure and handler crash. | `connection_test.exs:423` |
+| Inv-6 | Response id echo is byte-exact across error classes, string and integer ids. | `connection_test.exs:448` |
+| Inv-7 | No atom is created from wire input (unknown methods, notifications, session ids). | `connection_test.exs:539` |
+| Inv-8 | A handler calling `Connection.request/4` back into the same Connection completes promptly (no self-deadlock). | `connection_test.exs:580` |
+| Inv-9 | `conn == self()` raises `ArgumentError` on every public API function. | `connection_test.exs:606` |
+| Inv-10 | Handshake gate: agent role (inbound `-32600`, outbound `not_initialized`); client role (outbound gate then successful handshake). | `connection_test.exs:620`, `:643` |
+| Inv-11 | `caps` is written exactly once at handshake and never mutated after. | `connection_test.exs:663` |
+| Inv-12 | Transport-down delivers total cleanup for `pending_in` (undelegated killed, delegated silent: the transport is gone, so nothing can be answered). | `connection_lifecycle_test.exs:19` |
+| Inv-13 | Closed-delivery + monitor DOWN is idempotent (single cleanup, single stop). | `connection_lifecycle_test.exs:51` |
+| Inv-14 | A duplicate in-flight inbound id produces zero additional frames. | `connection_lifecycle_test.exs:83` |
+| Inv-15 | Malformed frames never terminate the connection or disturb an in-flight request. | `connection_lifecycle_test.exs:163` |
+| Inv-16 | Handler crash detail never reaches the wire. | `connection_lifecycle_test.exs:197` |
+| Inv-17 | Every task ref / reply_ref is tracked and reaped at quiescence. | `connection_lifecycle_test.exs:210` |
+| Inv-18 | Ids are opaque after minting: a pre-namespaced string id from a fan-out proxy round-trips. | `connection_lifecycle_test.exs:244` |
+| Inv-19 | Delegated-reply idempotence across reply/second-reply/adopter-DOWN/cancel interleavings; a reply after a cancel is the id's one frame. | `connection_lifecycle_test.exs:262` |
+| Inv-20 | `rx_seq` is monotone across an interleaved inbound burst. | `connection_lifecycle_test.exs:303` |
+| Inv-21 | `session/cancel` delivery runs no user code and survives any handler crash. | `connection_lifecycle_test.exs:336` |
 
 ## Family `IC`: shared Interface Contract (IC-1..IC-8)
 
@@ -105,14 +105,14 @@ enforcing test is cited.
 
 | ID | Canonical property | Enforcing test (representative) |
 |----|--------------------|----------------------------------|
-| IC-1 | ONE GenServer per peer link is the sole correlation/dispatch authority: never blocks, never runs handler code in-process, never mints atoms from wire input. | `connection_test.exs` `describe "§8 sequence diagrams"` (`:196`) + Inv-7/Inv-8 |
+| IC-1 | ONE GenServer per peer link is the sole correlation/dispatch authority: never blocks, never runs handler code in-process, never mints atoms from wire input. | `connection_test.exs` `describe "§8 sequence diagrams"` (`:24`) + Inv-7/Inv-8 |
 | IC-2 | `Connection.Ctx` is THE single per-dispatch struct handed to handler callbacks (`conn`, `reply_ref`, `rx_seq`); there is exactly one ctx concept. | `ctx_test.exs` (whole suite; moduledoc `:18`) |
 | IC-3 | `async_request/6` is THE outbound primitive (only it accepts `:infinity`); `request/4` is a caller-parking wrapper on the same `pending_out` table; Connection is the single timeout authority. | `ctx_test.exs:303`; `connection_test.exs` `describe "§8 sequence diagrams"` |
-| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_test.exs:1120` (Inv-19); `session_test.exs:691` (I17) |
-| IC-5 | (IC-5c) `rx_seq` latch: cancel and prompt commute by wire order, not scheduling order. | `session_test.exs:397` (I16) |
-| IC-6 | **Response-count invariant (canonical):** exactly one response frame per inbound id; after a peer `$/cancel_request` it is -32800, or the adopter's reply when the request was delegated. `Inv-4` is its alias. | `connection_test.exs:543` |
-| IC-7 | The Connection never blocks: no `GenServer.call` to itself, no synchronous wait on tasks, no transport call that waits on peer progress. | `connection_test.exs:752` (Inv-8) |
-| IC-8 | Sibling supervision tree: `task_sup`/`session_sup` resolved from the parent supervisor by module/type heuristic (injectable in tests); Connection is `:temporary`. | `connection_test.exs:80`; `integration/end_to_end_test.exs:301` |
+| IC-4 | Delegated reply: `delegate_reply/3` + `reply/3` + `:deferred` let the Session own WHEN the prompt response is sent, keeping updates + response on one FIFO lane. | `connection_lifecycle_test.exs:262` (Inv-19); `session_isolation_test.exs:285` (I17) |
+| IC-5 | (IC-5c) `rx_seq` latch: cancel and prompt commute by wire order, not scheduling order. | `session_test.exs:303` (I16) |
+| IC-6 | **Response-count invariant (canonical):** exactly one response frame per inbound id; after a peer `$/cancel_request` it is -32800, or the adopter's reply when the request was delegated. `Inv-4` is its alias. | `connection_test.exs:371` |
+| IC-7 | The Connection never blocks: no `GenServer.call` to itself, no synchronous wait on tasks, no transport call that waits on peer progress. | `connection_test.exs:580` (Inv-8) |
+| IC-8 | Sibling supervision tree: `task_sup`/`session_sup` resolved from the parent supervisor by module/type heuristic (injectable in tests); Connection is `:temporary`. | `support/connection_case.ex:39`; `integration/end_to_end_test.exs:301` |
 
 ## Family `F`: NDJSON framing / transport (F1..F8)
 
@@ -182,16 +182,16 @@ contour ships a named dead-injector negative control (bus §9).
 
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
-| J1 | Replay closure over the wire: `history ++ live == the durable substream`, no gap, no dup, incl. turn-boundary kinds (dead: a taint-filter breaks closure). | `reattach_test.exs:241` |
-| J2 | Register-before-`h`, decision-time `h`, permanent monotone gate armed before live: `offset <= h` dropped forever, `offset > h` forwarded once (dead: register-after-history / cached-counter → gap). | `reattach_test.exs:319`; `journal_test.exs:104` |
+| J1 | Replay closure over the wire: `history ++ live == the durable substream`, no gap, no dup, incl. turn-boundary kinds (dead: a taint-filter breaks closure). | `ext/reattach_test.exs:42` |
+| J2 | Register-before-`h`, decision-time `h`, permanent monotone gate armed before live: `offset <= h` dropped forever, `offset > h` forwarded once (dead: register-after-history / cached-counter → gap). | `ext/reattach_test.exs:120`; `journal_test.exs:104` |
 | J3 | Single-publisher: no public publish surface exists: publishing is the Writer's alone; a subscriber receives every appended record live, in order, all durable. | `journal_writer_test.exs:118`, `:98` |
-| J4 | Writerless attach = history-only, replies normally, NO error, no live frames (dead: attach-requires-writer would error). | `reattach_test.exs:405` |
-| J5 | Taint is annotated on every delivered frame and NEVER filters delivery (delivery counts == record counts). | `reattach_test.exs:450`; `journal_writer_test.exs:128` |
-| J6 | Lagged disconnect + lossless heal: `Lagged` carries the subscriber's own last-forwarded offset; `+1` heals dup-free (dead: reattach-from-`last_offset` re-delivers → dup). | `reattach_test.exs:536` |
-| J7 | Turn totality: `turn_completed` replays/finalizes a turn: every `turn_started` is matched by exactly one `turn_completed` in the durable substream; a reattacher's `turn_completed` equals the live `PromptResponse` (J7a). | `reattach_test.exs:671`, `:877` |
+| J4 | Writerless attach = history-only, replies normally, NO error, no live frames (dead: attach-requires-writer would error). | `ext/reattach_test.exs:206` |
+| J5 | Taint is annotated on every delivered frame and NEVER filters delivery (delivery counts == record counts). | `ext/reattach_test.exs:251`; `journal_writer_test.exs:128` |
+| J6 | Lagged disconnect + lossless heal: `Lagged` carries the subscriber's own last-forwarded offset; `+1` heals dup-free (dead: reattach-from-`last_offset` re-delivers → dup). | `ext/reattach_test.exs:337` |
+| J7 | Turn totality: `turn_completed` replays/finalizes a turn: every `turn_started` is matched by exactly one `turn_completed` in the durable substream; a reattacher's `turn_completed` equals the live `PromptResponse` (J7a). | `ext/reattach_lifecycle_test.exs:86`, `:292` |
 | J8 | Offset law: appends assign contiguous offsets from 1, strictly increasing, fully stamped, including under concurrency (no gap/dup). | `journal_test.exs:67`; property `journal_test.exs:189` |
-| J9 | Fail-closed attach (the CDI-1 funnel contract): a `{:denied, _}` (or any non-`{:ok, grant}`) verdict ⇒ `-32000` deny envelope, NO registration, NO history, NO reply. | `reattach_test.exs:756` |
-| J10 | No-bypass grep-gate: every delivered update is durable (one publish path). **KNOWN, REPORTED DEVIATION**: the origin connection keeps a direct `Connection.notify` alongside the durable `Writer.append` (two sites), so the literal one-call-site grep-gate does NOT hold for the origin. The OBSERVABLE leg (every delivered update is durable) IS covered. | observable leg: `reattach_test.exs:877`; deviation: `Session.Emitter.Journal` moduledoc (`lib/raxol/agent_client_protocol/session/emitter/journal.ex`) |
+| J9 | Fail-closed attach (the CDI-1 funnel contract): a `{:denied, _}` (or any non-`{:ok, grant}`) verdict ⇒ `-32000` deny envelope, NO registration, NO history, NO reply. | `ext/reattach_lifecycle_test.exs:171` |
+| J10 | No-bypass grep-gate: every delivered update is durable (one publish path). **KNOWN, REPORTED DEVIATION**: the origin connection keeps a direct `Connection.notify` alongside the durable `Writer.append` (two sites), so the literal one-call-site grep-gate does NOT hold for the origin. The OBSERVABLE leg (every delivered update is durable) IS covered. | observable leg: `ext/reattach_lifecycle_test.exs:292`; deviation: `Session.Emitter.Journal` moduledoc (`lib/raxol/agent_client_protocol/session/emitter/journal.ex`) |
 | J11 | Stock invisibility: a stock `_raxol/session.load` against a handler that never overrides the optional callback answers `-32601`. | unit: `agent_test.exs` `"every request-kind callback defaults to {:error, method_not_found}"`; wire: `pbus_coverage_audit_test.exs` (added-here) |
 | J12 | Orphan repair totality: (a) appender death → exactly one orphaned `turn_completed`, latch clears; (b) Writer-restart tip-fold orphans a dangling `turn_started` exactly once, idempotent; (c) success-then-crash → ZERO orphan rows. | `journal_writer_test.exs:234`, `:268`, `:195` |
 
@@ -211,7 +211,7 @@ moduledoc is the authoritative cross-index; each row mechanically drift-checked)
 | P-BUS5 | **alias of J6**: lagged heal from `last_offset+1`. | (see J6) |
 | P-BUS6 | **alias of J3**: single-publisher / I3. | (see J3) |
 | P-BUS7 | **standalone**: matrix conformance: the `(json × stdio)` codec cell against the reattach delivery sequence (no J alias). | `pbus_coverage_audit_test.exs` (added-here) |
-| P-JS5 | **standalone**: the replay-closure PROPERTY (`history ++ live == durable substream`) threaded across the reattach/session/integration layers. | `reattach_test.exs:241`; `integration/end_to_end_test.exs:21` |
+| P-JS5 | **standalone**: the replay-closure PROPERTY (`history ++ live == durable substream`) threaded across the reattach/session/integration layers. | `ext/reattach_test.exs:42`; `integration/end_to_end_test.exs:21` |
 
 *Known flagged gap (not fixed, structural):* `P-BUS5`'s second named dead
 injector (`p_bus5_dead_drop_middle_backpressure_test`) has no realization: the
@@ -255,12 +255,12 @@ The reattach/attach-policy seam contract. Moduledocs: `ext/attach_policy.ex`
 
 | ID | Canonical property | Enforcing test (`file:line`) |
 |----|--------------------|------------------------------|
-| CDI-1 | The SOLE fail-closed admission funnel: `authorize/2`; no second try-catch wrapper exists; every non-`{:ok, %Grant{}}` outcome denies. | `reattach_test.exs:756`; `attach_policy_test.exs:165` |
-| CDI-2 | `ctx.transport` is a REQUIRED attach-context key sourced ONLY from Connection-side knowledge, never peer-asserted; the ctx is a grow-only map. | `attach_policy_test.exs:293`; `reattach_test.exs:808` |
+| CDI-1 | The SOLE fail-closed admission funnel: `authorize/2`; no second try-catch wrapper exists; every non-`{:ok, %Grant{}}` outcome denies. | `ext/reattach_lifecycle_test.exs:171`; `attach_policy_test.exs:165` |
+| CDI-2 | `ctx.transport` is a REQUIRED attach-context key sourced ONLY from Connection-side knowledge, never peer-asserted; the ctx is a grow-only map. | `attach_policy_test.exs:293`; `ext/reattach_lifecycle_test.exs:223` |
 | CDI-3 | `%Grant{}` is the ONLY structural shape the Runner admits (binary actor id, allow-listed scope, `session_id == ctx`, non-nil `via`): a policy cannot "mostly" grant. | `attach_policy_test.exs:235`, `:208` |
 | CDI-4 | Live-bus registration (`subscribe`/`unsubscribe`) is serialized against appends in ONE mailbox (the Writer's), so the P-JS5 closure is a mailbox-order argument. | `journal_writer_test.exs:534`, `:98` |
-| CDI-5 | The wire deny envelope is `-32000 "attach denied"` with NO `data`; the reason atom goes to telemetry/`Logger` only. | `reattach_test.exs:757`; `integration/end_to_end_test.exs:567` |
-| CDI-6 | Mid-attach expiry: a held live tail is force-closed at `grant.expires_at` (emit `closed{revoked}`, detach); each subscriber's timer targets only itself. | `reattach_test.exs:732` |
+| CDI-5 | The wire deny envelope is `-32000 "attach denied"` with NO `data`; the reason atom goes to telemetry/`Logger` only. | `ext/reattach_lifecycle_test.exs:172`; `integration/end_to_end_test.exs:567` |
+| CDI-6 | Mid-attach expiry: a held live tail is force-closed at `grant.expires_at` (emit `closed{revoked}`, detach); each subscriber's timer targets only itself. | `ext/reattach_lifecycle_test.exs:147` |
 
 ---
 

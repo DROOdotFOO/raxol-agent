@@ -40,7 +40,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
   turn, so those tests start a real `Session` on top of the same
   Connection. Only `delegate_reply/3` is stubbed (`AdoptingConn`), because
   these tests fabricate `reply_ref`s; delegation is covered in
-  `connection_test.exs`.
+  `connection_lifecycle_test.exs` (Inv-19).
   """
   use ExUnit.Case, async: false
   use Raxol.AgentClientProtocol.Test.InvariantSentinel
