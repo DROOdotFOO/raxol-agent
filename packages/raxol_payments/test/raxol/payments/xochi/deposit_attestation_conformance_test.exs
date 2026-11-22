@@ -4,8 +4,8 @@ defmodule Raxol.Payments.Xochi.DepositAttestationConformanceTest do
   # pass for any encoding, a wrong one included.
   #
   # `test/fixtures/deposit_attestation_vectors.json` is
-  # axol-io/Riddler `priv/conformance/deposit_attestation.json` (origin/master
-  # 6bf4f221), vendored byte for byte. Riddler serves the same file at
+  # axol-io/Riddler `priv/conformance/deposit_attestation.json` (master
+  # 3df48684), vendored byte for byte. Riddler serves the same file at
   # `/xochi/vectors/deposit-attestation.json` and publishes its sha256 on
   # `GET /xochi/capabilities` as `deposit_attestation_vectors_sha256`; the
   # pinned digest is `test/fixtures/DEPOSIT_ATTESTATION_VECTORS_SHA256`. To
@@ -43,6 +43,8 @@ defmodule Raxol.Payments.Xochi.DepositAttestationConformanceTest do
     assert @doc_map["version"] == DepositAttestation.version()
     assert DepositAttestation.version() == "xochi-deposit-attestation:v3"
     assert length(@doc_map["vectors"]) == 13
+    # Riddler's all-abandon test key.
+    assert @doc_map["signer"] == "0xf99f53e8f301ab2cfeb40a21a11757a71dac2bed"
   end
 
   test "every vector quote carries exactly the v3 field set" do
