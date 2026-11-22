@@ -43,7 +43,8 @@ defmodule Raxol.Payments.Protocols.Xochi.DepositSignerPin do
     cond do
       unset(pin) != nil and not EIP712.address?(pin) ->
         raise ArgumentError,
-              "Xochi deposit-attestation signer pin is not a 0x + 40-hex address."
+              "Xochi deposit-attestation signer pin is not a valid 0x address " <>
+                "(0x + 40 hex, with a correct EIP-55 checksum if mixed case)."
 
       fail_open?(pin, require_pin?) ->
         raise ArgumentError,
@@ -71,7 +72,7 @@ defmodule Raxol.Payments.Protocols.Xochi.DepositSignerPin do
   defp fallback(false, matrix_signer) do
     signer = matrix_signer.()
 
-    if EIP712.address?(signer) do
+    if EIP712.address?(signer, checksum: false) do
       Logger.warning(
         "Xochi deposit route trusts the capability matrix's attestation signer: " <>
           "no :xochi_deposit_attestation_signer is pinned and :require_deposit_signer_pin is false"

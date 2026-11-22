@@ -16,8 +16,10 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
 
   @doc """
   Whether `addr` may receive a pull of `method`. It must be a clean `0x` +
-  40-hex address (`EIP712.address?/1`), pinned or not, so padding, bare hex or
-  a doubled prefix never normalizes onto a pinned solver. With an allowlist set it must
+  40-hex address (served, so its case is not checked), pinned or not, so
+  padding, bare hex or a doubled prefix never normalizes onto a pinned solver.
+  A configured allowlist none of whose entries is a valid address refuses
+  every pull rather than reading as unset. With an allowlist set it must
   be in it. With none, the methods differ by their on-chain guarantees:
   ERC-3009 binds `to` in the signed digest and the token enforces
   `msg.sender == to`, so an unpinned `to` stays bounded and is accepted unless
@@ -26,10 +28,10 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
   """
   @spec allowed?(term(), :erc3009 | :permit2) :: boolean()
   def allowed?(addr, method) do
-    EIP712.address?(addr) and
+    EIP712.address?(addr, checksum: false) and
       case allowlist() do
         [] -> method == :erc3009 and not required?()
-        list -> EIP712.normalize_address(addr) in list
+        {:configured, list} -> EIP712.normalize_address(addr) in list
       end
   end
 
@@ -58,8 +60,9 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
   def env_config! do
     solvers =
       @solver_env
-      |> Enum.map(&System.get_env/1)
-      |> Enum.reject(&(is_nil(&1) or &1 == ""))
+      |> Enum.map(&{&1, String.trim(System.get_env(&1) || "")})
+      |> Enum.reject(fn {_var, value} -> value == "" end)
+      |> Enum.map(&solver_address!/1)
 
     require_pin? =
       case System.get_env("XOCHI_PULL_REQUIRE_SOLVER_PIN", "") do
@@ -80,15 +83,33 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
     Application.get_env(:raxol_payments, :pull_require_solver_pin, Deployment.production?())
   end
 
-  defp allowlist do
-    normalize(Application.get_env(:raxol_payments, :pull_solver_allowlist, []))
+  # A set `XOCHI_SOLVER_*` must be an address (EIP-55 if mixed case): a typo
+  # would otherwise boot and refuse every pull to that solver.
+  defp solver_address!({var, value}) do
+    if EIP712.address?(value),
+      do: value,
+      else: raise(ArgumentError, "#{var} is not a valid 0x address (EIP-55 if mixed case).")
   end
 
+  # `:unset` only when nothing is configured: a list whose entries are all
+  # malformed still pins (to nothing), so it refuses rather than fails open.
+  defp allowlist do
+    raw = Application.get_env(:raxol_payments, :pull_solver_allowlist, [])
+
+    case raw |> List.wrap() |> Enum.filter(&(is_binary(&1) and String.trim(&1) != "")) do
+      [] -> []
+      _configured -> {:configured, normalize(raw)}
+    end
+  end
+
+  # Entries are trimmed, then kept only if they are a clean address (EIP-55 if
+  # mixed case), so a malformed entry never counts as a pin.
   defp normalize(list) do
     list
     |> List.wrap()
     |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&EIP712.address?/1)
     |> Enum.map(&EIP712.normalize_address/1)
-    |> Enum.reject(&(&1 == ""))
   end
 end

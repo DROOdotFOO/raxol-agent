@@ -207,7 +207,7 @@ defmodule Raxol.Payments.Protocols.XochiTest do
 
     test "matches checksum-cased EVM addresses against the lowercased intent" do
       checksummed =
-        request("0xF39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+        request("0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
           from_token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
           to_token: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
         )

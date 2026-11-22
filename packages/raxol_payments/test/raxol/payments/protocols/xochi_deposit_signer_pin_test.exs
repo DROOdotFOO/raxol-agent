@@ -144,6 +144,24 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       assert_received {:fetched, _}
     end
 
+    test "a pin with a wrong EIP-55 checksum is refused; a served matrix signer's case is not checked" do
+      Application.put_env(:raxol_payments, :deployment, :development)
+      # Lowercase with one letter upcased: mixed case that is not the EIP-55
+      # form, whichever letter it is.
+      [{index, _}] = Regex.run(~r/[a-f]/, signer(), return: :index) |> Enum.take(1)
+
+      wrong_case =
+        String.slice(signer(), 0, index) <>
+          String.upcase(String.at(signer(), index)) <> String.slice(signer(), (index + 1)..-1//1)
+
+      refute EIP712.address?(wrong_case)
+
+      assert {:error, :invalid_deposit_signer_pin} =
+               verify(capabilities: matrix(nil), deposit_attestation_signer: wrong_case)
+
+      assert {:ok, _} = verify(capabilities: matrix(wrong_case))
+    end
+
     test "a malformed matrix signer is not trusted" do
       Application.put_env(:raxol_payments, :deployment, :development)
 
@@ -164,7 +182,7 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       end
 
       for pin <- ["0x1234", 42] do
-        assert_raise ArgumentError, ~r/40-hex/, fn ->
+        assert_raise ArgumentError, ~r/not a valid 0x address/, fn ->
           Xochi.assert_deposit_signer_pinned!(pin, false)
         end
       end
@@ -177,7 +195,7 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
     end
 
     test "raises on a set but malformed pin, even when the pin is required" do
-      assert_raise ArgumentError, ~r/not a 0x \+ 40-hex address/, fn ->
+      assert_raise ArgumentError, ~r/not a valid 0x address/, fn ->
         Xochi.assert_deposit_signer_pinned!("0x1234", true)
       end
     end
@@ -193,7 +211,10 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       assert :ok = Xochi.assert_deposit_signer_pinned!()
 
       Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, "0xbad")
-      assert_raise ArgumentError, ~r/40-hex/, fn -> Xochi.assert_deposit_signer_pinned!() end
+
+      assert_raise ArgumentError, ~r/not a valid 0x address/, fn ->
+        Xochi.assert_deposit_signer_pinned!()
+      end
 
       Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, signer())
       Application.put_env(:raxol_payments, :require_deposit_signer_pin, false)

@@ -583,10 +583,10 @@ defmodule Raxol.Payments.EIP712Test do
   end
 
   describe "address?/1" do
-    test "accepts only 0x/0X + 40 hex with no surrounding whitespace" do
-      hex = String.duplicate("aB", 20)
+    test "accepts only single-case 0x/0X + 40 hex with no surrounding whitespace" do
+      hex = String.duplicate("ab", 20)
       assert EIP712.address?("0x" <> hex)
-      assert EIP712.address?("0X" <> hex)
+      assert EIP712.address?("0X" <> String.upcase(hex))
 
       for value <- [
             hex,
@@ -598,6 +598,22 @@ defmodule Raxol.Payments.EIP712Test do
             1
           ],
           do: refute(EIP712.address?(value))
+    end
+
+    test "a mixed-case address must carry a valid EIP-55 checksum" do
+      # USDC on Base, as Circle publishes it.
+      checksummed = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      assert EIP712.address?(checksummed)
+      assert EIP712.address?(String.downcase(checksummed))
+
+      # One letter's case flipped: still hex, no longer the checksum.
+      refute EIP712.address?("0x833589FCD6eDb6E08f4c7C32D4f71b54bdA02913")
+      refute EIP712.address?("0x" <> String.duplicate("aB", 20))
+    end
+
+    test "checksum: false checks the shape only" do
+      assert EIP712.address?("0x" <> String.duplicate("aB", 20), checksum: false)
+      refute EIP712.address?("0x" <> String.duplicate("aB", 20) <> " ", checksum: false)
     end
   end
 end

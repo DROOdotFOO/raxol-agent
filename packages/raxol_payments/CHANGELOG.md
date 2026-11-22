@@ -69,8 +69,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `Raxol.Payments.EIP712.address?/1`: whether a value is a clean `0x` +
-  40-hex EVM address.
+- `Raxol.Payments.EIP712.address?/1,2`: whether a value is a clean `0x` +
+  40-hex EVM address. A mixed-case address must carry a valid EIP-55
+  checksum; all-lowercase and all-uppercase carry none. `checksum: false`
+  checks the shape only. Operator input is checksum-checked: a deposit signer
+  pin with a wrong checksum is refused (`:invalid_deposit_signer_pin`, and
+  `assert_deposit_signer_pinned!` raises), as are solver allowlist entries and
+  `--solver`/`ORDER_SOLVER`. Addresses the endpoint serves (a pull `to` or
+  `spender`, the capability matrix's signer) are checked for shape only.
+- Origin-pull solver allowlist entries are trimmed and kept only when they
+  pass `address?/1`. A configured allowlist with no valid entry refuses every
+  pull instead of reading as unset. `origin_pull_pin_env_config!/0` raises on
+  a set `XOCHI_SOLVER_*` that is not a valid address, naming the variable.
 - The Xochi status parsers read every `IntentLifecycleStatus` of
   `@xochi/spec` 0.14.0. `IntentStatus` and `Intent` add `:pull_pending`,
   `:source_finalized` and `:refund_pending`; `ExecuteResponse` adds those and
