@@ -113,13 +113,13 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
     end
   end
 
-  # Unpadded EVM addresses as lowercase `0x` hex; anything else verbatim, so a
-  # padded address is attested byte for byte and base58 (Tron/Solana) keeps its
-  # case. Non-address strings (intent/quote ids) never reach here.
+  # EVM addresses lowercased, padding kept, so a padded address is attested
+  # byte for byte; base58 (Tron/Solana) verbatim, since its case is
+  # significant. Non-address strings (intent/quote ids) never reach here.
   defp normalize_address("0x" <> _ = address) do
     if String.trim(address) == address,
       do: "0x" <> EIP712.normalize_address(address),
-      else: address
+      else: String.downcase(address)
   end
 
   defp normalize_address(other), do: other
@@ -134,5 +134,6 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
     end
   end
 
-  defp addr_eq?(a, b), do: EIP712.normalize_address(a) == EIP712.normalize_address(b)
+  # Exact up to case: a malformed pinned signer must not match.
+  defp addr_eq?(a, b), do: String.downcase(a) == String.downcase(b)
 end

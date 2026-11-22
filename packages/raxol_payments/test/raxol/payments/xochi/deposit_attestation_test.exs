@@ -67,6 +67,10 @@ defmodule Raxol.Payments.Xochi.DepositAttestationTest do
 
       assert DepositAttestation.message(padded) =~ clean <> "\n"
 
+      # Lowercased as on any EVM address, but the padding stays.
+      shouting = %{padded | deposit_address: "0xABCDEF0000000000000000000000000000000001\n"}
+      assert DepositAttestation.message(shouting) =~ clean <> "\n"
+
       assert {:error, :attestation_mismatch} =
                DepositAttestation.verify(padded, sign(fields), signer_address())
     end

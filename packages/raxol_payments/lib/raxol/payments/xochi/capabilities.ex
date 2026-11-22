@@ -28,8 +28,8 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   `fallback/0` is derived from `Raxol.Payments.Assets` (a static mirror of
   Riddler's token registry), so an unreachable capabilities endpoint
-  degrades to the static behavior -- never to rejecting jobs the solver
-  could fill yesterday.
+  degrades to the static registry rather than rejecting jobs the solver can
+  fill.
 
   ## Caching
 
@@ -327,9 +327,8 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   defp parse_chain(_), do: []
 
-  # Absent means EVM. Matching is
-  # case/whitespace-insensitive so "EVM" does not silently drop a live chain; a
-  # genuinely unknown family still drops it.
+  # Absent means EVM. Matching is case/whitespace-insensitive so "EVM" does not
+  # silently drop a live chain; a genuinely unknown family still drops it.
   defp parse_vm_type(nil), do: {:ok, :evm}
 
   defp parse_vm_type(vm_type) when is_binary(vm_type),
