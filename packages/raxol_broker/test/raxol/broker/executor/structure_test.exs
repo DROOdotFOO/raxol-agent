@@ -36,10 +36,10 @@ defmodule Raxol.Broker.Executor.StructureTest do
     * The string scan over the source (order-writing tool names outside
       `executor/place.ex`) is best-effort: a name assembled at runtime from
       fragments passes it. The guarantees are the call-graph rules above and
-      the guards at the resources (the journal claim and the receipt key).
+      the guards at the resources (the journal claim and the review receipt).
 
   Code that deliberately writes into another module's private state (the
-  executor's process-dictionary slots, `:sys.replace_state/2`) is outside
+  executor's `:"$initial_call"`, `:sys.replace_state/2`) is outside
   what a structural test, or the BEAM, can stop.
   """
   use ExUnit.Case, async: true

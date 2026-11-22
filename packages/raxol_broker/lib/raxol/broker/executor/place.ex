@@ -110,7 +110,7 @@ defmodule Raxol.Broker.Executor.Place do
 
   # Wrapped so the key prints redacted if `env` ever reaches a crash report.
   defp verify(receipt, %Secret{} = key, intent, group_id),
-    do: Secret.with_revealed(key, &ReviewReceipt.verify(receipt, &1, intent, group_id))
+    do: ReviewReceipt.verify(receipt, Secret.reveal(key), intent, group_id)
 
   defp verify(_receipt, _key, _intent, _group_id), do: {:error, :invalid_receipt}
 

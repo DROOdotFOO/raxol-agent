@@ -698,7 +698,7 @@ defmodule Raxol.Broker.Executor do
   end
 
   # The clock is caller code, so it runs in a task: never in this process,
-  # where it would hold the executor's identity and receipt key. Its result
+  # where it would hold the executor's identity and journal claim. Its result
   # is rebuilt by pattern matching before any Calendar function sees it.
   defp now(clock) do
     task = Task.async(clock)

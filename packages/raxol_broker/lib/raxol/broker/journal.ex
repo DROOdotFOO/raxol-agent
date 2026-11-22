@@ -20,6 +20,7 @@ defmodule Raxol.Broker.Journal do
   the claim before anything the caller sent is read: `{:error, :unclaimed}`
   or `{:error, {:not_claimant, id}}`. A new group's intent and context are
   then rebuilt from plain data, so no protocol of caller data runs here.
+  `append_fill/2` is not a group write and takes no claim.
 
   ## Placing
 
@@ -51,7 +52,7 @@ defmodule Raxol.Broker.Journal do
   caller's, a UTC instant. Queries are `{:error, _}` while the journal is
   damaged or down, so a context left `nil` denies. `placing_for_intent/2`
   is the executor's idempotency check. `verify/1` walks the chain on disk
-  now, where `status/1` reports what start found.
+  now, where `status/1` reports what start found; arming must call it first.
   """
 
   use GenServer
