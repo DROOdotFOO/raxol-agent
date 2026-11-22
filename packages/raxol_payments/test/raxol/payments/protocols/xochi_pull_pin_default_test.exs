@@ -100,6 +100,27 @@ defmodule Raxol.Payments.Protocols.XochiPullPinDefaultTest do
       end
     end
 
+    test "a configured allowlist with no valid entry refuses every pull instead of failing open" do
+      Application.put_env(:raxol_payments, :deployment, :development)
+      Application.put_env(:raxol_payments, :pull_require_solver_pin, false)
+
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [
+        "0x1234",
+        "0x" <> String.duplicate("aB", 20)
+      ])
+
+      assert {:error, {:authorization_mismatch, :pull_to}} =
+               Xochi.validate_pull(erc3009_quote(@solver), request(), SignerWallet)
+    end
+
+    test "a served `to` is matched whatever its case; its checksum is not checked" do
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [@solver])
+      # Mixed case that is not @solver's EIP-55 form.
+      served = "0x000000000000000000000000000000000000DeAd"
+
+      assert :ok = Xochi.validate_pull(erc3009_quote(served), request(), SignerWallet)
+    end
+
     test "an unpinned pull outside production still needs a well-formed `to`" do
       Application.put_env(:raxol_payments, :deployment, :development)
 

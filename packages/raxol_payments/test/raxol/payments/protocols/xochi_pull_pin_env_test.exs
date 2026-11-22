@@ -58,6 +58,24 @@ defmodule Raxol.Payments.Protocols.XochiPullPinEnvTest do
       assert @other in config[:pull_solver_allowlist]
     end
 
+    test "refuses a set XOCHI_SOLVER_* that is not a valid address, naming the variable" do
+      System.put_env("XOCHI_PULL_REQUIRE_SOLVER_PIN", "true")
+      System.put_env("XOCHI_SOLVER_ETH", @solver)
+
+      for bad <- ["0x1234", "0x" <> String.duplicate("aB", 20)] do
+        System.put_env("XOCHI_SOLVER_BASE", bad)
+
+        assert_raise ArgumentError, ~r/XOCHI_SOLVER_BASE is not a valid 0x address/, fn ->
+          Xochi.origin_pull_pin_env_config!()
+        end
+      end
+    end
+
+    test "trims a padded solver address" do
+      System.put_env("XOCHI_SOLVER_BASE", " " <> @solver <> "\n")
+      assert @solver in Xochi.origin_pull_pin_env_config!()[:pull_solver_allowlist]
+    end
+
     test "a required pin boots with no solver address set" do
       System.put_env("XOCHI_PULL_REQUIRE_SOLVER_PIN", "true")
 

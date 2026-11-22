@@ -8,6 +8,7 @@ defmodule Mix.Tasks.RaxolEarn.Order.Preflight do
   alias Raxol.Agent.Secret
   alias Raxol.Earn.Onchain.RPC
   alias Raxol.Earn.Xochi.{OriginPull, PullPreflight}
+  alias Raxol.Payments.EIP712
   alias Raxol.Payments.Protocols.Permit2
   alias Raxol.Payments.Xochi.PullContracts
 
@@ -116,11 +117,12 @@ defmodule Mix.Tasks.RaxolEarn.Order.Preflight do
   end
 
   defp solver_address!(value) do
-    if Regex.match?(~r/\A0x[0-9a-fA-F]{40}\z/, value) do
+    if EIP712.address?(value) do
       value
     else
       Mix.raise(
-        "--solver / ORDER_SOLVER #{inspect(value)} is not a 0x-hex 20-byte address. " <>
+        "--solver / ORDER_SOLVER #{inspect(value)} is not a 0x-hex 20-byte address " <>
+          "(with a correct EIP-55 checksum if mixed case). " <>
           "It pins the origin-pull spender, so a typo would either reject every quote " <>
           "or pin the wrong destination."
       )
