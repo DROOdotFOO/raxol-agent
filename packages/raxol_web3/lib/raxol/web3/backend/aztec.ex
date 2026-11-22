@@ -178,10 +178,13 @@ defmodule Raxol.Web3.Backend.Aztec do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode, only: [dig: 2, ok_or: 2]
+
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Backend.Cache
+  alias Raxol.Web3.Backend.Decode
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.HTTP
-  alias Raxol.Web3.Origin
-  alias Raxol.Web3.TTL
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and `:base_url` carries the API key as a path
@@ -316,7 +319,7 @@ defmodule Raxol.Web3.Backend.Aztec do
   def capabilities(%__MODULE__{}), do: @optional
 
   @impl Backend
-  def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
+  def health_key(%__MODULE__{} = state), do: {:origin, Paging.origin_id(state.base_url)}
 
   # -- required ----------------------------------------------------------------
 
@@ -377,7 +380,7 @@ defmodule Raxol.Web3.Backend.Aztec do
   def get_block(%__MODULE__{} = state, number) do
     with {:ok, body} <- object(get(state, "/l2/blocks/#{segment(number)}", :block, :addressed)),
          {:ok, height} <- block_number(body) do
-      variables = body |> dig(["header", "globalVariables"]) |> as_map()
+      variables = body |> dig(["header", "globalVariables"]) |> Decode.object()
 
       {:ok,
        %{
@@ -505,7 +508,7 @@ defmodule Raxol.Web3.Backend.Aztec do
     url = state.base_url <> path
 
     url
-    |> HTTP.get(cache_opts(state, path, class))
+    |> HTTP.get(Cache.opts(state.http_opts, state.cache?, {state.base_digest, path}, class))
     |> decode(resource)
   end
 
@@ -515,16 +518,6 @@ defmodule Raxol.Web3.Backend.Aztec do
   defp object({:ok, body}) when is_map(body), do: {:ok, body}
   defp object({:ok, _other}), do: {:error, {:decode_failed, :not_an_object}}
   defp object({:error, _reason} = error), do: error
-
-  defp cache_opts(state, _path, nil), do: state.http_opts
-  defp cache_opts(%{cache?: false} = state, _path, _class), do: state.http_opts
-
-  defp cache_opts(state, path, class) do
-    Keyword.put(state.http_opts, :cache,
-      key: {state.base_digest, path},
-      ttl_ms: TTL.for(class)
-    )
-  end
 
   # A truncated SHA-256 of the whole base URL, prefix included. ADR-0033
   # section 7 names a cache key as one of the four places a credential leaks,
@@ -571,8 +564,6 @@ defmodule Raxol.Web3.Backend.Aztec do
   defp decode({:ok, %{status: 404}}, :addressed), do: {:error, {:upstream_refused, :not_found}}
   defp decode({:ok, %{status: status}}, _resource), do: {:error, {:http, status}}
   defp decode({:error, _reason} = error, _resource), do: error
-
-  defp origin_id(state), do: Origin.id(URI.new!(state.base_url))
 
   # Percent-encodes everything outside the unreserved set, so a caller-supplied
   # hash or address cannot carry a `/` or a `?` and reshape the path it is
@@ -732,9 +723,6 @@ defmodule Raxol.Web3.Backend.Aztec do
   defp evm_ref(address) when is_binary(address), do: {:evm, address}
   defp evm_ref(_absent), do: nil
 
-  defp ok_or({:ok, _value} = ok, _reason), do: ok
-  defp ok_or(:error, reason), do: {:error, reason}
-
   # The age of the tips observation, in milliseconds, or `nil`.
   #
   # Unreadable is reported the same as absent, which is the one place in this
@@ -755,16 +743,6 @@ defmodule Raxol.Web3.Backend.Aztec do
       _absent_or_unreadable -> nil
     end
   end
-
-  # `get_in/2` raises on the way through anything that is not a map, and every
-  # value on the way through belongs to the upstream.
-  defp dig(value, path), do: Enum.reduce(path, value, fn key, inner -> field(inner, key) end)
-
-  defp field(map, key) when is_map(map), do: Map.get(map, key)
-  defp field(_other, _key), do: nil
-
-  defp as_map(value) when is_map(value), do: value
-  defp as_map(_other), do: %{}
 
   # Milliseconds since the epoch, which is what every timestamp on this
   # surface is: a block's `globalVariables.timestamp` and a transaction's

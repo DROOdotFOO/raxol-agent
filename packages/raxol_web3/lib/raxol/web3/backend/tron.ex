@@ -114,14 +114,17 @@ defmodule Raxol.Web3.Backend.Tron do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode,
+    only: [dig: 2, field: 2, int: 1, object: 1, ok_or: 2, rows_of: 1]
+
   alias Raxol.MCP.Client
   alias Raxol.MCP.Client.Era
+
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Backend.SQD
   alias Raxol.Web3.Cache
-  alias Raxol.Web3.Cursor
   alias Raxol.Web3.MCPCall
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.Tables
   alias Raxol.Web3.Tron.Address
   alias Raxol.Web3.TTL
@@ -518,7 +521,7 @@ defmodule Raxol.Web3.Backend.Tron do
   def token_balances(state, account_ref, opts \\ [])
 
   def token_balances(%__MODULE__{source: :trongrid} = state, account_ref, opts) do
-    with :ok <- no_cursor(opts),
+    with :ok <- Paging.no_cursor(Keyword.get(opts, :cursor)),
          {:ok, address} <- account(account_ref),
          {:ok, body} <- call(state, "getAccountInfo", %{"address" => address}, :account),
          {:ok, record} <- first_row(body, :account),
@@ -541,19 +544,6 @@ defmodule Raxol.Web3.Backend.Tron do
         opts,
         &tronscan_token_balance/1
       )
-    end
-  end
-
-  # This read mints no cursor, so it accepts none. Answering page one again for
-  # a cursor nobody minted is the silent rewind the opaque-cursor rule exists
-  # to prevent, and it is indistinguishable from a walk that ended.
-  # `:wrong_scope` is the reason `Raxol.Web3.Cursor` already has for it and the
-  # one `Raxol.Web3.Backend.Solana` mints for the same case; the endpoint atom
-  # this used to carry named no cursor endpoint at all.
-  defp no_cursor(opts) do
-    case Keyword.get(opts, :cursor) do
-      nil -> :ok
-      _held -> {:error, {:invalid_cursor, :wrong_scope}}
     end
   end
 
@@ -758,7 +748,7 @@ defmodule Raxol.Web3.Backend.Tron do
   defp code_class(code) when code in [429, -32_005], do: :rate_limit
   defp code_class(_code), do: :unknown
 
-  defp origin_id(state), do: Origin.id(uri(state))
+  defp origin_id(state), do: Paging.origin_id(uri(state))
 
   defp uri(%__MODULE__{} = state), do: URI.new!(url(state))
 
@@ -781,7 +771,8 @@ defmodule Raxol.Web3.Backend.Tron do
   # that another page exists: the next request is composed here from the tool
   # and the argument map, never by following somebody else's URL.
   defp fingerprint_page(state, tool, base, endpoint, opts, mapper) do
-    with {:ok, params} <- cursor_params(state, endpoint, Keyword.get(opts, :cursor)),
+    with {:ok, params} <-
+           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
          arguments = Map.merge(base, Map.put(params, "limit", @page_limit)),
          {:ok, body} <- call(state, tool, arguments, :list),
          {:ok, rows} <- rows(body, :page),
@@ -789,7 +780,7 @@ defmodule Raxol.Web3.Backend.Tron do
       {:ok,
        %{
          items: items,
-         next: mint(state, endpoint, next_fingerprint(body))
+         next: Paging.next_cursor(next_fingerprint(body), origin_id(state), endpoint)
        }}
     end
   end
@@ -799,7 +790,8 @@ defmodule Raxol.Web3.Backend.Tron do
   # spending a token on a request the upstream documents as refused, and the
   # error is the same one the upstream's own refusal maps to.
   defp offset_page(state, tool, base, endpoint, opts, mapper) do
-    with {:ok, params} <- cursor_params(state, endpoint, Keyword.get(opts, :cursor)),
+    with {:ok, params} <-
+           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
          start = int(params["start"]) || 0,
          :ok <- within_ceiling(start),
          arguments = Map.merge(base, %{"start" => start, "limit" => @page_limit}),
@@ -809,7 +801,7 @@ defmodule Raxol.Web3.Backend.Tron do
       {:ok,
        %{
          items: items,
-         next: mint(state, endpoint, next_offset(body, start))
+         next: Paging.next_cursor(next_offset(body, start), origin_id(state), endpoint)
        }}
     end
   end
@@ -837,18 +829,6 @@ defmodule Raxol.Web3.Backend.Tron do
 
       _end_of_walk ->
         nil
-    end
-  end
-
-  defp mint(_state, _endpoint, nil), do: nil
-  defp mint(state, endpoint, params), do: Cursor.encode(params, origin_id(state), endpoint)
-
-  defp cursor_params(_state, _endpoint, nil), do: {:ok, %{}}
-
-  defp cursor_params(state, endpoint, cursor) do
-    case Cursor.decode(cursor, origin_id(state), endpoint) do
-      {:ok, params} -> {:ok, params}
-      {:error, reason} -> {:error, {:invalid_cursor, reason}}
     end
   end
 
@@ -1221,20 +1201,6 @@ defmodule Raxol.Web3.Backend.Tron do
     end
   end
 
-  # The upstream's own value at a path, or `nil` where the path does not lead
-  # to one. `get_in/2` raises on the way through anything that is not a map,
-  # and every value on the way through belongs to the upstream.
-  defp dig(value, path), do: Enum.reduce(path, value, fn key, inner -> field(inner, key) end)
-
-  defp field(map, key) when is_map(map), do: Map.get(map, key)
-  defp field(_other, _key), do: nil
-
-  defp object(value) when is_map(value), do: value
-  defp object(_other), do: %{}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
-
   # -- the account reference ---------------------------------------------------
 
   # The one place either encoding is accepted, and the one place it collapses.
@@ -1296,9 +1262,6 @@ defmodule Raxol.Web3.Backend.Tron do
 
   # -- scalars -----------------------------------------------------------------
 
-  defp ok_or({:ok, _value} = ok, _reason), do: ok
-  defp ok_or(:error, reason), do: {:error, reason}
-
   defp numeric?(value) when is_binary(value) do
     match?({_number, ""}, Integer.parse(value))
   end
@@ -1330,16 +1293,4 @@ defmodule Raxol.Web3.Backend.Tron do
   defp method_name(value) when is_integer(value), do: Integer.to_string(value)
   defp method_name(value) when is_binary(value), do: presence(value)
   defp method_name(_other), do: nil
-
-  defp int(nil), do: nil
-  defp int(value) when is_integer(value), do: value
-
-  defp int(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {number, ""} -> number
-      _invalid -> nil
-    end
-  end
-
-  defp int(_other), do: nil
 end

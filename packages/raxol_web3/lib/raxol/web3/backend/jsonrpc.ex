@@ -91,11 +91,13 @@ defmodule Raxol.Web3.Backend.JSONRPC do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode, only: [rows_of: 1]
+
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Backend.Cache
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Cursor
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.RPC
-  alias Raxol.Web3.TTL
 
   # Probed 2026-09-14: this endpoint answered `eth_chainId` with `0x1237`, which
   # is 4663, and `eth_blockNumber` with `0x3bd25de`. A table entry is a claim
@@ -325,11 +327,8 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   # credential in the host or the path, and ADR-0033 section 7 names cache keys
   # as one of the four places a credential leaks. `Raxol.Web3.HTTP` composes the
   # fragment with the origin id.
-  defp rpc_opts(state, _fragment, nil), do: state.http_opts
-  defp rpc_opts(%__MODULE__{cache?: false} = state, _fragment, _class), do: state.http_opts
-
   defp rpc_opts(state, fragment, class) do
-    Keyword.put(state.http_opts, :cache, key: fragment, ttl_ms: TTL.for(class))
+    Cache.opts(state.http_opts, state.cache?, fragment, class)
   end
 
   # Both halves of an account read share the `:account` class. Code gets the
@@ -447,6 +446,8 @@ defmodule Raxol.Web3.Backend.JSONRPC do
     end
   end
 
+  defp origin_id(state), do: Paging.origin_id(state.url)
+
   defp next_cursor(_state, %{to: to, walk_to: walk_to}) when to >= walk_to, do: nil
 
   defp next_cursor(state, %{to: to, walk_to: walk_to}) do
@@ -456,8 +457,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
       :rpc_logs
     )
   end
-
-  defp origin_id(state), do: Origin.id(URI.new!(state.url))
 
   # -- normalization -----------------------------------------------------------
 
@@ -508,9 +507,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   end
 
   defp log(_item), do: {:error, {:decode_failed, :log_row}}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
 
   # No receipt is a transaction the node holds but has not mined, which the
   # contract calls `:pending`. A mined receipt with no `status` field is

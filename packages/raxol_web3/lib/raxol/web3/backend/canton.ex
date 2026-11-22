@@ -202,12 +202,16 @@ defmodule Raxol.Web3.Backend.Canton do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode,
+    only: [dig: 2, field: 2, int: 1, iso8601: 1, object: 1, ok_or: 3, page_rows: 1, rows_of: 1]
+
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Backend.Cache
+  alias Raxol.Web3.Backend.Decode
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCPCall
-  alias Raxol.Web3.Origin
-  alias Raxol.Web3.TTL
 
   # The struct carries a credential, so it declares what `inspect/1` may show.
   # `Raxol.Agent.ExecutorConfig` is the precedent. It is load-bearing
@@ -327,7 +331,8 @@ defmodule Raxol.Web3.Backend.Canton do
   """
   @spec new(Backend.chain_ref(), keyword()) :: {:ok, Backend.t()} | {:error, term()}
   def new(chain_ref, opts \\ []) do
-    with {:ok, canonical} <- Map.fetch(@chain_refs, chain_ref) |> ok_or(chain_ref),
+    with {:ok, canonical} <-
+           Map.fetch(@chain_refs, chain_ref) |> ok_or(chain_ref, &{:unsupported_chain, &1}),
          {:ok, scan_url} <- base_url(opts, :scan_url, @default_scan_url),
          {:ok, ccscan_url} <- base_url(opts, :ccscan_url, @default_ccscan_url) do
       state = %__MODULE__{
@@ -345,12 +350,9 @@ defmodule Raxol.Web3.Backend.Canton do
     end
   end
 
-  # Validated at construction rather than at the first read: `scan_origin_id/1`
-  # is `URI.new!/1` on the Scan base and `health_key/1` reaches it, so a URL
-  # that is not one raised inside a router ordering candidates instead of
-  # failing the handle that carried it. The scheme is fixed because
-  # `Raxol.Web3.HTTP` vets `schemes: [:https]` and refuses anything else on
-  # the way out anyway.
+  # Validated at construction: `health_key/1` runs `URI.new!/1` on the Scan
+  # base, so a bad URL must fail the handle rather than a router ordering
+  # candidates. `Raxol.Web3.HTTP` only dials `https`.
   defp base_url(opts, key, default) do
     case Keyword.get(opts, key, default) do
       url when is_binary(url) -> checked_url(String.trim_trailing(url, "/"), key)
@@ -405,7 +407,7 @@ defmodule Raxol.Web3.Backend.Canton do
   # `Raxol.Web3.HTTP`; a router ordering candidates cares about the origin that
   # answers the reads every source must answer.
   @impl Backend
-  def health_key(%__MODULE__{} = state), do: {:origin, scan_origin_id(state)}
+  def health_key(%__MODULE__{} = state), do: {:origin, Paging.origin_id(state.scan_url)}
 
   # -- required ----------------------------------------------------------------
 
@@ -508,7 +510,7 @@ defmodule Raxol.Web3.Backend.Canton do
     state
     |> url(path, query)
     |> HTTP.get(scan_opts(state, path, query, class))
-    |> decode()
+    |> Decode.json_object()
   end
 
   defp post(state, endpoint, request, class) do
@@ -522,7 +524,7 @@ defmodule Raxol.Web3.Backend.Canton do
     state
     |> url(path, %{})
     |> HTTP.post(Jason.encode!(request), opts)
-    |> decode()
+    |> Decode.json_object()
   end
 
   # A path parameter rather than a table row, so it composes the path itself.
@@ -536,20 +538,13 @@ defmodule Raxol.Web3.Backend.Canton do
     state
     |> url("/updates/#{URI.encode(update_id, &URI.char_unreserved?/1)}", %{})
     |> HTTP.get(scan_opts(state, "/updates", %{"id" => update_id}, :transaction))
-    |> decode()
+    |> Decode.json_object()
   end
 
   defp scan_opts(state, path, fragment, class) do
     state.http_opts
     |> Keyword.put_new(:rate_limit, @rate_limit)
-    |> cache_opts(state, path, fragment, class)
-  end
-
-  defp cache_opts(opts, _state, _path, _fragment, nil), do: opts
-  defp cache_opts(opts, %{cache?: false}, _path, _fragment, _class), do: opts
-
-  defp cache_opts(opts, _state, path, fragment, class) do
-    Keyword.put(opts, :cache, key: {path, fragment}, ttl_ms: TTL.for(class))
+    |> Cache.opts(state.cache?, {path, fragment}, class)
   end
 
   defp url(state, path, query) when map_size(query) == 0, do: state.scan_url <> path
@@ -557,22 +552,6 @@ defmodule Raxol.Web3.Backend.Canton do
   defp url(state, path, query) do
     "#{state.scan_url}#{path}?#{URI.encode_query(query)}"
   end
-
-  # A non-2xx carries no body onward. The one 400 this surface produces is an
-  # `after` outside the current snapshot range, which a caller answers by
-  # restarting the walk; the range itself is upstream text and stays there.
-  defp decode({:ok, %{status: status, body: body}}) when status in 200..299 do
-    case Jason.decode(body) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _other} -> {:error, {:decode_failed, :not_an_object}}
-      {:error, _reason} -> {:error, {:decode_failed, :json}}
-    end
-  end
-
-  defp decode({:ok, %{status: status}}), do: {:error, {:http, status}}
-  defp decode({:error, _reason} = error), do: error
-
-  defp scan_origin_id(state), do: Origin.id(URI.new!(state.scan_url))
 
   # -- ccscan ------------------------------------------------------------------
 
@@ -713,9 +692,9 @@ defmodule Raxol.Web3.Backend.Canton do
   end
 
   defp holdings_request(state, party, cursor) do
-    case Cursor.decode(cursor, scan_origin_id(state), :canton_holdings_state) do
-      {:ok, params} -> {:ok, holdings_body(params, party)}
-      {:error, reason} -> {:error, {:invalid_cursor, reason}}
+    with {:ok, params} <-
+           Paging.cursor_params(cursor, Paging.origin_id(state.scan_url), :canton_holdings_state) do
+      {:ok, holdings_body(params, party)}
     end
   end
 
@@ -737,20 +716,13 @@ defmodule Raxol.Web3.Backend.Canton do
     end
   end
 
-  # An absent list is an empty page, and a list-shaped key holding something
-  # else is a body that is not what it claimed rather than a page with no
-  # rows: an empty page would report a party as holding nothing.
-  defp page_rows(nil), do: {:ok, []}
-  defp page_rows(rows) when is_list(rows), do: {:ok, rows}
-  defp page_rows(_other), do: {:error, {:decode_failed, :page}}
-
   defp next_cursor(_state, _request, nil), do: nil
 
   defp next_cursor(state, request, token) do
     request
     |> Map.take(["migration_id", "record_time"])
     |> Map.put("after", token)
-    |> Cursor.encode(scan_origin_id(state), :canton_holdings_state)
+    |> Cursor.encode(Paging.origin_id(state.scan_url), :canton_holdings_state)
   end
 
   # The asset catalog, `:catalog` class: the amulet's name and acronym are an
@@ -792,7 +764,7 @@ defmodule Raxol.Web3.Backend.Canton do
       # report and `:pending` cannot be observed from this endpoint either.
       status: :success,
       block: nil,
-      timestamp: timestamp(body["record_time"]),
+      timestamp: iso8601(body["record_time"]),
       from: nil,
       to: nil,
       value: nil,
@@ -868,7 +840,7 @@ defmodule Raxol.Web3.Backend.Canton do
   # freshness figure this host publishes. No ratio is published and there are no
   # blocks to lag by, so both of those keys are absent rather than computed.
   defp indexer(%{"effectiveAt" => effective_at}) when is_binary(effective_at) do
-    case timestamp(effective_at) do
+    case iso8601(effective_at) do
       nil -> %{finished?: true}
       datetime -> %{finished?: true, lag_seconds: max(0, DateTime.diff(utc_now(), datetime))}
     end
@@ -905,44 +877,4 @@ defmodule Raxol.Web3.Backend.Canton do
 
   defp party({tag, _value}), do: {:error, {:unsupported_account_ref, tag}}
   defp party(_other), do: {:error, {:unsupported_account_ref, :unknown}}
-
-  # `get_in/2` and the `[]` access syntax raise on the way through anything
-  # that is not a map, and every value on the way through belongs to the
-  # upstream. These read a wrong-typed value as an absent one instead.
-  defp dig(value, path), do: Enum.reduce(path, value, fn key, inner -> field(inner, key) end)
-
-  defp field(map, key) when is_map(map), do: Map.get(map, key)
-  defp field(_other, _key), do: nil
-
-  defp object(value) when is_map(value), do: value
-  defp object(_other), do: %{}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
-
-  defp ok_or({:ok, _value} = ok, _reason), do: ok
-  defp ok_or(:error, reason), do: {:error, {:unsupported_chain, reason}}
-
-  defp int(nil), do: nil
-  defp int(value) when is_integer(value), do: value
-
-  defp int(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {number, ""} -> number
-      _unparseable -> nil
-    end
-  end
-
-  defp int(_other), do: nil
-
-  defp timestamp(nil), do: nil
-
-  defp timestamp(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} -> datetime
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp timestamp(_other), do: nil
 end

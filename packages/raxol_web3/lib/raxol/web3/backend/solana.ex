@@ -312,13 +312,15 @@ defmodule Raxol.Web3.Backend.Solana do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode, only: [dig: 2, object: 1, ok_or: 2, rows_of: 1]
+
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Backend.Cache
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Backend.SQD
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCPCall
-  alias Raxol.Web3.Origin
-  alias Raxol.Web3.TTL
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and an operator's `:url` override often embeds a
@@ -598,7 +600,7 @@ defmodule Raxol.Web3.Backend.Solana do
   @impl Backend
   def token_balances(%__MODULE__{source: :rpc} = state, account_ref, opts \\ []) do
     with {:ok, pubkey} <- pubkey(account_ref),
-         :ok <- unpaginated(Keyword.get(opts, :cursor)),
+         :ok <- Paging.no_cursor(Keyword.get(opts, :cursor)),
          {:ok, body} <-
            rpc(
              state,
@@ -638,7 +640,8 @@ defmodule Raxol.Web3.Backend.Solana do
   # signature off the last row as the upstream wrote it.
   defp signature_page(state, account_ref, cursor) do
     with {:ok, pubkey} <- pubkey(account_ref),
-         {:ok, params} <- cursor_params(state, cursor),
+         {:ok, params} <-
+           Paging.cursor_params(cursor, origin_id(state), :solana_address_signatures),
          {:ok, body} <-
            rpc(state, "getSignaturesForAddress", [pubkey, page_config(params)], :list) do
       signature_rows(body)
@@ -710,7 +713,7 @@ defmodule Raxol.Web3.Backend.Solana do
     opts =
       state.http_opts
       |> Keyword.put_new(:rate_limit, @sqd_rate_limit)
-      |> cache_opts(state, {tool, arguments}, class)
+      |> Cache.opts(state.cache?, {tool, arguments}, class)
 
     case MCPCall.call(state.url, tool, arguments, opts) do
       {:ok, payload} -> sqd_result(payload, state)
@@ -769,7 +772,7 @@ defmodule Raxol.Web3.Backend.Solana do
       # handle at its own gated node carries the credential for it in a
       # header there.
       |> Backend.put_header(@content_type)
-      |> cache_opts(state, {method, params}, class)
+      |> Cache.opts(state.cache?, {method, params}, class)
       |> classified()
 
     state.url
@@ -818,36 +821,10 @@ defmodule Raxol.Web3.Backend.Solana do
   defp rpc_class(code) when code in [429, -32_005], do: :rate_limit
   defp rpc_class(_code), do: :unknown
 
-  defp cache_opts(opts, _state, _fragment, nil), do: opts
-  defp cache_opts(opts, %__MODULE__{cache?: false}, _fragment, _class), do: opts
-
-  defp cache_opts(opts, _state, fragment, class) do
-    Keyword.put(opts, :cache, key: fragment, ttl_ms: TTL.for(class))
-  end
-
-  defp origin_id(state), do: Origin.id(URI.new!(state.url))
-
   # -- paging ------------------------------------------------------------------
 
   defp page_config(params) do
     Map.merge(%{"limit" => @page_limit, "commitment" => "confirmed"}, params)
-  end
-
-  # `token_balances/3` mints no cursor, because `getTokenAccountsByOwner` has
-  # no parameter to resume on, so a cursor handed back to it came from
-  # somewhere else. `:wrong_scope` is what that is: no cursor is in this
-  # callback's scope, and serving the first page instead would answer a
-  # different question than the caller asked.
-  defp unpaginated(nil), do: :ok
-  defp unpaginated(_cursor), do: {:error, {:invalid_cursor, :wrong_scope}}
-
-  defp cursor_params(_state, nil), do: {:ok, %{}}
-
-  defp cursor_params(state, cursor) do
-    case Cursor.decode(cursor, origin_id(state), :solana_address_signatures) do
-      {:ok, params} -> {:ok, params}
-      {:error, reason} -> {:error, {:invalid_cursor, reason}}
-    end
   end
 
   defp next_cursor(state, items) do
@@ -856,13 +833,11 @@ defmodule Raxol.Web3.Backend.Solana do
         nil
 
       signature ->
-        Cursor.encode(
-          %{"before" => signature},
-          origin_id(state),
-          :solana_address_signatures
-        )
+        Cursor.encode(%{"before" => signature}, origin_id(state), :solana_address_signatures)
     end
   end
+
+  defp origin_id(state), do: Paging.origin_id(state.url)
 
   defp signature(%{"signature" => signature}) when is_binary(signature), do: signature
   defp signature(_absent), do: nil
@@ -979,20 +954,6 @@ defmodule Raxol.Web3.Backend.Solana do
   defp count(list) when is_list(list), do: length(list)
   defp count(_other), do: nil
 
-  # `get_in/2` and the `[]` access syntax raise on the way through anything
-  # that is not a map, and every value on the way through belongs to the
-  # upstream. These read a wrong-typed value as an absent one instead.
-  defp dig(value, path), do: Enum.reduce(path, value, fn key, inner -> field(inner, key) end)
-
-  defp field(map, key) when is_map(map), do: Map.get(map, key)
-  defp field(_other, _key), do: nil
-
-  defp object(value) when is_map(value), do: value
-  defp object(_other), do: %{}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
-
   # `DateTime.from_unix!/2` raises on a value outside the calendar's range,
   # and `blockTime` is the upstream's integer rather than one of ours.
   defp unix(seconds) when is_integer(seconds) do
@@ -1087,7 +1048,4 @@ defmodule Raxol.Web3.Backend.Solana do
   end
 
   defp slot_number(_other), do: {:error, {:decode_failed, :slot}}
-
-  defp ok_or({:ok, _value} = ok, _reason), do: ok
-  defp ok_or(:error, reason), do: {:error, reason}
 end
