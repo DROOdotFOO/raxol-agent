@@ -9,6 +9,7 @@ defmodule Raxol.Agent.SpendGate.ReserveBeforeCallTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Agent.SpendGate
+  alias Raxol.Agent.Test.Signal
   alias Raxol.Agent.Test.SpendGateProbe, as: P
 
   # Read at run time so `SPEND_GATE_SEED=...` works on an already compiled
@@ -80,17 +81,16 @@ defmodule Raxol.Agent.SpendGate.ReserveBeforeCallTest do
 
       # A real kill after reserve/3 returns: the reserve was journaled before
       # it returned, so the journal still shows it.
-      {pid, ref} =
-        spawn_monitor(fn ->
+      pid =
+        spawn(fn ->
           _ = SpendGate.reserve(ctx, "c1", 100)
-          send(parent, :reserved)
+          send(parent, {:reserved, self()})
           # Would call the provider next — but the crash happens first.
           Process.sleep(:infinity)
         end)
 
-      assert_receive :reserved, 1_000
-      Process.exit(pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 1_000
+      Signal.await(pid, :reserved)
+      assert Signal.kill(pid) == :killed
 
       recs = P.records(j)
       assert P.dangling_reserve_visible(recs, "c1") == :ok

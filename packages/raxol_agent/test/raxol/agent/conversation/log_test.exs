@@ -3,6 +3,7 @@ defmodule Raxol.Agent.Conversation.LogTest do
 
   alias Raxol.Agent.Conversation.Log
   alias Raxol.Agent.Conversation.Store.ETS
+  alias Raxol.Agent.Test.Signal
 
   setup do
     table = :"log_items_#{System.unique_integer([:positive])}"
@@ -56,19 +57,19 @@ defmodule Raxol.Agent.Conversation.LogTest do
       other =
         spawn_link(fn ->
           {:ok, _} = Log.subscribe(log, conv)
-          send(parent, :ready)
+          send(parent, {:ready, self()})
 
           receive do
             {:conversation_item, ^conv, item} -> send(parent, {:other_got, item.seq})
           end
         end)
 
-      assert_receive :ready
+      Signal.await(other, :ready)
       {:ok, %{}} = Log.subscribe(log, conv)
 
       {:ok, [item]} = Log.append(log, conv, %{type: :message})
       assert_receive {:conversation_item, ^conv, ^item}
-      assert_receive {:other_got, 0}
+      assert Signal.await(other, :other_got) == 0
 
       Process.exit(other, :normal)
     end
@@ -89,14 +90,12 @@ defmodule Raxol.Agent.Conversation.LogTest do
       doomed =
         spawn(fn ->
           {:ok, _} = Log.subscribe(log, conv)
-          send(parent, :subscribed)
+          send(parent, {:subscribed, self()})
           Process.sleep(:infinity)
         end)
 
-      assert_receive :subscribed
-      ref = Process.monitor(doomed)
-      Process.exit(doomed, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^doomed, _}
+      Signal.await(doomed, :subscribed)
+      assert Signal.kill(doomed) == :killed
 
       # A live subscriber still works after the dead one is cleaned up.
       {:ok, _} = Log.subscribe(log, conv)
@@ -128,16 +127,14 @@ defmodule Raxol.Agent.Conversation.LogTest do
         spawn(fn ->
           {:ok, _} = Log.subscribe(log, shared)
           {:ok, _} = Log.subscribe(log, only_doomed)
-          send(parent, :subscribed)
+          send(parent, {:subscribed, self()})
           Process.sleep(:infinity)
         end)
 
-      assert_receive :subscribed
+      Signal.await(doomed, :subscribed)
       {:ok, _} = Log.subscribe(log, shared)
 
-      ref = Process.monitor(doomed)
-      Process.exit(doomed, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^doomed, _}
+      assert Signal.kill(doomed) == :killed
 
       assert %{subscribers: subscribers} = :sys.get_state(log)
       assert subscribers == %{shared => MapSet.new([self()])}
