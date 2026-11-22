@@ -19,9 +19,10 @@ end
 - Transports: `Transport.Stdio` (newline-delimited JSON; frames over 16 MiB or
   nested over 256 deep are refused) and the in-process `Transport.Paired`.
   A spawned agent does not inherit the node's credentials: `start_spawn/3`
-  applies `Raxol.Core.ChildEnv`'s scrub (see its docs for the opt-outs).
-- Depends on `jason` and `raxol_core` (for that scrub), which brings
-  `:telemetry` and starts OTP's `:mnesia` application in RAM.
+  applies `Raxol.Core.ChildEnv`'s scrub, without its node-wide `pass:` list
+  (see `start_spawn/3` for the per-spawn `:pass` and the opt-outs).
+- Depends on `jason`, and on `raxol_core` for that scrub's code only
+  (`runtime: false`: raxol_core is not started; see "Releases").
 - `use Raxol.AgentClientProtocol.Client, fs_sandbox: root` answers `fs/*`
   inside `root` only (see `Client.FsSandbox` for the exact guarantees).
 - Resumable sessions (vendor extension): an append-only journal with
@@ -172,6 +173,24 @@ is a complete example.
 - A disk-backed journal store must create files `0600` and directories `0700`.
 
 `test/INVARIANTS.md` lists every named invariant and the test that enforces it.
+
+## Releases
+
+raxol_core is a `runtime: false` dependency: this package calls only
+`Raxol.Core.ChildEnv`, which needs no running application, so a host does not
+start raxol_core or the `:mnesia` its `.app` lists. A Mix release leaves a
+`runtime: false` dependency's code out, though. A release whose own
+applications do not already start raxol_core must load it:
+
+```elixir
+releases: [
+  my_app: [applications: [raxol_core: :load]]
+]
+```
+
+Without it, `Transport.Stdio.start_spawn/3` raises instead of spawning an
+agent unscrubbed (`scrub_env: false` still works). A host that depends on
+raxol_core itself, as raxol_agent does, needs nothing.
 
 ## Testing
 

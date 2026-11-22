@@ -67,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one copy. An ACP agent still inherits this package's named list (the
   Catalog key variables, `ORDER_*` URLs, `PROTON_UID`, the sidecar URL)
   unless its spawner passes `unset_env: Raxol.Agent.ChildEnv.unset_names()`.
+  That transport ignores `Raxol.Core.ChildEnv`'s `pass:`, so a name passed
+  to directive shells is not handed to ACP agents.
   **Upgrade note:** 2.9 also rejects an unknown or repeated key in
   `config :raxol_core, Raxol.Core.ChildEnv` (a misspelt `extra_secret:`,
   say). A shell directive then answers `%{exit_status: :error, output:

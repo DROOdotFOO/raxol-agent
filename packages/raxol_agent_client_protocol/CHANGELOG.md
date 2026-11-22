@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking: `Transport.Stdio.start_spawn/3` no longer hands a spawned
   agent the node's credentials.** It applies `Raxol.Core.ChildEnv`, the scrub
-  raxol's directive shells and MCP stdio servers use, so this package now
-  requires `raxol_core ~> 2.9`. Unset unless named in `:env`:
+  raxol's directive shells and MCP stdio servers use. Unset unless named in
+  `:env` or the new `:pass`:
   - any name with a credential word as a `_`-separated segment (`KEY`,
     `KEYS`, `APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
     `MNEMONIC`, `CREDENTIALS`, ...), case-insensitive, so `API_KEYS`
@@ -22,33 +22,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
     `SSH_AUTH_SOCK`, raxol's own keys) and the operator's `extra_secrets:`;
   - on top of Core, names with a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
-    `SEED_PHRASE` and `OP_SESSION_*`, which Core 2.9's pattern misses.
+    `SEED_PHRASE` and `OP_SESSION_*`, which Core 2.9's pattern misses
+    (`Transport.Stdio.credential_gaps/0`; raxol_agent reuses it).
 
   Also:
-  - **Security-relevant: the operator's `pass:` list now reaches ACP agents.**
-    `config :raxol_core, Raxol.Core.ChildEnv, pass:` is node-wide, so a name
-    passed for directive shells or MCP servers (`GH_TOKEN`, say) is handed
-    to every third-party agent this node spawns as well. Keep one from an
-    agent with that spawn's `:unset_env`, which wins over `pass:`.
-  - A name given in `:env` is set as given, whatever the scrub or
-    `:unset_env` say.
-  - A malformed `Raxol.Core.ChildEnv` config, a malformed `:env` entry (a
-    `nil` value, say) or a `:scrub_env` other than `true`/`false` makes
-    `start_spawn/3` raise `ArgumentError` in the caller.
-  - New: `Transport.Stdio.secret?/1` says whether a name is scrubbed, and
-    `Transport.Stdio.credential_gaps/0` returns the shapes added on top of
-    Core (raxol_agent reuses it).
+  - **Core's node-wide `pass:` list is not honoured.** A name the operator
+    lets through to directive shells or MCP servers with
+    `config :raxol_core, Raxol.Core.ChildEnv, pass:` is unset in a spawned
+    ACP agent, which is third-party code. A spawn hands an agent a name with
+    its own `:pass` option (exact names) or `:env`.
+  - Precedence, highest first: `:env` (set as given), `:unset_env` (unset),
+    `:pass` (inherited), then the scrub.
+  - Raised from `start_spawn/3` in the caller, before anything is spawned:
+    `ArgumentError` for a malformed `Raxol.Core.ChildEnv` config or a
+    malformed `:env` (a `nil` value, say), `:scrub_env` (anything but
+    `true`/`false`), `:unset_env` or `:pass`; `RuntimeError` when
+    `Raxol.Core.ChildEnv` is not loadable (see below).
+  - New: `Transport.Stdio.secret?/2` says whether a name is scrubbed.
 
   An agent that reads its own provider key from the environment needs it
-  passed in `:env`, or `scrub_env: false` for the old behaviour. Breaking for
-  such agents, hence 0.2.0.
-- **New runtime dependencies: `raxol_core ~> 2.9` and, through it,
-  `telemetry ~> 1.3`.** A host pinned to telemetry below 1.3 no longer
-  resolves. The package's events now fire whenever a host attaches handlers;
-  before, they did only if the host itself depended on `:telemetry`.
-  raxol_core also lists OTP's `:mnesia` in its applications, so it is started
-  (in RAM) before this package: a host that creates a disc schema must do so
-  with mnesia stopped, or start it as raxol_core expects.
+  passed in `:env` or `:pass`, or `scrub_env: false` for the old behaviour.
+  Breaking for such agents, hence 0.2.0.
+- **Requires `raxol_core ~> 2.9` as a `runtime: false` dependency.** Only
+  `Raxol.Core.ChildEnv`'s code is used, so raxol_core is not started, nor the
+  `:mnesia` its `.app` lists, and `:telemetry` stays optional. A Mix release
+  leaves a `runtime: false` dependency out: a release that does not already
+  start raxol_core must add `applications: [raxol_core: :load]`, or
+  `start_spawn/3` raises rather than spawn an agent unscrubbed (README,
+  "Releases").
 - Also ships the connection, delivery, journal writer and attach-policy
   robustness and security fixes merged in #27.
 - **A cancelled request is now answered.** After `$/cancel_request` the

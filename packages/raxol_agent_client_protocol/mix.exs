@@ -44,10 +44,13 @@ defmodule RaxolAgentClientProtocol.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
-      # `Raxol.Core.ChildEnv`: the credential scrub `Transport.Stdio` applies
-      # to a spawned agent, shared with the rest of raxol. It brings
-      # `:telemetry` at runtime.
-      {:raxol_core, "~> 2.9"},
+      # `Raxol.Core.ChildEnv`, the credential scrub `Transport.Stdio` applies to
+      # a spawned agent, shared with the rest of raxol. `runtime: false`: this
+      # package only calls that one module, which needs no application state,
+      # so a host does not start raxol_core (or the `:mnesia` its `.app`
+      # lists). A host that builds a release must ship the code: see the
+      # README's "Releases" note.
+      {:raxol_core, "~> 2.9", runtime: false},
 
       # Dev/test only
       {:stream_data, "~> 1.1", only: [:dev, :test]},

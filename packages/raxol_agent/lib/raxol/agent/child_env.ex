@@ -33,8 +33,11 @@ defmodule Raxol.Agent.ChildEnv do
       Directive.shell("gh pr list", env: [{"GH_TOKEN", System.fetch_env!("GH_TOKEN")}])
 
   Node-wide, list it under `Raxol.Core.ChildEnv`'s `pass:`. That hands it to
-  EVERY child this node spawns (directive shells, the earn bench's agent
-  packages), so prefer the per-command form:
+  every child this node spawns through Core or this module (directive shells,
+  MCP stdio servers, the earn bench's agent packages), so prefer the
+  per-command form. ACP agents spawned by
+  `Raxol.AgentClientProtocol.Transport.Stdio` do not get it: that transport
+  ignores `pass:` and takes its own per-spawn `:pass` option.
 
       config :raxol_core, Raxol.Core.ChildEnv, pass: ["GH_TOKEN"]
 
