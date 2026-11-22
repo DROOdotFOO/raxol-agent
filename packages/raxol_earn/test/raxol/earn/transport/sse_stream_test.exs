@@ -84,6 +84,33 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
       assert :ok = Transport.disconnect(transport)
     end
 
+    test "an error status ends the task with an error and its body is not parsed" do
+      transport = connect!({502, ~s|data: {"n":1}\n\n|})
+
+      assert_receive {ref, {:error, {:http_status, 502}}} when is_reference(ref), 2_000
+      refute_received {:transport, _}
+      assert :ok = Transport.disconnect(transport)
+    end
+
+    test "a stream that closes at once with no entries is not counted healthy" do
+      transport = connect!([": keepalive\n\n"])
+
+      assert_receive {ref, {:error, :closed_early}} when is_reference(ref), 2_000
+      assert :ok = Transport.disconnect(transport)
+    end
+
+    test "an unterminated tail exactly at the limit is still held" do
+      limit = 64
+      tail = "data: " <> String.duplicate("z", limit - 6)
+      assert byte_size(tail) == limit
+
+      transport = connect!([~s|data: {"n":1}\n\n|, tail], max_sse_buffer_bytes: limit)
+
+      assert_receive {:transport, %{"n" => 1}}, 2_000
+      assert_receive {ref, :ok} when is_reference(ref), 2_000
+      assert :ok = Transport.disconnect(transport)
+    end
+
     test "a transport failure ends the task with an error, not a clean close" do
       transport = connect!(:econnreset)
 
@@ -126,6 +153,9 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
     |> Plug.Conn.put_resp_content_type("application/json")
     |> Plug.Conn.send_resp(201, Jason.encode!(%{"data" => %{"token" => jwt()}}))
   end
+
+  defp serve(%Plug.Conn{request_path: "/chats/stream"} = conn, {status, body}),
+    do: Plug.Conn.send_resp(conn, status, body)
 
   defp serve(%Plug.Conn{request_path: "/chats/stream"} = conn, reason) when is_atom(reason),
     do: Req.Test.transport_error(conn, reason)

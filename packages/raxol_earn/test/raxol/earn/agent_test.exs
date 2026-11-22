@@ -24,6 +24,17 @@ defmodule Raxol.Earn.AgentTest do
     {:ok, agent: agent, transport: transport, api: api}
   end
 
+  describe "stream end handling" do
+    test "counts consecutive error closes and resets on a healthy one", %{agent: agent} do
+      send(agent, {make_ref(), {:error, :boom}})
+      send(agent, {make_ref(), {:error, :boom}})
+      assert :sys.get_state(agent).stream_failures == 2
+
+      send(agent, {make_ref(), :ok})
+      assert :sys.get_state(agent).stream_failures == 0
+    end
+  end
+
   describe "reconnect_after/2" do
     test "doubles the wait on consecutive error closes, capped at a minute" do
       waits =

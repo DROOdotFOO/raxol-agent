@@ -55,9 +55,9 @@ defmodule Raxol.Earn.Agent do
   # error). The stream is a long-lived connection that WILL drop in normal operation;
   # the Agent owns reconnection (see Transport.SSE.stream_loop's contract).
   @stream_reconnect_ms 2_000
-  # Consecutive error closes double the wait up to this, so a server that keeps
-  # failing the stream (an overflowing tail, a broken proxy) is not re-dialled
-  # every 2s. A clean close resets it.
+  # Consecutive failures (error closes and failed reconnects) double the wait up
+  # to this, so a server that keeps failing the stream is not re-dialled every
+  # 2s. Only a stream the transport reports as healthy (`:ok`) resets it.
   @max_stream_reconnect_ms 60_000
 
   @type t :: %__MODULE__{
@@ -307,9 +307,10 @@ defmodule Raxol.Earn.Agent do
         {:noreply, %{state | started?: true}}
 
       {:error, reason} ->
-        Logger.warning("ACP SSE reconnect failed (#{inspect(reason)}); retrying")
-        Process.send_after(self(), :reconnect_stream, @stream_reconnect_ms)
-        {:noreply, state}
+        {delay, failures} = reconnect_after({:error, reason}, state.stream_failures)
+        Logger.warning("ACP SSE reconnect failed (#{inspect(reason)}); retrying in #{delay}ms")
+        Process.send_after(self(), :reconnect_stream, delay)
+        {:noreply, %{state | stream_failures: failures}}
     end
   end
 
