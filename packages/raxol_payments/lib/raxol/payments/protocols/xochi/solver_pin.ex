@@ -84,11 +84,14 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
     normalize(Application.get_env(:raxol_payments, :pull_solver_allowlist, []))
   end
 
+  # Entries are trimmed, then kept only if they are a clean address, so a
+  # malformed `XOCHI_SOLVER_*` value never counts as a pin.
   defp normalize(list) do
     list
     |> List.wrap()
     |> Enum.filter(&is_binary/1)
+    |> Enum.map(&String.trim/1)
+    |> Enum.filter(&EIP712.address?/1)
     |> Enum.map(&EIP712.normalize_address/1)
-    |> Enum.reject(&(&1 == ""))
   end
 end

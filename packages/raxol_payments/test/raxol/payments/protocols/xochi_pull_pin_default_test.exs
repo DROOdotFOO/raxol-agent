@@ -122,6 +122,14 @@ defmodule Raxol.Payments.Protocols.XochiPullPinDefaultTest do
       end
     end
 
+    test "malformed allowlist entries do not count as a pin" do
+      for allowlist <- [["0x1234"], ["not-an-address"], ["0x" <> String.duplicate("aB", 20)]] do
+        assert Xochi.origin_pull_fail_open?(allowlist, false)
+      end
+
+      assert Xochi.origin_pull_fail_open?([" " <> hd(@pinned) <> "\n"], false) == false
+    end
+
     test "a required pin or a populated allowlist is not fail-open" do
       for {allowlist, require_pin?} <- [{[], true}, {@pinned, false}, {@pinned, true}] do
         refute Xochi.origin_pull_fail_open?(allowlist, require_pin?)
