@@ -14,6 +14,13 @@ package formerly named `raxol_acp`; neither name has been on Hex before, so
 
 ### Added
 
+- The Privy signer sidecar and the BEAM authenticate each other on every
+  request (`SignerSidecar.Envelope`): signed requests with a 30s window and
+  replay protection, and responses bound to the request and the sidecar's
+  wallet. Its URL must be loopback unless `RAXOL_ACP_SIDECAR_ALLOW_REMOTE=1`.
+- The ACP SSE transport folds CR and CRLF line endings, and drops an event
+  larger than `:max_sse_buffer_bytes` instead of closing the stream.
+
 - `ProviderAdapter.JSONRPC.new/1` derives the address under
   `Secret.with_revealed/2` and raises `ArgumentError` "private_key is not a
   valid secp256k1 key" for a key the curve refuses (was a `MatchError`).

@@ -2,9 +2,8 @@ defmodule Raxol.Earn.Transport.SSE.Parser do
   @moduledoc """
   Pure SSE wire-format parser used by `Raxol.Earn.Transport.SSE`.
 
-  Extracted into its own module so tests can hit it directly without
-  spinning up a stream. No state -- callers buffer their own partials
-  between `split_frames/1` calls.
+  Pure: `feed/3` takes and returns the stream state (`new/0`), and the
+  transport threads it between chunks.
   """
 
   @doc """
@@ -31,44 +30,79 @@ defmodule Raxol.Earn.Transport.SSE.Parser do
     end
   end
 
-  @doc """
-  Append `chunk` to the unterminated tail `buffer` and parse every frame it
-  completes. Returns the parsed entries, in order, and the new tail. Frames
-  that carry no data or invalid JSON are dropped.
-
-  CRLF line endings are folded to LF. A `\\r` that ends the tail is kept
-  until the next chunk shows whether a `\\n` follows it. Only the seam
-  between the tail and the new chunk is searched for a boundary, so a long
-  unterminated tail is not rescanned on every chunk.
+  @typedoc """
+  Stream state between chunks: the unterminated tail, and whether the parser
+  is discarding an event that outgrew the limit.
   """
-  @spec feed(binary(), binary()) :: {[map()], binary()}
-  def feed(buffer, chunk) when is_binary(buffer) and is_binary(chunk) do
-    {buffer, chunk} = carry_cr(buffer, chunk)
-    chunk = String.replace(chunk, "\r\n", "\n")
+  @type state :: %{tail: binary(), skipping?: boolean(), cr_pending?: boolean()}
 
-    if boundary_at_seam?(buffer, chunk) do
-      {frames, rest} = split_frames(buffer <> chunk)
-      {for(frame <- frames, {:ok, entry} <- [parse_frame(frame)], do: entry), rest}
-    else
-      {[], buffer <> chunk}
+  @spec new() :: state()
+  def new, do: %{tail: "", skipping?: false, cr_pending?: false}
+
+  @doc """
+  Feed one chunk. Returns the entries it completes, in order, how many events
+  it dropped for exceeding `max_bytes`, and the next state. Frames without
+  data or with invalid JSON are skipped.
+
+  CR and CRLF line endings are folded to LF. A CR that ends a chunk counts as
+  a line end at once, and an LF opening the next chunk is then dropped as the
+  second half of a CRLF. An event whose unterminated
+  part grows past `max_bytes` is discarded through its boundary and the stream
+  carries on with the next one. Only the seam between the tail and the new
+  chunk is searched for a boundary, so a long tail is not rescanned per chunk.
+  """
+  @spec feed(state(), binary(), pos_integer()) :: {[map()], non_neg_integer(), state()}
+  def feed(state, chunk, max_bytes) when is_binary(chunk) do
+    text = if state.cr_pending?, do: drop_leading_lf(chunk), else: chunk
+    {entries, dropped, next} = advance(state, fold_line_endings(text), max_bytes)
+    {entries, dropped, Map.put(next, :cr_pending?, cr_pending?(chunk, state.cr_pending?))}
+  end
+
+  defp drop_leading_lf("\n" <> rest), do: rest
+  defp drop_leading_lf(chunk), do: chunk
+
+  # An empty chunk leaves a pending CR pending.
+  defp cr_pending?("", pending?), do: pending?
+  defp cr_pending?(chunk, _pending?), do: String.ends_with?(chunk, "\r")
+
+  defp advance(%{skipping?: true, tail: tail}, chunk, max_bytes) do
+    seam = tail <> chunk
+
+    case :binary.match(seam, "\n\n") do
+      {pos, 2} ->
+        advance(
+          %{tail: "", skipping?: false},
+          binary_part(seam, pos + 2, byte_size(seam) - pos - 2),
+          max_bytes
+        )
+
+      :nomatch ->
+        {[], 0, %{tail: last_byte(seam), skipping?: true}}
     end
   end
 
-  defp carry_cr(buffer, chunk)
-       when byte_size(buffer) > 0 and binary_part(buffer, byte_size(buffer) - 1, 1) == "\r",
-       do: {binary_part(buffer, 0, byte_size(buffer) - 1), "\r" <> chunk}
-
-  defp carry_cr(buffer, chunk), do: {buffer, chunk}
-
-  defp boundary_at_seam?(buffer, chunk) do
-    seam =
-      case byte_size(buffer) do
-        0 -> chunk
-        n -> binary_part(buffer, n - 1, 1) <> chunk
+  defp advance(%{tail: tail}, chunk, max_bytes) do
+    {entries, rest} =
+      if boundary_at_seam?(tail, chunk) do
+        {frames, rest} = split_frames(tail <> chunk)
+        {for(frame <- frames, {:ok, entry} <- [parse_frame(frame)], do: entry), rest}
+      else
+        {[], tail <> chunk}
       end
 
-    :binary.match(seam, "\n\n") != :nomatch
+    if byte_size(rest) > max_bytes,
+      do: {entries, 1, %{tail: last_byte(rest), skipping?: true}},
+      else: {entries, 0, %{tail: rest, skipping?: false}}
   end
+
+  defp fold_line_endings(text),
+    do: text |> String.replace("\r\n", "\n") |> String.replace("\r", "\n")
+
+  defp last_byte(""), do: ""
+  defp last_byte(bin), do: binary_part(bin, byte_size(bin) - 1, 1)
+
+  defp boundary_at_seam?(tail, chunk),
+    do: :binary.match(last_byte(tail) <> chunk, "\n\n") != :nomatch
 
   @doc """
   Parse a single SSE frame's data field into a JSON map.

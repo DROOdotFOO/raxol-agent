@@ -149,8 +149,8 @@ defmodule Raxol.Earn.Xochi.SolverApplication do
   end
 
   # Delegated (Privy + Alchemy managed wallet) when a wallet id + address are set;
-  # otherwise the legacy local-EOA path. Delegated mode holds NO signing key in the
-  # BEAM -- the sidecar does, from its own env.
+  # otherwise the legacy local-EOA path. Delegated mode signs nothing in the BEAM --
+  # the sidecar does, from its own env; the BEAM only derives its MAC key from it.
   defp privy_mode? do
     present?(System.get_env("RAXOL_ACP_WALLET_ID")) and
       present?(System.get_env("RAXOL_ACP_WALLET_ADDRESS"))
@@ -172,7 +172,8 @@ defmodule Raxol.Earn.Xochi.SolverApplication do
           chains: %{@chain_id => rpc_url}
         )
 
-      # Start the sidecar FIRST (its init blocks until GET /health is 200), so Auth and
+      # Start the sidecar FIRST (its init blocks until an authenticated health check
+      # passes for this wallet), so Auth and
       # everything downstream only start once delegated signing is actually available.
       {provider, address, [{Raxol.Earn.SignerSidecar, []}]}
     else

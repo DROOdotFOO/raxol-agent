@@ -4,6 +4,7 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
 
   alias Mix.Tasks.RaxolEarn.Order
   alias Raxol.Earn.ProviderAdapter.Mock
+  alias Raxol.Earn.TestSupport.TestSidecar
 
   @spender "0xE9B020941015e428876f60C1979B3fc2A38a2f53"
   @allowance_sig "allowance(address,address)"
@@ -392,31 +393,12 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
   describe "the 7702 wallet's signing provider" do
     alias Mix.Tasks.RaxolEarn.Order.Signer
 
-    defmodule Health do
-      @moduledoc false
-      @behaviour Plug
-
-      @impl true
-      def init({address, test_pid}), do: {address, test_pid}
-
-      @impl true
-      def call(%Plug.Conn{request_path: "/send-calls"} = conn, {_address, test_pid}) do
-        send(test_pid, :send_calls_reached_sidecar)
-        json(conn, %{txHashes: ["0xfeed"]})
-      end
-
-      def call(conn, {address, _test_pid}), do: json(conn, %{status: "ok", address: address})
-
-      defp json(conn, body) do
-        conn
-        |> Plug.Conn.put_resp_content_type("application/json")
-        |> Plug.Conn.send_resp(200, Jason.encode!(body))
-      end
-    end
-
     setup do
-      previous = System.get_env("RAXOL_ACP_SIDECAR_URL")
-      on_exit(fn -> restore_env("RAXOL_ACP_SIDECAR_URL", previous) end)
+      saved =
+        Map.new(~w(RAXOL_ACP_SIDECAR_URL RAXOL_ACP_SIGNER_PRIVATE_KEY), &{&1, System.get_env(&1)})
+
+      on_exit(fn -> Enum.each(saved, fn {k, v} -> restore_env(k, v) end) end)
+      System.put_env("RAXOL_ACP_SIGNER_PRIVATE_KEY", TestSidecar.signer_private_key())
     end
 
     test "targets the sidecar that reports the 7702 account" do
@@ -447,21 +429,38 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
     @foreign_wallet "0x" <> String.duplicate("ab", 20)
 
     setup do
-      previous = System.get_env("RAXOL_ACP_SIDECAR_URL")
-      on_exit(fn -> restore_env("RAXOL_ACP_SIDECAR_URL", previous) end)
+      saved =
+        Map.new(~w(RAXOL_ACP_SIDECAR_URL RAXOL_ACP_SIGNER_PRIVATE_KEY), &{&1, System.get_env(&1)})
+
+      on_exit(fn -> Enum.each(saved, fn {k, v} -> restore_env(k, v) end) end)
+      System.put_env("RAXOL_ACP_SIGNER_PRIVATE_KEY", TestSidecar.signer_private_key())
     end
 
     test "broadcast once the sidecar reports the adapter's wallet" do
       url = serve_health(@wallet)
-      provider = Privy.new(sidecar_url: url, address: @wallet, chains: %{8453 => url})
+
+      provider =
+        Privy.new(
+          sidecar_url: url,
+          address: @wallet,
+          chains: %{8453 => url},
+          auth_key: TestSidecar.key()
+        )
 
       assert {:ok, ["0xfeed"]} = Signer.send_calls(provider, 8453, [@call])
-      assert_received :send_calls_reached_sidecar
+      assert_receive {:sidecar, "/send-calls", _}, 1_000
     end
 
     test "are refused before reaching a sidecar holding another wallet" do
       url = serve_health(@foreign_wallet)
-      provider = Privy.new(sidecar_url: url, address: @wallet, chains: %{8453 => url})
+
+      provider =
+        Privy.new(
+          sidecar_url: url,
+          address: @wallet,
+          chains: %{8453 => url},
+          auth_key: TestSidecar.key()
+        )
 
       job = %{
         provider: @wallet,
@@ -477,7 +476,7 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
       assert {:error, {:sidecar_unhealthy, ^url, {:sidecar_wrong_wallet, @foreign_wallet, _}}} =
                Signer.create_job(provider, 8453, @wallet, job)
 
-      refute_received :send_calls_reached_sidecar
+      refute_received {:sidecar, "/send-calls", _}
     end
 
     test "a refused fund names the live job and how to resume it" do
@@ -493,6 +492,18 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
 
       assert Errors.write_blocked(:create_job, "http://127.0.0.1:4048", :health_timeout) =~
                "Nothing from this run is on chain"
+
+      unauthenticated =
+        Errors.write_blocked({:fund, 9}, "http://127.0.0.1:4048", :sidecar_unauthenticated)
+
+      assert unauthenticated =~ "could not prove it holds the authorization key"
+      assert unauthenticated =~ "could not prove it is this run's signer"
+
+      stale =
+        Errors.write_blocked(:create_job, "http://127.0.0.1:4048", {:sidecar_refused, "stale"})
+
+      assert stale =~ "more than 30s off"
+      assert stale =~ "unverified"
     end
 
     test "other backends sign locally and pass through unchecked" do
@@ -534,11 +545,11 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
   end
 
   defp serve_health(address) do
-    ref = make_ref()
-    {:ok, _} = Plug.Cowboy.http(__MODULE__.Health, {address, self()}, port: 0, ref: ref)
-    on_exit(fn -> Plug.Cowboy.shutdown(ref) end)
+    url =
+      address
+      |> TestSidecar.start(%{"/send-calls" => {200, %{txHashes: ["0xfeed"]}}})
+      |> TestSidecar.listen()
 
-    url = "http://127.0.0.1:#{:ranch.get_port(ref)}"
     System.put_env("RAXOL_ACP_SIDECAR_URL", url)
     url
   end

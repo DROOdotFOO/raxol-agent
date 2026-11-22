@@ -11,30 +11,61 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
          case: :lower
        )
 
-  describe "Parser.feed/2" do
+  # Feeds chunks through Parser.feed/3 and collects what comes out.
+  defp run(chunks, max_bytes \\ 1_048_576) do
+    Enum.reduce(chunks, {[], 0, Parser.new()}, fn chunk, {entries, dropped, state} ->
+      {new, d, state} = Parser.feed(state, chunk, max_bytes)
+      {entries ++ new, dropped + d, state}
+    end)
+  end
+
+  describe "Parser.feed/3" do
     test "carries an unterminated frame across chunks" do
-      assert {[], tail} = Parser.feed("", ~s|data: {"a":|)
-      assert {[%{"a" => 1}], ""} = Parser.feed(tail, ~s|1}\n\n|)
+      assert {[%{"a" => 1}], 0, %{tail: ""}} = run([~s|data: {"a":|, ~s|1}\n\n|])
     end
 
     test "parses several frames from one chunk and keeps the remainder" do
-      assert {[%{"a" => 1}, %{"b" => 2}], ~s|data: {"c"|} =
-               Parser.feed("", ~s|data: {"a":1}\n\ndata: {"b":2}\n\ndata: {"c"|)
+      assert {[%{"a" => 1}, %{"b" => 2}], 0, %{tail: ~s|data: {"c"|}} =
+               run([~s|data: {"a":1}\n\ndata: {"b":2}\n\ndata: {"c"|])
     end
 
     test "splits CRLF-framed events" do
-      assert {[%{"a" => 1}, %{"b" => 2}], ""} =
-               Parser.feed("", ~s|data: {"a":1}\r\n\r\ndata: {"b":2}\r\n\r\n|)
+      assert {[%{"a" => 1}, %{"b" => 2}], 0, _} =
+               run([~s|data: {"a":1}\r\n\r\ndata: {"b":2}\r\n\r\n|])
     end
 
     test "joins a CRLF that straddles two chunks" do
-      assert {[], tail} = Parser.feed("", ~s|data: {"a":1}\r\n\r|)
-      assert {[%{"a" => 1}], ""} = Parser.feed(tail, "\n")
+      assert {[%{"a" => 1}], 0, %{tail: ""}} = run([~s|data: {"a":1}\r\n\r|, "\n"])
+    end
+
+    test "splits bare-CR-framed events as soon as their boundary arrives" do
+      assert {[%{"a" => 1}, %{"b" => 2}], 0, _} =
+               run([~s|data: {"a":1}\r\rdata: {"b":2}\r|, "\r"])
+
+      assert {[%{"a" => 1}], 0, _} = run([~s|data: {"a":1}\r|, ~s|\rdata: {"b"|])
+    end
+
+    test "a CR then LF across chunks is one line ending, not two" do
+      assert {[], 0, %{tail: tail}} = run([~s|data: {"a":1}\r|, "\n"])
+      assert tail == ~s|data: {"a":1}\n|
+
+      assert {[%{"a" => 1}], 0, _} = run([~s|data: {"a":1}\r|, "\n", "\r\n"])
+    end
+
+    test "only the LF straight after a CR is swallowed" do
+      assert {[%{"a" => 1}], 0, %{cr_pending?: false}} = run([~s|data: {"a":1}\r|, "\n", "\n"])
     end
 
     test "drops frames without data or with invalid JSON" do
-      assert {[%{"ok" => true}], ""} =
-               Parser.feed("", ~s|event: ping\n\ndata: nope\n\ndata: {"ok":true}\n\n|)
+      assert {[%{"ok" => true}], 0, _} =
+               run([~s|event: ping\n\ndata: nope\n\ndata: {"ok":true}\n\n|])
+    end
+
+    test "drops an event that outgrows the limit and parses the ones after it" do
+      flood = "data: " <> String.duplicate("x", 100)
+
+      assert {[%{"n" => 1}, %{"n" => 2}], 1, %{skipping?: false}} =
+               run([~s|data: {"n":1}\n\n|, flood, "xxx", "x\n", ~s|\ndata: {"n":2}\n\n|], 64)
     end
   end
 
@@ -54,20 +85,37 @@ defmodule Raxol.Earn.Transport.SSEStreamTest do
       assert :ok = Transport.disconnect(transport)
     end
 
-    test "closes the stream once an unterminated event passes the limit" do
+    test "drops an oversized event once and keeps the stream" do
       limit = 64
       flood = "data: " <> String.duplicate("x", limit)
 
-      transport =
-        connect!([~s|data: {"n":1}\n\n|, flood, ~s|data: {"n":2}\n\n|],
-          max_sse_buffer_bytes: limit
-        )
+      test_pid = self()
+      handler = "sse-dropped-#{inspect(make_ref())}"
 
-      assert_receive {:transport, %{"n" => 1}}, 2_000
-      assert_receive {ref, {:error, {:sse_buffer_overflow, ^limit}}} when is_reference(ref), 2_000
-      refute_received {:transport, %{"n" => 2}}
+      :telemetry.attach(
+        handler,
+        [:raxol, :earn, :transport, :sse_dropped],
+        fn _event, measurements, meta, _ -> send(test_pid, {:dropped, measurements, meta}) end,
+        nil
+      )
 
-      assert :ok = Transport.disconnect(transport)
+      on_exit(fn -> :telemetry.detach(handler) end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          transport =
+            connect!([~s|data: {"n":1}\n\n|, flood, "\n\n", ~s|data: {"n":2}\n\n|],
+              max_sse_buffer_bytes: limit
+            )
+
+          assert_receive {:transport, %{"n" => 1}}, 2_000
+          assert_receive {:transport, %{"n" => 2}}, 2_000
+          assert_receive {ref, :ok} when is_reference(ref), 2_000
+          assert :ok = Transport.disconnect(transport)
+        end)
+
+      assert [_one] = Regex.scan(~r/dropped 1 event\(s\) larger than 64 bytes/, log)
+      assert_received {:dropped, %{count: 1}, %{max_bytes: 64}}
     end
 
     test "an event within the limit still arrives when split across chunks" do

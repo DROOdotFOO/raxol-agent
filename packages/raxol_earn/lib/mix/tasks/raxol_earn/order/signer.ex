@@ -109,16 +109,15 @@ defmodule Mix.Tasks.RaxolEarn.Order.Signer do
     end
   end
 
-  # `/health` is unauthenticated and self-reported, and it is a separate request
-  # from the write that follows: this stops a stale or foreign sidecar, not a
-  # hostile process on the same host.
+  # Fail fast before a write. The write itself is authenticated too (every
+  # Privy call verifies the sidecar's response), so this is not the only gate.
   @spec verify_sidecar(ProviderAdapter.adapter()) ::
           :ok | {:error, {:sidecar_unhealthy, String.t(), term()}}
   def verify_sidecar(%{
         adapter: ProviderAdapter.Privy,
-        config: %{sidecar_url: url, address: address}
+        config: %{sidecar_url: url, address: address, auth_key: key}
       }) do
-    case SignerSidecar.await_health(url, @health_timeout_ms, address) do
+    case SignerSidecar.await_health(url, @health_timeout_ms, address, Secret.reveal(key)) do
       :ok -> :ok
       {:error, reason} -> {:error, {:sidecar_unhealthy, url, reason}}
     end
