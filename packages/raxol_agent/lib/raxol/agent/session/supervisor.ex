@@ -236,7 +236,7 @@ defmodule Raxol.Agent.Session.Supervisor do
   """
   @spec owner(term()) :: {:ok, term()} | :error
   def owner(session_id) do
-    case Registry.lookup(@registry, {:session_supervisor, session_id}) do
+    case live(Registry.lookup(@registry, {:session_supervisor, session_id})) do
       [{_pid, owner}] -> {:ok, owner}
       [] -> :error
     end
@@ -247,9 +247,12 @@ defmodule Raxol.Agent.Session.Supervisor do
   @doc "Every running session tree, as `{session_id, owner}`."
   @spec owners() :: [{term(), term()}]
   def owners do
-    Registry.select(@registry, [
-      {{{:session_supervisor, :"$1"}, :_, :"$2"}, [], [{{:"$1", :"$2"}}]}
+    @registry
+    |> Registry.select([
+      {{{:session_supervisor, :"$1"}, :"$2", :"$3"}, [], [{{:"$2", {{:"$1", :"$3"}}}}]}
     ])
+    |> live()
+    |> Enum.map(fn {_pid, entry} -> entry end)
   rescue
     ArgumentError -> []
   end
@@ -260,9 +263,10 @@ defmodule Raxol.Agent.Session.Supervisor do
   """
   @spec list_sessions() :: [{term(), pid()}]
   def list_sessions do
-    Registry.select(@registry, [
-      {{{:session, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
-    ])
+    @registry
+    |> Registry.select([{{{:session, :"$1"}, :"$2", :_}, [], [{{:"$2", :"$1"}}]}])
+    |> live()
+    |> Enum.map(fn {pid, session_id} -> {session_id, pid} end)
   rescue
     # Registry not running — no sessions.
     ArgumentError -> []
@@ -365,13 +369,21 @@ defmodule Raxol.Agent.Session.Supervisor do
   end
 
   defp lookup(key) do
-    case Registry.lookup(@registry, key) do
+    case live(Registry.lookup(@registry, key)) do
       [{pid, _}] -> pid
       [] -> nil
     end
   rescue
     ArgumentError -> nil
   end
+
+  # The Registry drops a dead process's entries only when its partition
+  # handles the exit, a moment after the process is gone, so a read in that
+  # moment still returns them: a tree that `stop_session/1` just stopped would
+  # read as running. Every read here keeps only processes that are alive.
+  # Registry pids are local, so `Process.alive?/1` is exact for them.
+  @spec live([{pid(), value}]) :: [{pid(), value}] when value: term()
+  defp live(entries), do: Enum.filter(entries, fn {pid, _value} -> Process.alive?(pid) end)
 
   # Prefer terminate_child (synchronous, removes the DynSup child); fall back
   # to a direct stop for a tree that was not started under DynSup.
