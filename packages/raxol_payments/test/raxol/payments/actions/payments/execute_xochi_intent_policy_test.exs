@@ -430,8 +430,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentPolicyTest do
     end
 
     test "a min_to_amount that is not an integer of atomic units is refused, not ignored" do
-      # A garbled floor used to read as absent: the 80% auto floor here, and no
-      # floor at all on a cross-asset corridor. It is the caller's bound.
+      # A garbled floor must not read as absent (the 80% auto floor here, no
+      # floor at all on a cross-asset corridor): it is the caller's bound.
       stub_floor_quote("960000")
       context = floor_ctx()
 

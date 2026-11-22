@@ -113,8 +113,6 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
     end
   end
 
-  # -- Private --
-
   # EVM addresses as lowercase `0x` hex; base58 (Tron/Solana) values verbatim.
   # Non-address strings (intent/quote ids) never reach here.
   defp normalize_address("0x" <> _ = address), do: "0x" <> EIP712.normalize_address(address)

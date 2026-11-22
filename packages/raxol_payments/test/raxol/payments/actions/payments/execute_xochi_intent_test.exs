@@ -436,7 +436,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
     end
 
     # A registered non-USD stablecoin scales correctly, but no spend cap reads
-    # an FX rate (ADR-0040 decision 7 is not built), so it is refused as a
+    # an FX rate, so it is refused as a
     # source under a dollar policy, even when a price for it is at hand.
     test "a non-USD stablecoin source is refused before signing" do
       stub_quote_and_execute()

@@ -318,7 +318,7 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
     assert :released = Ledger.release_by_intent(ledger, "agent_1", "int_rq")
   end
 
-  # xochi#563: the worker withholds a stealth intent's legs unless the caller
+  # The worker withholds a stealth intent's legs unless the caller
   # presents the read token execute returned. The sim reveals `tx_hash` only
   # for the right token, as the worker does.
   describe "read_token" do

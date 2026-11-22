@@ -81,7 +81,7 @@ defmodule Raxol.Payments.Xochi.Schemas.QuoteResponseTest do
       assert resp.error == "no liquidity"
     end
 
-    test "parses deposit-route fields (snake_case and camelCase) (#400)" do
+    test "parses deposit-route fields (snake_case and camelCase)" do
       for {addr, att, deadline} <- [
             {"deposit_address", "deposit_attestation", "deposit_deadline"},
             {"depositAddress", "depositAttestation", "depositDeadline"}
