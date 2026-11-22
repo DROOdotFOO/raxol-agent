@@ -1,139 +1,178 @@
 defmodule Raxol.Payments.Xochi.DepositAttestationTest do
-  # A deposit-route quote returns a bare deposit_address; the client must
-  # verify the deposit_attestation recovers to the pinned signer before sending
-  # funds. The signed message must be byte-exact with the Riddler signer.
+  # The fail-closed policy around a v3 deposit attestation. Byte-exact encoding
+  # is pinned by Riddler's own vectors in deposit_attestation_conformance_test.
   use ExUnit.Case, async: true
 
-  alias Raxol.Payments.EIP712
+  alias Raxol.Payments.Test.DepositAttestationFixture, as: Fixture
   alias Raxol.Payments.Xochi.DepositAttestation
 
-  @fields %{
-    intent_id: "xi_abc123",
-    quote_id: "xq_def456",
-    from_chain_id: 728_126_428,
-    from_token: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
-    from_amount: "1000000",
-    deposit_address: "TJYeasTPa6gpEEfYGfp5LQjWXmdZQBpLzX"
-  }
-
-  # A deterministic secp256k1 key: the "signer". Real crypto, no mocks -- the
-  # signature is produced with ExSecp256k1 exactly as a wallet would.
+  # Real secp256k1 keys, no mocks.
   @priv <<1::256>>
+  @now 1_800_000_000
 
-  defp signer_address do
-    {:ok, <<_prefix::8, xy::binary-size(64)>>} = ExSecp256k1.create_public_key(@priv)
-    <<_first12::binary-size(12), addr::binary-size(20)>> = ExKeccak.hash_256(xy)
-    "0x" <> Base.encode16(addr, case: :lower)
-  end
+  defp signer, do: Fixture.address(@priv)
 
-  defp sign(fields) do
-    digest =
-      ("\x19Ethereum Signed Message:\n" <>
-         Integer.to_string(byte_size(DepositAttestation.message(fields))) <>
-         DepositAttestation.message(fields))
-      |> ExKeccak.hash_256()
+  defp expect(overrides \\ %{}),
+    do:
+      Map.merge(%{signer: signer(), version: DepositAttestation.version(), now: @now}, overrides)
 
-    {:ok, sig} = ExSecp256k1.sign(digest, @priv)
-    "0x" <> Base.encode16(EIP712.pack_signature(sig), case: :lower)
-  end
+  describe "message/1" do
+    test "is eighteen lines opening with the v3 tag, absent optionals as empty lines" do
+      assert {:ok, message} = DepositAttestation.message(Fixture.fields())
+      lines = String.split(message, "\n")
 
-  describe "message/1 (byte-exact Riddler parity)" do
-    test "matches the v1 spec byte-for-byte" do
-      assert DepositAttestation.message(@fields) ==
-               "xochi-deposit-attestation:v1\n" <>
-                 "xi_abc123\n" <>
-                 "xq_def456\n" <>
-                 "728126428\n" <>
-                 "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t\n" <>
-                 "1000000\n" <>
-                 "TJYeasTPa6gpEEfYGfp5LQjWXmdZQBpLzX"
+      assert length(lines) == 18
+      assert hd(lines) == "xochi-deposit-attestation:v3"
+      assert Enum.at(lines, 9) == ""
+      assert Enum.slice(lines, 15, 2) == ["", ""]
+      assert List.last(lines) == "public"
     end
 
-    test "lowercases an EVM (0x-hex) address; leaves base58 verbatim" do
-      msg =
-        DepositAttestation.message(%{
-          @fields
-          | from_token: "0xAbCdEf0000000000000000000000000000000001"
-        })
-
-      assert msg =~ "0xabcdef0000000000000000000000000000000001"
-      assert msg =~ "TJYeasTPa6gpEEfYGfp5LQjWXmdZQBpLzX"
+    test "refuses a field containing the delimiter instead of signing it" do
+      for field <- [:wallet, :recipient, :refund_address, :deposit_address, :intent_id] do
+        assert {:error, {:newline_in_field, ^field}} =
+                 DepositAttestation.message(Fixture.fields(%{field => "TLa2f6\nX"}))
+      end
     end
 
-    test "attests a padded EVM address byte for byte, so it cannot verify as the clean one" do
-      clean = "0xabcdef0000000000000000000000000000000001"
-      fields = %{@fields | deposit_address: clean}
-      padded = %{fields | deposit_address: clean <> "\n"}
+    test "folds only a lowercase 0x prefix" do
+      assert {:ok, folded} =
+               DepositAttestation.message(Fixture.fields(%{refund_address: "0xAbC"}))
 
-      assert DepositAttestation.message(padded) =~ clean <> "\n"
+      assert {:ok, verbatim} =
+               DepositAttestation.message(Fixture.fields(%{refund_address: "0XAbC"}))
 
-      # Lowercased as on any EVM address, but the padding stays.
-      shouting = %{padded | deposit_address: "0xABCDEF0000000000000000000000000000000001\n"}
-      assert DepositAttestation.message(shouting) =~ clean <> "\n"
-
-      assert {:error, :attestation_mismatch} =
-               DepositAttestation.verify(padded, sign(fields), signer_address())
-    end
-
-    test "accepts an integer from_amount" do
-      assert DepositAttestation.message(%{@fields | from_amount: 1_000_000}) ==
-               DepositAttestation.message(@fields)
+      assert Enum.at(String.split(folded, "\n"), 9) == "0xabc"
+      assert Enum.at(String.split(verbatim, "\n"), 9) == "0XAbC"
     end
   end
 
-  describe "recover/2 and verify/3" do
-    test "an attestation recovers to the signing address" do
-      assert {:ok, recovered} = DepositAttestation.recover(@fields, sign(@fields))
-      assert recovered == signer_address()
+  describe "check_version/1" do
+    test "accepts only v3" do
+      assert :ok = DepositAttestation.check_version("xochi-deposit-attestation:v3")
+
+      for other <- ["xochi-deposit-attestation:v1", "xochi-deposit-attestation:v2", "", nil, 3] do
+        assert {:error, {:unsupported_deposit_attestation_version, ^other}} =
+                 DepositAttestation.check_version(other)
+      end
+    end
+  end
+
+  describe "verify/3" do
+    test "accepts a v3 attestation by the pinned signer with the window open" do
+      fields = Fixture.fields()
+      assert :ok = DepositAttestation.verify(fields, Fixture.sign(fields, @priv), expect())
     end
 
-    test "verify/3 accepts a signature that recovers to the pinned signer" do
-      assert :ok = DepositAttestation.verify(@fields, sign(@fields), signer_address())
-    end
+    test "is case-insensitive on the pinned signer" do
+      fields = Fixture.fields()
 
-    test "verify/3 is case-insensitive on the pinned signer" do
       assert :ok =
-               DepositAttestation.verify(@fields, sign(@fields), String.upcase(signer_address()))
+               DepositAttestation.verify(
+                 fields,
+                 Fixture.sign(fields, @priv),
+                 expect(%{signer: String.upcase(signer())})
+               )
     end
 
-    test "a tampered deposit_address no longer recovers to the signer (MITM swap)" do
-      sig = sign(@fields)
-      tampered = %{@fields | deposit_address: "TTamperedAddr00000000000000000000000"}
+    test "refuses a v1 attestation over the same deal, even when genuinely signed" do
+      fields = Fixture.fields()
 
-      assert {:ok, recovered} = DepositAttestation.recover(tampered, sig)
-      refute recovered == signer_address()
+      v1 =
+        Enum.join(
+          [
+            "xochi-deposit-attestation:v1",
+            fields.intent_id,
+            fields.quote_id,
+            Integer.to_string(fields.from_chain_id),
+            fields.from_token,
+            fields.from_amount,
+            fields.deposit_address
+          ],
+          "\n"
+        )
 
       assert {:error, :attestation_mismatch} =
-               DepositAttestation.verify(tampered, sig, signer_address())
+               DepositAttestation.verify(fields, Fixture.sign_message(v1, @priv), expect())
     end
 
-    test "verify/3 rejects an attestation from a different signer" do
-      other = "0x000000000000000000000000000000000000dead"
+    test "refuses a venue that advertises anything but v3, before recovery" do
+      fields = Fixture.fields()
+      sig = Fixture.sign(fields, @priv)
+
+      assert {:error, {:unsupported_deposit_attestation_version, "xochi-deposit-attestation:v1"}} =
+               DepositAttestation.verify(
+                 fields,
+                 sig,
+                 expect(%{version: "xochi-deposit-attestation:v1"})
+               )
+
+      assert {:error, {:unsupported_deposit_attestation_version, nil}} =
+               DepositAttestation.verify(fields, sig, expect(%{version: nil}))
+    end
+
+    test "refuses a closed or absent deposit window" do
+      fields = Fixture.fields(%{deposit_deadline: @now})
+      sig = Fixture.sign(fields, @priv)
+
+      assert {:error, {:deposit_deadline_passed, %{deadline: @now, now: @now}}} =
+               DepositAttestation.verify(fields, sig, expect())
+
+      assert :ok = DepositAttestation.verify(fields, sig, expect(%{now: @now - 1}))
+
+      no_deadline = Fixture.fields(%{deposit_deadline: nil})
+
+      assert {:error, :missing_deposit_deadline} =
+               DepositAttestation.verify(no_deadline, Fixture.sign(no_deadline, @priv), expect())
+
+      assert {:error, {:invalid_deposit_deadline, "soon"}} =
+               DepositAttestation.verify(
+                 Fixture.fields(%{deposit_deadline: "soon"}),
+                 sig,
+                 expect()
+               )
+    end
+
+    test "refuses a substituted deposit address (MITM swap)" do
+      sig = Fixture.sign(Fixture.fields(), @priv)
+      swapped = Fixture.fields(%{deposit_address: "TJYeasTPa6gpEEfYGfp5LQjWXmdZQBpLzX"})
+
+      assert {:error, :attestation_mismatch} = DepositAttestation.verify(swapped, sig, expect())
+    end
+
+    test "refuses another signer" do
+      fields = Fixture.fields()
 
       assert {:error, :attestation_mismatch} =
-               DepositAttestation.verify(@fields, sign(@fields), other)
+               DepositAttestation.verify(
+                 fields,
+                 Fixture.sign(fields, <<2::256>>),
+                 expect()
+               )
     end
 
-    test "verify/3 fails closed on a missing attestation" do
-      assert {:error, :missing_attestation} =
-               DepositAttestation.verify(@fields, nil, signer_address())
+    test "fails closed on a missing attestation or signer" do
+      fields = Fixture.fields()
+      sig = Fixture.sign(fields, @priv)
 
-      assert {:error, :missing_attestation} =
-               DepositAttestation.verify(@fields, "", signer_address())
-    end
+      assert {:error, :missing_attestation} = DepositAttestation.verify(fields, nil, expect())
+      assert {:error, :missing_attestation} = DepositAttestation.verify(fields, "", expect())
 
-    test "verify/3 fails closed when no signer is pinned" do
       assert {:error, :signer_unavailable} =
-               DepositAttestation.verify(@fields, sign(@fields), nil)
+               DepositAttestation.verify(fields, sig, expect(%{signer: nil}))
 
-      assert {:error, :signer_unavailable} = DepositAttestation.verify(@fields, sign(@fields), "")
+      assert {:error, :signer_unavailable} =
+               DepositAttestation.verify(fields, sig, expect(%{signer: ""}))
     end
 
-    test "verify/3 rejects a malformed signature" do
-      assert {:error, :invalid_signature} =
-               DepositAttestation.verify(@fields, "0xdeadbeef", signer_address())
+    test "refuses a malformed signature" do
+      fields = Fixture.fields()
+      "0x" <> hex = Fixture.sign(fields, @priv)
+      <<rs::binary-size(128), _v::binary-size(2)>> = hex
 
-      assert {:error, :invalid_signature} = DepositAttestation.recover(@fields, "not-a-sig")
+      for bad <- ["0xdeadbeef", "not-a-sig", hex, "0x" <> rs <> "1d", "0x" <> rs <> "zz"] do
+        assert {:error, :invalid_signature} = DepositAttestation.verify(fields, bad, expect())
+      end
     end
   end
 end

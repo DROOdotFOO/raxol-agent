@@ -6,15 +6,14 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
   # The matrix fallback logs a warning.
   @moduletag :capture_log
 
-  alias Raxol.Payments.EIP712
   alias Raxol.Payments.Protocols.Xochi
-  alias Raxol.Payments.Xochi.{Capabilities, DepositAttestation}
+  alias Raxol.Payments.Test.DepositAttestationFixture, as: Fixture
+  alias Raxol.Payments.Xochi.Capabilities
   alias Raxol.Payments.Xochi.Schemas.{DepositRouteRequest, QuoteResponse}
 
-  @tron_usdt "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
   @deposit_addr "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
-  @evm_recipient "0x" <> String.duplicate("ab", 20)
   @priv <<7::256>>
+  @now 1_800_000_000
   @config %{base_url: "https://xochi.test"}
 
   setup do
@@ -113,7 +112,7 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       end
     end
 
-    test "a required pin never fetches the capability matrix; a relaxed one does" do
+    test "the matrix is read for its version only; a required pin never takes its signer" do
       Application.put_env(:raxol_payments, :deployment, :production)
       Capabilities.reset()
       on_exit(&Capabilities.reset/0)
@@ -132,16 +131,21 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       quote_resp = QuoteResponse.from_json(quote_body())
 
       assert {:error, :deposit_signer_unpinned} =
-               Xochi.verify_deposit_route(config, request(), quote_resp, [])
+               Xochi.verify_deposit_route(config, request(), quote_resp, clock: &now/0)
 
-      refute_received {:fetched, _}
+      assert_received {:fetched, "/api/capabilities"}
+
+      # Pinned, but the matrix is unreachable: no advertised version, refused.
+      assert {:error, {:unsupported_deposit_attestation_version, nil}} =
+               Xochi.verify_deposit_route(config, request(), quote_resp,
+                 deposit_attestation_signer: signer(),
+                 clock: &now/0
+               )
 
       Application.put_env(:raxol_payments, :require_deposit_signer_pin, false)
 
       assert {:error, :deposit_signer_unavailable} =
-               Xochi.verify_deposit_route(config, request(), quote_resp, [])
-
-      assert_received {:fetched, _}
+               Xochi.verify_deposit_route(config, request(), quote_resp, clock: &now/0)
     end
 
     test "a pin with a wrong EIP-55 checksum is refused; a served matrix signer's case is not checked" do
@@ -223,56 +227,46 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
   end
 
   defp verify(opts) do
-    Xochi.verify_deposit_route(@config, request(), QuoteResponse.from_json(quote_body()), opts)
+    Xochi.verify_deposit_route(
+      @config,
+      request(),
+      QuoteResponse.from_json(quote_body()),
+      Keyword.put_new(opts, :clock, &now/0)
+    )
   end
 
-  defp matrix(signer), do: %{Capabilities.fallback() | deposit_attestation_signer: signer}
+  defp now, do: @now
+
+  defp matrix(signer), do: Fixture.capabilities(signer: signer)
 
   defp request do
     %DepositRouteRequest{
-      wallet: "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7",
+      wallet: Fixture.defaults().tron_wallet,
       from_chain_id: 728_126_428,
       to_chain_id: 8453,
-      from_token: @tron_usdt,
-      to_token: @evm_recipient,
+      from_token: Fixture.defaults().tron_usdt,
+      to_token: Fixture.defaults().to_token,
       from_amount: "1000000",
-      recipient_address: @evm_recipient
+      recipient_address: Fixture.defaults().recipient
     }
   end
+
+  defp deal, do: Fixture.fields(%{intent_id: "xi_dep_pin", quote_id: "xq_dep_pin"})
 
   defp quote_body do
+    deal = deal()
+
     %{
-      "intent_id" => "xi_dep_pin",
-      "quote_id" => "xq_dep_pin",
+      "intent_id" => deal.intent_id,
+      "quote_id" => deal.quote_id,
       "can_solve" => true,
-      "to_amount" => "995000",
-      "deposit_address" => @deposit_addr,
-      "deposit_attestation" => attestation()
+      "to_amount" => deal.to_amount,
+      "min_to_amount" => deal.min_to_amount,
+      "deposit_address" => deal.deposit_address,
+      "deposit_deadline" => deal.deposit_deadline,
+      "deposit_attestation" => Fixture.sign(deal, @priv)
     }
   end
 
-  defp signer do
-    {:ok, <<_prefix::8, xy::binary-size(64)>>} = ExSecp256k1.create_public_key(@priv)
-    <<_first12::binary-size(12), addr::binary-size(20)>> = ExKeccak.hash_256(xy)
-    "0x" <> Base.encode16(addr, case: :lower)
-  end
-
-  defp attestation do
-    message =
-      DepositAttestation.message(%{
-        intent_id: "xi_dep_pin",
-        quote_id: "xq_dep_pin",
-        from_chain_id: 728_126_428,
-        from_token: @tron_usdt,
-        from_amount: "1000000",
-        deposit_address: @deposit_addr
-      })
-
-    digest =
-      ("\x19Ethereum Signed Message:\n" <> Integer.to_string(byte_size(message)) <> message)
-      |> ExKeccak.hash_256()
-
-    {:ok, signature} = ExSecp256k1.sign(digest, @priv)
-    "0x" <> Base.encode16(EIP712.pack_signature(signature), case: :lower)
-  end
+  defp signer, do: Fixture.address(@priv)
 end
