@@ -2,32 +2,57 @@ defmodule Raxol.Agent.Session.Registration do
   @moduledoc false
   # Session keys in `Raxol.Agent.Registry`: the `{:session, session_id}` key
   # that `Raxol.Agent.Session.Supervisor.whereis/1` resolves, session id
-  # minting, and waiting out a dead predecessor's key before a restart.
+  # minting, and waiting out a predecessor's key before a restart.
+  #
+  # ## A dead holder's key is free
+  #
+  # The Registry deletes a dead process's entries when its partition handles
+  # the exit, a moment after the process is gone, and nothing orders that
+  # against anything the caller can wait on. A key held by a dead process is
+  # nonetheless free: `Registry.register/3` (and so every via-name start)
+  # replaces such an entry. So this module waits only on a live holder, by
+  # monitor, and readers that must see a free key as free filter with
+  # `live/1`.
 
   require Logger
 
   @registry Raxol.Agent.Registry
-  @attempts 200
-  @retry_ms 5
+  @budget_ms 1_000
 
   @doc """
-  Block until `key` is unregistered, at most `attempts` × 5 ms.
+  Return once no live process holds `key`, waiting at most `budget_ms` for
+  a live holder to exit.
 
-  Registry removes a dead process's keys asynchronously, so a same-name
-  restart can otherwise fail with `{:already_started, dead_pid}`. A key that
-  is still held after the budget falls through to a normal start.
+  A same-name restart can race its predecessor's exit. A holder still alive
+  after the budget falls through to a normal start, which then reports the
+  key as taken.
   """
   @spec await_free(term(), non_neg_integer()) :: :ok
-  def await_free(key, attempts \\ @attempts) do
-    case safe_lookup(key) do
-      [] ->
-        :ok
+  def await_free(key, budget_ms \\ @budget_ms) do
+    case live(safe_lookup(key)) do
+      [] -> :ok
+      [{holder, _value}] -> await_exit(holder, budget_ms)
+    end
+  end
 
-      _ when attempts > 0 ->
-        Process.sleep(@retry_ms)
-        await_free(key, attempts - 1)
+  @doc """
+  The entries of `entries` whose process is alive. Registry pids are local,
+  so `Process.alive?/1` is exact for them.
+  """
+  @spec live([{pid(), value}]) :: [{pid(), value}] when value: term()
+  def live(entries), do: Enum.filter(entries, fn {pid, _value} -> Process.alive?(pid) end)
 
-      _ ->
+  # The `:DOWN` arrives once `holder` has exited, or at once if it already
+  # has; no clock but the budget.
+  @spec await_exit(pid(), non_neg_integer()) :: :ok
+  defp await_exit(holder, budget_ms) do
+    ref = Process.monitor(holder)
+
+    receive do
+      {:DOWN, ^ref, :process, ^holder, _reason} -> :ok
+    after
+      budget_ms ->
+        Process.demonitor(ref, [:flush])
         :ok
     end
   end
@@ -52,15 +77,19 @@ defmodule Raxol.Agent.Session.Registration do
   @doc """
   Register the calling process under `{:session, session_id}`.
 
-  A stale key from a dead predecessor is retried until it clears. A key
-  still held by a live process after the budget is skipped with a warning
+  A key held by a live predecessor is retried once it exits. A key still
+  held by a live process after the budget is skipped with a warning
   and a `[:raxol, :agent, :session, :register_timeout]` event: the session
   runs, but cannot be found by session id.
   """
   @spec register(String.t(), term(), module(), term()) :: :ok
   def register(session_id, id, app_module, team_id) do
     if Process.whereis(@registry) do
-      do_register({:session, session_id}, %{id: id, app_module: app_module, team_id: team_id})
+      do_register(
+        {:session, session_id},
+        %{id: id, app_module: app_module, team_id: team_id},
+        deadline()
+      )
     end
 
     :ok
@@ -68,7 +97,9 @@ defmodule Raxol.Agent.Session.Registration do
     ArgumentError -> :ok
   end
 
-  defp do_register(key, meta, attempts \\ @attempts) do
+  # `Registry.register/3` refuses only a live holder (a dead one's entry it
+  # replaces), so each retry follows that holder's exit.
+  defp do_register(key, meta, deadline) do
     case Registry.register(@registry, key, meta) do
       {:ok, _} ->
         :ok
@@ -76,30 +107,40 @@ defmodule Raxol.Agent.Session.Registration do
       {:error, {:already_registered, pid}} when pid == self() ->
         :ok
 
-      {:error, {:already_registered, _pid}} when attempts > 0 ->
-        Process.sleep(@retry_ms)
-        do_register(key, meta, attempts - 1)
-
       {:error, {:already_registered, holder}} ->
-        Logger.warning(
-          "[Agent.Session] #{inspect(key)} is held by #{inspect(holder)}; running " <>
-            "unregistered, so whereis/list_sessions/stop_session cannot find this session"
-        )
+        case remaining(deadline) do
+          0 ->
+            register_timeout(key, meta, holder)
 
-        :telemetry.execute(
-          [:raxol, :agent, :session, :register_timeout],
-          %{count: 1},
-          Map.put(meta, :key, key)
-        )
-
-        :ok
+          budget_ms ->
+            await_exit(holder, budget_ms)
+            do_register(key, meta, deadline)
+        end
     end
   end
 
-  @doc "The pid registered under `key`, or nil."
+  defp deadline, do: System.monotonic_time(:millisecond) + @budget_ms
+  defp remaining(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+
+  defp register_timeout(key, meta, holder) do
+    Logger.warning(
+      "[Agent.Session] #{inspect(key)} is held by #{inspect(holder)}; running " <>
+        "unregistered, so whereis/list_sessions/stop_session cannot find this session"
+    )
+
+    :telemetry.execute(
+      [:raxol, :agent, :session, :register_timeout],
+      %{count: 1},
+      Map.put(meta, :key, key)
+    )
+
+    :ok
+  end
+
+  @doc "The live pid registered under `key`, or nil."
   @spec lookup(term()) :: pid() | nil
   def lookup(key) do
-    case safe_lookup(key) do
+    case live(safe_lookup(key)) do
       [{pid, _}] -> pid
       [] -> nil
     end

@@ -15,6 +15,14 @@ defmodule Raxol.Payments.Poll do
   `{:error, :timeout}` at the ceiling (`{:error, {:timeout, last_status}}` with
   `last_status_on_timeout: true`, `last_status` nil when no fetch succeeded) and
   `{:error, reason}` on a non-retryable fetch error.
+
+  ## Clock
+
+  Every reading of the time and every wait between polls goes through the
+  `:clock` option, `system_clock/0` by default. A caller that passes its own
+  (such as a test's virtual clock, whose time moves only when the poller
+  waits) decides the elapsed time, so how many polls fit before the
+  deadline depends on the clock and not on how fast the host runs.
   """
 
   @default_budget_ms 3_000
@@ -23,6 +31,17 @@ defmodule Raxol.Payments.Poll do
   @default_timeout_ms 120_000
 
   @type result :: {:ok, term(), non_neg_integer()} | {:error, term()}
+
+  @typedoc """
+  The time source of `run/3`: `now_ms` reads monotonic milliseconds, and
+  `sleep_ms` waits that many milliseconds.
+  """
+  @type clock :: %{now_ms: (-> integer()), sleep_ms: (non_neg_integer() -> term())}
+
+  @doc "The real clock: `System.monotonic_time/1` and `Process.sleep/1`."
+  @spec system_clock() :: clock()
+  def system_clock,
+    do: %{now_ms: fn -> System.monotonic_time(:millisecond) end, sleep_ms: &Process.sleep/1}
 
   @doc "Default budget window in milliseconds."
   @spec default_budget_ms() :: pos_integer()
@@ -37,9 +56,11 @@ defmodule Raxol.Payments.Poll do
   @spec run((-> {:ok, term()} | {:error, term()}), (term() -> boolean()), keyword()) :: result()
   def run(fetch, terminal?, opts \\ [])
       when is_function(fetch, 0) and is_function(terminal?, 1) do
-    start = System.monotonic_time(:millisecond)
+    clock = Keyword.get(opts, :clock, system_clock())
+    start = clock.now_ms.()
 
     state = %{
+      clock: clock,
       start: start,
       budget: Keyword.get(opts, :budget_ms, @default_budget_ms),
       fast: Keyword.get(opts, :fast_interval_ms, @default_fast_interval_ms),
@@ -56,7 +77,7 @@ defmodule Raxol.Payments.Poll do
     case fetch.() do
       {:ok, status} ->
         if terminal?.(status),
-          do: {:ok, status, elapsed(state.start)},
+          do: {:ok, status, elapsed(state)},
           else: wait_or_timeout(fetch, terminal?, %{state | last: status})
 
       {:error, reason} ->
@@ -67,13 +88,13 @@ defmodule Raxol.Payments.Poll do
   end
 
   defp wait_or_timeout(fetch, terminal?, state) do
-    now = System.monotonic_time(:millisecond)
+    now = state.clock.now_ms.()
     interval = if now - state.start < state.budget, do: state.fast, else: state.slow
 
     if now + interval > state.deadline do
       if state.with_last, do: {:error, {:timeout, state.last}}, else: {:error, :timeout}
     else
-      Process.sleep(interval)
+      state.clock.sleep_ms.(interval)
       do_poll(fetch, terminal?, state)
     end
   end
@@ -82,5 +103,5 @@ defmodule Raxol.Payments.Poll do
   defp backoff?({:http, 429, _body}), do: true
   defp backoff?(_reason), do: false
 
-  defp elapsed(start), do: System.monotonic_time(:millisecond) - start
+  defp elapsed(state), do: state.clock.now_ms.() - state.start
 end

@@ -59,6 +59,7 @@ if Code.ensure_loaded?(Raxol.AgentClientProtocol.Ctx) do
     alias Raxol.Agent.ClientProtocol.Budget
     alias Raxol.Agent.ClientProtocol.Permission
     alias Raxol.Agent.Comm
+    alias Raxol.Agent.Session.Registration
 
     @ctx Raxol.AgentClientProtocol.Ctx
     @error Raxol.AgentClientProtocol.Error
@@ -100,7 +101,9 @@ if Code.ensure_loaded?(Raxol.AgentClientProtocol.Ctx) do
     # The prompt goes out in the envelope `Raxol.Agent.Comm.call/4` sends, so
     # this process can also take the session's `:acp_cancel` while it waits.
     defp prompt(session, request, agent_id, budget) do
-      case Registry.lookup(@registry, agent_id) do
+      # An agent that has exited reads as not running, whether or not the
+      # Registry has dropped its entry yet.
+      case Registration.live(Registry.lookup(@registry, agent_id)) do
         [{agent, _value}] ->
           turn = %{
             session: session,

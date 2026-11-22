@@ -12,6 +12,7 @@ defmodule Raxol.Agent.ClientProtocol.PermissionTest do
   alias Raxol.Agent.ClientProtocol.Permission
   alias Raxol.Agent.Reference.Counter.Increment
   alias Raxol.Agent.Reference.Counter.Reset
+  alias Raxol.Agent.Test.Signal
 
   @session_id "sess-1"
 
@@ -154,8 +155,8 @@ defmodule Raxol.Agent.ClientProtocol.PermissionTest do
       stub = session(:hold)
       gate = Permission.authorizer(stub, @session_id)
 
-      spawn(fn -> gate.(Reset, %{to: 0}, %{}) end)
-      assert_receive {:asked, request}
+      caller = spawn(fn -> gate.(Reset, %{to: 0}, %{}) end)
+      request = Signal.await(caller, :asked)
       assert %{title: "Run `reset`", raw_input: %{"to" => 0}} = request.tool_call.fields
       id = request.tool_call.tool_call_id
 

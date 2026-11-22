@@ -195,8 +195,11 @@ defmodule Raxol.Payments.Test.ExecuteXochiIntentCase do
 
     {:ok, port} = :inet.port(listener)
 
+    # No timeouts on this side: the server is linked to the test, and the
+    # client's own timeouts bound how long the test waits. A clock here only
+    # fails a loaded run whose client was slow to connect.
     spawn_link(fn ->
-      {:ok, socket} = :gen_tcp.accept(listener, 5_000)
+      {:ok, socket} = :gen_tcp.accept(listener)
       :ok = :gen_tcp.close(listener)
       body = socket |> read_http_request("") |> Jason.decode!()
       to_amount = body["output_amount"] || "499000"
@@ -232,12 +235,12 @@ defmodule Raxol.Payments.Test.ExecuteXochiIntentCase do
         if byte_size(body) >= length do
           binary_part(body, 0, length)
         else
-          {:ok, data} = :gen_tcp.recv(socket, 0, 5_000)
+          {:ok, data} = :gen_tcp.recv(socket, 0)
           read_http_request(socket, acc <> data)
         end
 
       [_head] ->
-        {:ok, data} = :gen_tcp.recv(socket, 0, 5_000)
+        {:ok, data} = :gen_tcp.recv(socket, 0)
         read_http_request(socket, acc <> data)
     end
   end
