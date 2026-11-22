@@ -172,7 +172,8 @@ defmodule Raxol.Earn.Xochi.SolverApplication do
           chains: %{@chain_id => rpc_url}
         )
 
-      # Start the sidecar FIRST (its init blocks until GET /health is 200), so Auth and
+      # Start the sidecar FIRST (its init blocks until an authenticated health check
+      # passes for this wallet), so Auth and
       # everything downstream only start once delegated signing is actually available.
       {provider, address, [{Raxol.Earn.SignerSidecar, []}]}
     else

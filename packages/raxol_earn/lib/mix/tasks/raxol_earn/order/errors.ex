@@ -142,7 +142,23 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
   defp sidecar_problem(url, {:sidecar_wrong_wallet, got, _want}),
     do: "the sidecar at #{url} reports wallet #{got}."
 
+  defp sidecar_problem(url, {:sidecar_refused, reason}),
+    do: "the sidecar at #{url} refused the request (#{inspect(reason)}, unverified)."
+
+  defp sidecar_problem(url, :sidecar_unauthenticated),
+    do: "the process at #{url} could not prove it holds the authorization key."
+
   defp sidecar_problem(url, _reason), do: "the sidecar at #{url} did not pass its /health check."
+
+  defp refusal_hint("stale"),
+    do: "the request's timestamp was more than 30s off the sidecar's clock."
+
+  defp refusal_hint("bad_signature"),
+    do:
+      "the request signature did not verify -- the sidecar was started with a " <>
+        "different RAXOL_ACP_SIGNER_PRIVATE_KEY, or something else holds the port."
+
+  defp refusal_hint(reason), do: inspect(reason)
 
   @spec sidecar(term(), String.t()) :: String.t()
   def sidecar(reason, url \\ SignerSidecar.base_url([]))
@@ -161,6 +177,28 @@ defmodule Mix.Tasks.RaxolEarn.Order.Errors do
       lsof -i :#{URI.parse(url).port}
 
     Or point this run elsewhere with RAXOL_ACP_SIGNER_PORT / RAXOL_ACP_SIDECAR_URL.
+    """
+  end
+
+  def sidecar({:sidecar_refused, reason}, url) do
+    """
+    the sidecar at #{url} refused this run's request: #{refusal_hint(reason)}
+
+    The refusal is unsigned, so nothing proves it came from the sidecar; the
+    request was not served either way.
+    """
+  end
+
+  def sidecar(:sidecar_unauthenticated, url) do
+    """
+    the process answering at #{url} could not prove it is this run's signer.
+
+    Nothing was signed or sent through it. Every sidecar response must carry a
+    signature made with a key derived from RAXOL_ACP_SIGNER_PRIVATE_KEY; this one
+    did not. Either another process holds the port, or the sidecar there was
+    started with a different authorization key. Find it with
+
+      lsof -i :#{URI.parse(url).port}
     """
   end
 

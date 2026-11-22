@@ -40,7 +40,8 @@ defmodule Mix.Tasks.RaxolEarn.Order do
       ORDER_BUNDLER_URL, ORDER_PAYMASTER_POLICY    the sca backend.
       RAXOL_ACP_WALLET_ADDRESS, RAXOL_ACP_WALLET_ID,
       RAXOL_ACP_SIGNER_PRIVATE_KEY, PRIVY_APP_ID   the privy backend; the
-      sidecar listens on RAXOL_ACP_SIGNER_PORT or RAXOL_ACP_SIDECAR_URL.
+      sidecar listens on RAXOL_ACP_SIGNER_PORT or RAXOL_ACP_SIDECAR_URL, which
+      must be loopback unless RAXOL_ACP_SIDECAR_ALLOW_REMOTE=1.
 
   ## Flags
 
@@ -301,7 +302,11 @@ defmodule Mix.Tasks.RaxolEarn.Order do
         Mix.raise(Errors.write_blocked({:fund, job_id}, url, reason))
 
       err ->
-        Mix.raise("fund failed for job #{job_id} (on chain, not funded): #{inspect(err)}")
+        Mix.raise(
+          "fund failed for job #{job_id}: #{inspect(err)}. The job is on chain; check " <>
+            "whether its funding landed (#{Plan.explorer(cfg.from)}) before re-running with " <>
+            "--job-id #{job_id} --fund."
+        )
     end
   end
 

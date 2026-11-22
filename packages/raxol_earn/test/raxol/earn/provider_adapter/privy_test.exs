@@ -2,42 +2,43 @@ defmodule Raxol.Earn.ProviderAdapter.PrivyTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Earn.ProviderAdapter.Privy
+  alias Raxol.Earn.TestSupport.TestSidecar
 
   @addr "0x" <> String.duplicate("ab", 20)
 
-  # An in-process signing sidecar: a Req plug that echoes each request to the test
-  # and returns a canned {status, body} per path. No Node process, no network.
-  defp sidecar(test_pid, responses) do
-    plug = fn conn ->
-      {:ok, body, conn} = Plug.Conn.read_body(conn)
-      send(test_pid, {:sidecar, conn.request_path, Jason.decode!(body)})
-      {status, resp} = Map.get(responses, conn.request_path, {200, %{}})
+  # An in-process signing sidecar speaking the authenticated protocol, mounted
+  # as a Req plug: no Node process, no network.
+  defp sidecar(test_pid, responses, mode \\ :honest) do
+    holder = TestSidecar.start(@addr, responses, mode: mode, test_pid: test_pid)
 
-      conn
-      |> Plug.Conn.put_resp_content_type("application/json")
-      |> Plug.Conn.send_resp(status, Jason.encode!(resp))
-    end
+    {adapter(req_options: [plug: {TestSidecar, holder}, retry: false]), holder}
+    |> elem(0)
+  end
 
+  defp adapter(opts) do
     Privy.new(
-      sidecar_url: "http://127.0.0.1:4048/",
-      address: @addr,
-      chains: %{8453 => "https://mainnet.base.org"},
-      req_options: [plug: plug, retry: false]
+      Keyword.merge(
+        [
+          sidecar_url: "http://127.0.0.1:4048/",
+          address: @addr,
+          chains: %{8453 => "https://mainnet.base.org"},
+          auth_key: TestSidecar.key()
+        ],
+        opts
+      )
     )
   end
 
   describe "new/1" do
     test "trims a trailing slash from the sidecar url and defaults the timeout" do
-      adapter =
-        Privy.new(sidecar_url: "http://127.0.0.1:4048/", address: @addr, chains: %{8453 => "u"})
+      adapter = adapter(chains: %{8453 => "u"})
 
       assert adapter.config.sidecar_url == "http://127.0.0.1:4048"
       assert adapter.config.req_options[:receive_timeout] == 60_000
     end
 
     test "exposes the managed wallet address and the sorted supported chains" do
-      adapter =
-        Privy.new(sidecar_url: "http://x", address: @addr, chains: %{42_161 => "a", 8453 => "b"})
+      adapter = adapter(chains: %{42_161 => "a", 8453 => "b"})
 
       assert Privy.get_address(adapter) == @addr
       assert Privy.supported_chain_ids(adapter) == [8453, 42_161]
@@ -123,9 +124,61 @@ defmodule Raxol.Earn.ProviderAdapter.PrivyTest do
     end
   end
 
+  describe "authentication" do
+    test "a sidecar without the key is refused, whatever it answers" do
+      adapter = sidecar(self(), %{"/send-calls" => {200, %{"txHashes" => ["0xabc"]}}}, :impostor)
+      assert {:error, :sidecar_unauthenticated} = Privy.send_calls(adapter, 8453, [%{to: "0x1"}])
+    end
+
+    test "an unsigned response is refused" do
+      adapter = sidecar(self(), %{"/sign-message" => {200, %{"signature" => "0x00"}}}, :unsigned)
+      assert {:error, :sidecar_unauthenticated} = Privy.sign_message(adapter, 8453, "x")
+    end
+
+    test "a response signed for another wallet is refused" do
+      holder = TestSidecar.start("0x" <> String.duplicate("99", 20), %{})
+      adapter = adapter(req_options: [plug: {TestSidecar, holder}, retry: false])
+
+      assert {:error, :sidecar_unauthenticated} = Privy.sign_message(adapter, 8453, "x")
+    end
+
+    test "requests carry a signature the sidecar checks" do
+      adapter = adapter(auth_key: :crypto.strong_rand_bytes(32))
+      holder = TestSidecar.start(@addr, %{})
+      adapter = put_in(adapter.config.req_options, plug: {TestSidecar, holder}, retry: false)
+
+      # Wrong key: the sidecar refuses with an unsigned 401, reported as an
+      # unverified refusal rather than an answer.
+      assert {:error, {:sidecar_refused, "bad_signature"}} =
+               Privy.sign_message(adapter, 8453, "x")
+
+      refute_received {:sidecar, _, _}
+    end
+  end
+
+  describe "new/1 sidecar url" do
+    test "refuses a non-loopback host" do
+      assert_raise ArgumentError, ~r/not loopback/, fn ->
+        adapter(sidecar_url: "http://signer.example:4048")
+      end
+    end
+
+    test "accepts a non-loopback host only when explicitly allowed" do
+      assert adapter(sidecar_url: "http://signer.example:4048", allow_remote: true).config.sidecar_url ==
+               "http://signer.example:4048"
+    end
+
+    test "accepts IPv6 loopback and localhost" do
+      assert adapter(sidecar_url: "http://[::1]:4048").config.sidecar_url == "http://[::1]:4048"
+
+      assert adapter(sidecar_url: "http://localhost:4048").config.sidecar_url ==
+               "http://localhost:4048"
+    end
+  end
+
   describe "read callbacks" do
     test "reject an unsupported chain before any network call" do
-      adapter = Privy.new(sidecar_url: "http://x", address: @addr, chains: %{8453 => "u"})
+      adapter = adapter(chains: %{8453 => "u"})
 
       assert {:error, {:unsupported_chain, 10}} =
                Privy.get_transaction_receipt(adapter, 10, "0xh")
