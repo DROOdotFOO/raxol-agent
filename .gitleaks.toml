@@ -51,13 +51,17 @@ regexes = [
 [[allowlists]]
 description = """
 Public stablecoin contracts used as swap and transfer test tokens in the
-payments tests: USDC on Base and on Arbitrum One, and USDT on Tron.
+payments tests: USDC on Base, Arbitrum One, Ethereum and Tron, and USDT on
+Tron. Riddler's deposit-attestation conformance vectors use the Ethereum and
+Tron USDC contracts.
 """
 targetRules = ["generic-api-key"]
 regexes = [
   '''(?i)0x833589fcd6edb6e08f4c7c32d4f71b54bda02913''',
   '''(?i)0xaf88d065e77c8cc2239327c5edb3a432268e5831''',
+  '''(?i)0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48''',
   '''TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t''',
+  '''TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8''',
 ]
 
 [[allowlists]]
