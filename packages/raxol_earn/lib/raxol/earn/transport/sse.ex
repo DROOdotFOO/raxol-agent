@@ -48,6 +48,8 @@ defmodule Raxol.Earn.Transport.SSE do
   alias Raxol.Earn.Auth
   alias Raxol.Earn.Transport.SSE.Parser
 
+  require Logger
+
   @max_sse_buffer_bytes 1_048_576
 
   @doc """
@@ -63,11 +65,12 @@ defmodule Raxol.Earn.Transport.SSE do
   - `:supported_chain_ids` -- defaults to `[8453]`. Sent as the
     `x-supported-chains` header.
   - `:req_options` -- extra options threaded into Req (for testing).
-  - `:max_sse_buffer_bytes` -- the largest event the stream accepts, counted
-    as bytes held without an event boundary (default 1 MiB, as in
-    `Raxol.Agent.Backend.HTTP`). Past it the stream is closed and its task
-    ends `{:error, {:sse_buffer_overflow, limit}}`; the Agent reconnects with
-    backoff. A non-positive-integer value raises `ArgumentError`.
+  - `:max_sse_buffer_bytes` -- the most bytes of one event held while waiting
+    for its boundary (default 1 MiB, as in `Raxol.Agent.Backend.HTTP`). An
+    event that outgrows it is dropped with one warning and the stream carries
+    on, so it is not replayed by a reconnect. An event that arrives whole in
+    one chunk is not held and is not limited. A non-positive-integer value
+    raises `ArgumentError`.
   """
   @spec new(keyword()) :: Raxol.Earn.Transport.t()
   def new(opts) do
@@ -206,10 +209,7 @@ defmodule Raxol.Earn.Transport.SSE do
         retry: false,
         into: fn
           {:data, data}, {req, %Req.Response{status: 200} = resp} ->
-            case feed(owner, resp, data, cfg.max_sse_buffer_bytes) do
-              {:cont, resp} -> {:cont, {req, resp}}
-              {:halt, resp} -> {:halt, {req, resp}}
-            end
+            {:cont, {req, feed(owner, resp, data, cfg.max_sse_buffer_bytes)}}
 
           # An error page is not an event stream: never parse it.
           {:data, _data}, {req, resp} ->
@@ -227,12 +227,8 @@ defmodule Raxol.Earn.Transport.SSE do
     end
   end
 
-  defp stream_result({:ok, %Req.Response{status: 200} = resp}, elapsed_ms) do
-    case Req.Response.get_private(resp, :sse_error) do
-      nil -> clean_close(Req.Response.get_private(resp, :sse_entries, 0), elapsed_ms)
-      reason -> {:error, reason}
-    end
-  end
+  defp stream_result({:ok, %Req.Response{status: 200} = resp}, elapsed_ms),
+    do: clean_close(Req.Response.get_private(resp, :sse_entries, 0), elapsed_ms)
 
   defp stream_result({:ok, %Req.Response{status: status}}, _elapsed_ms),
     do: {:error, {:http_status, status}}
@@ -248,25 +244,23 @@ defmodule Raxol.Earn.Transport.SSE do
 
   defp clean_close(_entries, _elapsed_ms), do: {:error, :closed_early}
 
-  # The unterminated tail of the stream rides in the response's private map,
-  # the accumulator Req threads through every `:into` call. A tail that grows
-  # past the limit never reached an event boundary, so the stream is closed
-  # rather than buffered without bound.
+  # The parser state rides in the response's private map, the accumulator Req
+  # threads through every `:into` call.
   defp feed(owner, resp, data, max_bytes) do
-    {entries, rest} = Parser.feed(Req.Response.get_private(resp, :sse_buffer, ""), data)
+    {entries, dropped, state} =
+      resp |> Req.Response.get_private(:sse_state, Parser.new()) |> Parser.feed(data, max_bytes)
+
     Enum.each(entries, &send(owner, {:transport, &1}))
 
-    resp =
-      Req.Response.update_private(resp, :sse_entries, length(entries), &(&1 + length(entries)))
-
-    if byte_size(rest) > max_bytes do
-      {:halt,
-       resp
-       |> Req.Response.put_private(:sse_buffer, "")
-       |> Req.Response.put_private(:sse_error, {:sse_buffer_overflow, max_bytes})}
-    else
-      {:cont, Req.Response.put_private(resp, :sse_buffer, rest)}
+    if dropped > 0 do
+      Logger.warning(
+        "ACP SSE: dropped #{dropped} event(s) larger than #{max_bytes} bytes; stream kept open"
+      )
     end
+
+    resp
+    |> Req.Response.put_private(:sse_state, state)
+    |> Req.Response.update_private(:sse_entries, length(entries), &(&1 + length(entries)))
   end
 
   defp max_sse_buffer_bytes(opts) do
