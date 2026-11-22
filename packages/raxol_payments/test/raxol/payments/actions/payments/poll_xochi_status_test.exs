@@ -3,6 +3,7 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
 
   alias Raxol.Payments.Actions.Payments.PollXochiStatus
   alias Raxol.Payments.{Checkpoint, Failure, Ledger, SpendingPolicy}
+  alias Raxol.Payments.Test.VirtualClock
   alias Raxol.Payments.Xochi.{ReadTokenStore, SettlementState}
 
   # A checkpoint store that dies on delete, modelling a crash between the
@@ -289,11 +290,19 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
     end)
 
     {:ok, ledger} = Ledger.start_link(table_name: :"poll_rp_#{:erlang.unique_integer()}")
-    ctx = %{xochi_config: config(), ledger: ledger, agent_id: "agent_1"}
+    # On a virtual clock the three polls take 20ms of its time, inside the
+    # 25ms window however slowly the host runs them.
+    ctx = %{
+      xochi_config: config(),
+      ledger: ledger,
+      agent_id: "agent_1",
+      poll_clock: VirtualClock.new()
+    }
+
     :ok = Ledger.try_spend(ledger, "agent_1", Decimal.new("1.00"), policy(), %{})
     :ok = Ledger.tag_reservation(ledger, "agent_1", "int_rp", Decimal.new("1.00"))
 
-    params = %{intent_id: "int_rp", timeout_ms: 2_000, interval_ms: 10, budget_ms: 0}
+    params = %{intent_id: "int_rp", timeout_ms: 25, interval_ms: 10, budget_ms: 0}
 
     assert {:error, %Failure{reason: :refunded}} = PollXochiStatus.run(params, ctx)
     assert :counters.get(polls, 1) == 3
