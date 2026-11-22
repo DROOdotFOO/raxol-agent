@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking (deployment config): a production release must pin the
+  deposit-attestation signer.** `Protocols.Xochi.deposit_route_quote/3` and
+  `verify_deposit_route/4` no longer fall back to the capability matrix's
+  `deposit_attestation_signer` (served by the same endpoint as the quote) when
+  `config :raxol_payments, :require_deposit_signer_pin` is true, which it is
+  by default when `Raxol.Payments.Deployment.production?/0`; an unpinned run
+  fails with `{:error, :deposit_signer_unpinned}`. Set
+  `config :raxol_payments, :xochi_deposit_attestation_signer, "0x..."` (or pass
+  `:deposit_attestation_signer`) in a release that serves deposit routes.
+  Development and tests still fall back. A pin that is not `0x` + 40 hex is
+  refused with `{:error, :invalid_deposit_signer_pin}`. New
+  `Protocols.Xochi.assert_deposit_signer_pinned!/2` raises at boot on a
+  fail-open configuration, as `assert_origin_pull_pinned!/2` does for the
+  solver pin.
+- The origin-pull solver pin matches a served ERC-3009 `to` or Permit2
+  `spender` only when it is a clean `0x` + 40-hex address; padded, bare-hex or
+  doubled-prefix values are refused as `{:authorization_mismatch, :pull_to}`
+  (or `:pull_spender`).
 - **Breaking: `Raxol.Payments.Secret` is deprecated** and delegates to
   `Raxol.Agent.Secret` (raxol_agent); `new/1` returns a `Raxol.Agent.Secret`,
   so a `%Raxol.Payments.Secret{}` pattern no longer matches.

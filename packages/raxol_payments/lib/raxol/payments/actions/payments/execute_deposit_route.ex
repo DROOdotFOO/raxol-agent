@@ -25,7 +25,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
       principal's ownership before returning the deposit instructions.
     * `:deposit_attestation_signer` -- optional operator pin for the expected
       signer; otherwise `config :raxol_payments, :xochi_deposit_attestation_signer`,
-      otherwise the live capability matrix's `deposit_attestation_signer`.
+      otherwise (outside production, see `Protocols.Xochi.deposit_route_quote/3`)
+      the live capability matrix's `deposit_attestation_signer`.
 
   ## Delivery floor: a pre-funding filter, not a bound
 
@@ -45,7 +46,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
   after the deposit lands.
 
   Errors are machine-readable: `:attestation_mismatch`, `:missing_attestation`,
-  `:deposit_signer_unavailable`, `:not_a_deposit_route`, `{:not_solvable, reason}`,
+  `:deposit_signer_unavailable`, `:deposit_signer_unpinned`,
+  `:invalid_deposit_signer_pin`, `:not_a_deposit_route`, `{:not_solvable, reason}`,
   `{:unpriced_asset, detail}`, `{:invalid_min_to_amount, value}`,
   `{:implausible_min_to_amount, detail}`, `{:delivery_below_floor, detail}`,
   `{:invalid_quote_amount, %{field: field, value: value}}` (the quote served

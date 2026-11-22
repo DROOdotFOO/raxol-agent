@@ -24,11 +24,16 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
   """
   @spec allowed?(term(), :erc3009 | :permit2) :: boolean()
   def allowed?(addr, method) do
-    case allowlist() do
-      [] -> method == :erc3009 and not required?()
-      list -> is_binary(addr) and EIP712.normalize_address(addr) in list
-    end
+    address?(addr) and
+      case allowlist() do
+        [] -> method == :erc3009 and not required?()
+        list -> EIP712.normalize_address(addr) in list
+      end
   end
+
+  # The served `to`/`spender` must be a clean `0x` + 40-hex address, so padding,
+  # bare hex or a doubled prefix never normalizes onto a pinned solver.
+  defp address?(addr), do: is_binary(addr) and Regex.match?(~r/\A0[xX][0-9a-fA-F]{40}\z/, addr)
 
   # `require_pin?` true means a boot with an empty allowlist is acceptable
   # because every ERC-3009 pull will then be refused; false with an empty
