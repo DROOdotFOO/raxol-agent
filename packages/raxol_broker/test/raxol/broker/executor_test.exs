@@ -775,18 +775,18 @@ defmodule Raxol.Broker.ExecutorTest do
   end
 
   describe "clock" do
-    test "runs outside the executor: no claim, no receipt key", ctx do
+    test "runs outside the executor: no claim", ctx do
       test_pid = self()
       journal = ctx.journal
 
       clock = fn ->
-        send(test_pid, {:clock, Journal.claim(journal), Executor.receipt_key()})
+        send(test_pid, {:clock, Journal.claim(journal)})
         @t0
       end
 
       executor = start_executor!(ctx, clock: clock)
       assert {:ok, %{status: :placed}} = Executor.run(executor, limit("clock"), context())
-      assert_received {:clock, {:error, :not_an_executor}, nil}
+      assert_received {:clock, {:error, :not_an_executor}}
     end
 
     test "a clock that returns something other than a UTC DateTime places nothing", ctx do
@@ -817,26 +817,23 @@ defmodule Raxol.Broker.ExecutorTest do
         catalog: Catalog.static(),
         journal: ctx.journal,
         account: @account,
+        key: key,
         timeout: 5_000
       }
 
       {:ok, executor: executor, intent: intent, gid: gid, key: key, env: env}
     end
 
-    test "a receipt verified outside the executor process is refused; nothing is sent", ctx do
+    test "a receipt verified under another key is refused; nothing is sent", ctx do
       receipt = ReviewReceipt.issue(ctx.key, ctx.intent, ctx.gid)
-      assert Executor.receipt_key() == nil
+      env = %{ctx.env | key: :crypto.strong_rand_bytes(32)}
 
-      assert Place.run(receipt, ctx.intent, ctx.gid, ctx.env) == {:error, :invalid_receipt}
+      assert Place.run(receipt, ctx.intent, ctx.gid, env) == {:error, :invalid_receipt}
       assert Fake.calls(ctx.server, "place_") == []
       refute "placing" in types(ctx.path, ctx.gid)
     end
 
-    # The tests below write the executor's private key slot on purpose: the
-    # deliberate-subversion path the threat model excludes. They show the
-    # receipt binding and the claimant check still hold behind it.
     test "a receipt is bound to the whole intent, its group and the key", ctx do
-      Process.put({Executor, :receipt_key}, ctx.key)
       receipt = ReviewReceipt.issue(ctx.key, ctx.intent, ctx.gid)
       foreign = ReviewReceipt.issue(:crypto.strong_rand_bytes(32), ctx.intent, ctx.gid)
 
@@ -857,7 +854,6 @@ defmodule Raxol.Broker.ExecutorTest do
     end
 
     test "a valid receipt from a process that is not the claimant is refused", ctx do
-      Process.put({Executor, :receipt_key}, ctx.key)
       receipt = ReviewReceipt.issue(ctx.key, ctx.intent, ctx.gid)
 
       assert Place.run(receipt, ctx.intent, ctx.gid, ctx.env) ==
@@ -873,9 +869,10 @@ defmodule Raxol.Broker.ExecutorTest do
       assert {:ok, %{status: :placed}} = Executor.approve(ctx.executor, ctx.gid, "droo")
 
       stop_and_wait(ctx.executor)
-      ExecutorIdentity.assume!(ctx.journal, key: state.key)
+      ExecutorIdentity.assume!(ctx.journal)
+      env = %{ctx.env | key: state.key}
 
-      assert {:error, _refused} = Place.run(receipt, ctx.intent, ctx.gid, ctx.env)
+      assert {:error, _refused} = Place.run(receipt, ctx.intent, ctx.gid, env)
 
       assert Fake.calls(ctx.server, "place_") == ["place_equity_order"]
       assert Enum.count(types(ctx.path, ctx.gid), &(&1 == "placing")) == 1

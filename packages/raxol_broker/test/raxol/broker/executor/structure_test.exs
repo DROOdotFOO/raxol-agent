@@ -344,7 +344,7 @@ defmodule Raxol.Broker.Executor.StructureTest do
   test "the walker sees remote calls (sanity)", %{facts: facts} do
     place = Enum.find(facts, &(&1.module == Place))
     assert {Journal, :append_to_group, 4} in place.refs
-    assert {@executor, :receipt_key, 0} in place.refs
+    assert {ReviewReceipt, :verify, 4} in place.refs
   end
 
   test "only the Executor references a sink", %{facts: facts} do

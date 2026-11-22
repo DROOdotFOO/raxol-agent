@@ -12,12 +12,10 @@ defmodule Raxol.Broker.Executor.ReviewReceipt do
   (the key rotates) all fail `verify/4`.
 
   `verify/4` takes the key as an argument, so on its own it proves only that
-  whoever holds the key issued the receipt. Anyone can mint a receipt under
-  a key of their own. What makes a receipt mean "the executor reviewed
-  this" is the caller: `Raxol.Broker.Executor.Place.run/4` never takes a key
-  from its arguments; it verifies under `Raxol.Broker.Executor.receipt_key/0`,
-  which reads the calling process's dictionary and is nil anywhere except
-  the executor process, which puts its key there in `init/1`.
+  whoever holds the key issued the receipt; anyone can mint a receipt under
+  a key of their own. `Raxol.Broker.Executor.Place.run/4` verifies under the
+  key the executor passes it, and only the journal's claimant (a process
+  started as the executor) may then write `placing`.
 
   Single use is not this module's job: the journal takes one `placing`
   record per group and refuses a second live `placing` for an intent id.
@@ -27,12 +25,9 @@ defmodule Raxol.Broker.Executor.ReviewReceipt do
   The guarantee is that no path through public APIs places an order without
   the executor's review pipeline. The BEAM cannot stop code that
   deliberately writes into another module's private state: a process that
-  puts a key into the executor's process-dictionary slot (and its
-  `:"$initial_call"`, to take the journal claim), or reads the key out of
-  the executor with `:sys` or `Process.info/2`, can mint and spend receipts.
-  Every such bypass requires impersonating the executor's private slots on
-  purpose; `Raxol.Broker.Test.ExecutorIdentity` does exactly that, and only
-  in tests.
+  sets the executor's `:"$initial_call"` to take the journal claim, or reads
+  the key out of the executor with `:sys`, can mint and spend receipts.
+  `Raxol.Broker.Test.ExecutorIdentity` does the former, and only in tests.
   """
 
   alias Raxol.Broker.Intent

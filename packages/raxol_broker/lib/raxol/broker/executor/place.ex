@@ -10,12 +10,8 @@ defmodule Raxol.Broker.Executor.Place do
   `run/4` re-checks everything itself, whatever its caller checked:
 
     1. the `Raxol.Broker.Executor.ReviewReceipt` verifies, for this whole
-       intent and this group id, under the key the calling process holds as
-       `Raxol.Broker.Executor.receipt_key/0`. The key is read from the
-       caller's process dictionary, never from an argument, so only the
-       executor process (which puts it there in `init/1`) can spend a
-       receipt; in any other process the key is nil and the receipt is
-       refused before anything is journaled or sent;
+       intent and this group id, under `env.key`, the key the executor
+       generated in `init/1`; otherwise nothing is journaled or sent;
     2. the intent has an order tool (equity orders and cancels), and that
        tool is `:write` in the session's `Raxol.Broker.Tools.Catalog`
        classes (`env.catalog`), so a tool the capture lacks or one whose
@@ -37,13 +33,14 @@ defmodule Raxol.Broker.Executor.Place do
   ## Threat model
 
   The guarantee is that no path through public APIs sends an order tool
-  without the executor's review pipeline. The BEAM cannot stop code that
-  deliberately writes into another module's private state: a process that
-  sets the executor's `:"$initial_call"` and receipt-key slots in its own
-  process dictionary (as `Raxol.Broker.Test.ExecutorIdentity` does in the
-  tests), or that uses `:sys.replace_state/2` on the executor, can impersonate
-  it. Every remaining bypass requires impersonating those private slots on
-  purpose.
+  without the executor's review pipeline. A caller with a key of its own can
+  mint a receipt that verifies, so what stops it is step 3: only the
+  journal's claimant may write `placing`, and only a process started as the
+  executor may claim. The BEAM cannot stop code that deliberately writes
+  into another module's private state: a process that sets the executor's
+  `:"$initial_call"` in its own process dictionary (as
+  `Raxol.Broker.Test.ExecutorIdentity` does in the tests), or that uses
+  `:sys.replace_state/2` on the executor, can impersonate it.
 
   ## Status
 
@@ -63,7 +60,7 @@ defmodule Raxol.Broker.Executor.Place do
       other server error). The order may exist, and it keeps counting.
   """
 
-  alias Raxol.Broker.{Executor, Intent, Journal}
+  alias Raxol.Broker.{Intent, Journal}
   alias Raxol.Broker.Executor.{Port, Review, ReviewReceipt}
   alias Raxol.Broker.Tools.Catalog
 
@@ -74,6 +71,7 @@ defmodule Raxol.Broker.Executor.Place do
           catalog: Catalog.session(),
           journal: Journal.server(),
           account: String.t(),
+          key: binary(),
           timeout: timeout(),
           customer_approval_required: boolean()
         }
@@ -87,8 +85,7 @@ defmodule Raxol.Broker.Executor.Place do
   @doc """
   Place (or cancel) `intent` for journal group `group_id` with `receipt`.
 
-  `env` carries no key: the receipt is verified under
-  `Raxol.Broker.Executor.receipt_key/0` of the calling process.
+  The receipt is verified under `env.key`.
 
   `{:ok, status, response}` once the order call ran and its response is
   journaled. `{:error, :invalid_receipt}` and any other `{:error, reason}`
@@ -98,7 +95,7 @@ defmodule Raxol.Broker.Executor.Place do
   """
   @spec run(ReviewReceipt.t(), Intent.t(), String.t(), env()) :: outcome()
   def run(receipt, %Intent{} = intent, group_id, env) do
-    with :ok <- ReviewReceipt.verify(receipt, Executor.receipt_key(), intent, group_id),
+    with :ok <- ReviewReceipt.verify(receipt, env.key, intent, group_id),
          {:ok, tool, args} <- permitted_call(intent, env),
          :ok <- journal(group_id, {:placing}, env.journal) do
       {status, response} = send_order(tool, args, intent, env)

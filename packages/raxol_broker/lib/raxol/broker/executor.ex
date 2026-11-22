@@ -56,9 +56,9 @@ defmodule Raxol.Broker.Executor do
     * Review is mandatory: `Raxol.Broker.Executor.Place` is the only
       module that names an order tool, and it needs a
       `Raxol.Broker.Executor.ReviewReceipt` for the same intent and group,
-      verified under a key this process generates and keeps in its own
-      process dictionary (`receipt_key/0` is nil in any other process).
-      The key is put there only after the claim succeeds. No caller code
+      verified under a key this process generates in `init/1` and passes
+      to `Place.run/4`; only the journal's claimant may then write
+      `placing`. No caller code
       runs in this process: `:journal` must be an atom or pid, and the
       `:clock` runs in a task. The journal refuses every group write from
       any process but the claimant, and `placing` for a group without a
@@ -67,8 +67,8 @@ defmodule Raxol.Broker.Executor do
       into another module's private state, e.g. `Process.put` into its
       slots or `:sys.replace_state`. The guarantee is that no path through
       public APIs can send an order tool without this review pipeline.
-      Every remaining bypass requires impersonating the executor's private
-      process-dictionary slots on purpose.
+      Every remaining bypass requires impersonating the executor's
+      `:"$initial_call"` on purpose.
     * Any journal error before `placing` is written, any review error, and
       any intent without an order tool mean no order is sent.
     * Once the order call has been made the result is always `{:ok, map}`.
@@ -315,13 +315,6 @@ defmodule Raxol.Broker.Executor do
   defp place_shutdown(ms) when is_integer(ms) and ms > 0 and ms <= @max_timeout, do: ms + 5_000
   defp place_shutdown(_unset_or_refused), do: @default_timeout + 5_000
 
-  # The receipt key lives in the executor's own process dictionary, so it is
-  # nil in every other process. `Raxol.Broker.Executor.Place` verifies
-  # receipts with it, which means only this process can place.
-  @doc false
-  @spec receipt_key() :: binary() | nil
-  def receipt_key, do: Process.get({__MODULE__, :receipt_key})
-
   # -- Server -------------------------------------------------------------------
 
   @impl GenServer
@@ -333,7 +326,6 @@ defmodule Raxol.Broker.Executor do
          {:ok, journal_ref} <- monitor_journal(config.journal),
          :ok <- safe(fn -> Journal.claim(config.journal) end) do
       state = base_state(config, client_spec, journal_ref)
-      Process.put({__MODULE__, :receipt_key}, state.key)
       close_orphans(state)
       {:ok, state, {:continue, :connect}}
     else
@@ -934,6 +926,7 @@ defmodule Raxol.Broker.Executor do
       catalog: state.catalog,
       journal: state.journal,
       account: state.account,
+      key: state.key,
       timeout: state.place_timeout,
       customer_approval_required: customer_approval_required
     }
