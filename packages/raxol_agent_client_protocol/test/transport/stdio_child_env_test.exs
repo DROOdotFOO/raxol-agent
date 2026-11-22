@@ -82,6 +82,23 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioChildEnvTest do
       assert Stdio.secret?("ssh_auth_sock")
     end
 
+    # A passed name that no pattern or named set covers: Core lets every case
+    # of it through but `pass:`'s own, so only this transport's
+    # case-insensitive match keeps the variant from an agent.
+    test "a case variant of a Core-passed plain name is still unset" do
+      plain = "ACP_STDIO_#{System.unique_integer([:positive])}_PLAIN"
+      variant = String.downcase(plain)
+      Application.put_env(:raxol_core, Raxol.Core.ChildEnv, pass: [plain])
+
+      refute Raxol.Core.ChildEnv.secret?(variant)
+
+      seen = spawn_seen([plain, variant], [])
+
+      assert seen[plain] == "unset"
+      assert seen[variant] == "unset"
+      assert Stdio.secret?(variant)
+    end
+
     test "precedence: :env, then :unset_env, then :pass, then the scrub" do
       suffix = System.unique_integer([:positive])
       given = "ACP_STDIO_#{suffix}_GIVEN_TOKEN"
@@ -147,14 +164,17 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioChildEnvTest do
   # must fail rather than hand the agent everything.
   test "the scrub fails closed when raxol_core's code is missing" do
     module = Raxol.Core.ChildEnv
+    # Loaded first: `:code.delete/1` returns false for a module that is not,
+    # which happens when this test runs before any other touches Core.
+    Code.ensure_loaded!(module)
     beam_dir = module |> :code.which() |> Path.dirname() |> String.to_charlist()
 
-    :code.del_path(beam_dir)
-    :code.purge(module)
-    true = :code.delete(module)
-    :code.purge(module)
-
     try do
+      :code.del_path(beam_dir)
+      :code.purge(module)
+      true = :code.delete(module)
+      :code.purge(module)
+
       assert_raise RuntimeError, ~r/Raxol.Core.ChildEnv is not available/, fn ->
         Stdio.start_spawn("sh", ["-c", "true"], owner: self())
       end
