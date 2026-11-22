@@ -3,6 +3,9 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
   # and :xochi_deposit_attestation_signer.
   use ExUnit.Case, async: false
 
+  # The matrix fallback logs a warning.
+  @moduletag :capture_log
+
   alias Raxol.Payments.EIP712
   alias Raxol.Payments.Protocols.Xochi
   alias Raxol.Payments.Xochi.{Capabilities, DepositAttestation}
@@ -110,8 +113,10 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       end
     end
 
-    test "a required pin never fetches the capability matrix" do
+    test "a required pin never fetches the capability matrix; a relaxed one does" do
       Application.put_env(:raxol_payments, :deployment, :production)
+      Capabilities.reset()
+      on_exit(&Capabilities.reset/0)
       test_pid = self()
 
       config = %{
@@ -130,12 +135,29 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
                Xochi.verify_deposit_route(config, request(), quote_resp, [])
 
       refute_received {:fetched, _}
+
+      Application.put_env(:raxol_payments, :require_deposit_signer_pin, false)
+
+      assert {:error, :deposit_signer_unavailable} =
+               Xochi.verify_deposit_route(config, request(), quote_resp, [])
+
+      assert_received {:fetched, _}
+    end
+
+    test "a malformed matrix signer is not trusted" do
+      Application.put_env(:raxol_payments, :deployment, :development)
+
+      for bad <- ["not-an-address", signer() <> " ", String.slice(signer(), 2..-1//1)] do
+        assert {:error, :deposit_signer_unavailable} = verify(capabilities: matrix(bad))
+      end
     end
   end
 
   describe "assert_deposit_signer_pinned!/2" do
     test "raises when no valid pin is set and the pin is not required" do
       for pin <- [nil, ""] do
+        assert :ok = Xochi.assert_deposit_signer_pinned!(pin, "false")
+
         assert_raise ArgumentError, ~r/deposit-attestation signer is not pinned/, fn ->
           Xochi.assert_deposit_signer_pinned!(pin, false)
         end

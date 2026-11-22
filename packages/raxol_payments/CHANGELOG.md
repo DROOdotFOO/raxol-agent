@@ -20,13 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:deposit_attestation_signer`) in a release that serves deposit routes.
   Development and tests still fall back. A pin that is not `0x` + 40 hex is
   refused with `{:error, :invalid_deposit_signer_pin}`. New
-  `Protocols.Xochi.assert_deposit_signer_pinned!/0,2` raise at boot on a
-  malformed pin or a fail-open configuration, as `assert_origin_pull_pinned!/2`
-  does for the solver pin.
+  `Protocols.Xochi.assert_deposit_signer_pinned!/0,2`, called at boot, raise
+  on a malformed pin or a fail-open configuration, as
+  `assert_origin_pull_pinned!/2` does for the solver pin. Note that a required
+  but unset pin passes the boot check and refuses every deposit route. Using
+  the matrix signer logs a warning.
 - A served ERC-3009 `to` or Permit2 `spender` must be a clean `0x` + 40-hex
-  address, whether or not a solver pin is set; padded, bare-hex or
-  doubled-prefix values are refused as `{:authorization_mismatch, :pull_to}`
-  (or `:pull_spender`). New `Raxol.Payments.EIP712.address?/1` is that check.
+  address (`Raxol.Payments.EIP712.address?/1`), whether or not a solver pin is
+  set, so an unpinned development pull that served a padded or bare-hex `to`
+  is now refused too: `{:authorization_mismatch, :pull_to}` (or
+  `:pull_spender`).
 - **Breaking: `Raxol.Payments.Secret` is deprecated** and delegates to
   `Raxol.Agent.Secret` (raxol_agent); `new/1` returns a `Raxol.Agent.Secret`,
   so a `%Raxol.Payments.Secret{}` pattern no longer matches.
@@ -66,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Raxol.Payments.EIP712.address?/1`: whether a value is a clean `0x` +
+  40-hex EVM address.
 - The Xochi status parsers read every `IntentLifecycleStatus` of
   `@xochi/spec` 0.14.0. `IntentStatus` and `Intent` add `:pull_pending`,
   `:source_finalized` and `:refund_pending`; `ExecuteResponse` adds those and

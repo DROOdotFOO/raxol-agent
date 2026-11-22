@@ -11,6 +11,8 @@ defmodule Raxol.Payments.Protocols.Xochi.DepositSignerPin do
   # resolution in `Raxol.Payments.Protocols.Xochi`, which delegates
   # `assert_pinned!/0,2` and documents them.
 
+  require Logger
+
   alias Raxol.Payments.{Deployment, EIP712}
 
   @type error ::
@@ -26,11 +28,12 @@ defmodule Raxol.Payments.Protocols.Xochi.DepositSignerPin do
     end
   end
 
-  # Fail-open: no valid pin and the pin not required, so the matrix signer
-  # would be trusted. Required with no pin is not fail-open: it boots, and
-  # every deposit route is refused with `:deposit_signer_unpinned`.
+  # Fail-open: no valid pin and the pin relaxed (only an explicit `false`
+  # relaxes it, as in `required?/0`), so the matrix signer would be trusted.
+  # Required with no pin is not fail-open: it boots, and every deposit route is
+  # refused with `:deposit_signer_unpinned`.
   @spec fail_open?(term(), term()) :: boolean()
-  def fail_open?(pin, require_pin?), do: not EIP712.address?(pin) and require_pin? != true
+  def fail_open?(pin, require_pin?), do: not EIP712.address?(pin) and require_pin? == false
 
   @spec assert_pinned!() :: :ok
   def assert_pinned!, do: assert_pinned!(configured_pin(), required?())
@@ -66,9 +69,17 @@ defmodule Raxol.Payments.Protocols.Xochi.DepositSignerPin do
   defp fallback(true, _matrix_signer), do: {:error, :deposit_signer_unpinned}
 
   defp fallback(false, matrix_signer) do
-    case matrix_signer.() do
-      signer when is_binary(signer) and signer != "" -> {:ok, signer}
-      _ -> {:error, :deposit_signer_unavailable}
+    signer = matrix_signer.()
+
+    if EIP712.address?(signer) do
+      Logger.warning(
+        "Xochi deposit route trusts the capability matrix's attestation signer: " <>
+          "no :xochi_deposit_attestation_signer is pinned and :require_deposit_signer_pin is false"
+      )
+
+      {:ok, signer}
+    else
+      {:error, :deposit_signer_unavailable}
     end
   end
 

@@ -547,12 +547,12 @@ defmodule Raxol.Payments.Protocols.Xochi do
   @doc """
   Raise when `pin` is set but is not a `0x` + 40-hex address, or when deposit
   routes would trust the capability matrix's attestation signer (fail-open: no
-  valid `pin` and `require_pin?` not true). A required pin that is unset is not
+  valid `pin` and `require_pin?` is `false`). A required pin that is unset is not
   fail-open: the boot goes ahead and every deposit route is refused with
   `{:error, :deposit_signer_unpinned}`. `assert_deposit_signer_pinned!/0`
   reads both from config.
   """
-  @spec assert_deposit_signer_pinned!(term(), term()) :: :ok
+  @spec assert_deposit_signer_pinned!(String.t() | nil, boolean()) :: :ok
   defdelegate assert_deposit_signer_pinned!(pin, require_pin?),
     to: DepositSignerPin,
     as: :assert_pinned!
