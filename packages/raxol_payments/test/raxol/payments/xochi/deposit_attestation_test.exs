@@ -1,5 +1,5 @@
 defmodule Raxol.Payments.Xochi.DepositAttestationTest do
-  # #400: a deposit-route quote returns a bare deposit_address; the client must
+  # A deposit-route quote returns a bare deposit_address; the client must
   # verify the deposit_attestation recovers to the pinned signer before sending
   # funds. The signed message must be byte-exact with the Riddler signer.
   use ExUnit.Case, async: true
@@ -58,6 +58,21 @@ defmodule Raxol.Payments.Xochi.DepositAttestationTest do
 
       assert msg =~ "0xabcdef0000000000000000000000000000000001"
       assert msg =~ "TJYeasTPa6gpEEfYGfp5LQjWXmdZQBpLzX"
+    end
+
+    test "attests a padded EVM address byte for byte, so it cannot verify as the clean one" do
+      clean = "0xabcdef0000000000000000000000000000000001"
+      fields = %{@fields | deposit_address: clean}
+      padded = %{fields | deposit_address: clean <> "\n"}
+
+      assert DepositAttestation.message(padded) =~ clean <> "\n"
+
+      # Lowercased as on any EVM address, but the padding stays.
+      shouting = %{padded | deposit_address: "0xABCDEF0000000000000000000000000000000001\n"}
+      assert DepositAttestation.message(shouting) =~ clean <> "\n"
+
+      assert {:error, :attestation_mismatch} =
+               DepositAttestation.verify(padded, sign(fields), signer_address())
     end
 
     test "accepts an integer from_amount" do

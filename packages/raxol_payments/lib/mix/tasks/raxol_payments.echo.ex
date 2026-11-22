@@ -20,6 +20,9 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
 
   use Mix.Task
 
+  alias Raxol.Payments.EIP712
+  alias Raxol.Payments.Xochi.Schemas
+
   @impl true
   def run(argv) do
     Mix.Task.run("app.start")
@@ -38,8 +41,8 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
     server_opts =
       opts
       |> Keyword.take([:port, :amount, :pay_to, :asset, :network])
-      |> Keyword.update(:pay_to, nil, &normalize_address/1)
-      |> Keyword.update(:asset, nil, &normalize_address/1)
+      |> Keyword.update(:pay_to, nil, &with_0x/1)
+      |> Keyword.update(:asset, nil, &with_0x/1)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     case Raxol.Payments.EchoServer.start_link(server_opts) do
@@ -53,7 +56,14 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
     end
   end
 
-  defp normalize_address(nil), do: nil
-  defp normalize_address("0x" <> _ = addr), do: addr
-  defp normalize_address(addr) when is_binary(addr), do: "0x" <> addr
+  defp with_0x(nil), do: nil
+
+  defp with_0x(addr) when is_binary(addr) do
+    address = "0x" <> EIP712.normalize_address(addr)
+
+    case Schemas.validate_eth_address(address) do
+      :ok -> address
+      {:error, :invalid_address} -> Mix.raise("not an EVM address: #{inspect(addr)}")
+    end
+  end
 end

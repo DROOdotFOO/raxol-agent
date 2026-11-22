@@ -82,6 +82,28 @@ defmodule Raxol.Payments.Protocols.XochiPullPinDefaultTest do
     end
   end
 
+  describe "origin_pull_fail_open?/2 and assert_origin_pull_pinned!/2" do
+    @pinned ["0x8d7d8AcfC25E999273394F7Ab44C239806724e2B"]
+
+    test "an empty allowlist without a required pin is fail-open and refused" do
+      # nil, blank and non-binary entries normalize away to an empty list.
+      for allowlist <- [[], nil, ["", "  "], [nil, 123]] do
+        assert Xochi.origin_pull_fail_open?(allowlist, false)
+
+        assert_raise ArgumentError, ~r/solver pin is not configured/, fn ->
+          Xochi.assert_origin_pull_pinned!(allowlist, false)
+        end
+      end
+    end
+
+    test "a required pin or a populated allowlist is not fail-open" do
+      for {allowlist, require_pin?} <- [{[], true}, {@pinned, false}, {@pinned, true}] do
+        refute Xochi.origin_pull_fail_open?(allowlist, require_pin?)
+        assert :ok = Xochi.assert_origin_pull_pinned!(allowlist, require_pin?)
+      end
+    end
+  end
+
   defp request do
     %QuoteRequest{
       wallet: @signer,

@@ -2,145 +2,39 @@ defmodule Raxol.Payments.Telemetry do
   @moduledoc """
   Telemetry event surface for the payment subsystem.
 
-  Every event is emitted via `:telemetry.execute/3` with no caller-supplied
-  config -- attach a handler from your application's start-up code to forward
-  to Phoenix.LiveDashboard, Datadog, OpenTelemetry, a plain `IO.inspect`,
-  or anywhere else.
+  Every event is emitted via `:telemetry.execute/3`; attach a handler from your
+  application's start-up code to forward it anywhere.
 
-  ## Classification
-
-  Every event below is also classified as exactly one of `:invariant`, `:peer`
-  or `:operational` (see `events/0`), because an event nothing fails on is not
-  a guard. `:invariant` events -- ones that can only fire if this library
-  itself is wrong -- are armed by `Raxol.Core.Telemetry.InvariantSentinel`,
-  which fails any test in which they fire. `:peer` and `:operational` events
-  are not enforced.
-
-  This package currently declares NO `:invariant` events, and that is a
-  finding rather than an omission. Its telemetry watches money crossing a
-  chain through a third-party solver, so every alarming name here resolves to
-  the solver, the chain, the network, the clock, or a deployment choice --
-  causes the criterion puts outside our control. The registry still earns its
-  place: it forces the next event added to this package to be classified
-  before it can ship, which is exactly the step that was missing when an
-  emitted-and-logged impossible state shipped anyway.
-
-  `events/0` is the complete list. The sections below document the
-  longest-standing seven in detail; the rest are documented at their emit
-  sites.
+  `events/0` lists every event, each classified as `:invariant`, `:peer` or
+  `:operational`. `:invariant` events (ones that can only fire if this library
+  is wrong) are armed by `Raxol.Core.Telemetry.InvariantSentinel`, which fails
+  any test in which they fire. This package declares none: every alarming
+  event here resolves to the solver, the chain, the network, the clock or a
+  deployment choice. The registry makes each new event be classified before it
+  ships.
 
   ## Events
 
-  ### `[:raxol, :payments, :spend]`
+  | Event | Measurements | Metadata |
+  | ----- | ------------ | -------- |
+  | `[:raxol, :payments, :spend]` | `:amount` (`Decimal`, human units) | `:agent_id`, `:currency`, `:metadata` |
+  | `[:raxol, :payments, :over_budget]` | `:amount` | `:agent_id`, `:limit_type` (`:per_request` \\| `:session` \\| `:lifetime` \\| `:frozen`) |
+  | `[:raxol, :payments, :freeze]` | | `:frozen?` |
+  | `[:raxol, :payments, :xochi, :settled]` | `:elapsed_ms` | `:intent_id`, chains, tokens, amounts, `:xochi_fee`, `:tx_hash`, `:settlement_type` |
+  | `[:raxol, :payments, :settlement]` | `:fee_atomic`, `:gas_wei` (nil when unknown) | `:intent_id`, chains, `:token_symbol`, gas chain/symbol/status, `:settlement_type` |
+  | `[:raxol, :payments, :margin]` | `SettlementLedger.report/2` totals | `:corridor_count` |
+  | `[:raxol, :payments, :rebalance, :recommendation]` | `:amount` | `:type` (`:refuel_gas` \\| `:rebalance_usdc` \\| `:alert`) and type-specific keys |
+  | `[:raxol, :payments, :rebalance, :advice]` | `:count` | `:refuel_count`, `:rebalance_count`, `:alert_count` |
 
-  Fires when `Raxol.Payments.Ledger` records a successful spend (either via
-  `record_spend/4` or the atomic `try_spend/5`).
-
-  | Measurement | Type          | Notes                                 |
-  | ----------- | ------------- | ------------------------------------- |
-  | `:amount`   | `t:Decimal.t/0` | Human-decimal units (e.g. `0.01`)     |
-
-  | Metadata    | Type          | Notes                                 |
-  | ----------- | ------------- | ------------------------------------- |
-  | `:agent_id` | `term()`      | Caller-supplied identifier            |
-  | `:currency` | `String.t()`  | E.g. `"USDC"`                         |
-  | `:metadata` | `map()`       | Whatever the caller attached          |
-
-  ### `[:raxol, :payments, :over_budget]`
-
-  Fires when a `try_spend` or `check_budget` call denies because the policy
-  cap was exceeded or the ledger was frozen.
-
-  | Measurement | Type          |
-  | ----------- | ------------- |
-  | `:amount`   | `t:Decimal.t/0` |
-
-  | Metadata      | Type    | Values                                                   |
-  | ------------- | ------- | -------------------------------------------------------- |
-  | `:agent_id`   | `term()` |                                                          |
-  | `:limit_type` | atom    | `:per_request` \\| `:session` \\| `:lifetime` \\| `:frozen` |
-
-  ### `[:raxol, :payments, :freeze]`
-
-  Fires when the ledger transitions between frozen and unfrozen. Use this
-  to alert operators or kick off a pause-confirmation flow elsewhere.
-
-  | Metadata    | Type      | Values                  |
-  | ----------- | --------- | ----------------------- |
-  | `:frozen?`  | `boolean()` | new freeze state        |
-
-  ### `[:raxol, :payments, :xochi, :settled]`
-
-  Fires from `Raxol.Payments.Protocols.Xochi.transfer/4` when an intent reaches a
-  completed terminal status. Carries everything the accounting layer needs to book
-  the settlement; `Raxol.Payments.SettlementAccountant` subscribes to it.
-
-  | Measurement | Type   | Notes                        |
-  | ----------- | ------ | ---------------------------- |
-  | `:elapsed_ms` | `integer()` \\| nil | settlement latency, if known |
-
-  Metadata: `:intent_id`, `:from_chain_id`, `:to_chain_id`, `:from_token`,
-  `:to_token`, `:from_amount`, `:to_amount`, `:xochi_fee`, `:tx_hash`,
-  `:settlement_type`.
-
-  ### `[:raxol, :payments, :settlement]`
-
-  Fires when `Raxol.Payments.SettlementLedger` records a completed fill (once per
-  intent; never on a duplicate re-record).
-
-  | Measurement   | Type                 | Notes                                 |
-  | ------------- | -------------------- | ------------------------------------- |
-  | `:fee_atomic` | `t:Decimal.t/0`        | Fee collected, atomic units           |
-  | `:gas_wei`    | `t:Decimal.t/0` \\| nil | Native gas burned; nil when unknown   |
-
-  Metadata: `:intent_id`, `:from_chain_id`, `:to_chain_id`, `:token_symbol`,
-  `:gas_chain_id`, `:gas_symbol`, `:gas_status`, `:settlement_type`.
-
-  ### `[:raxol, :payments, :margin]`
-
-  Fires once per `Raxol.Payments.RebalanceMonitor` sweep with the totals of
-  `SettlementLedger.report/2`, priced with the sweep's `price_fn` (FX in front
-  of the configured price source when `:fx` is set). The full report, per
-  corridor and destination, is `RebalanceMonitor.margin_report/1`.
-
-  | Measurement            | Type                 | Notes                                    |
-  | ---------------------- | -------------------- | ---------------------------------------- |
-  | `:count`               | `integer()`          | settlements in the ledger                |
-  | `:unpriced_count`      | `integer()`          | entries with a leg or a nonzero fee no price answered (for a recording-gap entry, its fee only) |
-  | `:recording_gap_count` | `integer()`          | entries missing a leg's amount or decimals; not in `:usd_revenue`. Overlaps `:unpriced_count` only where such an entry's fee is unpriced |
-  | `:gas_unknown_count`   | `integer()`          | entries with no gas figure yet           |
-  | `:gas_unpriced_count`  | `integer()`          | entries whose gas amount is known but whose gas symbol no price answered |
-  | `:usd_revenue`         | `t:Decimal.t/0` \\| nil | spread of entries with both legs recorded and priced |
-  | `:usd_fee`             | `t:Decimal.t/0` \\| nil | venue fee of entries whose fee is priced |
-  | `:usd_gas`             | `t:Decimal.t/0` \\| nil | gas of entries whose gas is known and priced |
-  | `:usd_margin`          | `t:Decimal.t/0` \\| nil | sum of per-entry basis (spread, else fee if legs unrecorded) net of that entry's gas, over entries with both; negative is subsidy |
-  | `:margin_count`        | `integer()`          | entries `:usd_margin` covers; `:count` minus this were left out, each reason countable: no basis (`:unpriced_count`, `:recording_gap_count`), unknown gas (`:gas_unknown_count`), unpriced gas (`:gas_unpriced_count`). An entry with an unpriced fee but a priced spread is in both this and `:unpriced_count` |
-
-  Each `usd_*` total is over its own population, so `usd_revenue - usd_gas` is
-  not the margin; see `Raxol.Payments.SettlementLedger`'s `aggregate` type.
-
-  Metadata: `:corridor_count`.
-
-  ### `[:raxol, :payments, :rebalance, :recommendation]`
-
-  Fires once per `Raxol.Payments.RebalanceAdvisor.advise/4` recommendation.
-
-  | Measurement | Type                 | Notes                            |
-  | ----------- | -------------------- | -------------------------------- |
-  | `:amount`   | `t:Decimal.t/0` \\| nil | USDC to convert / move, or deficit |
-
-  Metadata: `:type` (`:refuel_gas` \\| `:rebalance_usdc` \\| `:alert`) plus
-  type-specific keys (`:chain_id`, `:from_chain`, `:to_chain`, `:funding`, `:note`).
-
-  ### `[:raxol, :payments, :rebalance, :advice]`
-
-  Fires once per `advise/4` call with the recommendation counts.
-
-  | Measurement | Type   | Notes                       |
-  | ----------- | ------ | --------------------------- |
-  | `:count`    | `integer()` | total recommendations  |
-
-  Metadata: `:refuel_count`, `:rebalance_count`, `:alert_count`.
+  `:spend` fires when `Raxol.Payments.Ledger` records a spend, `:over_budget`
+  when a policy cap or the freeze denies one, `:freeze` on a freeze toggle.
+  `:xochi, :settled` fires from `Protocols.Xochi.transfer/4` on a completed
+  intent and feeds `Raxol.Payments.SettlementAccountant`; `:settlement` fires
+  once per intent `SettlementLedger` books. `:margin` fires once per
+  `RebalanceMonitor` sweep; each `usd_*` total is over its own population (see
+  `SettlementLedger`'s `aggregate` type), and `RebalanceMonitor.margin_report/1`
+  has the per-corridor detail. The remaining events are documented at their
+  emit sites.
 
   ## Attaching a handler
 
@@ -156,84 +50,34 @@ defmodule Raxol.Payments.Telemetry do
       )
   """
 
-  # Each verdict below was read off the emit site, never off the event name --
-  # the two scariest names here (`:intent_stranded`, `:unchecked_settlement`)
-  # are not invariants, and the reasons are recorded per entry so the next
-  # reader does not have to re-derive them.
+  # Each verdict is read off the emit site, not the event name.
   use Raxol.Core.Telemetry.Invariants,
     events: %{
-      # OPERATIONAL. The spend gate admitting a charge: routine bookkeeping.
       [:raxol, :payments, :spend] => :operational,
-
-      # OPERATIONAL. `try_spend` denied because a policy cap was hit or the
-      # ledger is frozen. The caps come from a caller-supplied policy, so this
-      # is the gate WORKING, and the negative spend-gate tests drive it on
-      # purpose.
+      # A caller-supplied policy cap or freeze: the gate working.
       [:raxol, :payments, :over_budget] => :operational,
-
-      # OPERATIONAL. An operator (or a kill switch) flipped the freeze flag.
-      # A state transition somebody asked for.
       [:raxol, :payments, :freeze] => :operational,
-
-      # OPERATIONAL. `release_by_intent/2` reversed a reservation because the
-      # solver refunded the origin funds. The refund is upstream; the emit is
-      # our ledger reconciling correctly, and it is idempotent by the presence
-      # of the reservation tag.
+      # The solver refunded; the ledger reconciles idempotently by reservation tag.
       [:raxol, :payments, :refund_reconciled] => :operational,
-
-      # OPERATIONAL. `SettlementLedger` booked a completed fill, once per
-      # intent. The success path of accounting.
       [:raxol, :payments, :settlement] => :operational,
-
-      # OPERATIONAL. `RebalanceMonitor`'s per-sweep margin totals. Pure output
-      # of a function over the ledger; a negative margin is a fact about the
-      # corridors, not a defect here.
+      # A negative margin is a fact about the corridors, not a defect here.
       [:raxol, :payments, :margin] => :operational,
-
-      # OPERATIONAL x2. `RebalanceAdvisor`'s per-recommendation rows and the
-      # per-call summary. Pure output of a function over observed balances --
-      # including the `:alert` recommendations, because an underfunded chain
-      # is a fact about the wallet, not a defect in this library.
+      # An `:alert` is a fact about an underfunded wallet, not a defect here.
       [:raxol, :payments, :rebalance, :recommendation] => :operational,
       [:raxol, :payments, :rebalance, :advice] => :operational,
-
-      # OPERATIONAL. `Protocols.Xochi.transfer/4` reached a completed terminal
-      # status. The happy path; `SettlementAccountant` subscribes to it.
       [:raxol, :payments, :xochi, :settled] => :operational,
-
-      # OPERATIONAL. `AgentStream` got HTTP 202 back for an announce: success.
       [:raxol, :payments, :xochi, :agent_stream, :announced] => :operational,
-
-      # PEER. The announce reached the Xochi agent-stream endpoint and was
-      # refused -- 429 rate limit, any other non-202, or a transport error.
-      # That is the remote endpoint or the network talking, and the announce is
-      # best-effort by construction, so a drop never affects the swap.
+      # The endpoint refused (429, non-202) or the network failed; announces
+      # are best-effort and never affect the swap.
       [:raxol, :payments, :xochi, :agent_stream, :dropped] => :peer,
-
-      # OPERATIONAL. The layer ABOVE an attempted announce: no announce was
-      # made at all because the topic, wallet or host is unconfigured, the
-      # mandate binding did not hold, or the stashed route is missing or
-      # expired. Configuration and TTL, i.e. a user and the clock.
+      # No announce attempted: unconfigured topic/wallet/host, mandate binding,
+      # or an expired route stash.
       [:raxol, :payments, :xochi, :agent_stream, :announce_skipped] => :operational,
-
-      # PEER, despite the name. `PollXochiStatus` emits this on
-      # `{:error, :timeout}`: the intent never reached a terminal status inside
-      # the poll budget, so the origin pull may have moved funds while delivery
-      # stayed unconfirmed. The cause is the solver or the chain being slow,
-      # unreachable or refusing -- funded ACP jobs that never settled behind a
-      # Xochi 502 `validation_failed` were exactly this shape. Our
-      # bookkeeping is behaving correctly when it fires: it refuses to report
-      # success and hands the operator an intent id to reconcile.
+      # `PollXochiStatus` timed out before a terminal status: the solver or
+      # chain is slow or refusing, and the operator gets the intent id.
       [:raxol, :payments, :xochi, :intent_stranded] => :peer,
-
-      # OPERATIONAL, despite the name. `resolve_checkpoint/2` found no
-      # idempotency store while `require_checkpoint?/1` was false, so the
-      # settlement proceeds with a double-settle exposure on a crash-retry.
-      # Fail-closed is the PRODUCTION default; development and tests are
-      # deliberately permissive, so every settlement test that does not pass a
-      # `:checkpoint` store fires this on its happy path. It discloses a
-      # deployment choice. Enforcing it would fail the ordinary path, which is
-      # precisely how a false invariant gets the whole mechanism deleted.
+      # No checkpoint store while not required: a deployment choice, and the
+      # happy path of every settlement test without one.
       [:raxol, :payments, :xochi, :unchecked_settlement] => :operational
     }
 end

@@ -15,9 +15,8 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   ## Wire tolerance
 
-  - The current matrix emits chains as `chain_id` + `chain_name` only;
-    `vm_type` and `address_format` arrive with a later solver release. Absent
-    `vm_type` defaults to `:evm` (the older wire). A *present* but
+  - A chain may carry only `chain_id` + `chain_name`; absent `vm_type`
+    defaults to `:evm`. A *present* but
     unrecognised `vm_type` drops the chain: its address rules are unknown, so
     it is not treated as EVM.
   - Unknown keys are dropped; individually malformed chain/token entries are
@@ -27,10 +26,10 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   ## Degrade policy
 
-  `fallback/0` is derived from `Raxol.Payments.Assets` (the legacy hardcoded
-  mirror of Riddler's token registry), so an unreachable capabilities endpoint
-  degrades to exactly today's behavior -- never to rejecting jobs the solver
-  could fill yesterday.
+  `fallback/0` is derived from `Raxol.Payments.Assets` (a static mirror of
+  Riddler's token registry), so an unreachable capabilities endpoint
+  degrades to the static registry rather than rejecting jobs the solver can
+  fill.
 
   ## Caching
 
@@ -40,7 +39,7 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   lifetime.
   """
 
-  alias Raxol.Payments.Assets
+  alias Raxol.Payments.{Assets, EIP712}
 
   @type vm_type :: :evm | :tvm | :svm
   @type role :: :origin | :destination
@@ -76,10 +75,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   # rides 728126428 through the whole stack) keeps chain ids integers.
   @evm_hex_re ~r/\A0x[0-9a-fA-F]{40}\z/
   @solana_base58_re ~r/\A[1-9A-HJ-NP-Za-km-z]{32,44}\z/
-
-  # ============================================================
-  # Fetch + parse (pure network + pure parse)
-  # ============================================================
 
   @doc """
   Fetch and parse the capability matrix from the Xochi worker.
@@ -170,10 +165,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
     }
   end
 
-  # ============================================================
-  # Cached read-through
-  # ============================================================
-
   @doc """
   Cached capabilities: serve the ETS-cached matrix while fresh, refresh from
   the worker when stale, and degrade to the previous cached value -- or
@@ -186,13 +177,10 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   ## Failures are cached too
 
-  Only successes used to be, which made an unreachable worker cost a fresh
-  blocking request on EVERY call rather than one per expiry: the degrade path
-  is correct but it is not cheap, and callers reach this from a LiveView
-  `mount/3`. A failure now parks for `:failure_ttl_ms` -- shorter than the
-  success TTL, so a recovered worker is picked up promptly -- and calls inside
-  that window serve the stale value or `fallback/0` without touching the
-  network.
+  A failure parks for `:failure_ttl_ms` (shorter than the success TTL, so a
+  recovered worker is picked up promptly), and calls inside that window serve
+  the stale value or `fallback/0` without a blocking request; callers reach
+  this from a LiveView `mount/3`.
 
   This bounds an outage to one stall per failure window. It is not a stampede
   guard: concurrent callers arriving on a cold cache still each fetch, since
@@ -246,10 +234,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
     :ets.delete(@table, :last_failure)
     :ok
   end
-
-  # ============================================================
-  # Corridor predicates (what offerings route through)
-  # ============================================================
 
   @doc "Chain ids the solver currently offers."
   @spec chain_ids(t()) :: [pos_integer()]
@@ -315,10 +299,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   def valid_address?(_caps, _chain, _address), do: false
 
-  # ============================================================
-  # Private
-  # ============================================================
-
   # The published attestation signer must be a well-formed EVM address; a
   # malformed value is treated as absent (nil), so verify fails closed rather
   # than pinning against garbage.
@@ -347,9 +327,8 @@ defmodule Raxol.Payments.Xochi.Capabilities do
 
   defp parse_chain(_), do: []
 
-  # Absent is the older wire, which only ever listed EVM chains. Matching is
-  # case/whitespace-insensitive so "EVM" does not silently drop a live chain; a
-  # genuinely unknown family still drops it.
+  # Absent means EVM. Matching is case/whitespace-insensitive so "EVM" does not
+  # silently drop a live chain; a genuinely unknown family still drops it.
   defp parse_vm_type(nil), do: {:ok, :evm}
 
   defp parse_vm_type(vm_type) when is_binary(vm_type),
@@ -395,10 +374,15 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   defp parse_addresses(_), do: %{}
 
   # EVM addresses compare case-insensitively; base58 forms are case-sensitive.
+  # Only a well-formed `0x` address is canonicalized, so a bare or padded one
+  # never matches.
   defp normalize_address(caps, chain_id, address) do
     case vm_type(caps, chain_id) do
-      :evm -> String.downcase(address)
-      _ -> address
+      :evm ->
+        canonical_evm(address)
+
+      _ ->
+        address
     end
   end
 
@@ -468,4 +452,13 @@ defmodule Raxol.Payments.Xochi.Capabilities do
         @table
     end
   end
+
+  defp canonical_evm(<<prefix::binary-size(2), hex::binary-size(40)>> = address)
+       when prefix in ["0x", "0X"] do
+    if Regex.match?(~r/\A[0-9a-fA-F]{40}\z/, hex),
+      do: "0x" <> EIP712.normalize_address(address),
+      else: address
+  end
+
+  defp canonical_evm(address), do: address
 end

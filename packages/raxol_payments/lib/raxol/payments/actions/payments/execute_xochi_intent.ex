@@ -2,76 +2,52 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
   @moduledoc """
   Agent Action that runs a cross-chain (and optionally stealth) Xochi intent.
 
-  Quotes the intent, authorizes the spend through `SpendGate` before any
-  signature is released, signs and submits via the wallet, and returns the
-  intent id and initial status. Poll for the terminal status with
-  `Raxol.Payments.Actions.Payments.PollXochiStatus`. When a checkpoint store is
-  configured, the execute-time read token is kept in a separate private record
-  keyed by the API origin, executing principal, and intent id; it never enters
-  the Action result or replay summary. The principal is the `:agent_id` when
-  present, otherwise the signing wallet address. Polling with the same context
-  reads that private record automatically.
+  Quotes the intent, binds the served EIP-712 intent to the request
+  (`Protocols.Xochi.validate_intent/2`) and checks the delivery floor,
+  authorizes the spend through `SpendGate` before any signature is released,
+  signs and submits via the wallet, and returns the intent id and initial
+  status. Poll for the terminal status with
+  `Raxol.Payments.Actions.Payments.PollXochiStatus`.
 
-  `amount` is a human amount of `from_token`; the atomic `from_amount` sent
-  to Xochi is derived from the token's registered decimals. `SpendGate`
-  converts it into the spending policy's unit (`Raxol.Payments.SpendPricing`:
-  a stablecoin pegged to it at par, a token that is not a stablecoin at its
-  USD price from the configured source under a USD policy; a stablecoin pegged
-  to another currency is refused) and gates and reserves that, or refuses the intent as
-  `{:unpriced_asset, detail}` before anything is signed. Invalid endpoint
-  configuration, a connection failure proven to happen before send, a local
-  signing failure, or a structurally valid clean server rejection releases the
-  reservation and deletes the checkpoint. Once submission may have started, a
-  reset, malformed response, or 5xx remains in doubt: it is reported as
+  `amount` is a human amount of `from_token`, scaled to atomic units by the
+  token's registered decimals. `SpendGate` prices it in the spending policy's
+  unit (`Raxol.Payments.SpendPricing`) and reserves that, or refuses the intent
+  as `{:unpriced_asset, detail}` before anything is signed. With
+  `swap_kind: "exact_output"` the caller fixes the delivered `output_amount`
+  instead, and `amount` is the most the caller will spend: what the gate
+  reserves and the ceiling the signed `fromAmount` is held to.
+
+  A proven local failure (bad endpoint config, a connection refused before
+  send, a signing failure) or a structurally valid clean server rejection
+  releases the reservation and deletes the checkpoint. Once submission may have
+  started, a reset, malformed response or 5xx stays in doubt: it is reported as
   dispatched with `reconciling: true`, and the checkpoint and reservation remain
-  for polling or operator reconciliation even when no read token was received.
-  A 409 or 400 saying another writer claimed or completed the intent is a clean
-  rejection for this writer and is never polled as this payment's result.
-
-  With `swap_kind: "exact_output"` the caller fixes the delivered
-  `output_amount` instead, the solver picks the origin amount, and `amount` is
-  the most the caller will spend: it is what the gate prices and reserves and the ceiling
-  the signed `fromAmount` is held to.
-
-  Before the spend is authorized, the served EIP-712 intent is bound to the
-  request (`Protocols.Xochi.validate_intent/2`): a quote whose signed terms
-  differ from what was asked for is refused without reserving or signing.
+  for polling or operator reconciliation. A 409 or 400 saying another writer
+  claimed or completed the intent is a clean rejection for this writer.
 
   ## Idempotent recovery
 
-  When a `:checkpoint` store is supplied, the intent is checkpointed by a stable
-  idempotency key before it is submitted. If the process crashes mid-settlement
-  and the Action runs again for the same logical payment, it finds the
-  checkpoint and returns the in-flight intent for the caller to poll, rather than
-  re-quoting and signing a second time. The spend is reserved and the signature
-  released exactly once across the crash.
-
-  Without a checkpoint store the settlement proceeds unchecked and emits
-  `[:raxol, :payments, :xochi, :unchecked_settlement]` telemetry, so a crash
-  between signing and confirming would re-quote and sign a second time. A
-  fund-moving deployment closes that window by injecting a durable `:checkpoint`
-  store (see `Raxol.Payments.Checkpoint.ContextStore`) and setting
-  `require_checkpoint: true` in context (or `config :raxol_payments,
-  :require_checkpoint, true`), which fails the Action closed with
-  `{:error, {:checkpoint_required, _}}` before any signature when no store is
-  present.
+  With a `:checkpoint` store, the intent is checkpointed by a stable
+  idempotency key before submit, so a run after a crash returns the in-flight
+  intent to poll instead of signing again. The execute-time read token is kept
+  in a separate private record keyed by API origin, principal (`:agent_id`,
+  else the wallet address) and intent id; it never enters the result. Without a
+  store the settlement proceeds unchecked and emits
+  `[:raxol, :payments, :xochi, :unchecked_settlement]`; `require_checkpoint:
+  true` (or `config :raxol_payments, :require_checkpoint`, defaulting to
+  `Raxol.Payments.Deployment.production?/0`) fails closed instead with
+  `{:error, {:checkpoint_required, _}}`.
 
   ## Context keys
 
   * `:wallet` -- wallet module signing the EIP-712 intent.
-  * `:xochi_config` -- `%{base_url:, auth:}` for `Xochi.Client` (e.g.
-    `auth: {:mandate, agent_wallet}`; see `Xochi.Client` for all auth modes).
+  * `:xochi_config` -- `%{base_url:, auth:}` for `Xochi.Client`.
   * `:policy`, `:ledger`, `:agent_id`, `:on_confirm` -- see `SpendGate`.
-    `:agent_id` is also the read-token principal; atom and binary ids are
-    supported. Without one, the wallet address is the principal.
   * `:checkpoint` -- optional trusted `{module, handle}`
-    `Raxol.Payments.Checkpoint` store for idempotent recovery and the separate
-    `Secret`-wrapped read capability (nil disables both).
-  * `:require_checkpoint` -- when `true`, the Action fails closed with
-    `{:error, {:checkpoint_required, _}}` unless a `:checkpoint` store is present
-    (default `false`; falls back to `config :raxol_payments, :require_checkpoint`).
-  * `:idempotency_key` -- optional explicit key; derived from the payment when
-    absent.
+    `Raxol.Payments.Checkpoint` store (nil disables recovery).
+  * `:require_checkpoint` -- fail closed without a `:checkpoint` store.
+  * `:idempotency_key` -- optional explicit key; derived from the payment
+    when absent.
   """
 
   @compile {:no_warn_undefined, Raxol.Agent.Action}
@@ -147,11 +123,12 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
       ]
     ]
 
+  alias Raxol.Payments.Actions.Payments.ExecuteXochiIntent.{Dispatch, Floor}
   alias Raxol.Payments.Actions.SpendGate
-  alias Raxol.Payments.{Assets, Checkpoint, DeliveryFloor, Failure, Router}
+  alias Raxol.Payments.{Assets, Checkpoint, Failure, Router}
   alias Raxol.Payments.Protocols.Xochi
-  alias Raxol.Payments.Xochi.{Client, ReadTokenStore, SettlementState, Stealth, SwapAnnouncer}
-  alias Raxol.Payments.Xochi.Schemas.{ExecuteResponse, QuoteRequest, QuoteResponse}
+  alias Raxol.Payments.Xochi.{Client, Stealth, SwapAnnouncer}
+  alias Raxol.Payments.Xochi.Schemas.QuoteRequest
 
   @spec run(map(), map()) :: {:ok, map()} | {:error, Failure.t()}
   @impl true
@@ -170,9 +147,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     key = idempotency_key(context, request)
 
     case Checkpoint.fetch(store, key) do
-      # Poll-before-re-sign: this payment is already in flight from an earlier
-      # run that crashed before confirming. Return the recorded intent without
-      # reserving budget or signing again.
+      # Already in flight from a run that crashed before confirming: return the
+      # recorded intent without reserving budget or signing again.
       {:ok, record} -> {:ok, resume_summary(record)}
       :error -> settle(config, wallet, request, amount, params, context, store, key)
     end
@@ -183,12 +159,24 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
 
   defp settle(config, wallet, request, amount, params, context, store, key) do
     with :ok <- assert_xochi_route(params),
-         {:ok, floor} <- delivery_floor(request, params),
-         {:ok, quote} <- solvable_quote(config, request),
-         :ok <- assert_quote(quote, request, floor),
+         {:ok, floor} <- Floor.delivery_floor(request, params),
+         {:ok, quote} <- Dispatch.solvable_quote(config, request),
+         :ok <- Floor.assert_quote(quote, request, floor),
          {:ok, reserved} <- authorize(context, config, request, amount),
          {:ok, exec, filled_quote} <-
-           execute(config, request, quote, floor, wallet, context, reserved, store, key),
+           Dispatch.execute(
+             %{
+               config: config,
+               request: request,
+               floor: floor,
+               wallet: wallet,
+               context: context,
+               amount: reserved,
+               store: store,
+               key: key
+             },
+             quote
+           ),
          :ok <- assert_settlement_privacy(request, exec) do
       record_settled(context, request, filled_quote, exec, store, key)
     end
@@ -199,31 +187,26 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     # signed intent bound (equal to the request's on exact_input).
     reported = %{request | from_amount: Xochi.intent_from_amount(filled_quote)}
     summary = summary(reported, filled_quote, exec)
-    # Best-effort, non-blocking: emit a signed activity row to the user's live
-    # feed (and stash the route for the terminal announce). Never affects the
-    # swap; a no-op unless a capability topic_id is configured.
+    # Best-effort and non-blocking; a no-op unless a capability topic_id is set.
     SwapAnnouncer.announce_execute(context, reported, filled_quote, exec)
-    Checkpoint.put(store, key, settled_record(summary))
+
+    Checkpoint.put(store, key, %{
+      intent_id: summary.intent_id,
+      status: :in_flight,
+      summary: summary
+    })
+
     {:ok, summary}
   end
 
-  # An in-doubt (reconciling) settlement has not landed yet: the worker could not
-  # confirm the solver executed (typically an upstream Riddler 5xx/timeout wrapped
-  # as a 200) and kept the intent non-terminal. No stealth address exists yet --
-  # it appears only once the intent resolves to completed via polling -- so the
-  # stealth-address guard below must not fire. The in-doubt state is surfaced to
-  # the caller via the summary's `reconciling` flag instead.
+  # An in-doubt settlement has no stealth address yet (it appears once the
+  # intent completes), so the guard below must not fire; `reconciling` in the
+  # summary reports the in-doubt state instead.
   defp assert_settlement_privacy(_request, %{reconciling: true}), do: :ok
 
   # A stealth settlement must come back with the stealth address the worker
-  # derived and announced. A nil there means the funds did not land on a stealth
-  # address -- a server fallback to public, or a hostile endpoint -- so the
-  # privacy the caller asked for was not delivered. Fail closed rather than
-  # report success; the intent id rides the error so an operator can verify it.
-  #
-  # Public and shielded settlements legitimately have no stealth address: shielded
-  # is note-based (note_commitment / nullifier_hash), surfaced at terminal status,
-  # not an announced stealth address.
+  # derived and announced; nil means the privacy asked for was not delivered.
+  # Public and shielded (note-based) settlements have no stealth address.
   defp assert_settlement_privacy(%QuoteRequest{settlement_preference: "stealth"}, %{
          stealth_address: address,
          intent_id: intent_id
@@ -235,13 +218,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
 
   defp assert_settlement_privacy(_request, _exec), do: :ok
 
-  # Resolve the idempotency store that lets a resumed settlement poll the
-  # in-flight intent instead of signing a second time. An explicit `:checkpoint`
-  # store in context wins. With none, a fund-moving deployment sets
-  # `require_checkpoint: true` (context) or `config :raxol_payments,
-  # :require_checkpoint, true`, so a missing store fails closed BEFORE any
-  # signature. Otherwise the settlement proceeds unchecked and emits telemetry,
-  # so the double-settle exposure on a crash-retry is observable, never silent.
   defp resolve_checkpoint(context, request) do
     case Map.get(context, :checkpoint) do
       {module, _handle} = store when is_atom(module) ->
@@ -257,10 +233,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     end
   end
 
-  # Fail closed by default in a deployed release: a real settlement with no
-  # durable checkpoint risks a double-settle on a crash-retry. An explicit
-  # context flag or `config :raxol_payments, :require_checkpoint` overrides;
-  # development and tests stay permissive.
   defp require_checkpoint?(context) do
     case Map.get(context, :require_checkpoint) do
       flag when is_boolean(flag) ->
@@ -288,8 +260,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
   end
 
   # An explicit key lets a caller treat two otherwise-identical payments as
-  # distinct; otherwise the key is the canonical payment, so a resumed run of the
-  # same payment recognizes it.
+  # distinct; otherwise the key is the canonical payment, recipient included.
   defp idempotency_key(context, %QuoteRequest{} = request) do
     case Map.get(context, :idempotency_key) do
       key when is_binary(key) ->
@@ -307,8 +278,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
           request.swap_kind,
           request.output_amount,
           request.max_from_amount,
-          # The recipient is part of the payment's identity: a transfer to
-          # recipient A must never be treated as a resume of one to recipient B.
           request.recipient_address,
           request.settlement_preference,
           request.stealth_spending_pub_key,
@@ -317,131 +286,13 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     end
   end
 
-  # A resume returns the full summary once execution recorded it. If the crash
-  # landed between the pre-submit checkpoint and that record, only the dispatched
-  # intent is known; return it so the caller polls the existing intent.
+  # A crash between the pre-submit checkpoint and the settled record leaves
+  # only the dispatched intent; return it so the caller polls it.
   defp resume_summary(%{summary: summary}) when is_map(summary), do: summary
 
   defp resume_summary(record) do
     %{intent_id: record.intent_id, status: to_string(Map.get(record, :status, :dispatched))}
   end
-
-  defp dispatched_record(%QuoteResponse{} = quote, principal, deadline, now) do
-    %{
-      intent_id: quote.intent_id,
-      quote_id: quote.quote_id,
-      status: :dispatched,
-      principal: principal,
-      deadline: deadline,
-      expires_at: max(deadline || now, now) + 86_400
-    }
-  end
-
-  defp settled_record(summary) do
-    %{intent_id: summary.intent_id, status: :in_flight, summary: summary}
-  end
-
-  # Guard the server's method choice before signing: ERC-3009 is USDC-only (it
-  # signs against the USDC contract as the EIP-712 verifying contract), so an
-  # ERC-3009 quote for a non-USDC token would be a silently invalid signature.
-  defp assert_method(%QuoteResponse{payment_method: "erc3009"}, %QuoteRequest{
-         from_chain_id: chain,
-         from_token: token
-       }) do
-    if Assets.usdc?(chain, token),
-      do: :ok,
-      else: {:error, {:method_mismatch, :erc3009_requires_usdc}}
-  end
-
-  defp assert_method(_quote, _request), do: :ok
-
-  # Reject a quote that delivers far less than the agent sends, before any
-  # signature. The spend gate sees only the human `amount` that leaves the wallet,
-  # not the served `to_amount` that arrives; the origin-pull value cap bounds the
-  # amount out, not the ratio in. So a hostile or compromised quote endpoint could
-  # serve a punitive `to_amount` (deliver ~0 while pulling the full origin amount)
-  # and the gate would not catch it.
-  #
-  # `min_to_amount` is read by `Raxol.Payments.DeliveryFloor`: absent, or a
-  # positive integer in destination atomic units; anything else, `0` included,
-  # is refused before quoting (`validate_min_to_amount/1`). A same-asset
-  # corridor (same token symbol both sides) always gets an automatic floor:
-  # delivery must be at least `:min_delivery_bps` of par (default 8000 = 80%),
-  # judged like any floor on the lowest amount the quote states, so a
-  # `slippage_bps` past about 2000 lets an honest quote's own minimum fall under
-  # it. This is a theft backstop, not a pricing check -- Xochi enforces pricing;
-  # legitimate fees and slippage stay well inside 80%. An explicit
-  # `min_to_amount` can only raise that floor, never lower it: the caller
-  # setting it is the agent the backstop exists to bound, so
-  # `min_to_amount: "1"` must not switch it off. A cross-asset corridor has no
-  # on-client price, so it is bound only by an explicit `min_to_amount`. A
-  # non-USD stablecoin destination (`Assets.fx_peg/2`) without one is refused:
-  # it scales, but with no FX rate there is no par to floor against (ADR-0040
-  # decision 6), and a floor on one must be in that token's units. Both tokens
-  # have registered decimals by this point (`build_request/2` refuses anything
-  # else). The quote is judged on the lowest amount it states: `toAmount`, its
-  # own `minToAmount`, and the `toAmount` in the EIP-712 message the wallet
-  # would sign.
-  # Every quote that may be signed passes these checks and the intent binding
-  # (`Xochi.validate_intent/2`, which also requires the signed `toAmount` to
-  # equal the served `to_amount`): the first quote, and the re-quote an expired
-  # execute leads to.
-  defp assert_quote(%QuoteResponse{} = quote, %QuoteRequest{} = request, floor) do
-    with :ok <- assert_method(quote, request),
-         :ok <- Xochi.validate_intent(quote, request),
-         do: DeliveryFloor.check(quote, floor)
-  end
-
-  # exact_output pins the delivered amount exactly (`validate_intent/2`), so no
-  # par floor applies (and the request has no origin amount to take par from);
-  # an explicit `min_to_amount` still does.
-  defp delivery_floor(%QuoteRequest{swap_kind: "exact_output"} = request, params) do
-    case DeliveryFloor.parse(Map.get(params, :min_to_amount)) do
-      {:ok, nil} -> {:ok, :none}
-      {:ok, min_out} -> DeliveryFloor.for_route(min_out, Map.from_struct(request))
-      {:error, _} = error -> error
-    end
-  end
-
-  defp delivery_floor(%QuoteRequest{} = request, params) do
-    with {:ok, min_out} <- DeliveryFloor.parse(Map.get(params, :min_to_amount)),
-         {:ok, floor} <- DeliveryFloor.for_route(min_out, Map.from_struct(request)) do
-      {:ok, tighten(floor, same_asset_floor(request))}
-    end
-  end
-
-  # The explicit floor can only raise the automatic same-asset one.
-  defp tighten(:none, auto), do: auto
-  defp tighten(floor, :none), do: floor
-  defp tighten({:floor, explicit}, {:floor, auto}), do: {:floor, max(explicit, auto)}
-
-  defp same_asset_floor(%QuoteRequest{} = request) do
-    from_symbol = Assets.symbol_for(request.from_chain_id, request.from_token)
-    to_symbol = Assets.symbol_for(request.to_chain_id, request.to_token)
-
-    with true <- not is_nil(from_symbol) and from_symbol == to_symbol,
-         {:ok, from_decimals} <- Assets.fetch_decimals(request.from_chain_id, request.from_token),
-         {:ok, to_decimals} <- Assets.fetch_decimals(request.to_chain_id, request.to_token) do
-      par_out = Assets.to_atomic(Assets.to_human(request.from_amount, from_decimals), to_decimals)
-      bps = Application.get_env(:raxol_payments, :min_delivery_bps, 8000)
-      {:floor, div(par_out * bps, 10_000)}
-    else
-      _ -> :none
-    end
-  end
-
-  defp validate_min_to_amount(params) do
-    case Map.get(params, :min_to_amount) do
-      nil -> :ok
-      value -> positive_floor(value, DeliveryFloor.parse(value))
-    end
-  end
-
-  # `DeliveryFloor.parse/1` reads `0` and `""` as absent; here a floor the
-  # caller wrote must bound something, so they are refused.
-  defp positive_floor(_value, {:ok, n}) when is_integer(n), do: :ok
-  defp positive_floor(value, {:ok, nil}), do: {:error, {:invalid_min_to_amount, value}}
-  defp positive_floor(_value, {:error, _} = error), do: error
 
   defp fetch(context, key) do
     case Map.fetch(context, key) do
@@ -455,7 +306,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     settlement = settlement(params)
 
     with {:ok, decimals} <- registered_legs(params),
-         :ok <- validate_min_to_amount(params),
+         :ok <- Floor.validate_min_to_amount(params),
          {:ok, spending_key, viewing_key} <- stealth_keys(settlement, params),
          {:ok, amounts} <- swap_amounts(params, Assets.to_atomic(amount, decimals)) do
       fields =
@@ -506,11 +357,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     end
   end
 
-  # Both legs must have registered decimals; returns the source leg's. The
-  # source amount is scaled by them -- a guess would move 10^n the intended
-  # amount -- and a destination amount (a `min_to_amount`, the same-asset floor)
-  # means nothing without them. `min_to_amount` does not waive this: the caller
-  # setting it cannot know an unregistered token's decimals either.
+  # Both legs must have registered decimals; returns the source leg's. A guess
+  # would move 10^n the intended amount, and a destination amount (a
+  # `min_to_amount`, the same-asset floor) means nothing without them.
   defp registered_legs(params) do
     from_chain = Map.fetch!(params, :from_chain_id)
     from_token = Map.fetch!(params, :from_token)
@@ -535,10 +384,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
 
   defp settlement(params), do: Map.get(params, :settlement, "stealth")
 
-  # Stealth settlement: derive the recipient's compressed spending and viewing
-  # public keys from their ERC-6538 meta-address. Xochi (Riddler) rejects a
-  # stealth quote without them, and derives the stealth address + announcement
-  # server-side from these keys, so the client only supplies the keys.
+  # Riddler rejects a stealth quote without the recipient's compressed spending
+  # and viewing keys (from their ERC-6538 meta-address) and derives the stealth
+  # address and announcement server-side from them.
   defp stealth_keys("stealth", %{recipient_meta_address: meta, to_chain_id: chain})
        when is_binary(meta) do
     case Stealth.decode_meta_address(meta, chain) do
@@ -583,14 +431,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
   defp settlement_atom("shielded"), do: :shielded
   defp settlement_atom(_), do: :invalid
 
-  defp solvable_quote(config, request) do
-    case Xochi.get_quote(config, request) do
-      {:ok, %QuoteResponse{can_solve: true} = quote} -> {:ok, quote}
-      {:ok, %QuoteResponse{error: err}} -> {:error, {:cannot_solve, err}}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
   # The gate reserves `amount` in the policy's unit; the ledger calls that
   # follow (release, tag) take the reserved amount it returns.
   defp authorize(context, config, request, amount) do
@@ -603,231 +443,10 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
     )
   end
 
-  # Load-balanced Riddler nodes occasionally miss a freshly issued quote and
-  # reject the execute as expired/not-found. Re-quote and re-execute once under
-  # the same spend reservation (same logical payment, so no second authorize).
-  #
-  # The dispatched intent is checkpointed before submit so that a crash during
-  # submit leaves a record a resumed run can poll instead of re-signing.
-  defp execute(config, request, quote, floor, wallet, context, amount, store, key) do
-    case submit(config, quote, wallet, request, context, amount, store, key) do
-      {:ok, _exec, _quote} = dispatched ->
-        dispatched
-
-      # Already released and nothing dispatched; the checkpoint is not ours.
-      {:refused, reason} ->
-        {:error, reason}
-
-      {:error, reason} ->
-        if quote_expired?(reason),
-          do: retry_execute(config, request, floor, wallet, context, amount, store, key),
-          else: release_and_clear(context, amount, reason, store, key)
-    end
-  end
-
-  # The re-quote is a new quote from the same endpoint whose first answer
-  # expired, so it is held to the same method and floor checks before anything
-  # is signed. A refusal releases the reservation and reports itself, not as an
-  # execute failure.
-  defp retry_execute(config, request, floor, wallet, context, amount, store, key) do
-    with {:ok, quote} <- solvable_quote(config, request),
-         :ok <- assert_quote(quote, request, floor) |> refuse_retry(context, amount, store, key),
-         {:ok, _exec, _quote} = dispatched <-
-           submit(config, quote, wallet, request, context, amount, store, key) do
-      dispatched
-    else
-      {:refused, reason} -> {:error, reason}
-      {:error, reason} -> release_and_clear(context, amount, reason, store, key)
-    end
-  end
-
-  # Sign before the dispatched checkpoint: a signing/encoding failure is proven
-  # local and can release the reservation. Once the checkpoint is written and
-  # submission starts, any exception or ambiguous client outcome must remain in
-  # doubt; retrying or releasing then could double-spend or free already-spent
-  # budget.
-  defp submit(config, quote, wallet, request, context, amount, store, key) do
-    with {:ok, bundle} <- safe_sign(quote, wallet, request) do
-      now = now(context)
-
-      acquire_dispatch(%{
-        amount: amount,
-        bundle: bundle,
-        config: config,
-        context: context,
-        key: key,
-        now: now,
-        principal: SettlementState.principal(context, wallet),
-        quote: quote,
-        store: store
-      })
-    end
-  end
-
-  defp acquire_dispatch(dispatch) do
-    record =
-      dispatched_record(
-        dispatch.quote,
-        dispatch.principal,
-        dispatch.bundle[:deadline],
-        dispatch.now
-      )
-
-    case Checkpoint.put_new(dispatch.store, dispatch.key, record) do
-      :ok ->
-        bind_dispatch_owner(dispatch)
-        dispatch_owned(dispatch)
-
-      # Another run of this payment holds the key, so this run's reservation is
-      # released here, once. When that run's record is already gone there is
-      # nothing to resume: this run stops without sending, as a refusal the
-      # caller does not release again.
-      {:error, :exists} ->
-        SpendGate.release(dispatch.context, dispatch.amount, %{
-          protocol: :xochi,
-          reason: :concurrent_dispatch
-        })
-
-        case Checkpoint.fetch(dispatch.store, dispatch.key) do
-          {:ok, existing} -> {:ok, resumed_execute(existing), dispatch.quote}
-          :error -> {:refused, :checkpoint_race}
-        end
-    end
-  end
-
-  defp bind_dispatch_owner(dispatch) do
-    SettlementState.bind(
-      dispatch.store,
-      dispatch.config.base_url,
-      dispatch.principal,
-      dispatch.quote.intent_id,
-      dispatch.bundle[:deadline],
-      dispatch.now,
-      dispatch_key: dispatch.key
-    )
-  end
-
-  defp dispatch_owned(dispatch) do
-    result =
-      dispatch.config
-      |> safe_dispatch(dispatch.bundle, dispatch.quote.intent_id)
-      |> Xochi.as_dispatched(dispatch.quote.intent_id)
-
-    case result do
-      {:ok, exec} ->
-        bind_dispatch_owner(dispatch)
-
-        ReadTokenStore.put(
-          dispatch.store,
-          dispatch.config.base_url,
-          dispatch.principal,
-          exec.intent_id,
-          exec.read_token,
-          dispatch.now
-        )
-
-        tag_dispatch(dispatch.context, exec, dispatch.amount)
-        {:ok, exec, dispatch.quote}
-
-      {:error, _reason} = error ->
-        clear_owned_dispatch(
-          dispatch.store,
-          dispatch.key,
-          dispatch.config.base_url,
-          dispatch.principal,
-          dispatch.quote.intent_id
-        )
-
-        error
-    end
-  end
-
-  defp resumed_execute(record) do
-    %ExecuteResponse{
-      intent_id: record.intent_id,
-      status: Map.get(record, :status, :unknown),
-      reconciling: true
-    }
-  end
-
-  defp clear_owned_dispatch(store, key, base_url, principal, intent_id) do
-    case Checkpoint.fetch(store, key) do
-      {:ok, %{principal: ^principal}} ->
-        Checkpoint.delete(store, key)
-        SettlementState.forget(store, base_url, principal, intent_id)
-        ReadTokenStore.delete(store, base_url, principal, intent_id)
-
-      _ ->
-        :ok
-    end
-  end
-
-  defp now(context) do
-    context
-    |> Map.get(:clock, fn -> System.system_time(:second) end)
-    |> then(fn clock -> clock.() end)
-  end
-
-  defp safe_sign(quote, wallet, request) do
-    Xochi.sign_intent(quote, wallet, request)
-  rescue
-    exception -> {:error, {:exception, Exception.message(exception)}}
-  end
-
-  defp safe_dispatch(config, bundle, intent_id) do
-    Xochi.execute_signed(config, bundle)
-  rescue
-    _exception -> {:ok, in_doubt(intent_id)}
-  catch
-    _kind, _reason -> {:ok, in_doubt(intent_id)}
-  end
-
-  defp in_doubt(intent_id) do
-    %ExecuteResponse{
-      intent_id: intent_id,
-      status: :unknown,
-      error: "response_exception",
-      reconciling: true
-    }
-  end
-
-  defp refuse_retry(:ok, _context, _amount, _store, _key), do: :ok
-
-  defp refuse_retry({:error, reason}, context, amount, store, key) do
-    SpendGate.release(context, amount, %{protocol: :xochi, reason: :requote_refused})
-    Checkpoint.delete(store, key)
-    {:refused, reason}
-  end
-
-  # A proven local failure or clean server rejection means nothing dispatched:
-  # release the reservation and let a later retry start clean.
-  defp release_and_clear(context, amount, reason, store, key) do
-    SpendGate.release(context, amount, %{protocol: :xochi, reason: :execute_failed})
-    Checkpoint.delete(store, key)
-    {:error, {:execute_failed, reason}}
-  end
-
-  # The intent dispatched: bind the reserved amount to its id so a later refund
-  # (observed by PollXochiStatus) releases exactly this reservation, idempotently.
-  defp tag_dispatch(context, %{intent_id: intent_id}, amount) when is_binary(intent_id),
-    do: SpendGate.tag_reservation(context, intent_id, amount)
-
-  defp tag_dispatch(_context, _exec, _amount), do: :ok
-
-  defp quote_expired?({:http, _status, body}) when is_map(body) do
-    code = to_string(body["error"] || body["reason"] || "")
-    message = to_string(body["message"] || "")
-
-    String.contains?(code, "quote_expired") or code == "not_found" or
-      String.contains?(String.downcase(message), "expired")
-  end
-
-  defp quote_expired?(_reason), do: false
-
-  # The stealth address is whatever Xochi derived and announced server-side from
-  # the supplied keys. We report that authoritative value; we do not derive one
-  # client-side, since an independent derivation uses a different ephemeral key
-  # and would name an address the funds never landed on.
+  # The stealth address is the one Xochi derived and announced server-side; a
+  # client-side derivation would use a different ephemeral key and name an
+  # address the funds never landed on. `reconciling` surfaces an in-doubt
+  # execute rather than reporting it as a completed payment.
   defp summary(request, quote, exec) do
     %{
       intent_id: exec.intent_id,
@@ -836,10 +455,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
       to_amount: quote.to_amount,
       xochi_fee: quote.xochi_fee,
       stealth_address: exec.stealth_address,
-      # Surface the in-doubt state rather than reporting a clean success: an
-      # execute the worker could not confirm is not a completed payment. The
-      # retained checkpoint and budget reservation force poll/operator
-      # reconciliation instead of an unsafe retry or apparent refund.
       reconciling: exec.reconciling
     }
   end
