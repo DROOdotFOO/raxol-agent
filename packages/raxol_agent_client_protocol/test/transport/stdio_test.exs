@@ -86,26 +86,51 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioTest do
                      2_000
     end
 
-    # Pinned, so this transport's scrub does not drift with raxol_agent's,
-    # which follows raxol_core's wider pattern.
-    test "the credential pattern scrubs exactly these names" do
-      pattern = Stdio.credential_pattern()
-
-      scrubbed =
+    # Concrete names, independent of either regex: the first list is what the
+    # suffix pattern this transport had during 0.2.0 development scrubbed
+    # (never released), the second what only raxol_core adds.
+    test "secret?/1 covers the old suffix scrub and raxol_core's shapes" do
+      old =
         ~w(OPENAI_API_KEY AWS_ACCESS_KEY_ID ALCHEMY_APIKEY GH_TOKEN WALLET_PRIVKEY APP_SECRET
            DB_PASSWORD SMTP_PASS GPG_PASSPHRASE WALLET_MNEMONIC WALLET_SEED_PHRASE
            GOOGLE_CREDENTIALS SENTRY_DSN MAINNET_RPC RPC_BASE BASE_RPC_URL MNEMONIC
-           SEED_PHRASE SSH_AUTH_SOCK OP_SESSION_me my_api_key)
+           SEED_PHRASE SSH_AUTH_SOCK OP_SESSION_me my_api_key smtp_pass x_dsn seed_phrase
+           op_session_me)
 
-      # The credentials among these (DATABASE_URL onwards) are known misses:
-      # only raxol_core's pattern or named list catches them, and this package does not
-      # depend on it. A spawner adds them through `:unset_env`.
-      kept =
-        ~w(PATH HOME KEYBOARD TOKENIZERS_PARALLELISM GRPC_TRACE DATABASE_URL PGPASSWORD
-           API_KEYS SECRET_KEY_BASE RELEASE_COOKIE KEY TOKEN)
+      core = ~w(DATABASE_URL PGPASSWORD API_KEYS SECRET_KEY_BASE RELEASE_COOKIE KEY TOKEN)
+      kept = ~w(PATH HOME KEYBOARD TOKENIZERS_PARALLELISM GRPC_TRACE PASSPORT_HOME DSNX)
 
-      for name <- scrubbed, do: assert(Regex.match?(pattern, name), name)
-      for name <- kept, do: refute(Regex.match?(pattern, name), name)
+      for name <- old ++ core, do: assert(Stdio.secret?(name), name)
+      for name <- kept, do: refute(Stdio.secret?(name), name)
+    end
+
+    # `credential_gaps/0` is right only for this Core pattern. A raxol_core
+    # release that changes it fails here, before it can narrow (or make
+    # redundant) what the gap list covers.
+    test "raxol_core's credential pattern is the one the gap list was written against" do
+      core = Raxol.Core.ChildEnv.credential_pattern()
+
+      # Whitespace is insignificant in an `x` regex.
+      assert String.replace(Regex.source(core), ~r/\s+/, "") ==
+               ~S"(\A|_)(APIKEYS?|KEYS?|PRIVKEY|TOKENS?|SECRETS?|PASSWORD|PASSWD|PASSPHRASE|MNEMONIC|CREDENTIALS?)(_|\z)" <>
+                 ~S"|(\A|_)(DATABASE|POSTGRES|POSTGRESQL|MYSQL|REDIS|MONGO|MONGODB|AMQP|RABBITMQ)_UR[LI]" <>
+                 ~S"|(\A|_)PG\w*PASSWORD|(?<!G)RPC"
+
+      assert Enum.sort(Regex.opts(core)) == [:caseless, :extended]
+    end
+
+    test "malformed :env and :scrub_env raise in the caller" do
+      assert_raise ArgumentError, ~r/:env entries.*\{string, nil\}/, fn ->
+        Stdio.start_spawn("sh", ["-c", "true"], env: [{"X_API_KEY", nil}])
+      end
+
+      assert_raise ArgumentError, ~r/:env entries.*\{string, integer\}/, fn ->
+        Stdio.start_spawn("sh", ["-c", "true"], env: [{"PORT", 4000}], scrub_env: false)
+      end
+
+      assert_raise ArgumentError, ~r/:scrub_env must be true or false/, fn ->
+        Stdio.start_spawn("sh", ["-c", "true"], scrub_env: nil)
+      end
     end
 
     test ":unset_env names are unset too, even without a credential name" do

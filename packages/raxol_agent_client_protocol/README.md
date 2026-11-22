@@ -18,6 +18,10 @@ end
   supervised tasks; permission asks fail closed.
 - Transports: `Transport.Stdio` (newline-delimited JSON; frames over 16 MiB or
   nested over 256 deep are refused) and the in-process `Transport.Paired`.
+  A spawned agent does not inherit the node's credentials: `start_spawn/3`
+  applies `Raxol.Core.ChildEnv`'s scrub (see its docs for the opt-outs).
+- Depends on `jason` and `raxol_core` (for that scrub), which brings
+  `:telemetry` and starts OTP's `:mnesia` application in RAM.
 - `use Raxol.AgentClientProtocol.Client, fs_sandbox: root` answers `fs/*`
   inside `root` only (see `Client.FsSandbox` for the exact guarantees).
 - Resumable sessions (vendor extension): an append-only journal with

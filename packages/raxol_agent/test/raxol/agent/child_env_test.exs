@@ -36,8 +36,10 @@ defmodule Raxol.Agent.ChildEnvTest do
         do: assert(ChildEnv.secret?(name), name)
   end
 
-  # The gap list is only right for this Core pattern. A raxol_core release
-  # that changes it fails here, before it can narrow what shells inherit.
+  # The gap list (`Raxol.AgentClientProtocol.Transport.Stdio.credential_gaps/0`,
+  # pinned there too) is only right for this Core pattern. A raxol_core
+  # release that changes it fails here, before it can narrow what shells
+  # inherit.
   test "Core's credential pattern is the one the gap list was written against" do
     core = Raxol.Core.ChildEnv.credential_pattern()
 
@@ -50,29 +52,29 @@ defmodule Raxol.Agent.ChildEnvTest do
     assert Enum.sort(Regex.opts(core)) == [:caseless, :extended]
   end
 
-  # `Raxol.AgentClientProtocol.Transport.Stdio` keeps its own suffix pattern
-  # (it cannot depend on raxol_core): every name it matches must be one this
-  # module denies, so a shell never sees more than an ACP agent would.
-  test "every name the ACP stdio pattern matches is denied here" do
-    acp = Raxol.AgentClientProtocol.Transport.Stdio.credential_pattern()
-
+  # `Raxol.AgentClientProtocol.Transport.Stdio` applies Core's scrub plus the
+  # gap shapes this module reuses, so this mostly guards against the two
+  # diverging in how they apply `pass:` or case. The concrete-name test above
+  # is the one independent of both regexes.
+  test "every name the ACP stdio transport denies is denied here" do
     corpus =
       for prefix <- ["", "X_", "MY_APP_", "x_"],
           suffix <-
-            ~w(KEY KEY_ID APIKEY TOKEN PRIVKEY SECRET PASSWORD PASS PASSPHRASE MNEMONIC
-               SEED_PHRASE CREDENTIALS DSN RPC),
+            ~w(KEY KEY_ID KEYS APIKEY TOKEN TOKENS PRIVKEY SECRET PASSWORD PASSWD PASS
+               PASSPHRASE MNEMONIC SEED_PHRASE CREDENTIALS DSN RPC DATABASE_URL REDIS_URI),
           name = prefix <> "A_" <> suffix,
           variant <- [name, String.downcase(name)],
           do: variant
 
     extra =
       ~w(RPC_BASE BASE_RPC_URL X_RPC_Y MNEMONIC SEED_PHRASE SSH_AUTH_SOCK OP_SESSION_me
-         mnemonic seed_phrase ssh_auth_sock op_session_me rpc_base)
+         PGPASSWORD SECRET_KEY_BASE RELEASE_COOKIE TOKEN mnemonic seed_phrase ssh_auth_sock
+         op_session_me rpc_base release_cookie)
 
-    matched = Enum.filter(corpus ++ extra, &Regex.match?(acp, &1))
-    assert length(matched) == length(corpus ++ extra)
+    denied = Enum.filter(corpus ++ extra, &Raxol.AgentClientProtocol.Transport.Stdio.secret?/1)
+    assert length(denied) == length(corpus ++ extra)
 
-    for name <- matched, do: assert(ChildEnv.secret?(name), name)
+    for name <- denied, do: assert(ChildEnv.secret?(name), name)
   end
 
   test "names the ACP stdio transport unsets are denied here too" do

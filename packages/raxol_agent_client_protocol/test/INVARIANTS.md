@@ -161,7 +161,7 @@ reorder buffer and no settle timer needed on this path.
 | D6 | Streaming live: `prompt_stream/4` invokes `on_update` synchronously at receipt, strictly before the terminal result, with no accumulation (O(1): the loop keeps no update list at all). | `client_ergonomics_test.exs:213` (positive case); `connection_delivery_test.exs` D2's `prompt_stream/4` gap test re-confirms the no-settle-timer half |
 | D7 | Recursive namespace: a straggler demuxed after a turn's result is stamped out-of-turn and never reaches the departed owner as a turn message; a fresh turn for the same session gets a fresh receiver-minted token with ordinals reset to 0 (no cross-turn aliasing); two sessions' concurrent turns never cross-deliver. | `connection_delivery_test.exs` `describe "D7 recursive turn namespace"` |
 | D8 | **RESERVED**: replay idempotence across reconnect (reattach/journal integration); not yet implemented. | - |
-| D9 | Telemetry contract: every delivery decision emits `[:raxol, :acp, :delivery]` with `%{session, turn, decision, buffered, ordinal}` (direct path: `decision: :emit, buffered: 0`); the client's fail-the-turn gap emits exactly one `:fail` decision. Asserted with real `:telemetry` handlers (a dev/test-only dependency). | `connection_delivery_test.exs` `describe "D9 telemetry contract"` |
+| D9 | Telemetry contract: every delivery decision emits `[:raxol, :acp, :delivery]` with `%{session, turn, decision, buffered, ordinal}` (direct path: `decision: :emit, buffered: 0`); the client's fail-the-turn gap emits exactly one `:fail` decision. Asserted with real `:telemetry` handlers (a runtime dependency through raxol_core since 0.2.0). | `connection_delivery_test.exs` `describe "D9 telemetry contract"` |
 
 ---
 

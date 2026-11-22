@@ -509,9 +509,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
   # [:raxol, :acp, :delivery] with %{session, turn, decision, buffered,
   # ordinal}, partitioning into :emit | :buffer | :gap | :fail (:gap is
   # unreachable in v1 -- nothing is coalescible; not asserted here, no
-  # such variant exists yet). `:telemetry` is a dev/test-only dependency, so
-  # `Telemetry.execute/3` emits here while the published package does not
-  # require it.
+  # such variant exists yet). `:telemetry` is a runtime dependency (through
+  # raxol_core) since 0.2.0, so `Telemetry.execute/3` emits here as it does
+  # in a host.
   # ===========================================================================
 
   @doc false

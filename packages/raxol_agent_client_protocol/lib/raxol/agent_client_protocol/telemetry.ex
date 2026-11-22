@@ -11,7 +11,9 @@ defmodule Raxol.AgentClientProtocol.Telemetry do
   not an invariant. The test suite fails if `lib/` emits an event missing from
   `events/0`, or if `events/0` lists one nothing emits.
 
-  `:telemetry` is optional: `execute/2,3` are no-ops when it is not loaded.
+  Since 0.2.0, `:telemetry` is a runtime dependency, through raxol_core. The
+  `Code.ensure_loaded?/1` guard in `execute/3` stays so a build that strips it
+  (a release that excludes it) still runs: emitting is then a no-op.
   """
 
   @compile {:no_warn_undefined, :telemetry}

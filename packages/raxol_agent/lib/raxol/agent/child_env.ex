@@ -38,14 +38,15 @@ defmodule Raxol.Agent.ChildEnv do
 
       config :raxol_core, Raxol.Core.ChildEnv, pass: ["GH_TOKEN"]
 
-  `Raxol.AgentClientProtocol.Transport.Stdio` cannot depend on raxol_core and
-  keeps its own, narrower suffix pattern; `child_env_test.exs` checks that
-  every name it scrubs is one this module scrubs too. An ACP agent spawned
-  with that pattern alone still inherits what only Core's pattern or this
-  module's names catch (`DATABASE_URL`, `PGPASSWORD`, `API_KEYS`,
-  `SECRET_KEY_BASE`, `PROTON_UID`, ...). A spawner that wants the shell's
-  scrub passes `unset_env: Raxol.Agent.ChildEnv.unset_names()`. MCP stdio
-  servers are spawned by raxol_mcp with `Raxol.Core.ChildEnv` alone.
+  The gap shapes are `Raxol.AgentClientProtocol.Transport.Stdio.credential_gaps/0`,
+  which this module reuses. ACP's stdio transport applies Core's scrub plus
+  those shapes, but not this module's named list, so an ACP agent still
+  inherits the Catalog key variables, the ORDER_* URLs, `PROTON_UID` and the
+  sidecar URL unless its spawner passes
+  `unset_env: Raxol.Agent.ChildEnv.unset_names()`. MCP stdio servers are
+  spawned by raxol_mcp with `Raxol.Core.ChildEnv` alone, so they still
+  inherit gap-shaped variables (`SMTP_PASS`, `SENTRY_DSN`, `OP_SESSION_*`)
+  until raxol_core covers them.
 
   Every function here reads `Raxol.Core.ChildEnv`'s config and raises
   `ArgumentError` when it is malformed (since raxol_core 2.9, an unknown or
@@ -58,12 +59,8 @@ defmodule Raxol.Agent.ChildEnv do
   """
 
   alias Raxol.Agent.Backend.Catalog
+  alias Raxol.AgentClientProtocol.Transport.Stdio
   alias Raxol.Core.ChildEnv, as: CoreEnv
-
-  # ACP-stdio shapes Core denies neither by pattern nor by name (raxol_core
-  # 2.9; `child_env_test.exs` pins Core's pattern, so a change to it fails
-  # the build instead of narrowing this).
-  @gaps ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
 
   @named ~w(
     ORDER_BUNDLER_URL
@@ -102,7 +99,7 @@ defmodule Raxol.Agent.ChildEnv do
 
   @spec own?(String.t()) :: boolean()
   defp own?(name),
-    do: String.upcase(name) in own_named_upcase() or Regex.match?(@gaps, name)
+    do: String.upcase(name) in own_named_upcase() or Regex.match?(Stdio.credential_gaps(), name)
 
   @spec own_named() :: [String.t()]
   defp own_named, do: Enum.flat_map(Catalog.entries(), & &1.env_keys) ++ @named
