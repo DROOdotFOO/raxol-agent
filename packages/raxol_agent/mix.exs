@@ -38,9 +38,10 @@ defmodule RaxolAgent.MixProject do
   defp deps do
     [
       runtime_dep(:raxol, "~> 2.8", "."),
-      # 2.9: `Raxol.Core.ChildEnv` matches credential names itself, and
-      # `Raxol.Agent.ChildEnv` delegates to it (`pass/0`, `secret?/1`).
-      runtime_dep(:raxol_core, "~> 2.9", "packages/raxol_core"),
+      # `Raxol.Agent.ChildEnv` delegates its matching to `Raxol.Core.ChildEnv`
+      # (`pass/0`, `secret?/1`); 2.9.1 covers the `_PASS`, `_SEED_PHRASE`,
+      # `_DSN` and `OP_SESSION_*` shapes it used to add itself.
+      runtime_dep(:raxol_core, "~> 2.9.1", "packages/raxol_core"),
       runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp"),
       runtime_dep(:raxol_journal, "~> 2.8", "packages/raxol_journal"),
       {:circular_buffer, "~> 1.0"},

@@ -104,19 +104,48 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioTest do
       for name <- kept, do: refute(Stdio.secret?(name), name)
     end
 
-    # `credential_gaps/0` is right only for this Core pattern. A raxol_core
-    # release that changes it fails here, before it can narrow (or make
-    # redundant) what the gap list covers.
-    test "raxol_core's credential pattern is the one the gap list was written against" do
+    # raxol_core 2.9.1's pattern, pinned: a release that changes it fails
+    # here, so a narrowing cannot reach spawned agents unnoticed.
+    test "raxol_core's credential pattern is the 2.9.1 one" do
       core = Raxol.Core.ChildEnv.credential_pattern()
 
       # Whitespace is insignificant in an `x` regex.
       assert String.replace(Regex.source(core), ~r/\s+/, "") ==
-               ~S"(\A|_)(APIKEYS?|KEYS?|PRIVKEY|TOKENS?|SECRETS?|PASSWORD|PASSWD|PASSPHRASE|MNEMONIC|CREDENTIALS?)(_|\z)" <>
-                 ~S"|(\A|_)(DATABASE|POSTGRES|POSTGRESQL|MYSQL|REDIS|MONGO|MONGODB|AMQP|RABBITMQ)_UR[LI]" <>
-                 ~S"|(\A|_)PG\w*PASSWORD|(?<!G)RPC"
+               ~S"(\A|_)(APIKEYS?|KEYS?|PRIVKEY|PRIVATEKEY|TOKENS?|SECRETS?|CLIENTSECRET|AUTHTOKEN|AUTHKEY" <>
+                 ~S"|APITOKEN|ACCESSTOKEN|CREDENTIALS?|DSN|PAT|CONNECTION_STRING|PASSWORD|PASSWD" <>
+                 ~S"|PASSPHRASE|PASS|MNEMONICS?|SEEDPHRASE|SEED_PHRASE|(WALLET|MASTER|HD|TOTP)_SEED)" <>
+                 ~S"(_|\d|\z)" <>
+                 ~S"|(\A|_)PK\d*\z|_PWD(_|\d|\z)|WEBHOOK|\AOP_SESSION_|(\A|_)(BW|LPASS)_SESSION(_|\z)" <>
+                 ~S"|(\A|_)(DATABASE|POSTGRES|POSTGRESQL|MYSQL|MARIADB|MSSQL|REDIS|REDISCLOUD|REDISTOGO" <>
+                 ~S"|VALKEY|MEMCACHED|MONGO|MONGODB|AMQP|AMQPS|CLOUDAMQP|RABBITMQ|ELASTICSEARCH" <>
+                 ~S"|OPENSEARCH|CLICKHOUSE|COUCHDB|MONGOHQ|MONGOLAB)(_\w+)?_UR[LI]" <>
+                 ~S"|(\A|_)(DB|PG|BROKER|SMTP|MAIL|EMAIL)_UR[LI]|(\A|_)PG\w*PASSWORD|(?<!G)RPC"
 
       assert Enum.sort(Regex.opts(core)) == [:caseless, :extended]
+    end
+
+    # Before raxol_core 2.9.1 this transport added these shapes on top of
+    # Core (`credential_gaps/0`, now removed). Every name they matched must
+    # still be denied by Core alone.
+    test "every name the removed gap list covered is still scrubbed" do
+      removed_gaps = ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
+
+      names =
+        for prefix <- ["X_", "MY_APP_", "A1_", "x_", "my_app_"],
+            stem <- ~w(PASS SEED_PHRASE DSN WALLET_SEED_PHRASE SMTP_PASS SENTRY_DSN),
+            name = prefix <> stem,
+            variant <- [name, String.downcase(name)],
+            do: variant
+
+      names =
+        names ++
+          ~w(SEED_PHRASE seed_phrase Seed_Phrase OP_SESSION_ OP_SESSION_me op_session_x
+             OP_SESSION_my_team_1 Op_Session_abc)
+
+      covered = Enum.filter(names, &Regex.match?(removed_gaps, &1))
+      assert length(covered) == length(names)
+
+      for name <- covered, do: assert(Stdio.secret?(name), name)
     end
 
     test "malformed :env and :scrub_env raise in the caller" do

@@ -62,11 +62,11 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioChildEnvTest do
       for name <- all, do: assert(Stdio.secret?(name), name)
     end
 
-    # Core matches its named set case-insensitively and `pass:` exactly, so
-    # passing `SSH_AUTH_SOCK` makes Core let `ssh_auth_sock` through too.
+    # `pass:` is exact-case. raxol_core 2.9.0 still let `ssh_auth_sock` through
+    # once `SSH_AUTH_SOCK` was passed; this transport denies either case
+    # whatever Core does.
     test "a case variant of a Core-passed named secret is still unset" do
       Application.put_env(:raxol_core, Raxol.Core.ChildEnv, pass: ["SSH_AUTH_SOCK"])
-      refute Raxol.Core.ChildEnv.secret?("ssh_auth_sock")
 
       previous = Map.new(~w(SSH_AUTH_SOCK ssh_auth_sock), &{&1, System.get_env(&1)})
 

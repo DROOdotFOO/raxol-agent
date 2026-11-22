@@ -52,7 +52,7 @@ defmodule RaxolAgentClientProtocol.MixProject do
       # so a host does not start raxol_core (or the `:mnesia` its `.app`
       # lists). A host that builds a release must ship the code: see the
       # README's "Releases" note.
-      {:raxol_core, "~> 2.9", runtime: false},
+      {:raxol_core, "~> 2.9.1", runtime: false},
 
       # Dev/test only
       {:stream_data, "~> 1.1", only: [:dev, :test]},

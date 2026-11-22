@@ -178,15 +178,15 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
     * every variable whose name looks like a credential (case-insensitive):
       a `_`-separated segment such as `KEY`, `KEYS`, `APIKEY`, `TOKEN`,
-      `SECRET`, `PASSWORD`, `PASSPHRASE`, `MNEMONIC` or `CREDENTIALS`
-      anywhere in the name; a database or broker URL (`DATABASE_URL`,
-      `REDIS_URL`, ...); `PGPASSWORD`; `RPC` anywhere but in `GRPC`;
+      `SECRET`, `PASSWORD`, `PASS`, `PAT`, `PASSPHRASE`, `MNEMONIC`,
+      `SEED_PHRASE`, `DSN` or `CREDENTIALS` anywhere in the name; a non-leading
+      `PWD` segment; `WEBHOOK` anywhere; `OP_SESSION_*` and the Bitwarden
+      and LastPass sessions; wallet seeds (`WALLET_SEED`, ...); a database,
+      broker or mail URL (`DATABASE_URL`, `REDIS_URL`, `SMTP_URL`, ...);
+      `PGPASSWORD`; `RPC` anywhere but in `GRPC`;
     * raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
       `SSH_AUTH_SOCK`, raxol's own keys) and the operator's
       `config :raxol_core, Raxol.Core.ChildEnv, extra_secrets:`, set or not;
-    * and, on top of Core, a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
-      `SEED_PHRASE`, and `OP_SESSION_*`, which raxol_core 2.9's pattern
-      misses;
 
   minus this call's `:pass`.
 
@@ -421,28 +421,11 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   defp type(term) when is_tuple(term), do: "tuple"
   defp type(_term), do: "other"
 
-  # Core's pattern is pinned in `stdio_test.exs`: the gap list is right only
-  # for it, so a raxol_core release that changes it fails this package's
-  # build before it can narrow what agents inherit. raxol_core 2.9.1 adds
-  # these shapes to its own pattern; the list stays until this package
-  # requires it.
-  @gaps ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
-
-  # The names this transport scrubs on top of `Raxol.Core.ChildEnv`
-  # (case-insensitive). Internal: `Raxol.Agent.ChildEnv` applies the same list
-  # to directive shells, so there is one copy of it. Removed once this package
-  # requires raxol_core 2.9.1, whose pattern covers these names.
-  @doc false
-  @spec credential_gaps() :: Regex.t()
-  def credential_gaps, do: @gaps
-
   @doc """
   Whether a spawned agent is denied `name`: `Raxol.Core.ChildEnv` denies it
-  (its pattern or named set), it is on Core's `pass:` list (which this
-  transport does not honour), or it has a shape Core 2.9 misses (a `_PASS`,
-  `_SEED_PHRASE` or `_DSN` suffix, `SEED_PHRASE`, `OP_SESSION_*`), and it is
-  not in `opts[:pass]`. A spawn's `:env` and `:unset_env` are not
-  consulted. Raises like `start_spawn/3` on a malformed config or a missing
+  (its pattern or named set) or it is on Core's `pass:` list (which this
+  transport does not honour), and it is not in `opts[:pass]`. A spawn's
+  `:env` and `:unset_env` are not consulted. Raises like `start_spawn/3` on a malformed config or a missing
   raxol_core.
   """
   @spec secret?(String.t(), keyword()) :: boolean()
@@ -451,14 +434,14 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     denied?(name, core_pass_upcase(), names!(opts, :pass))
   end
 
-  # Core matches its named set case-insensitively but `pass:` exactly, so
-  # `pass: ["SSH_AUTH_SOCK"]` makes Core let `ssh_auth_sock` through as well.
-  # Matching Core's `pass:` case-insensitively here denies every such variant.
+  # Core's `pass:` is exact-case; it is matched case-insensitively here, so
+  # no case variant of a passed name reaches an agent whatever Core does with
+  # it (raxol_core 2.9.0 let `ssh_auth_sock` through after
+  # `pass: ["SSH_AUTH_SOCK"]`).
   @spec denied?(String.t(), [String.t()], [String.t()]) :: boolean()
   defp denied?(name, core_pass_upcase, pass) do
     name not in pass and
-      (String.upcase(name) in core_pass_upcase or CoreEnv.secret?(name) or
-         Regex.match?(@gaps, name))
+      (String.upcase(name) in core_pass_upcase or CoreEnv.secret?(name))
   end
 
   @spec core_pass_upcase() :: [String.t()]

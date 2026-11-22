@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   :secret_operation_crashed}`) and `redact_status/2` for `format_status/1`.
   `Raxol.Payments.Secret` and `Raxol.Earn.Secret` delegate to it.
 - **`Raxol.Agent.ChildEnv`**, `Raxol.Core.ChildEnv` plus this package's own
-  names and a few shapes Core's pattern misses, for children that run
+  names, for children that run
   model- or third-party-chosen code. `secrets/0` leaves out `pass:` names;
   `unset_names/0` is the full list for a spawner that takes names (the ACP
   stdio transport's `:unset_env`).
@@ -38,12 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{:missing_option, :backend}`.
 - **Breaking: directive shell commands no longer inherit provider API keys
   or any other credential-named variable.** `Raxol.Agent.ChildEnv` unsets
-  everything `Raxol.Core.ChildEnv` (raxol_core 2.9) does -- every name with
-  a credential segment (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`, ...), a
-  database or broker URL, `RPC` anywhere but in `GRPC`, `SSH_AUTH_SOCK` --
-  plus a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix, `SEED_PHRASE`,
-  `OP_SESSION_*`, the `Backend.Catalog` key variables, `PROTON_UID` and the
-  earn/order URLs. This reverses 3.0.0's "provider API keys are not
+  everything `Raxol.Core.ChildEnv` (raxol_core 2.9.1) does -- every name
+  with a credential segment (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`,
+  `_PASS`, `_PAT`, `_SEED_PHRASE`, `_DSN`, ...), `OP_SESSION_*` and the
+  Bitwarden and LastPass sessions, wallet seeds, a database, broker or mail
+  URL, a webhook URL, `RPC` anywhere but in `GRPC`, `SSH_AUTH_SOCK` -- plus
+  the `Backend.Catalog` key variables, `PROTON_UID` and the earn/order URLs. This reverses 3.0.0's "provider API keys are not
   scrubbed". It ships in a minor release because it removes access rather
   than changing an API, and the old behaviour exposed every key to a
   prompt-injected command. `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` and
@@ -59,12 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crash reports (`redact_status(status, keys, failure: true)`).
 - `Directive.Shell` renders its `env` names but not their values.
 - Requires `raxol_agent_client_protocol ~> 0.2.0`, whose stdio transport
-  scrubs a spawned agent's environment with `Raxol.Core.ChildEnv` plus
-  the `_PASS`, `_SEED_PHRASE`, `_DSN`, `SEED_PHRASE` and `OP_SESSION_*`
-  shapes Core misses, and
-  `raxol_core ~> 2.9`, whose `Raxol.Core.ChildEnv` this delegates to.
-  `Raxol.Agent.ChildEnv` takes those gap shapes from the transport's
-  internal `credential_gaps/0`, so there is one copy. An ACP agent still inherits this package's named list (the
+  scrubs a spawned agent's environment with `Raxol.Core.ChildEnv`, and
+  `raxol_core ~> 2.9.1`, whose `Raxol.Core.ChildEnv` this delegates to.
+  2.9.1's pattern covers the `_PASS`, `_SEED_PHRASE`, `_DSN`, `SEED_PHRASE`
+  and `OP_SESSION_*` shapes 2.9.0 missed, so `Raxol.Agent.ChildEnv` no
+  longer adds a pattern of its own (a test checks that every name the old
+  one matched is still denied). An ACP agent still inherits this package's
+  named list (the
   Catalog key variables, `ORDER_*` URLs, `PROTON_UID`, the sidecar URL)
   unless its spawner passes `unset_env: Raxol.Agent.ChildEnv.unset_names()`.
   That transport ignores `Raxol.Core.ChildEnv`'s `pass:`, so a name passed

@@ -14,18 +14,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raxol's directive shells and MCP stdio servers use. Unset unless named in
   `:env` or the new `:pass`:
   - any name with a credential word as a `_`-separated segment (`KEY`,
-    `KEYS`, `APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
-    `MNEMONIC`, `CREDENTIALS`, ...), case-insensitive, so `API_KEYS`
-    and a bare `TOKEN` go too;
-  - database and broker URLs (`DATABASE_URL`, `REDIS_URL`, ...),
-    `PGPASSWORD`, and `RPC` anywhere in a name but `GRPC`;
+    `KEYS`, `APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASS`,
+    `PAT`, `PASSPHRASE`, `MNEMONIC`, `SEED_PHRASE`, `DSN`, `CREDENTIALS`,
+    ...), case-insensitive, so `API_KEYS`, `SMTP_PASS` and a bare `TOKEN`
+    go too; a non-leading `PWD` segment; `WEBHOOK` anywhere;
+  - `OP_SESSION_*`, the Bitwarden and LastPass sessions, and wallet seeds
+    (`WALLET_SEED`, `HD_SEED`, ...);
+  - database, broker and mail URLs (`DATABASE_URL`, `REDIS_URL`,
+    `SMTP_URL`, ...), `PGPASSWORD`, and `RPC` anywhere in a name but `GRPC`;
   - raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
-    `SSH_AUTH_SOCK`, raxol's own keys) and the operator's `extra_secrets:`;
-  - on top of Core, names with a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
-    `SEED_PHRASE` and `OP_SESSION_*`, which Core 2.9's pattern misses.
-    `Transport.Stdio.credential_gaps/0`, which holds them for raxol_agent to
-    reuse, is internal (`@doc false`), not public API: it goes away once
-    this package requires raxol_core 2.9.1, which covers those names.
+    `SSH_AUTH_SOCK`, raxol's own keys) and the operator's `extra_secrets:`.
+
+  Some names that hold no secret match too (`PASS_THROUGH`, `DSN_TIMEOUT`,
+  `GLOB_PAT`, `WEBHOOK_PORT`, `ORIG_PWD`, any name over 256 bytes). Core's
+  `pass:` does not give them back to an agent (see below); the spawn's own
+  `:pass` or `:env` does.
+
+  The `_PASS`, `_SEED_PHRASE`, `_DSN`, `SEED_PHRASE` and `OP_SESSION_*`
+  shapes raxol_core 2.9.0 missed were added on top of Core during 0.2.0
+  development (`Transport.Stdio.credential_gaps/0`, internal and never
+  released); raxol_core 2.9.1 covers them, so that function is removed. A
+  test checks that every name it matched is still scrubbed.
 
   Also:
   - **Core's node-wide `pass:` list is not honoured.** A name the operator
@@ -45,7 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An agent that reads its own provider key from the environment needs it
   passed in `:env` or `:pass`, or `scrub_env: false` for the old behaviour.
   Breaking for such agents, hence 0.2.0.
-- **Requires `raxol_core ~> 2.9` as a `runtime: false` dependency.** Only
+- **Requires `raxol_core ~> 2.9.1` as a `runtime: false` dependency.** Only
   `Raxol.Core.ChildEnv`'s code is used, so raxol_core is not started, nor the
   `:mnesia` its `.app` lists, and `:telemetry` stays optional. A Mix release
   leaves a `runtime: false` dependency out: a release that does not already
