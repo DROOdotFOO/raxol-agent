@@ -7,7 +7,7 @@ defmodule Raxol.AgentClientProtocol.InvariantsCitationsTest do
   # Rows that deliberately cite a comment or moduledoc line, with text that
   # line must contain.
   @comment_citations %{
-    "connection_test.exs:80" => "IC-8 pins Connection",
+    "support/connection_case.ex:39" => "IC-8 pins Connection",
     "integration/end_to_end_test.exs:301" => "IC-8",
     "integration/end_to_end_test.exs:21" => "P-JS5",
     "attach_policy_test.exs:2" => "P-BUS4",
@@ -16,7 +16,7 @@ defmodule Raxol.AgentClientProtocol.InvariantsCitationsTest do
   }
 
   test "every INVARIANTS.md citation points at a test" do
-    test_files = Path.wildcard("test/**/*_test.exs")
+    test_files = Path.wildcard("test/**/*_test.exs") ++ Path.wildcard("test/support/**/*.ex")
     doc = File.read!("test/INVARIANTS.md")
     citations = doc |> String.split("\n") |> Enum.flat_map(&row_citations/1)
 
@@ -43,7 +43,7 @@ defmodule Raxol.AgentClientProtocol.InvariantsCitationsTest do
   # A bare `:N` cites the file named last before it in the same row, so it is
   # checked against that file too.
   defp row_citations(row) do
-    ~r/([a-z_\/]+_test\.exs)(?::(\d+))?|`:(\d+)`/
+    ~r/(support\/[a-z_\/]+\.ex|[a-z_\/]+_test\.exs)(?::(\d+))?|`:(\d+)`/
     |> Regex.scan(row)
     |> Enum.map_reduce(nil, fn
       [_, file], _last -> {[], file}

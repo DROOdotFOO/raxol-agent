@@ -58,7 +58,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
   test "I2 — stamp ephemeral ids from a fresh counter" do
     assert_anchor!(
       Path.join(@agent_lib, "emit_bridge.ex"),
-      "event = map_event(neutral, state.last_offset, session_id)",
+      "map_event(stamp_generation(neutral, state), state.last_offset, session_id)",
       "replace state.last_offset with System.unique_integer([:positive]) (fresh fake offsets)",
       "identity_invariants_test.exs — I2 property: ephemeral id != last durable offset"
     )
@@ -85,7 +85,7 @@ defmodule Raxol.Agent.Invariants.MutationControlsTest do
   test "I9 — narrow a payload shape" do
     assert_anchor!(
       Path.join(@agent_lib, "stream_pump.ex"),
-      "item_type: :tool_use,",
+      "call_id: Map.get(tool_use, :id)",
       "drop the call_id field from the tool_use item_completed payload",
       "contract_invariants_test.exs — pump producer test (required payload field call_id missing)"
     )

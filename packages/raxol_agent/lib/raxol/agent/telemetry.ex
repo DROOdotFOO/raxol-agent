@@ -82,9 +82,8 @@ defmodule Raxol.Agent.Telemetry do
     # driven on purpose by `raxol_journal`'s fault-injection suite.
     [:raxol, :agent, :journal, :damaged] => :operational,
 
-    # OPERATIONAL. Same reason as `:damaged`: the write was refused by the OS.
-    # There is a deliberate chmod-0500 fault test (tagged `:skip_on_ci`) whose
-    # entire job is to make this fire.
+    # OPERATIONAL. Same reason as `:damaged`: the write was refused by the OS,
+    # and `raxol_journal`'s chmod-0500 fault test makes it fire on purpose.
     [:raxol, :agent, :journal, :write_failed] => :operational,
 
     # OPERATIONAL. A sandbox refusing an action is the sandbox working. The

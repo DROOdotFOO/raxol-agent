@@ -1,0 +1,87 @@
+name: Release preflight
+description: >
+  Refuse a release whose tag does not match its package version, or whose
+  commit has no green CI run. Needs `actions: read` and a prior checkout.
+
+inputs:
+  tag-prefix:
+    description: Tag family, e.g. `raxol-cli-v`. The version check runs only when the ref is such a tag.
+    required: true
+  version-file:
+    description: >
+      Where the version is read: a package.json (its `version`) or a mix.exs
+      (its `@version`).
+    required: true
+  require-green-ci:
+    description: '"true" to wait for a successful CI run on this commit.'
+    default: 'true'
+  ci-workflow:
+    description: Workflow file whose run must have succeeded on this commit.
+    default: ci.yml
+  wait-minutes:
+    description: How long to wait for an in-progress CI run before failing.
+    default: '60'
+
+runs:
+  using: composite
+  steps:
+    - name: Match package version to tag
+      if: startsWith(github.ref, format('refs/tags/{0}', inputs.tag-prefix))
+      shell: bash
+      env:
+        RELEASE_TAG: ${{ github.ref_name }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        VERSION_FILE: ${{ inputs.version-file }}
+      run: |
+        set -euo pipefail
+        case "$VERSION_FILE" in
+          *package.json)
+            version="$(node -p 'require(require("node:path").resolve(process.argv[1])).version' "$VERSION_FILE")" ;;
+          *mix.exs)
+            version="$(sed -n 's/^  @version "\(.*\)"$/\1/p' "$VERSION_FILE")" ;;
+          *)
+            echo "::error::cannot read a version from $VERSION_FILE"; exit 1 ;;
+        esac
+
+        if [[ -z "$version" || "$RELEASE_TAG" != "$TAG_PREFIX$version" ]]; then
+          echo "::error::$RELEASE_TAG does not match $VERSION_FILE version '$version'"
+          exit 1
+        fi
+
+    # The release builds from this commit, so the suite must have passed on
+    # it. A run still in progress is waited for. A run cancelled by a newer
+    # push to the same branch counts as missing: start one on the tag itself
+    # with `gh workflow run ci.yml --ref <tag>`.
+    - name: Require green CI on this commit
+      if: inputs.require-green-ci == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CI_WORKFLOW: ${{ inputs.ci-workflow }}
+        WAIT_MINUTES: ${{ inputs.wait-minutes }}
+      run: |
+        set -euo pipefail
+        deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+
+        while :; do
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW/runs?head_sha=$GITHUB_SHA&per_page=100" \
+            --jq '[.workflow_runs[] | {status, conclusion}]')"
+
+          if jq -e 'any(.[]; .conclusion == "success")' <<<"$runs" >/dev/null; then
+            echo "$CI_WORKFLOW succeeded on $GITHUB_SHA"
+            exit 0
+          fi
+
+          if ! jq -e 'any(.[]; .status != "completed")' <<<"$runs" >/dev/null; then
+            echo "::error::no successful $CI_WORKFLOW run on $GITHUB_SHA (runs: $(jq -c . <<<"$runs"))"
+            exit 1
+          fi
+
+          if (( $(date +%s) >= deadline )); then
+            echo "::error::$CI_WORKFLOW on $GITHUB_SHA did not finish within $WAIT_MINUTES minutes"
+            exit 1
+          fi
+
+          echo "Waiting for $CI_WORKFLOW on $GITHUB_SHA to finish"
+          sleep 30
+        done

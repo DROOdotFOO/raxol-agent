@@ -10,6 +10,10 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentPolicyTest do
 
   # `amount` is a human amount of `from_token`; the gate converts it into the
   # policy's unit (USD here) before it reserves anything or the wallet signs.
+  # One accepted and one refused conversion prove the Action routes through the
+  # gate before signing; the pricing cases themselves (par, stale, unpriced,
+  # failing source, currency mismatch) live in spend_gate_test.exs, and their
+  # Failure mapping in failure_test.exs.
   describe "ExecuteXochiIntent policy unit" do
     @weth_base "0x4200000000000000000000000000000000000006"
 
@@ -63,73 +67,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentPolicyTest do
       assert metadata.protocol == :xochi
       assert metadata.source_asset == {:token, 8453, @weth_base}
       assert Decimal.equal?(metadata.source_amount, Decimal.new("0.002"))
-    end
-
-    test "a WETH intent with no price source is refused before signing" do
-      stub_quote_and_execute()
-      ledger = start_supervised!({Ledger, [name: nil]})
-      ctx = Map.delete(weth_ctx(ledger), :price_fn)
-
-      assert {:error,
-              %Failure{
-                reason: :invalid_request,
-                detail: {:unpriced_asset, %{reason: :no_price_source, unit: "USD"}}
-              }} = ExecuteXochiIntent.run(weth_params("0.002"), ctx)
-
-      refute_received :wallet_signed
-      assert Ledger.get_history(ledger, "a1") == []
-    end
-
-    test "a stale WETH price is refused before signing" do
-      stub_quote_and_execute()
-      ledger = start_supervised!({Ledger, [name: nil]})
-      stale = Static.price_fn(%{"WETH" => "3000"}, as_of: System.system_time(:second) - 3600)
-
-      assert {:error, %Failure{detail: {:unpriced_asset, %{reason: :no_price}}}} =
-               ExecuteXochiIntent.run(weth_params("0.002"), weth_ctx(ledger, %{price_fn: stale}))
-
-      refute_received :wallet_signed
-    end
-
-    test "a price source error refuses the intent before signing" do
-      stub_quote_and_execute()
-      ledger = start_supervised!({Ledger, [name: nil]})
-      failing = fn _symbol -> raise "price feed down" end
-
-      assert {:error,
-              %Failure{
-                retryable?: true,
-                detail: {:unpriced_asset, %{reason: :price_source_error}}
-              }} =
-               ExecuteXochiIntent.run(
-                 weth_params("0.002"),
-                 weth_ctx(ledger, %{price_fn: failing})
-               )
-
-      refute_received :wallet_signed
-    end
-
-    test "USDC counts at par with no price source" do
-      stub_quote_and_execute()
-      ledger = start_supervised!({Ledger, [name: nil]})
-      ctx = Map.delete(weth_ctx(ledger), :price_fn)
-
-      assert {:ok, _} = ExecuteXochiIntent.run(base_params(%{}), ctx)
-      assert [%{amount: amount}] = Ledger.get_history(ledger, "a1")
-      assert Decimal.equal?(amount, Decimal.new("0.50"))
-    end
-
-    test "a EUR policy refuses a USDC intent before signing" do
-      stub_quote_and_execute()
-      ledger = start_supervised!({Ledger, [name: nil]})
-      ctx = weth_ctx(ledger, %{policy: %{usd_policy() | currency: "EUR"}})
-
-      assert {:error,
-              %Failure{
-                detail: {:unpriced_asset, %{reason: :fx_unsupported, peg: "USD", unit: "EUR"}}
-              }} = ExecuteXochiIntent.run(base_params(%{}), ctx)
-
-      refute_received :wallet_signed
     end
 
     test "AutoPay x402 and Xochi spends add up against one session_max in USD" do

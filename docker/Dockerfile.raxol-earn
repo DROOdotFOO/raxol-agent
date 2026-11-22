@@ -22,7 +22,8 @@
 # authorization key (RAXOL_ACP_SIGNER_PRIVATE_KEY) -- both from the runtime env (fly
 # secrets), never the image.
 
-ARG ELIXIR_IMAGE=elixir:1.20.0-otp-29
+# Default only: CI passes the elixir pin from mise.toml as this build arg.
+ARG ELIXIR_IMAGE=elixir:1.20.2-otp-29
 ARG NODE_IMAGE=node:22-trixie-slim
 # The runner is a Node image so `node` runs the signing sidecar; the BEAM's own ERTS
 # ships in the release. It MUST be Debian trixie to match ELIXIR_IMAGE's glibc: the
