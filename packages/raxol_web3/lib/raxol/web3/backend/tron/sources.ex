@@ -1,9 +1,10 @@
 defmodule Raxol.Web3.Backend.Tron.Sources do
-  @moduledoc """
-  The three Tron MCP sources, the accepted chain references and what each
-  source declares. Data, dated 2026-09-14; the behaviour is in
-  `Raxol.Web3.Backend.Tron`.
-  """
+  @moduledoc false
+  # Internal to `Raxol.Web3.Backend.Tron`.
+  #
+  # The three Tron MCP sources, the accepted chain references and what each
+  # source declares. Data, dated 2026-09-14; the behaviour is in
+  # `Raxol.Web3.Backend.Tron`.
 
   @type source :: :trongrid | :sqd | :tronscan
 

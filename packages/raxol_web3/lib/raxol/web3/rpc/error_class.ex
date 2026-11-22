@@ -13,7 +13,7 @@ defmodule Raxol.Web3.RPC.ErrorClass do
 
   # -32004 is absent on purpose. On an EVM node it is a head block that has not
   # landed yet, which is transient and must stay `:unknown`; on Solana it is a
-  # slot with no block, which is an answer. Only `Raxol.Web3.Backend.Solana.RPC`
+  # slot with no block, which is an answer. Only the Solana backend
   # overrides it.
   @classes %{
     -32_601 => :not_found,

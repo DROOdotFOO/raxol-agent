@@ -62,6 +62,17 @@ defmodule Raxol.Web3.Backend.ConformanceTest do
 
   @tags [:evm, :aztec, :solana, :party, :tron, :conformance]
 
+  # The handle fields that carry an operator's credential. Tron takes no
+  # operator URL; its credential, if any, is a header in `http_opts`.
+  @credential_fields %{
+    blockscout: [:rpc_url],
+    jsonrpc: [:url],
+    aztec: [:base_url],
+    solana_sqd: [:url],
+    solana_rpc: [:url],
+    canton: [:scan_url, :ccscan_url, :ccscan_key]
+  }
+
   # One handle per backend and source, with @secret in every operator URL (in
   # the path, and in the query string for Solana's RPC), in an authorization
   # header, and in the ccscan key.
@@ -134,6 +145,11 @@ defmodule Raxol.Web3.Backend.ConformanceTest do
         {name, callback}
       end
 
+    # Every backend and source with an account callback contributes, so none
+    # can silently drop out. The two SQD archives declare no optional callback.
+    assert checked |> Enum.map(&elem(&1, 0)) |> Enum.uniq() |> Enum.sort() ==
+             Enum.sort(Map.keys(@own_tag) -- [:solana_sqd, :tron_sqd])
+
     assert length(checked) >= 15
     refute_received {:request, _path}
   end
@@ -143,9 +159,10 @@ defmodule Raxol.Web3.Backend.ConformanceTest do
       refute inspect(handle, limit: :infinity) =~ @secret, "#{name} renders a credential"
 
       # Redaction is of the rendering, not the state: an authenticated node
-      # still gets its key.
-      assert inspect(Map.from_struct(state), limit: :infinity) =~ @secret,
-             "#{name} dropped its credential from the handle"
+      # still gets its key, in the field that carries it.
+      for field <- Map.get(@credential_fields, name, []) do
+        assert Map.fetch!(state, field) =~ @secret, "#{name} dropped its credential from #{field}"
+      end
     end
   end
 end

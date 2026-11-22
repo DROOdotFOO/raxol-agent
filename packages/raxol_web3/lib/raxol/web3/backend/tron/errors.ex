@@ -1,10 +1,11 @@
 defmodule Raxol.Web3.Backend.Tron.Errors do
-  @moduledoc """
-  Maps what the Tron MCP sources return onto `Raxol.Web3.Backend.error()`.
-
-  Nothing upstream travels: a JSON-RPC error contributes its numeric code and
-  never its message, and a refusal announced in prose is classified by shape.
-  """
+  @moduledoc false
+  # Internal to `Raxol.Web3.Backend.Tron`.
+  #
+  # Maps what the Tron MCP sources return onto `Raxol.Web3.Backend.error()`.
+  #
+  # Nothing upstream travels: a JSON-RPC error contributes its numeric code and
+  # never its message, and a refusal announced in prose is classified by shape.
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.RPC.ErrorClass

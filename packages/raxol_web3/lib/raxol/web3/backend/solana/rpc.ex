@@ -1,9 +1,10 @@
 defmodule Raxol.Web3.Backend.Solana.RPC do
-  @moduledoc """
-  The JSON-RPC half of `Raxol.Web3.Backend.Solana`: one POST per call, the
-  documented rate-limit seed, and a cache stage that is told which bodies
-  are answers, because a node announces every refusal inside a 200.
-  """
+  @moduledoc false
+  # Internal to `Raxol.Web3.Backend.Solana`.
+  #
+  # The JSON-RPC half of `Raxol.Web3.Backend.Solana`: one POST per call, the
+  # documented rate-limit seed, and a cache stage that is told which bodies
+  # are answers, because a node announces every refusal inside a 200.
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Cache
@@ -54,7 +55,7 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
   `get_block/2` needs the code, because -32009 (a skipped slot) is a success.
   """
   @spec raw(state(), String.t(), list(), Raxol.Web3.TTL.class() | nil) ::
-          {:ok, term()} | {:rpc_error, integer()} | {:error, Backend.error()}
+          {:ok, term()} | {:rpc_error, integer() | nil} | {:error, Backend.error()}
   def raw(state, method, params, class) do
     body =
       Jason.encode!(%{
@@ -107,7 +108,9 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
   defp rpc_response({:ok, %{status: status, body: body}}) when status in 200..299 do
     case Jason.decode(body) do
       {:ok, %{"result" => result}} -> {:ok, result}
-      {:ok, %{"error" => %{"code" => code}}} -> {:rpc_error, code}
+      {:ok, %{"error" => %{"code" => code}}} when is_integer(code) -> {:rpc_error, code}
+      # A code that is not an integer is upstream text, and it does not travel.
+      {:ok, %{"error" => %{"code" => _other}}} -> {:rpc_error, nil}
       {:ok, _other} -> {:error, {:decode_failed, :jsonrpc}}
       {:error, _reason} -> {:error, {:decode_failed, :json}}
     end

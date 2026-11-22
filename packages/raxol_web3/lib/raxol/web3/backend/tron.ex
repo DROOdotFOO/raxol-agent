@@ -23,14 +23,14 @@ defmodule Raxol.Web3.Backend.Tron do
   TronGrid's `tools/list` alone was 269,860 bytes on 2026-09-14. None of that
   text reaches a served tool definition or an annotation: upstream names appear
   only as arguments this module chooses, and upstream prose travels only inside
-  a result payload that `Raxol.Web3.Backend.Tron.Normalize` takes structured
+  a result payload that the normalizers take structured
   fields out of.
 
   ## Two encodings for one account
 
   The reference is `{:tron, value}` and accepts Base58Check or hex for the same
   account. `Raxol.Web3.Tron.Address.canonical/1` collapses them, and it is
-  applied ONCE, at the edge, in `Tron.Normalize.account/1`. Everything past that point holds
+  applied ONCE, at the edge, before any request. Everything past that point holds
   Base58, so a cache key, a cursor scope and a rate-limit spend cannot differ
   by encoding for one account. The upstreams make the point themselves: a
   single `getTransactionById` response carried `owner_address` in Base58 and

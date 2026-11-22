@@ -1,10 +1,11 @@
 defmodule Raxol.Web3.Backend.Tron.Normalize do
-  @moduledoc """
-  Maps TronGrid, TronScan and SQD payloads onto the `Raxol.Web3.Backend`
-  shapes. Every account leaves here in Base58, however the upstream spelled
-  it, and an unreadable field is `nil` or a `{:decode_failed, _}`, never a
-  guess.
-  """
+  @moduledoc false
+  # Internal to `Raxol.Web3.Backend.Tron`.
+  #
+  # Maps TronGrid, TronScan and SQD payloads onto the `Raxol.Web3.Backend`
+  # shapes. Every account leaves here in Base58, however the upstream spelled
+  # it, and an unreadable field is `nil` or a `{:decode_failed, _}`, never a
+  # guess.
 
   import Raxol.Web3.Backend.Decode, only: [dig: 2, field: 2, int: 1, object: 1, rows_of: 1]
 

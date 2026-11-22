@@ -146,7 +146,7 @@ defmodule Raxol.Web3.MCPCall do
   # The third shape is the one `decode/1` cannot own, because it is not a
   # refusal at the MCP level at all: the server answered, `isError` is absent,
   # and what came back is a well-formed payload whose CONTENT says no.
-  # `Raxol.Web3.Backend.Tron.sqd_result/2` reads exactly that payload and
+  # `Raxol.Web3.Backend.SQD.refusal/2` reads exactly that payload and
   # turns `unknown_network` into `{:unsupported_chain, _}`, so caching it puts
   # the same refusal in front of every read of that class for the whole TTL,
   # which is the bug this predicate exists to remove. Returning the payload to

@@ -1,4 +1,4 @@
-defmodule Raxol.Web3.Backend.DecodeTest do
+defmodule Raxol.Web3.Backend.HelpersTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Web3.Backend.Cache

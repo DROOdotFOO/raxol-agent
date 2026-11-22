@@ -1,8 +1,9 @@
 defmodule Raxol.Web3.Backend.Solana.Normalize do
-  @moduledoc """
-  Maps Solana JSON-RPC results onto the `Raxol.Web3.Backend` shapes. See
-  `Raxol.Web3.Backend.Solana` for what each field does and does not claim.
-  """
+  @moduledoc false
+  # Internal to `Raxol.Web3.Backend.Solana`.
+  #
+  # Maps Solana JSON-RPC results onto the `Raxol.Web3.Backend` shapes. See
+  # `Raxol.Web3.Backend.Solana` for what each field does and does not claim.
 
   import Raxol.Web3.Backend.Decode, only: [dig: 2, object: 1]
 
