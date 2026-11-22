@@ -188,7 +188,7 @@ defmodule Raxol.Web3.Backend.Canton do
 
   Neither upstream publishes a figure. `api.cantonnodes.com` answered 429 after
   roughly three requests spaced a few seconds apart on 2026-09-14, and answered
-  every request spaced twelve seconds apart, so the refill rate below is **a
+  every request spaced twelve seconds apart, so the refill rate in `Scan.rate_limit/0` is **a
   guess anchored on that observed threshold** rather than a published number.
   ccscan's limits are **unverified**, because the endpoint that would document
   them is itself account-gated, so it gets the same conservative seed.
@@ -203,14 +203,12 @@ defmodule Raxol.Web3.Backend.Canton do
   @behaviour Raxol.Web3.Backend
 
   import Raxol.Web3.Backend.Decode,
-    only: [dig: 2, field: 2, int: 1, iso8601: 1, object: 1, ok_or: 3, page_rows: 1, rows_of: 1]
+    only: [dig: 2, field: 2, int: 1, iso8601: 1, object: 1, ok_or: 3, rows_of: 1]
 
   alias Raxol.Web3.Backend
-  alias Raxol.Web3.Backend.Cache
-  alias Raxol.Web3.Backend.Decode
+  alias Raxol.Web3.Backend.Canton.Holdings
+  alias Raxol.Web3.Backend.Canton.Scan
   alias Raxol.Web3.Backend.Paging
-  alias Raxol.Web3.Cursor
-  alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCPCall
 
   # The struct carries a credential, so it declares what `inspect/1` may show.
@@ -255,18 +253,6 @@ defmodule Raxol.Web3.Backend.Canton do
   @default_scan_url "https://api.cantonnodes.com/v0"
   @default_ccscan_url "https://ccscan.xyz/mcp"
 
-  # Every path probed 2026-09-14 against api.cantonnodes.com, all 200 keyless.
-  # Data, not behaviour: the method is part of the row because two of the five
-  # are POSTs whose parameters travel in a body rather than a query string.
-  @paths %{
-    round_of_latest_data: {:get, "/round-of-latest-data"},
-    dso: {:get, "/dso"},
-    acs_snapshot: {:get, "/state/acs/snapshot-timestamp"},
-    instance_names: {:get, "/splice-instance-names"},
-    holdings_summary: {:post, "/holdings/summary"},
-    holdings_state: {:post, "/holdings/state"}
-  }
-
   # Measured 2026-09-14: `tools/list` on the ccscan endpoint answers 200 with
   # exactly these 13 names and issues no session. Names only. The upstream's own
   # descriptions are not copied anywhere, which is ADR-0033 section 7's rule
@@ -275,34 +261,6 @@ defmodule Raxol.Web3.Backend.Canton do
   @ccscan_tools ~w(search get_network_overview get_economics get_price get_assets
                    get_transactions get_transaction get_party get_validators
                    get_sv_locking get_app_locking get_governance get_round)
-
-  # Splice's Daml `Decimal`, and measured: every amulet figure in every response
-  # probed carries exactly ten fractional digits.
-  @amulet_decimals 10
-
-  # `page_size` is a REQUIRED field on `POST /v0/holdings/state`, measured
-  # 2026-09-14: omitting it answers 400 with `DecodingFailure at .page_size:
-  # Missing required field`, which is the one field a specification reader
-  # would assume optional. The upstream's own ceiling is 1000, measured the
-  # same way: 1001 answers 400 naming the limit. 100 is this backend's choice
-  # inside that ceiling, and it is a judgement rather than a measurement: a
-  # party typically holds ONE consolidated Amulet contract, so a page rarely
-  # fills, and the cost of a larger one is bytes for a walk that will not
-  # happen. The ceiling enforces itself below rather than being a comment, so
-  # raising the page size past what the upstream accepts fails the build rather
-  # than a request.
-  @page_size 100
-  @max_page_size 1000
-
-  if @page_size > @max_page_size do
-    raise "page_size #{@page_size} exceeds the upstream ceiling of #{@max_page_size}, " <>
-            "measured 2026-09-14 on POST /v0/holdings/state"
-  end
-
-  # The refill is a guess, the capacity is derived. See "Rate limits" above.
-  @rate_limit [capacity: 4, refill_per_second: 0.2]
-
-  @content_type {"content-type", "application/json"}
 
   @optional_callbacks_declared [:get_transaction, :account_info, :token_balances, :raw_request]
 
@@ -371,7 +329,7 @@ defmodule Raxol.Web3.Backend.Canton do
 
   @doc "The probed endpoint table, as `{method, path}`. Data, not behaviour."
   @spec paths() :: %{atom() => {:get | :post, String.t()}}
-  def paths, do: @paths
+  def paths, do: Scan.paths()
 
   @doc "The ccscan tool names `raw_request/2` will dispatch."
   @spec raw_request_allowlist() :: [String.t()]
@@ -387,7 +345,7 @@ defmodule Raxol.Web3.Backend.Canton do
   Data, so the derivation in "Rate limits" is checkable rather than asserted.
   """
   @spec rate_limit() :: keyword()
-  def rate_limit, do: @rate_limit
+  def rate_limit, do: Scan.rate_limit()
 
   @impl Backend
   def backend, do: :canton
@@ -413,7 +371,7 @@ defmodule Raxol.Web3.Backend.Canton do
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
-    with {:ok, body} <- dso(state) do
+    with {:ok, body} <- Scan.dso(state) do
       {:ok,
        %{
          chain_ref: state.chain_ref,
@@ -432,7 +390,7 @@ defmodule Raxol.Web3.Backend.Canton do
 
   @impl Backend
   def block_height(%__MODULE__{} = state) do
-    with {:ok, body} <- get(state, :round_of_latest_data),
+    with {:ok, body} <- Scan.get(state, :round_of_latest_data),
          {:ok, round} <- fetch_round(body) do
       {:ok,
        %{
@@ -448,7 +406,7 @@ defmodule Raxol.Web3.Backend.Canton do
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, update_id) when is_binary(update_id) do
-    with {:ok, body} <- get_update(state, update_id) do
+    with {:ok, body} <- Scan.get_update(state, update_id) do
       {:ok, transaction(body)}
     end
   end
@@ -456,9 +414,9 @@ defmodule Raxol.Web3.Backend.Canton do
   @impl Backend
   def account_info(%__MODULE__{} = state, account_ref) do
     with {:ok, party} <- party(account_ref),
-         {:ok, snapshot} <- snapshot(state),
+         {:ok, snapshot} <- Scan.snapshot(state),
          request = Map.put(snapshot, "owner_party_ids", [party]),
-         {:ok, body} <- post(state, :holdings_summary, request, :account) do
+         {:ok, body} <- Scan.post(state, :holdings_summary, request, :account) do
       account(party, body)
     end
   end
@@ -466,10 +424,10 @@ defmodule Raxol.Web3.Backend.Canton do
   @impl Backend
   def token_balances(%__MODULE__{} = state, account_ref, opts \\ []) do
     with {:ok, party} <- party(account_ref),
-         {:ok, request} <- holdings_request(state, party, Keyword.get(opts, :cursor)),
-         {:ok, symbol} <- amulet_names(state),
-         {:ok, body} <- post(state, :holdings_state, request, :list) do
-      holdings_page(state, request, body, symbol)
+         {:ok, request} <- Holdings.request(state, party, Keyword.get(opts, :cursor)),
+         {:ok, symbol} <- Holdings.names(state),
+         {:ok, body} <- Scan.post(state, :holdings_state, request, :list) do
+      Holdings.page(state, request, body, symbol)
     end
   end
 
@@ -500,59 +458,6 @@ defmodule Raxol.Web3.Backend.Canton do
 
   # -- the outbound path -------------------------------------------------------
 
-  # `class` names the cache class, or `nil` for a request that must not be
-  # cached. The key fragment is built from the endpoint's own path and its own
-  # parameters, never from an assembled URI, which is what keeps a credential
-  # out of a cache key structurally rather than by review.
-  defp get(state, endpoint, query \\ %{}, class \\ nil) do
-    {:get, path} = Map.fetch!(@paths, endpoint)
-
-    state
-    |> url(path, query)
-    |> HTTP.get(scan_opts(state, path, query, class))
-    |> Decode.json_object()
-  end
-
-  defp post(state, endpoint, request, class) do
-    {:post, path} = Map.fetch!(@paths, endpoint)
-
-    opts =
-      state
-      |> scan_opts(path, request, class)
-      |> Backend.put_header(@content_type)
-
-    state
-    |> url(path, %{})
-    |> HTTP.post(Jason.encode!(request), opts)
-    |> Decode.json_object()
-  end
-
-  # A path parameter rather than a table row, so it composes the path itself.
-  # The id reaches here from a caller, so it is percent-encoded against the
-  # unreserved set rather than with `URI.encode/1`'s default predicate: that
-  # predicate leaves `/`, `?` and `#` alone, so it is not a defence at all --
-  # `URI.encode("../../v0/admin?x=1")` is its own input, and an id shaped like
-  # that would walk off `/updates/` on a credentialed host and pick its own
-  # path and query.
-  defp get_update(state, update_id) do
-    state
-    |> url("/updates/#{URI.encode(update_id, &URI.char_unreserved?/1)}", %{})
-    |> HTTP.get(scan_opts(state, "/updates", %{"id" => update_id}, :transaction))
-    |> Decode.json_object()
-  end
-
-  defp scan_opts(state, path, fragment, class) do
-    state.http_opts
-    |> Keyword.put_new(:rate_limit, @rate_limit)
-    |> Cache.opts(state.cache?, {path, fragment}, class)
-  end
-
-  defp url(state, path, query) when map_size(query) == 0, do: state.scan_url <> path
-
-  defp url(state, path, query) do
-    "#{state.scan_url}#{path}?#{URI.encode_query(query)}"
-  end
-
   # -- ccscan ------------------------------------------------------------------
 
   # The credential is composed into a header here, per call, and nowhere else.
@@ -562,7 +467,7 @@ defmodule Raxol.Web3.Backend.Canton do
   # headers reach an RBAC-gated instance instead of being dropped.
   defp ccscan_opts(state) do
     state.http_opts
-    |> Keyword.put_new(:rate_limit, @rate_limit)
+    |> Keyword.put_new(:rate_limit, Scan.rate_limit())
     |> Backend.put_header({state.ccscan_auth_header, "Bearer " <> state.ccscan_key})
   end
 
@@ -601,12 +506,6 @@ defmodule Raxol.Web3.Backend.Canton do
 
   # -- the DSO reference read --------------------------------------------------
 
-  # `:catalog` rather than `:chain_stats`: this body is governance and topology
-  # reference data, it changes on a vote rather than on a round, and it is the
-  # only place the current synchronizer migration id is published. 72 KB an hour
-  # buys both `chain_info/1` and the migration id every party-scoped read needs.
-  defp dso(state), do: get(state, :dso, %{}, :catalog)
-
   defp tick_duration_ms(body) do
     case dig(body, ["latest_mining_round", "contract", "payload", "tickDuration"]) do
       %{"microseconds" => micros} -> div_or_nil(int(micros), 1000)
@@ -617,122 +516,9 @@ defmodule Raxol.Web3.Backend.Canton do
   defp div_or_nil(nil, _divisor), do: nil
   defp div_or_nil(value, divisor), do: div(value, divisor)
 
-  # Every super-validator declares a migration id for its sequencer, nested
-  # inside a Daml-encoded map whose shape differs per node, so the highest id
-  # published anywhere in the body is taken rather than one path walked. The
-  # current migration is by definition the highest any node has moved to.
-  # Measured 2026-09-14: every id in the body is "4".
-  #
-  # A pinned id short-circuits the read rather than overriding it afterwards,
-  # so reading a historical migration deliberately costs no 72 KB fetch.
-  defp resolve_migration(%__MODULE__{migration_id: id}) when is_integer(id), do: {:ok, id}
-
-  defp resolve_migration(%__MODULE__{} = state) do
-    with {:ok, body} <- dso(state) do
-      body |> collect_migration_ids() |> Enum.max(fn -> nil end) |> highest_migration()
-    end
-  end
-
-  defp highest_migration(nil), do: {:error, {:decode_failed, :migration_id}}
-  defp highest_migration(id) when is_integer(id), do: {:ok, id}
-
-  defp collect_migration_ids(%{} = map) do
-    own = map |> Map.get("migrationId") |> int() |> List.wrap()
-    own ++ Enum.flat_map(Map.values(map), &collect_migration_ids/1)
-  end
-
-  defp collect_migration_ids(list) when is_list(list) do
-    Enum.flat_map(list, &collect_migration_ids/1)
-  end
-
-  defp collect_migration_ids(_scalar), do: []
-
   # -- the ACS snapshot a party-scoped read is taken against -------------------
 
-  # Both party-scoped reads are as-of a snapshot, so the snapshot has to be
-  # resolved first: a migration id from the DSO body and the latest snapshot
-  # record time at or before now. `before` is truncated to the hour so the cache
-  # key is stable for one, which is safe because snapshots land daily (measured
-  # 2026-09-14: midnight for migration 4, noon for migration 0) and `before` is
-  # inclusive.
-  defp snapshot(state) do
-    with {:ok, migration} <- resolve_migration(state),
-         query = %{"before" => hour_boundary(), "migration_id" => migration},
-         {:ok, body} <- get(state, :acs_snapshot, query, :catalog),
-         {:ok, record_time} <- fetch_record_time(body) do
-      {:ok, %{"migration_id" => migration, "record_time" => record_time}}
-    end
-  end
-
-  defp hour_boundary do
-    DateTime.utc_now()
-    |> DateTime.truncate(:second)
-    |> Map.merge(%{minute: 0, second: 0})
-    |> DateTime.to_iso8601()
-  end
-
-  defp fetch_record_time(%{"record_time" => record_time}) when is_binary(record_time) do
-    {:ok, record_time}
-  end
-
-  defp fetch_record_time(_body), do: {:error, {:decode_failed, :acs_snapshot}}
-
   # -- holdings pagination -----------------------------------------------------
-
-  # Without a cursor the snapshot is resolved live; with one it comes from
-  # inside the signed payload, which is what pins a walk to the snapshot it
-  # started against rather than letting it drift onto today's. `page_size` is
-  # added here rather than carried in the cursor, deliberately: it is a
-  # required field and it is ours, so a held cursor cannot choose how much of
-  # somebody else's budget the next request spends.
-  defp holdings_request(state, party, nil) do
-    with {:ok, snapshot} <- snapshot(state) do
-      {:ok, holdings_body(snapshot, party)}
-    end
-  end
-
-  defp holdings_request(state, party, cursor) do
-    with {:ok, params} <-
-           Paging.cursor_params(cursor, Paging.origin_id(state.scan_url), :canton_holdings_state) do
-      {:ok, holdings_body(params, party)}
-    end
-  end
-
-  defp holdings_body(params, party) do
-    params
-    |> Map.put("owner_party_ids", [party])
-    |> Map.put("page_size", @page_size)
-  end
-
-  # `next` is minted from the token's presence and never from whether the page
-  # had items: measured 2026-09-14, a page with zero `created_events` came back
-  # with a non-null `next_page_token`, and reading that as the end of the walk
-  # would report a party as holding nothing while its holdings were one page
-  # further on.
-  defp holdings_page(state, request, body, symbol) do
-    with {:ok, rows} <- page_rows(body["created_events"]),
-         {:ok, items} <- Backend.map_rows(rows, &token_balance(&1, symbol), :token_balance_row) do
-      {:ok, %{items: items, next: next_cursor(state, request, body["next_page_token"])}}
-    end
-  end
-
-  defp next_cursor(_state, _request, nil), do: nil
-
-  defp next_cursor(state, request, token) do
-    request
-    |> Map.take(["migration_id", "record_time"])
-    |> Map.put("after", token)
-    |> Cursor.encode(Paging.origin_id(state.scan_url), :canton_holdings_state)
-  end
-
-  # The asset catalog, `:catalog` class: the amulet's name and acronym are an
-  # upstream release's worth of stable and the cost of a stale row is a label
-  # rather than a number.
-  defp amulet_names(state) do
-    with {:ok, body} <- get(state, :instance_names, %{}, :catalog) do
-      {:ok, %{symbol: body["amulet_name_acronym"], name: body["amulet_name"]}}
-    end
-  end
 
   # -- normalization -----------------------------------------------------------
 
@@ -743,7 +529,7 @@ defmodule Raxol.Web3.Backend.Canton do
      %{
        ref: {:party, party},
        # `nil` and not `0` for an absent summary: see the moduledoc.
-       balance: summary && amulet(field(summary, "total_coin_holdings")),
+       balance: summary && Holdings.amulet(field(summary, "total_coin_holdings")),
        # A party holds no code and there is nothing to verify.
        contract?: false,
        verified?: false,
@@ -787,53 +573,6 @@ defmodule Raxol.Web3.Backend.Canton do
        do: choice
 
   defp exercised_choice(_event), do: nil
-
-  # The Amulet contract's own recorded amount. A caller summing a page gets the
-  # gross holding, which the upstream's `total_coin_holdings` agrees with to the
-  # digit; the accrued holding fee is a party-level figure and is not netted out
-  # here. `template_id` is the asset's identity on this chain, which is a Daml
-  # template rather than a contract address.
-  defp token_balance(event, names) when is_map(event) do
-    {:ok,
-     %{
-       token: %{
-         address: event["template_id"],
-         symbol: names.symbol,
-         name: names.name,
-         decimals: @amulet_decimals,
-         type: event["package_name"]
-       },
-       amount: event |> dig(["create_arguments", "amount", "initialAmount"]) |> amulet(),
-       token_id: event["contract_id"]
-     }}
-  end
-
-  defp token_balance(_event, _names), do: {:error, {:decode_failed, :token_balance_row}}
-
-  # Reported in the smallest unit, the way wei and lamports are. A figure with
-  # more than ten fractional digits is a shape change rather than a rounding
-  # opportunity, so it is `nil`.
-  defp amulet(nil), do: nil
-
-  defp amulet(value) when is_binary(value) do
-    case String.split(value, ".", parts: 2) do
-      [whole] -> units(whole, "")
-      [whole, fraction] -> units(whole, fraction)
-    end
-  end
-
-  defp amulet(_other), do: nil
-
-  defp units(whole, fraction) when byte_size(fraction) <= @amulet_decimals do
-    padding = String.duplicate("0", @amulet_decimals - byte_size(fraction))
-
-    case Integer.parse(whole <> fraction <> padding) do
-      {units, ""} when units >= 0 -> units
-      _unparseable -> nil
-    end
-  end
-
-  defp units(_whole, _fraction), do: nil
 
   # `finished?` is the endpoint's own claim: it is named for the round whose
   # data is complete. `lag_seconds` is the age of that data, which is the one
