@@ -1,7 +1,8 @@
 name: Nightly
 
 # What no pull request runs or fails on, each needing no secret:
-#   - the dependency advisory audit (mix_audit), which only warns in ci.yml;
+#   - the dependency audit (`hex.audit` and mix_audit), which only warns in
+#     ci.yml;
 #   - raxol_agent's mutation controls (`:mutation`), whose anchors rot silently
 #     when the guarded production line moves;
 #   - raxol_earn's anvil-fork suites (`:live_chain`, `:live_bundler`), which
@@ -47,15 +48,18 @@ jobs:
           version-file: mise.toml
           version-type: strict
 
-      # hex.audit needs the deps fetched; neither needs them compiled.
+      # hex.audit needs the deps fetched; neither needs them compiled. Both
+      # run, so one log lists every finding, and either fails the job.
       - name: Audit dependencies
         run: |
           mix local.hex --force
           mix local.rebar --force
           mix deps.get --check-locked
-          mix hex.audit
           mix escript.install hex mix_audit "$MIX_AUDIT_VERSION" --force
-          "$HOME/.mix/escripts/mix_audit"
+          status=0
+          mix hex.audit || status=1
+          "$HOME/.mix/escripts/mix_audit" || status=1
+          exit "$status"
 
   raxol-agent:
     name: raxol_agent (mutation controls)
