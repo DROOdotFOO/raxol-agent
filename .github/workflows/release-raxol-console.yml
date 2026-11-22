@@ -9,7 +9,14 @@ name: Release raxol_console npm package
 # `raxol-console-v*` tag matching npm/package.json, or a manual run with
 # `publish: true`; either way the commit needs green CI, and the publish waits
 # for release-environment approval. npm CLI 11.5.1+ uses the package's
-# configured trusted publisher and emits provenance, so no token is stored.
+# configured trusted publisher (OIDC) and emits provenance.
+#
+# One-time fallback: npm allows a trusted publisher only on a package that
+# already exists, so the first publish of `raxol-console` (and only that one)
+# authenticates with the NPM_TOKEN repository secret. Once the trusted
+# publisher is configured on npmjs.com, delete the fallback branch in the
+# publish step and the NPM_TOKEN_FIRST_PUBLISH env, and remove the secret if
+# nothing else reads it.
 
 on:
   push:
@@ -137,8 +144,12 @@ jobs:
           name: raxol-console-npm-tarball
           path: dist
 
-      # Resumable: a version already on the registry is skipped.
+      # Resumable: a version already on the registry is skipped. The token is
+      # handed to npm only when the package does not exist yet (see the header);
+      # otherwise npm authenticates through the trusted publisher.
       - name: Publish to npm
+        env:
+          NPM_TOKEN_FIRST_PUBLISH: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           name="$(node -p 'require("./packages/raxol_console/npm/package.json").name')"
@@ -148,8 +159,20 @@ jobs:
 
           if npm view "$name@$version" version >/dev/null 2>&1; then
             echo "$name@$version is already published; skipping"
-          else
+          elif npm view "$name" name >/dev/null 2>"$RUNNER_TEMP/npm-view.err"; then
             npm publish "$tarball" --provenance --access public
+          elif grep -q E404 "$RUNNER_TEMP/npm-view.err"; then
+            # One-time fallback, removed once the trusted publisher is set up.
+            [[ -n "$NPM_TOKEN_FIRST_PUBLISH" ]] || {
+              echo "::error::$name is not on npm yet and NPM_TOKEN is not set; the first publish needs it"
+              exit 1
+            }
+            echo "::warning::$name is not on npm yet; first publish with NPM_TOKEN. Configure its trusted publisher, then remove this fallback."
+            NODE_AUTH_TOKEN="$NPM_TOKEN_FIRST_PUBLISH" npm publish "$tarball" --provenance --access public
+          else
+            cat "$RUNNER_TEMP/npm-view.err"
+            echo "::error::could not tell whether $name exists on npm"
+            exit 1
           fi
 
           for attempt in {1..180}; do
