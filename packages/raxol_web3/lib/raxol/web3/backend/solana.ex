@@ -84,7 +84,7 @@ defmodule Raxol.Web3.Backend.Solana do
   # anywhere below formats the struct whole into a log line.
   @derive {Inspect, except: [:url, :http_opts]}
   @enforce_keys [:chain_ref, :source, :url, :network]
-  defstruct [:chain_ref, :source, :url, :network, :scope, http_opts: [], cache?: true]
+  defstruct [:chain_ref, :source, :url, :network, http_opts: [], cache?: true]
 
   @type source :: :sqd | :rpc
 
@@ -92,7 +92,6 @@ defmodule Raxol.Web3.Backend.Solana do
           chain_ref: Backend.chain_ref(),
           source: source(),
           url: String.t(),
-          scope: Scope.t() | nil,
           network: String.t(),
           http_opts: keyword(),
           cache?: boolean()
@@ -456,7 +455,7 @@ defmodule Raxol.Web3.Backend.Solana do
 
   defp origin_id(state), do: Origin.for_url(state.url)
 
-  defp scope(state), do: state.scope
+  defp scope(state), do: Scope.of(state.url, state.http_opts)
 
   defp signature(%{"signature" => signature}) when is_binary(signature), do: signature
   defp signature(_absent), do: nil
@@ -508,8 +507,7 @@ defmodule Raxol.Web3.Backend.Solana do
       url: url,
       network: Keyword.get(opts, :network, chain.network),
       http_opts: Keyword.get(opts, :http_opts, []),
-      cache?: Keyword.get(opts, :cache, true),
-      scope: Scope.of(url, Keyword.get(opts, :http_opts, []))
+      cache?: Keyword.get(opts, :cache, true)
     }
   end
 

@@ -56,7 +56,7 @@ defmodule Raxol.Web3.Backend.Canton.Holdings do
 
   def request(state, party, cursor) do
     with {:ok, params} <-
-           Paging.cursor_params(cursor, state.scope, :canton_holdings_state) do
+           Paging.cursor_params(cursor, Scan.scope(state), :canton_holdings_state) do
       {:ok, holdings_body(params, party)}
     end
   end
@@ -89,7 +89,7 @@ defmodule Raxol.Web3.Backend.Canton.Holdings do
     request
     |> Map.take(["migration_id", "record_time"])
     |> Map.put("after", token)
-    |> Cursor.encode(state.scope, :canton_holdings_state)
+    |> Cursor.encode(Scan.scope(state), :canton_holdings_state)
   end
 
   # The asset catalog, `:catalog` class: the amulet's name and acronym are an

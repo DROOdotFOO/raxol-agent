@@ -72,7 +72,6 @@ defmodule Raxol.Web3.FX.Sleuth do
   @enforce_keys [:api_key]
   defstruct [
     :api_key,
-    :scope,
     base_url: "https://www.sleuthintel.io/api/mcp",
     http_opts: [],
     cache?: true
@@ -81,7 +80,6 @@ defmodule Raxol.Web3.FX.Sleuth do
   @type t :: %__MODULE__{
           api_key: String.t(),
           base_url: String.t(),
-          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -163,18 +161,11 @@ defmodule Raxol.Web3.FX.Sleuth do
         {:error, {:invalid_argument, "base_url"}}
 
       true ->
-        base_url = String.trim_trailing(base_url, "/")
-        http_opts = Keyword.get(opts, :http_opts, [])
-        # The key travels as a header, so it is part of the source: two keys on
-        # one URL are two tenants and share no cache entry.
-        headers = [{"authorization", "Bearer " <> api_key} | Keyword.get(http_opts, :headers, [])]
-
         {:ok,
          %__MODULE__{
            api_key: api_key,
-           base_url: base_url,
-           scope: Scope.id(base_url, headers),
-           http_opts: http_opts,
+           base_url: String.trim_trailing(base_url, "/"),
+           http_opts: Keyword.get(opts, :http_opts, []),
            cache?: Keyword.get(opts, :cache, true)
          }}
     end
@@ -277,13 +268,20 @@ defmodule Raxol.Web3.FX.Sleuth do
       |> Keyword.put_new(:max_bytes, @max_bytes)
       |> Backend.put_header({"authorization", "Bearer " <> sleuth.api_key})
       |> Backend.put_header({"accept", "application/json"})
-      |> put_cache(sleuth.cache?, {sleuth.scope, path, query}, decoder)
+      |> put_cache(sleuth.cache?, {scope(sleuth), {path, query}}, decoder)
 
     case HTTP.get(url, opts) do
       {:ok, %{status: status, body: body}} when status in 200..299 -> decoder.(body)
       {:ok, %{status: status}} -> {:error, status_error(status, argument)}
       {:error, _} = error -> error
     end
+  end
+
+  # The key travels as a header, so it is part of the source: two keys on one
+  # URL are two tenants and share no cache entry.
+  defp scope(sleuth) do
+    headers = Keyword.get(sleuth.http_opts, :headers, [])
+    Scope.id(sleuth.base_url, [{"authorization", "Bearer " <> sleuth.api_key} | headers])
   end
 
   defp put_cache(opts, false, _fragment, _decoder), do: opts

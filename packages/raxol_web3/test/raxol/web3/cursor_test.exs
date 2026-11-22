@@ -82,7 +82,7 @@ defmodule Raxol.Web3.CursorTest do
     end
 
     test "a cursor with no signature at all is refused as malformed" do
-      for bad <- ["", "v1", "v1.payload", "garbage", "v0.a.b", nil, 42] do
+      for bad <- ["", "v2", "v2.payload", "garbage", "v1.a.b", nil, 42] do
         assert {:error, :malformed} = Cursor.decode(bad, @scope, :address_transactions)
       end
     end
@@ -220,7 +220,7 @@ defmodule Raxol.Web3.CursorTest do
   # what happens to a validly signed payload the encoder would never produce.
   defp sign(payload, key) do
     encoded = payload |> Jason.encode!() |> Base.url_encode64(padding: false)
-    signed = "v1." <> encoded
+    signed = "v2." <> encoded
     mac = :crypto.mac(:hmac, :sha256, key, signed)
 
     signed <> "." <> Base.url_encode64(mac, padding: false)

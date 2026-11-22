@@ -40,6 +40,7 @@ defmodule Raxol.Web3.FX.Chainlink do
   """
 
   alias Raxol.Web3.RPC
+  alias Raxol.Web3.Scope
 
   # An RPC URL often embeds a provider key (`/v2/<key>`, `?apikey=`), and the
   # handle sits in every agent tool context, so a crash report or a debug log
@@ -316,12 +317,10 @@ defmodule Raxol.Web3.FX.Chainlink do
     |> List.keysort(0)
   end
 
-  # Distinguishes two routes and carries nothing back.
-  defp route_digest(url, http_opts) do
-    :crypto.hash(:sha256, :erlang.term_to_binary({url, route_headers(http_opts)}))
-    |> Base.url_encode64(padding: false)
-    |> binary_part(0, 16)
-  end
+  # Distinguishes two routes and carries nothing back. Keyed, not a plain
+  # hash: the cache table is public, and a bare digest of a URL whose secret
+  # is a short path segment or header is an offline guessing oracle for it.
+  defp route_digest(url, http_opts), do: Scope.id(url, route_headers(http_opts))
 
   defp expected_response?(%{body: body}, selector, feed) do
     case Jason.decode(body) do

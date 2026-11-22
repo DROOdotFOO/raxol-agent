@@ -154,7 +154,8 @@ defmodule Raxol.Web3.Backend.ConformanceTest do
     refute_received {:request, _path}
   end
 
-  # Ids that are, or decode into, a dot segment, or an empty one. Each would
+  # Dot segments in every spelling a server might normalize, and separators.
+  # Each would
   # resolve off its endpoint on a server or proxy that normalizes paths.
   @dot_ids [
     ".",
@@ -176,7 +177,7 @@ defmodule Raxol.Web3.Backend.ConformanceTest do
     "%u002e%u002e"
   ]
 
-  test "an id that is or decodes into a dot segment is refused before any request" do
+  test "an id outside the path allowlist is refused before any request" do
     calls = [
       blockscout: [get_transaction: & &1, get_block: & &1],
       aztec: [get_transaction: & &1, get_block: & &1, contract_metadata: &{:aztec, &1}],

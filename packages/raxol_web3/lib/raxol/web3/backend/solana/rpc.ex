@@ -10,13 +10,13 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.RPC.ErrorClass
+  alias Raxol.Web3.Scope
 
   @typedoc "The fields of a Solana handle this module reads."
   @type state :: %{
           required(:url) => String.t(),
           required(:http_opts) => keyword(),
           required(:cache?) => boolean(),
-          required(:scope) => String.t(),
           optional(atom()) => term()
         }
 
@@ -74,7 +74,7 @@ defmodule Raxol.Web3.Backend.Solana.RPC do
       # handle at its own gated node carries the credential for it in a
       # header there.
       |> Backend.put_header(@content_type)
-      |> Cache.opts(state.scope, state.cache?, {method, params}, class)
+      |> Cache.opts(Scope.of(state.url, state.http_opts), state.cache?, {method, params}, class)
       |> classified()
 
     state.url

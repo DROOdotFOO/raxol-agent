@@ -17,6 +17,7 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   alias Raxol.Web3.Backend.Decode
   alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Scope
 
   @typedoc "The fields of a Canton handle this module reads."
   @type state :: %{
@@ -24,7 +25,6 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
           required(:http_opts) => keyword(),
           required(:cache?) => boolean(),
           required(:migration_id) => non_neg_integer() | nil,
-          required(:scope) => String.t(),
           optional(atom()) => term()
         }
 
@@ -52,6 +52,11 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   @doc false
   @spec paths() :: %{atom() => {:get | :post, String.t()}}
   def paths, do: @paths
+
+  # The Scan source's scope: cache keys and cursors are bound to it.
+  @doc false
+  @spec scope(state()) :: Scope.t()
+  def scope(state), do: Scope.of(state.scan_url, state.http_opts)
 
   # The token-bucket seed for both Canton upstreams.
   @doc false
@@ -94,10 +99,10 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
 
   # A path parameter rather than a table row, so it composes the path itself.
   # The id reaches here from a caller, so it goes through
-  # `Raxol.Web3.Backend.PathSegment.encode/2`: percent-encoded against the
-  # unreserved set, so it cannot carry `/`, `?` or `#` and walk off
-  # `/updates/`, and refused when it is or decodes into `.` or `..`, which a
-  # resolving proxy would turn into the API root with the credential attached.
+  # `Raxol.Web3.Backend.PathSegment.encode/2`, whose allowlist admits no `/`,
+  # `?`, `#`, `.` or `%`, so it can neither walk off `/updates/` nor become a
+  # dot segment a resolving proxy would turn into the API root with the
+  # credential attached.
   @doc false
   @spec get_update(state(), String.t()) :: {:ok, map()} | {:error, Backend.error()}
   def get_update(state, update_id) do
@@ -112,7 +117,7 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   defp scan_opts(state, path, fragment, class) do
     state.http_opts
     |> Keyword.put_new(:rate_limit, @rate_limit)
-    |> Cache.opts(state.scope, state.cache?, {path, fragment}, class)
+    |> Cache.opts(scope(state), state.cache?, {path, fragment}, class)
   end
 
   defp url(state, path, query) when map_size(query) == 0, do: state.scan_url <> path

@@ -3,7 +3,7 @@ defmodule Raxol.Web3.Backend.Paging do
   Cursor plumbing shared by the paginating backends.
 
   A cursor is minted and verified against the scope of the source that served
-  the page (`Raxol.Web3.Scope.id/1` of its full base URL), so it is refused
+  the page (`Raxol.Web3.Scope.of/2` of its base URL and headers), so it is refused
   on another source, including another path or tenant on the same host. See
   `Raxol.Web3.Cursor` for the format.
   """

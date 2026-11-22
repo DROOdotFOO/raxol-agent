@@ -92,13 +92,12 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # below, never from configuration.
   @derive {Inspect, except: [:rpc_url, :http_opts]}
   @enforce_keys [:chain_ref, :host]
-  defstruct [:chain_ref, :host, :rpc_url, :scope, http_opts: [], cache?: true]
+  defstruct [:chain_ref, :host, :rpc_url, http_opts: [], cache?: true]
 
   @type t :: %__MODULE__{
           chain_ref: Backend.chain_ref(),
           host: String.t(),
           rpc_url: String.t() | nil,
-          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -160,9 +159,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
         cache?: Keyword.get(opts, :cache, true)
       }
 
-      # The REST base is the chain's host and nothing else, so the scope is too.
-      state = %{state | scope: Scope.of("https://#{host}/", state.http_opts)}
-
       {:ok, {__MODULE__, state}}
     end
   end
@@ -191,7 +187,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
 
   defp origin_id(state), do: Origin.for_url("https://#{state.host}/")
 
-  defp scope(state), do: state.scope
+  # The REST base is the chain's host and nothing else, so the scope is too.
+  defp scope(state), do: Scope.of("https://#{state.host}/", state.http_opts)
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
@@ -364,7 +361,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # cached. The key fragment is built here, from the endpoint's own path and
   # its own query map, and never from the assembled URI: that is what keeps a
   # credential-bearing query parameter out of a cache key by construction
-  # rather than by review. `Raxol.Web3.HTTP` composes it with the origin id.
+  # rather than by review. It sits under the handle's scope, and
+  # `Raxol.Web3.HTTP` adds the origin id.
   defp get(state, path, query \\ %{}, class \\ nil) do
     state
     |> url(path, query)
@@ -560,9 +558,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # Rejecting beats encoding for this one: this upstream has exactly one
   # address shape, and a percent-encoded traversal is a 404 a caller cannot act
   # on. `segment/1` still encodes every address it interpolates, and every
-  # other id goes through `Raxol.Web3.Backend.PathSegment.encode/2`, which also
-  # refuses dot segments, so a path parameter added later cannot reopen the
-  # hole.
+  # other id goes through `Raxol.Web3.Backend.PathSegment.encode/2`'s
+  # allowlist, so a path parameter added later cannot reopen the hole.
   #
   # Case is carried through rather than normalized: an EIP-55 checksum is the
   # caller's own typo protection, and downcasing it would throw that away.

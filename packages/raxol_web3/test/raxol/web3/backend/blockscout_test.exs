@@ -345,8 +345,8 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
       assert length(page.items) == 2
       assert is_binary(page.next)
 
-      origin = Scope.id("https://eth.blockscout.com/")
-      assert {:ok, params} = Cursor.decode(page.next, origin, :address_transactions)
+      scope = Scope.id("https://eth.blockscout.com/")
+      assert {:ok, params} = Cursor.decode(page.next, scope, :address_transactions)
       assert params["block_number"] == 25_574_152
       refute Map.has_key?(params, "items_count")
     end

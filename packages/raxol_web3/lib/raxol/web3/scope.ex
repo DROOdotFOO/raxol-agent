@@ -11,15 +11,17 @@ defmodule Raxol.Web3.Scope do
 
   So the scope is the base URL in full (scheme, user info, host, port, path
   and query, normalized so a trailing slash or default port does not split
-  one source in two) together with the request headers a handle sends, since
-  a credential or a tenant can travel in a header as well. It is an HMAC under the node's cursor key
-  (`Raxol.Web3.Tables.cursor_key/0`), not a plain digest: a cursor carries it
+  one source in two; a `#fragment` is ignored) together with the request
+  headers a handle sends, since a credential or a tenant can travel in a
+  header as well. It is an HMAC under a key derived from the node's cursor key
+  (`Raxol.Web3.Tables.scope_key/0`), not a plain digest: a cursor carries it
   to the caller, and a bare hash of a URL whose secret is a short path
   segment would be an offline guessing oracle for that secret. It is kept in
   no table and cannot be turned back into a URL.
 
-  It costs a call to `Raxol.Web3.Tables`, so a backend computes it once, when
-  its handle is built, and carries it on the handle.
+  A backend computes it where it is used, from the handle, so building a
+  handle stays pure and works before `:raxol_web3` has started; computing a
+  scope needs the application running, which every request does anyway.
   """
 
   alias Raxol.Web3.Tables
@@ -38,7 +40,7 @@ defmodule Raxol.Web3.Scope do
   def id(url, headers \\ []) do
     input = "raxol_web3.scope\0" <> canonical(url) <> "\0" <> canonical_headers(headers)
 
-    :crypto.mac(:hmac, :sha256, Tables.cursor_key(), input)
+    :crypto.mac(:hmac, :sha256, Tables.scope_key(), input)
     |> binary_part(0, @id_bytes)
     |> Base.url_encode64(padding: false)
   end
@@ -47,11 +49,13 @@ defmodule Raxol.Web3.Scope do
   @spec of(String.t() | URI.t(), keyword()) :: t()
   def of(url, http_opts), do: id(url, Keyword.get(http_opts, :headers, []))
 
+  # A malformed entry is skipped here and refused where it is sent. Repeated
+  # names keep their order, since a gateway honouring the first sees that.
   defp canonical_headers(headers) do
-    headers
-    |> Enum.map(fn {name, value} ->
-      {String.downcase(to_string(name), :ascii), to_string(value)}
-    end)
+    for(
+      {name, value} <- headers,
+      do: {String.downcase(to_string(name), :ascii), to_string(value)}
+    )
     |> Enum.sort_by(&elem(&1, 0))
     |> :erlang.term_to_binary()
   end

@@ -135,7 +135,7 @@ defmodule Raxol.Web3.Backend.Tron do
   # crash anywhere below formats the struct whole into a log line.
   @derive {Inspect, except: [:http_opts]}
   @enforce_keys [:source, :chain_ref]
-  defstruct [:source, :chain_ref, :client, :scope, http_opts: [], cache?: true]
+  defstruct [:source, :chain_ref, :client, http_opts: [], cache?: true]
 
   @type source :: Sources.source()
 
@@ -143,7 +143,6 @@ defmodule Raxol.Web3.Backend.Tron do
           source: source(),
           chain_ref: Backend.chain_ref(),
           client: GenServer.server() | nil,
-          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -197,7 +196,7 @@ defmodule Raxol.Web3.Backend.Tron do
         cache?: Keyword.get(opts, :cache, true)
       }
 
-      {:ok, {__MODULE__, %{state | scope: Scope.of(config.url, state.http_opts)}}}
+      {:ok, {__MODULE__, state}}
     end
   end
 
@@ -625,7 +624,16 @@ defmodule Raxol.Web3.Backend.Tron do
 
   defp origin_id(state), do: Origin.for_url(uri(state))
 
-  defp scope(state), do: state.scope
+  # A stateful source's credential lives in its `Raxol.MCP.Client`, not in
+  # `:http_opts`, so the client is part of the source: two handles on two
+  # clients share no cache entry and accept no cursor of the other's.
+  defp scope(%__MODULE__{client: nil} = state), do: Scope.of(url(state), state.http_opts)
+
+  defp scope(%__MODULE__{client: client} = state) do
+    Scope.id(url(state), [{"x-raxol-mcp-client", inspect(client)} | headers(state)])
+  end
+
+  defp headers(state), do: Keyword.get(state.http_opts, :headers, [])
 
   defp uri(%__MODULE__{} = state), do: URI.new!(url(state))
 

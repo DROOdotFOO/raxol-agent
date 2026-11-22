@@ -60,12 +60,12 @@ defmodule Raxol.Web3.Backend.HelpersTest do
 
   describe "Paging" do
     test "a minted cursor round-trips only against its own scope and endpoint" do
-      origin = Scope.id("https://example.invalid/v0")
+      scope = Scope.id("https://example.invalid/v0")
       other = Scope.id("https://other.invalid/v0")
       same_host = Scope.id("https://example.invalid/v1")
-      cursor = Paging.next_cursor(%{"after" => 5}, origin, :canton_holdings_state)
+      cursor = Paging.next_cursor(%{"after" => 5}, scope, :canton_holdings_state)
 
-      assert Paging.cursor_params(cursor, origin, :canton_holdings_state) ==
+      assert Paging.cursor_params(cursor, scope, :canton_holdings_state) ==
                {:ok, %{"after" => 5}}
 
       assert {:error, {:invalid_cursor, _}} =
@@ -74,8 +74,8 @@ defmodule Raxol.Web3.Backend.HelpersTest do
       assert {:error, {:invalid_cursor, _}} =
                Paging.cursor_params(cursor, same_host, :canton_holdings_state)
 
-      assert {:error, {:invalid_cursor, _}} = Paging.cursor_params(cursor, origin, :rpc_logs)
-      assert Paging.cursor_params(nil, origin, :rpc_logs) == {:ok, %{}}
+      assert {:error, {:invalid_cursor, _}} = Paging.cursor_params(cursor, scope, :rpc_logs)
+      assert Paging.cursor_params(nil, scope, :rpc_logs) == {:ok, %{}}
     end
 
     test "a non-map is the last page, and an unpaginated read refuses any cursor" do
@@ -143,7 +143,7 @@ defmodule Raxol.Web3.Backend.HelpersTest do
     end
   end
 
-  describe "Scope.id/1" do
+  describe "Scope.id/2 and Scope.of/2" do
     test "one source is one scope, however its URL is spelled" do
       base = Scope.id("https://Node.Example/v2/KEY")
 

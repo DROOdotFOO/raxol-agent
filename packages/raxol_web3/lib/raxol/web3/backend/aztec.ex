@@ -80,7 +80,6 @@ defmodule Raxol.Web3.Backend.Aztec do
     :base_url,
     :network,
     :source,
-    :scope,
     http_opts: [],
     cache?: true
   ]
@@ -90,7 +89,6 @@ defmodule Raxol.Web3.Backend.Aztec do
           base_url: String.t(),
           network: String.t(),
           source: :aztecscan | :chicmoz,
-          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -166,8 +164,6 @@ defmodule Raxol.Web3.Backend.Aztec do
         http_opts: Keyword.put_new(Keyword.get(opts, :http_opts, []), :rate_limit, @rate_limit),
         cache?: Keyword.get(opts, :cache, true)
       }
-
-      state = %{state | scope: Scope.of(base_url, state.http_opts)}
 
       {:ok, {__MODULE__, state}}
     end
@@ -375,19 +371,21 @@ defmodule Raxol.Web3.Backend.Aztec do
   #
   # The cache key is the path under the handle's scope, never the assembled
   # URL. On this upstream the credential is a PATH SEGMENT, so the scope
-  # (`Raxol.Web3.Scope.id/1` of the whole base URL) is what keeps two key
+  # (`Raxol.Web3.Scope.of/2` of the base URL and headers) is what keeps two key
   # prefixes on one host from sharing entries, and it carries nothing back.
   defp get(state, path, class, resource) do
     url = state.base_url <> path
 
     url
-    |> HTTP.get(Cache.opts(state.http_opts, state.scope, state.cache?, path, class))
+    |> HTTP.get(Cache.opts(state.http_opts, scope(state), state.cache?, path, class))
     |> decode(resource)
   end
 
   # Most endpoints answer an object, and the two stats reads answer a bare
   # number or string (`l2/latest-height` does too). Guarding here rather than
   # inside `decode/2` is what lets both kinds share one outbound path.
+  defp scope(state), do: Scope.of(state.base_url, state.http_opts)
+
   defp object({:ok, body}) when is_map(body), do: {:ok, body}
   defp object({:ok, _other}), do: {:error, {:decode_failed, :not_an_object}}
   defp object({:error, _reason} = error), do: error
@@ -429,9 +427,9 @@ defmodule Raxol.Web3.Backend.Aztec do
   defp decode({:error, _reason} = error, _resource), do: error
 
   # Every caller-supplied id reaches a path through
-  # `Raxol.Web3.Backend.PathSegment.encode/2`: encoded against the unreserved set,
-  # and refused when it is or decodes into a dot segment. A well-formed id that
-  # does not exist is still the upstream's clean 404.
+  # `Raxol.Web3.Backend.PathSegment.encode/2`, and anything outside its
+  # allowlist is refused before a request. A well-formed id that does not
+  # exist is still the upstream's clean 404.
 
   defp resolve(default_url, nil), do: {:ok, default_url, source(default_url)}
 

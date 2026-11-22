@@ -25,8 +25,8 @@ defmodule Raxol.Web3.Cursor do
     1. **A MAC** over the whole payload, under this node's key
        (`Raxol.Web3.Tables.cursor_key/0`). A cursor that does not verify is
        refused before anything is decoded.
-    2. **Scope binding**: the source's scope (`Raxol.Web3.Scope.id/1` of its
-       full base URL) and the endpoint travel inside the signed payload and
+    2. **Scope binding**: the source's scope (`Raxol.Web3.Scope.of/2` of its
+       base URL and headers) and the endpoint travel inside the signed payload and
        must match the call. A verified cursor from `token-transfers` on chain
        1 is still refused on `logs`, on chain 8453, or on another path or
        tenant behind the same host.
@@ -45,16 +45,18 @@ defmodule Raxol.Web3.Cursor do
 
   ## Wire format
 
-      v1.<base64url(payload)>.<base64url(mac)>
+      v2.<base64url(payload)>.<base64url(mac)>
 
   The version prefix is outside the MAC input only in the sense that it is part
-  of the signed string: the MAC covers `"v1." <> payload`, so a downgrade to a
-  future `v0` cannot be forged by relabelling.
+  of the signed string: the MAC covers `"v2." <> payload`, so relabelling a
+  cursor as another version cannot be forged. `v2` binds the payload to a
+  `Raxol.Web3.Scope` under `"s"`; a `v1` cursor, bound to a host under `"o"`,
+  is `:malformed` and its walk restarts.
   """
 
   alias Raxol.Web3.Tables
 
-  @version "v1"
+  @version "v2"
 
   # The digest `mac/1` signs with, and the size every signature it produces
   # has, read off the same digest rather than written down twice.

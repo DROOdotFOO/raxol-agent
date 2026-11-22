@@ -224,7 +224,6 @@ defmodule Raxol.Web3.Backend.Canton do
     :ccscan_url,
     :ccscan_key,
     :migration_id,
-    :scope,
     ccscan_auth_header: "authorization",
     http_opts: [],
     cache?: true
@@ -236,7 +235,6 @@ defmodule Raxol.Web3.Backend.Canton do
           ccscan_url: String.t(),
           ccscan_key: String.t() | nil,
           migration_id: non_neg_integer() | nil,
-          scope: Raxol.Web3.Scope.t() | nil,
           ccscan_auth_header: String.t(),
           http_opts: keyword(),
           cache?: boolean()
@@ -301,8 +299,6 @@ defmodule Raxol.Web3.Backend.Canton do
         http_opts: Keyword.get(opts, :http_opts, []),
         cache?: Keyword.get(opts, :cache, true)
       }
-
-      state = %{state | scope: Raxol.Web3.Scope.of(scan_url, state.http_opts)}
 
       {:ok, {__MODULE__, state}}
     end

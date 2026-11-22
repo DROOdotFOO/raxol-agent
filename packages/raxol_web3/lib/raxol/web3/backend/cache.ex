@@ -5,8 +5,9 @@ defmodule Raxol.Web3.Backend.Cache do
   The key is `{scope, fragment}`. The fragment is built from the backend's own
   path or method and parameters, never from an assembled URL, which keeps a
   credential out of a cache key by construction. The scope
-  (`Raxol.Web3.Scope.id/1` of the handle's base URL) keeps two sources behind
-  one host, told apart by path or query, from sharing entries.
+  (`Raxol.Web3.Scope.of/2` of the handle's base URL and headers) keeps two
+  sources behind one host, told apart by path, query or header, from sharing
+  entries.
   `Raxol.Web3.Cache` describes the full entry key.
   """
 

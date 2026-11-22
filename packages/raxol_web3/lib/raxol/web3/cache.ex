@@ -25,7 +25,7 @@ defmodule Raxol.Web3.Cache do
   `Raxol.Web3.HTTP` composes a key as `{origin_id, fragment}`, where the
   fragment is supplied by the caller. A backend's fragment is
   `{scope, endpoint_key}` (see `Raxol.Web3.Backend.Cache.opts/5`): the scope,
-  `Raxol.Web3.Scope.id/2` of its full base URL and headers, keeps two sources
+  `Raxol.Web3.Scope.of/2` of its base URL and headers, keeps two sources
   behind one host apart, and the endpoint key is built from the endpoint's
   own name and the parameters it declares. The request URI is never an input. That is
   ADR-0033 §7's rule about cache keys made structural rather than reviewed: an

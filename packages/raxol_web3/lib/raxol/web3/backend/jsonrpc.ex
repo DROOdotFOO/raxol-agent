@@ -142,7 +142,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
     :chain_ref,
     :chain_id,
     :url,
-    :scope,
     http_opts: [],
     cache?: true,
     log_window: @log_window,
@@ -153,7 +152,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
           chain_ref: Backend.chain_ref(),
           chain_id: non_neg_integer(),
           url: String.t(),
-          scope: Scope.t() | nil,
           http_opts: keyword(),
           cache?: boolean(),
           log_window: pos_integer(),
@@ -197,7 +195,7 @@ defmodule Raxol.Web3.Backend.JSONRPC do
         log_lookback: Keyword.get(opts, :log_lookback, @log_lookback)
       }
 
-      {:ok, {__MODULE__, %{state | scope: Scope.of(url, state.http_opts)}}}
+      {:ok, {__MODULE__, state}}
     end
   end
 
@@ -322,8 +320,8 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   # `get/4` does for a path. The key fragment is the method and its own
   # arguments, never the URL: a bring-your-own-node deployment carries its
   # credential in the host or the path, and ADR-0033 section 7 names cache keys
-  # as one of the four places a credential leaks. `Raxol.Web3.HTTP` composes the
-  # fragment with the origin id.
+  # as one of the four places a credential leaks. The fragment sits under the
+  # handle's scope, and `Raxol.Web3.HTTP` adds the origin id.
   defp rpc_opts(state, fragment, class) do
     Cache.opts(state.http_opts, scope(state), state.cache?, fragment, class)
   end
@@ -443,7 +441,7 @@ defmodule Raxol.Web3.Backend.JSONRPC do
 
   defp origin_id(state), do: Origin.for_url(state.url)
 
-  defp scope(state), do: state.scope
+  defp scope(state), do: Scope.of(state.url, state.http_opts)
 
   defp next_cursor(_state, %{to: to, walk_to: walk_to}) when to >= walk_to, do: nil
 

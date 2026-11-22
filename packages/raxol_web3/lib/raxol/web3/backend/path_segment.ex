@@ -1,10 +1,12 @@
 defmodule Raxol.Web3.Backend.PathSegment do
+  @max_bytes 256
+
   @moduledoc """
   Turns a caller-supplied id into one URL path segment, or refuses it.
 
   An id reaches a path from a model, so it is checked against an allowlist
   rather than a list of known-bad spellings: ASCII letters, digits, `_`, `-`
-  and `:`, at most #{256} bytes. Every id these backends take fits it (hex
+  and `:`, at most #{@max_bytes} bytes. Every id these backends take fits it (hex
   hashes and addresses, decimal block numbers, `latest`-style tags, Canton's
   `1220...` update ids). A denylist of dot segments cannot be complete: a
   proxy or server may strip `;` parameters (`..;`), trim trailing dots or
@@ -16,8 +18,6 @@ defmodule Raxol.Web3.Backend.PathSegment do
   What passes is still percent-encoded against the unreserved set, which
   leaves it unchanged except for `:`.
   """
-
-  @max_bytes 256
 
   @doc """
   The encoded segment for `value`, or `{:invalid_argument, name}`.
