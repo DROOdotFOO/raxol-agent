@@ -32,6 +32,21 @@ defmodule Raxol.Earn.Transport.SSE.Parser do
   end
 
   @doc """
+  Append `chunk` to the unterminated tail `buffer` and parse every frame it
+  completes. Returns the parsed entries, in order, and the new tail. Frames
+  that carry no data or invalid JSON are dropped.
+  """
+  @spec feed(binary(), binary()) :: {[map()], binary()}
+  def feed(buffer, chunk) when is_binary(buffer) and is_binary(chunk) do
+    {frames, rest} = split_frames(buffer <> chunk)
+
+    entries =
+      for frame <- frames, {:ok, entry} <- [parse_frame(frame)], do: entry
+
+    {entries, rest}
+  end
+
+  @doc """
   Parse a single SSE frame's data field into a JSON map.
 
   - `data:` lines (with or without leading space) are concatenated.
