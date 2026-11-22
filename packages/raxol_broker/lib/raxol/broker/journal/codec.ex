@@ -1,6 +1,7 @@
 defmodule Raxol.Broker.Journal.Codec do
   @moduledoc """
-  JSON forms of what `Raxol.Broker.Journal` records.
+  JSON forms of what `Raxol.Broker.Journal` records: intents, contexts,
+  policy results, fills and opaque terms.
 
   Decimals are written as strings with their exact digits and exponent
   (`Decimal.to_string/1`), so they read back equal. The journal is hash-chained
@@ -27,8 +28,6 @@ defmodule Raxol.Broker.Journal.Codec do
   @sessions [:regular, :extended, :closed]
   @intent_decimals [:qty, :notional, :limit, :stop]
   @context_decimals [:portfolio_value, :start_of_day_value, :day_pnl, :today_notional]
-
-  # -- Intent -----------------------------------------------------------------
 
   @doc "Encode an intent as a JSON-ready map."
   @spec encode_intent(Intent.t()) :: map()
@@ -105,8 +104,6 @@ defmodule Raxol.Broker.Journal.Codec do
 
   defp json_map(value, _error) when is_map(value), do: {:ok, value}
   defp json_map(_value, error), do: {:error, error}
-
-  # -- Context ----------------------------------------------------------------
 
   @doc "Encode a policy context (policy, prices, counters) as a JSON-ready map."
   @spec encode_context(Context.t()) :: map()
@@ -250,7 +247,31 @@ defmodule Raxol.Broker.Journal.Codec do
     ArgumentError -> :error
   end
 
-  # -- Policy results -----------------------------------------------------------
+  @doc "Encode a fill; its decimals must be finite and its symbol valid."
+  @spec encode_fill(term()) :: {:ok, map()} | {:error, {:invalid_fill, term()}}
+  def encode_fill(%{order_id: order_id, symbol: symbol, side: side} = fill)
+      when is_binary(order_id) and order_id != "" and side in @sides do
+    decimals = [:qty, :price, :realized_pnl]
+
+    if Intent.symbol?(symbol) and Enum.all?(decimals, &finite?(Map.get(fill, &1))) do
+      {:ok,
+       %{
+         "order_id" => order_id,
+         "symbol" => symbol,
+         "side" => Atom.to_string(side),
+         "qty" => Decimal.to_string(fill.qty),
+         "price" => Decimal.to_string(fill.price),
+         "realized_pnl" => Decimal.to_string(fill.realized_pnl)
+       }}
+    else
+      {:error, {:invalid_fill, fill}}
+    end
+  end
+
+  def encode_fill(fill), do: {:error, {:invalid_fill, fill}}
+
+  defp finite?(%Decimal{coef: coef}), do: is_integer(coef)
+  defp finite?(_value), do: false
 
   @doc """
   Encode a `Raxol.Broker.Policy.evaluate/2` result. `{:error, {:invalid_result,
@@ -278,8 +299,6 @@ defmodule Raxol.Broker.Journal.Codec do
     do: {:ok, %{"action" => "deny", "rule" => Atom.to_string(rule), "detail" => term(detail)}}
 
   def encode_result(other), do: {:error, {:invalid_result, other}}
-
-  # -- Shared -----------------------------------------------------------------
 
   @doc """
   One-way JSON form of an arbitrary term: Decimals and DateTimes as strings,
