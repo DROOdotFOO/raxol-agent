@@ -164,7 +164,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent do
          :ok <- Floor.assert_quote(quote, request, floor),
          {:ok, reserved} <- authorize(context, config, request, amount),
          {:ok, exec, filled_quote} <-
-           Dispatch.run(
+           Dispatch.execute(
              %{
                config: config,
                request: request,

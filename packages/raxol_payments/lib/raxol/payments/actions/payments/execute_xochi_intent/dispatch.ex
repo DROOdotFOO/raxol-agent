@@ -54,8 +54,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntent.Dispatch do
   issued quote and reject the execute as expired; that re-quotes and
   re-executes once under the same reservation.
   """
-  @spec run(t(), QuoteResponse.t()) :: result()
-  def run(payment, %QuoteResponse{} = quote) do
+  @spec execute(t(), QuoteResponse.t()) :: result()
+  def execute(payment, %QuoteResponse{} = quote) do
     case submit(payment, quote) do
       {:ok, _exec, _quote} = dispatched ->
         dispatched

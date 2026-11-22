@@ -95,6 +95,7 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
       assert {:ok, result} =
                PollXochiStatus.call(%{intent_id: "int_1"}, %{xochi_config: config()})
 
+      assert result.status == "completed"
       assert result.terminal == true
 
       for field <- [:tx_hash, :settlement_type, :note_commitment, :nullifier_hash, :l2_tx_hash],

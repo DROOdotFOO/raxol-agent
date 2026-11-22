@@ -375,10 +375,15 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   defp parse_addresses(_), do: %{}
 
   # EVM addresses compare case-insensitively; base58 forms are case-sensitive.
+  # Only a well-formed `0x` address is canonicalized, so a bare or padded one
+  # never matches.
   defp normalize_address(caps, chain_id, address) do
     case vm_type(caps, chain_id) do
-      :evm -> EIP712.normalize_address(address)
-      _ -> address
+      :evm ->
+        canonical_evm(address)
+
+      _ ->
+        address
     end
   end
 
@@ -448,4 +453,13 @@ defmodule Raxol.Payments.Xochi.Capabilities do
         @table
     end
   end
+
+  defp canonical_evm(<<prefix::binary-size(2), hex::binary-size(40)>> = address)
+       when prefix in ["0x", "0X"] do
+    if Regex.match?(~r/\A[0-9a-fA-F]{40}\z/, hex),
+      do: "0x" <> EIP712.normalize_address(address),
+      else: address
+  end
+
+  defp canonical_evm(address), do: address
 end

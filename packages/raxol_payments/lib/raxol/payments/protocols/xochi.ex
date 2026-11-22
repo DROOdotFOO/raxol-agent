@@ -341,7 +341,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   against its own server-persisted quote, so neither raxol nor the buyer can
   forge the amount or route.
 
-  Unlike `execute/3,4`, this takes no wallet and releases no signature -- raxol
+  Unlike `execute/4`, this takes no wallet and releases no signature -- raxol
   is never on the fund-signing path. Fails closed with
   `{:error, {:invalid_signed_intent, field}}` on a missing or malformed field,
   before any network call.

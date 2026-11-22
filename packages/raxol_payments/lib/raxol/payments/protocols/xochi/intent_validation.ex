@@ -176,17 +176,19 @@ defmodule Raxol.Payments.Protocols.Xochi.IntentValidation do
   end
 
   # Riddler signs an EVM (0x-hex) wallet, token, or recipient lowercased and a
-  # base58 (TVM/SVM) one verbatim, since base58 is case-sensitive. The served
-  # value must carry no surrounding whitespace: `recipient` is a signed string.
+  # base58 (TVM/SVM) one verbatim, since base58 is case-sensitive. Only an
+  # unpadded 0x value is canonicalized, so padding on either side never matches.
   defp addressish_match?(served, requested)
-       when is_binary(served) and is_binary(requested) and served != "" do
-    String.trim(served) == served and addressish(served) == addressish(requested)
-  end
+       when is_binary(served) and is_binary(requested) and served != "",
+       do: addressish(served) == addressish(requested)
 
   defp addressish_match?(_, _), do: false
 
-  defp addressish(<<prefix::binary-size(2), _::binary>> = value) when prefix in ["0x", "0X"],
-    do: {:evm, EIP712.normalize_address(value)}
+  defp addressish(<<prefix::binary-size(2), _::binary>> = value) when prefix in ["0x", "0X"] do
+    if String.trim(value) == value,
+      do: {:evm, EIP712.normalize_address(value)},
+      else: {:verbatim, value}
+  end
 
   defp addressish(value), do: {:verbatim, value}
 end

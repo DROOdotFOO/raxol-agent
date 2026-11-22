@@ -3,23 +3,7 @@ defmodule Raxol.Payments.Xochi.Schemas.Status do
   # The intent lifecycle statuses the Xochi worker reports, parsed from wire
   # strings without minting atoms: unknown input reads as `:unknown`.
 
-  @type t ::
-          :idle
-          | :pending
-          | :pull_pending
-          | :quoting
-          | :quoted
-          | :signing
-          | :executing
-          | :bridging
-          | :settling
-          | :source_finalized
-          | :completed
-          | :refund_pending
-          | :failed
-          | :expired
-          | :refunded
-          | :unknown
+  @type t :: Raxol.Payments.Xochi.Schemas.IntentStatus.status()
 
   @statuses ~w(idle pending pull_pending quoting quoted signing executing bridging
                settling source_finalized completed refund_pending failed expired

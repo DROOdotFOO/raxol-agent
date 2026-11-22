@@ -30,6 +30,9 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
     end
   end
 
+  # `require_pin?` true means a boot with an empty allowlist is acceptable
+  # because every ERC-3009 pull will then be refused; false with an empty
+  # allowlist is the fail-open state.
   @spec fail_open?([String.t()] | nil, boolean()) :: boolean()
   def fail_open?(allowlist, require_pin?) do
     normalize(allowlist) == [] and require_pin? != true
@@ -41,9 +44,8 @@ defmodule Raxol.Payments.Protocols.Xochi.SolverPin do
       raise ArgumentError,
             "Xochi origin-pull solver pin is not configured (fail-open): the agent " <>
               "would sign ERC-3009 origin-pull authorizations to an unverified recipient. " <>
-              "Set XOCHI_SOLVER_BASE / XOCHI_SOLVER_ARBITRUM / XOCHI_SOLVER_OPTIMISM / " <>
-              "XOCHI_SOLVER_ETH / XOCHI_SOLVER_POLYGON / XOCHI_SOLVER_ROBINHOOD to the " <>
-              "canonical solver address(es), or set XOCHI_PULL_REQUIRE_SOLVER_PIN=true."
+              "Set #{Enum.join(@solver_env, " / ")} to the canonical solver address(es), " <>
+              "or set XOCHI_PULL_REQUIRE_SOLVER_PIN=true."
     end
 
     :ok

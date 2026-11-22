@@ -196,6 +196,13 @@ defmodule Raxol.Payments.Xochi.CapabilitiesTest do
       refute Capabilities.fillable?(caps, @tron, String.downcase(@usdt_tron), :destination)
     end
 
+    test "does not canonicalize a malformed EVM address into a match" do
+      {:ok, caps} = Capabilities.parse(@wire_multi_vm)
+      "0x" <> bare = @usdc_base
+      refute Capabilities.fillable?(caps, 8453, bare, :origin)
+      refute Capabilities.fillable?(caps, 8453, " " <> @usdc_base, :origin)
+    end
+
     test "rejects unadvertised chains and blank tokens" do
       {:ok, caps} = Capabilities.parse(@wire_evm)
       refute Capabilities.fillable?(caps, 1, @usdc_base, :origin)

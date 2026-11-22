@@ -113,9 +113,15 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
     end
   end
 
-  # EVM addresses as lowercase `0x` hex; base58 (Tron/Solana) values verbatim.
-  # Non-address strings (intent/quote ids) never reach here.
-  defp normalize_address("0x" <> _ = address), do: "0x" <> EIP712.normalize_address(address)
+  # Unpadded EVM addresses as lowercase `0x` hex; anything else verbatim, so a
+  # padded address is attested byte for byte and base58 (Tron/Solana) keeps its
+  # case. Non-address strings (intent/quote ids) never reach here.
+  defp normalize_address("0x" <> _ = address) do
+    if String.trim(address) == address,
+      do: "0x" <> EIP712.normalize_address(address),
+      else: address
+  end
+
   defp normalize_address(other), do: other
 
   defp decode_signature(hex) do

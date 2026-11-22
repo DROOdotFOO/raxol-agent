@@ -40,7 +40,23 @@ defmodule Raxol.Payments.Xochi.Schemas.IntentStatus do
     terminal: false
   ]
 
-  @type status :: Status.t()
+  @type status ::
+          :idle
+          | :pending
+          | :pull_pending
+          | :quoting
+          | :quoted
+          | :signing
+          | :executing
+          | :bridging
+          | :settling
+          | :source_finalized
+          | :completed
+          | :refund_pending
+          | :failed
+          | :expired
+          | :refunded
+          | :unknown
 
   @type settlement_type :: :public | :stealth | :shielded | nil
   @type attestation_status :: :verified | :rejected | :not_required | nil

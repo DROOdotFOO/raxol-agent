@@ -193,6 +193,18 @@ defmodule Raxol.Payments.Protocols.XochiTest do
       assert :ok = Xochi.validate_intent(quote_resp, request(@signer_addr))
     end
 
+    test "refuses an address padded with whitespace on either side" do
+      recipient = "0x" <> String.duplicate("ab", 20)
+
+      padded_request = request(@signer_addr, recipient_address: recipient <> "\n")
+      quote_resp = intent_quote(padded_request, message: %{"recipient" => recipient})
+      assert_refused(quote_resp, padded_request, :recipient)
+
+      clean_request = request(@signer_addr, recipient_address: recipient)
+      quote_resp = intent_quote(clean_request, message: %{"recipient" => recipient <> " "})
+      assert_refused(quote_resp, clean_request, :recipient)
+    end
+
     test "matches checksum-cased EVM addresses against the lowercased intent" do
       checksummed =
         request("0xF39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
