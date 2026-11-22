@@ -54,7 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An agent that reads its own provider key from the environment needs it
   passed in `:env` or `:pass`, or `scrub_env: false` for the old behaviour.
   Breaking for such agents, hence 0.2.0.
-- **Requires `raxol_core ~> 2.9.1` as a `runtime: false` dependency.** Only
+- **Requires `raxol_core ~> 2.9 and >= 2.9.1` as a `runtime: false`
+  dependency** (2.9.1 for its wider scrub; 2.10 and later are allowed). Only
   `Raxol.Core.ChildEnv`'s code is used, so raxol_core is not started, nor the
   `:mnesia` its `.app` lists, and `:telemetry` stays optional. A Mix release
   leaves a `runtime: false` dependency out: a release that does not already

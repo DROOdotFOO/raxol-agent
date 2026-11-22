@@ -60,7 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Directive.Shell` renders its `env` names but not their values.
 - Requires `raxol_agent_client_protocol ~> 0.2.0`, whose stdio transport
   scrubs a spawned agent's environment with `Raxol.Core.ChildEnv`, and
-  `raxol_core ~> 2.9.1`, whose `Raxol.Core.ChildEnv` this delegates to.
+  `raxol_core ~> 2.9 and >= 2.9.1`, whose `Raxol.Core.ChildEnv` this
+  delegates to (2.10 and later are allowed).
   2.9.1's pattern covers the `_PASS`, `_SEED_PHRASE`, `_DSN`, `SEED_PHRASE`
   and `OP_SESSION_*` shapes 2.9.0 missed, so `Raxol.Agent.ChildEnv` no
   longer adds a pattern of its own (a test checks that every name the old
