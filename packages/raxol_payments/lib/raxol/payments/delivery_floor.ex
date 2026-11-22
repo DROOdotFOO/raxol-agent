@@ -40,9 +40,10 @@ defmodule Raxol.Payments.DeliveryFloor do
   beside a low estimate, or signs for less than it advertises, is judged on
   the low figure.
   Every amount must read as an integer in 0..2^256 - 1, or the floor fails: a
-  larger one would sign as its low 256 bits. None of these figures is attested
-  by Xochi's deposit attestation, so on the deposit route this is a
-  pre-funding filter on what the quote says, not a bound on what is delivered.
+  larger one would sign as its low 256 bits. On the deposit route the quote's
+  `to_amount` and `min_to_amount` are bound by its v3 deposit attestation, but
+  the floor is never sent to Xochi, so this is a pre-funding filter on what the
+  venue signed, not a bound on what is delivered.
   """
 
   alias Raxol.Payments.{Assets, EIP712}

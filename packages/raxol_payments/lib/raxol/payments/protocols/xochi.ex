@@ -134,27 +134,51 @@ defmodule Raxol.Payments.Protocols.Xochi do
   quote.
 
   A non-EVM origin has no gasless pull, so the quote returns a bare
-  `deposit_address` the payer must fund directly. A MITM or compromised endpoint
-  could swap that address, so raxol verifies the attestation recovers to the
-  pinned signer BEFORE surfacing the address, failing closed when no signer is
-  pinned or the attestation does not verify. raxol never sends the funds; the
-  returned instructions are for the caller's own Tron wallet to fund, then poll
-  with `poll_status/3`.
+  `deposit_address` the payer must fund directly. raxol verifies the
+  `xochi-deposit-attestation:v3` attestation (`Raxol.Payments.Xochi.DepositAttestation`)
+  BEFORE surfacing the address and fails closed otherwise. The signed message is
+  rebuilt from the caller's own request (depositor `wallet`, origin chain and
+  token, `from_amount`, destination chain and token, resolved recipient, refund
+  address, settlement preference) plus the server-chosen quote values (intent
+  and quote ids, deposit address and deadline, `to_amount`, `min_to_amount`), so
+  an attestation for any other deal -- including a genuine one issued to someone
+  else, or a replayed v1 -- does not recover to the pinned signer
+  (`{:error, :attestation_mismatch}`). raxol never sends the funds; the returned
+  instructions are for the caller's own Tron wallet to fund, then poll with
+  `poll_status/3`.
 
-  Signer resolution, in precedence order: `opts[:deposit_attestation_signer]`
-  (an operator's out-of-band pin), else `config :raxol_payments,
-  :xochi_deposit_attestation_signer`, else the live capability matrix's
-  `deposit_attestation_signer`; `nil` and `""` count as unset. A pin must be a
-  `0x` + 40-hex address (`{:error, :invalid_deposit_signer_pin}` otherwise).
-  The matrix is served by the quote endpoint itself, so unless `config
-  :raxol_payments, :require_deposit_signer_pin` is exactly `false` (unset, it
-  follows `Raxol.Payments.Deployment.production?/0`) it is not consulted and
-  an unpinned run fails with `{:error, :deposit_signer_unpinned}`.
+  Also refused, before recovery:
+
+    * `{:unsupported_deposit_attestation_version, advertised}` -- the capability
+      matrix's `deposit_attestation_version` is not
+      `"xochi-deposit-attestation:v3"` (absent counts as unsupported).
+    * `:missing_deposit_deadline` / `{:deposit_deadline_passed, detail}` -- the
+      attested deadline must be in the future of `opts[:clock]`.
+    * `{:invalid_quote_amount, %{field: field, value: value}}` -- `to_amount` or
+      `min_to_amount` absent, or not a non-negative decimal integer (an
+      integral JSON float of at most 2^53 counts as its integer).
+    * `{:inconsistent_quote_amounts, detail}` -- `min_to_amount > to_amount`.
+    * `{:invalid_quote_id, %{field: field, value: value}}` -- an empty intent
+      or quote id.
+    * `:recipient_is_destination_token` -- funds paid to the token contract are
+      unspendable (raxol#869), and no signature can catch it.
+
+  The signer is only ever an operator's out-of-band pin:
+  `opts[:deposit_attestation_signer]`, else `config :raxol_payments,
+  :xochi_deposit_attestation_signer`; `nil` and `""` count as unset, and an
+  unpinned call fails with `{:error, :deposit_signer_unpinned}`. A pin must be
+  a `0x` + 40-hex address (`{:error, :invalid_deposit_signer_pin}` otherwise).
+  The capability matrix is served by the quote endpoint itself, so it is never
+  a source of the signer, in any deployment. It is read only for
+  `deposit_attestation_version`; a version is not a trust anchor, only a way
+  to name a field-set skew.
 
   ## Options
 
     * `:deposit_attestation_signer` -- pin the expected signer explicitly.
     * `:capabilities` -- a pre-fetched `Capabilities.t()` (skips the network).
+    * `:clock` -- zero-arity function returning unix seconds (default
+      `System.system_time(:second)`), for the deadline check.
   """
   @spec deposit_route_quote(Client.config(), DepositRouteRequest.t(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -166,9 +190,10 @@ defmodule Raxol.Payments.Protocols.Xochi do
   end
 
   @doc """
-  Verify a deposit-route quote's attestation against the pinned signer and return
-  the deposit instructions, or a fail-closed error. See `deposit_route_quote/3`
-  for signer resolution.
+  Verify a deposit-route quote's v3 attestation against the pinned signer and
+  the caller's own request, and return the deposit instructions, or a
+  fail-closed error. See `deposit_route_quote/3` for the checks, signer
+  resolution and options.
   """
   @spec verify_deposit_route(
           Client.config(),
@@ -182,15 +207,25 @@ defmodule Raxol.Payments.Protocols.Xochi do
         %QuoteResponse{} = quote,
         opts \\ []
       ) do
-    with :ok <- ensure_deposit_route(quote),
-         {:ok, signer} <- resolve_deposit_signer(config, opts),
+    # Validated here as well as in the client: this is public, and the request
+    # is half the signed message, so an unvalidated one could bind a value
+    # (e.g. a `0x`-prefixed non-hex recipient) whose case v3 cannot pin.
+    with :ok <- DepositRouteRequest.validate(request),
+         :ok <- ensure_deposit_route(quote),
+         {:ok, signer} <- DepositSignerPin.resolve(opts),
+         version = Capabilities.deposit_attestation_version(deposit_capabilities(config, opts)),
+         # Also checked inside verify/3; here first, so a v1 venue is named as
+         # such before a field-level refusal can mask it.
+         :ok <- DepositAttestation.check_version(version),
+         {:ok, fields} <- deposit_binding_fields(request, quote),
+         :ok <- refuse_token_recipient(fields),
          :ok <-
-           DepositAttestation.verify(
-             deposit_binding_fields(request, quote),
-             quote.deposit_attestation,
-             signer
-           ) do
-      {:ok, deposit_instructions(request, quote)}
+           DepositAttestation.verify(fields, quote.deposit_attestation, %{
+             signer: signer,
+             version: version,
+             now: deposit_now(opts)
+           }) do
+      {:ok, deposit_instructions(fields)}
     end
   end
 
@@ -205,14 +240,6 @@ defmodule Raxol.Payments.Protocols.Xochi do
       else: {:error, :not_a_deposit_route}
   end
 
-  # A bare deposit address with nothing to authenticate it against is never
-  # trusted; see `DepositSignerPin` for when the matrix signer may stand in.
-  defp resolve_deposit_signer(config, opts) do
-    DepositSignerPin.resolve(opts, fn ->
-      Capabilities.deposit_attestation_signer(deposit_capabilities(config, opts))
-    end)
-  end
-
   defp deposit_capabilities(config, opts) do
     case Keyword.get(opts, :capabilities) do
       %{} = caps -> caps
@@ -220,40 +247,121 @@ defmodule Raxol.Payments.Protocols.Xochi do
     end
   end
 
-  # The attestation binds fields split across the request (origin) and the quote
-  # response (ids + deposit address); reassemble them for recovery.
-  defp deposit_binding_fields(
-         %DepositRouteRequest{} = request,
-         %QuoteResponse{} = quote
-       ) do
-    %{
-      intent_id: quote.intent_id,
-      quote_id: quote.quote_id,
-      from_chain_id: request.from_chain_id,
-      from_token: request.from_token,
-      from_amount: request.from_amount,
-      deposit_address: quote.deposit_address
-    }
+  defp deposit_now(opts) do
+    case Keyword.get(opts, :clock) do
+      clock when is_function(clock, 0) -> clock.()
+      _ -> System.system_time(:second)
+    end
   end
 
-  defp deposit_instructions(
-         %DepositRouteRequest{} = request,
-         %QuoteResponse{} = quote
-       ) do
+  # The attested deal. The caller-supplied half comes from OUR request, never
+  # from the response: rebuilding it is what binds the attestation to this
+  # caller, so a quote signed for another wallet, recipient, chain, token,
+  # amount, refund address or settlement type does not recover. The response
+  # echoes none of it anyway. Only server-chosen values come from the quote.
+  defp deposit_binding_fields(%DepositRouteRequest{} = request, %QuoteResponse{} = quote) do
+    with {:ok, intent_id} <- quote_id_field(:intent_id, quote.intent_id),
+         {:ok, quote_id} <- quote_id_field(:quote_id, quote.quote_id),
+         {:ok, to_amount} <- quote_amount(:to_amount, quote.to_amount),
+         {:ok, min_to_amount} <- quote_amount(:min_to_amount, quote.min_to_amount),
+         :ok <- amounts_consistent(to_amount, min_to_amount) do
+      {:ok,
+       %{
+         intent_id: intent_id,
+         quote_id: quote_id,
+         wallet: request.wallet,
+         from_chain_id: request.from_chain_id,
+         from_token: request.from_token,
+         from_amount: request.from_amount,
+         deposit_address: quote.deposit_address,
+         deposit_deadline: quote.deposit_deadline,
+         refund_address: request.refund_address,
+         to_chain_id: request.to_chain_id,
+         to_token: request.to_token,
+         to_amount: to_amount,
+         min_to_amount: min_to_amount,
+         # Riddler signs the resolved recipient (requested, else the wallet);
+         # `DepositRouteRequest.validate/1` requires one, so it is the request's.
+         recipient: request.recipient_address,
+         stealth_spending_pub_key: request.stealth_spending_pub_key,
+         stealth_viewing_pub_key: request.stealth_viewing_pub_key,
+         settlement_preference: request.settlement_preference
+       }}
+    end
+  end
+
+  defp quote_id_field(_field, id) when is_binary(id) and id != "", do: {:ok, id}
+  defp quote_id_field(field, id), do: {:error, {:invalid_quote_id, %{field: field, value: id}}}
+
+  # The message signs decimal base units. A digit string is used byte for byte
+  # (Riddler signs the string it serves); a JSON integer is that integer, and a
+  # JSON float only when it is integral and at most 2^53, where the float is
+  # exactly the integer written. Anything else -- absent, fractional, signed,
+  # grouped -- is refused rather than reformatted into an amount the quote
+  # never stated.
+  @max_exact_float Integer.pow(2, 53)
+
+  defp quote_amount(field, n) when is_integer(n) and n >= 0,
+    do: quote_amount(field, Integer.to_string(n))
+
+  defp quote_amount(field, n) when is_float(n) do
+    int = trunc(n)
+
+    if int == n and int >= 0 and int <= @max_exact_float,
+      do: {:ok, Integer.to_string(int)},
+      else: {:error, {:invalid_quote_amount, %{field: field, value: n}}}
+  end
+
+  # A uint256 has at most 78 decimal digits. Longer is refused before any parse:
+  # the quote endpoint is the party being verified, and a multi-million-digit
+  # string would stall `String.to_integer/1` (or raise `SystemLimitError`).
+  @max_amount_digits 78
+
+  defp quote_amount(field, amount) when is_binary(amount) do
+    if amount != "" and byte_size(amount) <= @max_amount_digits and
+         String.match?(amount, ~r/\A[0-9]+\z/),
+       do: {:ok, amount},
+       else: {:error, {:invalid_quote_amount, %{field: field, value: amount}}}
+  end
+
+  defp quote_amount(field, other),
+    do: {:error, {:invalid_quote_amount, %{field: field, value: other}}}
+
+  defp amounts_consistent(to_amount, min_to_amount) do
+    if String.to_integer(min_to_amount) <= String.to_integer(to_amount),
+      do: :ok,
+      else:
+        {:error,
+         {:inconsistent_quote_amounts, %{to_amount: to_amount, min_to_amount: min_to_amount}}}
+  end
+
+  # The venue really would deliver to the token contract, so the signature
+  # verifies; the funds are still unspendable there (raxol#869).
+  # Case-folded on both sides: on today's EVM destinations that is the address
+  # rule, and for a case-sensitive encoding it can only over-refuse.
+  defp refuse_token_recipient(%{recipient: recipient, to_token: to_token}) do
+    if String.downcase(recipient) == String.downcase(to_token),
+      do: {:error, :recipient_is_destination_token},
+      else: :ok
+  end
+
+  # Every value returned is an attested one.
+  defp deposit_instructions(fields) do
     %{
-      intent_id: quote.intent_id,
-      quote_id: quote.quote_id,
-      deposit_address: quote.deposit_address,
-      deposit_deadline: quote.deposit_deadline,
-      from_chain_id: request.from_chain_id,
-      from_token: request.from_token,
-      from_amount: request.from_amount,
-      to_chain_id: request.to_chain_id,
-      to_token: request.to_token,
-      recipient_address: request.recipient_address,
-      to_amount: quote.to_amount,
-      min_to_amount: quote.min_to_amount,
-      expires_at: quote.expiry
+      intent_id: fields.intent_id,
+      quote_id: fields.quote_id,
+      deposit_address: fields.deposit_address,
+      deposit_deadline: fields.deposit_deadline,
+      from_chain_id: fields.from_chain_id,
+      from_token: fields.from_token,
+      from_amount: fields.from_amount,
+      to_chain_id: fields.to_chain_id,
+      to_token: fields.to_token,
+      recipient_address: fields.recipient,
+      refund_address: fields.refund_address,
+      settlement_preference: fields.settlement_preference,
+      to_amount: fields.to_amount,
+      min_to_amount: fields.min_to_amount
     }
   end
 
@@ -545,23 +653,18 @@ defmodule Raxol.Payments.Protocols.Xochi do
     as: :assert_pinned!
 
   @doc """
-  Raise when `pin` is set but is not a `0x` + 40-hex address, or when deposit
-  routes would trust the capability matrix's attestation signer (fail-open: no
-  valid `pin` and `require_pin?` is `false`). A required pin that is unset is not
-  fail-open: the boot goes ahead and every deposit route is refused with
-  `{:error, :deposit_signer_unpinned}`. `assert_deposit_signer_pinned!/0`
-  reads both from config.
+  Raise when the deposit-attestation signer `pin` is unset (`nil` or `""`:
+  every deposit route would be refused with `{:error,
+  :deposit_signer_unpinned}`) or is not a `0x` + 40-hex address, otherwise
+  return `:ok`.
   """
-  @spec assert_deposit_signer_pinned!(String.t() | nil, boolean()) :: :ok
-  defdelegate assert_deposit_signer_pinned!(pin, require_pin?),
-    to: DepositSignerPin,
-    as: :assert_pinned!
+  @spec assert_deposit_signer_pinned!(String.t() | nil) :: :ok
+  defdelegate assert_deposit_signer_pinned!(pin), to: DepositSignerPin, as: :assert_pinned!
 
   @doc """
-  `assert_deposit_signer_pinned!/2` over the configured
-  `:xochi_deposit_attestation_signer` and `:require_deposit_signer_pin` (unset,
-  `Raxol.Payments.Deployment.production?/0`). Call it from the start-up of a
-  release that serves deposit routes.
+  `assert_deposit_signer_pinned!/1` over the configured
+  `:xochi_deposit_attestation_signer`. Call it from the start-up of a release
+  that serves deposit routes, so a missing or malformed pin halts the boot.
   """
   @spec assert_deposit_signer_pinned!() :: :ok
   defdelegate assert_deposit_signer_pinned!, to: DepositSignerPin, as: :assert_pinned!

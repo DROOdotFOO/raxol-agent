@@ -40,6 +40,51 @@ defmodule Raxol.Payments.Xochi.Schemas.DepositRouteRequestTest do
       assert json["trust_score"] == 40
     end
 
+    test "serializes the optional attested refund address and stealth meta-address" do
+      spend = "0x02" <> String.duplicate("ab", 32)
+      view = "0x03" <> String.duplicate("cd", 32)
+
+      req =
+        deposit_route(%{
+          refund_address: @tron_wallet,
+          stealth_spending_pub_key: spend,
+          stealth_viewing_pub_key: view
+        })
+
+      assert :ok = DepositRouteRequest.validate(req)
+      json = DepositRouteRequest.to_json(req)
+      assert json["refund_address"] == @tron_wallet
+      assert json["stealth_spending_pub_key"] == spend
+      assert json["stealth_viewing_pub_key"] == view
+
+      bare = DepositRouteRequest.to_json(deposit_route())
+
+      for key <- ~w(refund_address stealth_spending_pub_key stealth_viewing_pub_key),
+          do: refute(Map.has_key?(bare, key))
+    end
+
+    test "rejects a refund address that is not Tron base58, and malformed stealth keys" do
+      assert {:error, {:invalid_refund_address, _}} =
+               DepositRouteRequest.validate(deposit_route(%{refund_address: @evm_addr}))
+
+      assert {:error, {:invalid_refund_address, _}} =
+               DepositRouteRequest.validate(
+                 deposit_route(%{refund_address: @tron_wallet <> "\n"})
+               )
+
+      for bad <- [
+            "0x02ab",
+            "02" <> String.duplicate("ab", 32),
+            "0x02" <> String.duplicate("zz", 32)
+          ] do
+        assert {:error, {:invalid_stealth_spending_pub_key, _}} =
+                 DepositRouteRequest.validate(deposit_route(%{stealth_spending_pub_key: bad}))
+
+        assert {:error, {:invalid_stealth_viewing_pub_key, _}} =
+                 DepositRouteRequest.validate(deposit_route(%{stealth_viewing_pub_key: bad}))
+      end
+    end
+
     test "omits trust_score when nil" do
       json = DepositRouteRequest.to_json(deposit_route())
       refute Map.has_key?(json, "trust_score")

@@ -6,18 +6,21 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
 
   alias Raxol.Payments.Actions.Payments
   alias Raxol.Payments.Actions.Payments.ExecuteDepositRoute
-  alias Raxol.Payments.{Checkpoint, EIP712}
-  alias Raxol.Payments.Xochi.{Capabilities, DepositAttestation, SettlementState}
+  alias Raxol.Payments.Checkpoint
+  alias Raxol.Payments.Test.DepositAttestationFixture, as: Fixture
+  alias Raxol.Payments.Xochi.SettlementState
 
   @tron_usdt "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
   @tron_wallet "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"
   @deposit_addr "TWd4WrZ9wn84f5x1hZhL4DHvk738ns5jwb"
   @evm_recipient "0x" <> String.duplicate("ab", 20)
+  @base_usdc "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 
   @intent_id "xi_dep_1"
   @quote_id "xq_dep_1"
   @amount "1000000"
   @priv <<9::256>>
+  @now 1_800_000_000
 
   defp params(overrides \\ %{}) do
     Map.merge(
@@ -26,7 +29,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
         from_chain_id: 728_126_428,
         to_chain_id: 8453,
         from_token: @tron_usdt,
-        to_token: @evm_recipient,
+        to_token: @base_usdc,
         amount_atomic: @amount,
         recipient_address: @evm_recipient,
         slippage_bps: 50
@@ -35,50 +38,25 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     )
   end
 
-  defp signer_address do
-    {:ok, <<_prefix::8, xy::binary-size(64)>>} = ExSecp256k1.create_public_key(@priv)
-    <<_first12::binary-size(12), addr::binary-size(20)>> = ExKeccak.hash_256(xy)
-    "0x" <> Base.encode16(addr, case: :lower)
+  defp signer_address, do: Fixture.address(@priv)
+
+  # Context every verifying run needs: a v3 matrix and a clock before the
+  # attested deadline.
+  defp ctx(overrides) do
+    Map.merge(%{capabilities: Fixture.capabilities(), clock: fn -> @now end}, overrides)
   end
 
-  defp attestation do
-    msg =
-      DepositAttestation.message(%{
-        intent_id: @intent_id,
-        quote_id: @quote_id,
-        from_chain_id: 728_126_428,
-        from_token: @tron_usdt,
-        from_amount: @amount,
-        deposit_address: @deposit_addr
-      })
-
-    digest =
-      ("\x19Ethereum Signed Message:\n" <> Integer.to_string(byte_size(msg)) <> msg)
-      |> ExKeccak.hash_256()
-
-    {:ok, sig} = ExSecp256k1.sign(digest, @priv)
-    "0x" <> Base.encode16(EIP712.pack_signature(sig), case: :lower)
-  end
-
+  # A stub venue that does what Riddler does: attest the deal it was asked
+  # for -- the request's own fields plus the quote's server-chosen values.
+  # `quote` overrides the served body, and the venue signs what it serves.
   defp config(quote \\ %{}) do
-    body =
-      Map.merge(
-        %{
-          "intent_id" => @intent_id,
-          "quote_id" => @quote_id,
-          "can_solve" => true,
-          "to_amount" => "995000",
-          "deposit_address" => @deposit_addr,
-          "deposit_attestation" => attestation(),
-          "deposit_deadline" => 1_900_000_000
-        },
-        quote
-      )
-
     test = self()
 
     plug = fn conn ->
       send(test, :quote_requested)
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      req = Jason.decode!(raw)
+      body = quote_body(req, quote)
 
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
@@ -88,9 +66,51 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     %{base_url: "https://xochi.test", req_options: [plug: plug]}
   end
 
+  defp quote_body(req, quote) do
+    served =
+      Map.merge(
+        %{
+          "intent_id" => @intent_id,
+          "quote_id" => @quote_id,
+          "can_solve" => true,
+          "to_amount" => "995000",
+          "min_to_amount" => "990025",
+          "deposit_address" => @deposit_addr,
+          "deposit_deadline" => 1_900_000_000
+        },
+        quote
+      )
+
+    deal = %{
+      intent_id: served["intent_id"],
+      quote_id: served["quote_id"],
+      wallet: req["wallet"],
+      from_chain_id: req["from_chain_id"],
+      from_token: req["from_token"],
+      from_amount: req["from_amount"],
+      deposit_address: served["deposit_address"],
+      deposit_deadline: served["deposit_deadline"],
+      refund_address: req["refund_address"],
+      to_chain_id: req["to_chain_id"],
+      to_token: req["to_token"],
+      to_amount: decimal(served["to_amount"]),
+      min_to_amount: decimal(served["min_to_amount"]),
+      recipient: req["recipient_address"] || req["wallet"],
+      stealth_spending_pub_key: req["stealth_spending_pub_key"],
+      stealth_viewing_pub_key: req["stealth_viewing_pub_key"],
+      settlement_preference: req["settlement_preference"]
+    }
+
+    Map.put(served, "deposit_attestation", Fixture.sign(deal, @priv))
+  end
+
+  # Riddler signs the decimal string of the amount it serves.
+  defp decimal(n) when is_float(n), do: n |> trunc() |> Integer.to_string()
+  defp decimal(n), do: to_string(n)
+
   describe "run/2" do
     test "verifies the attestation and returns the deposit instructions" do
-      ctx = %{xochi_config: config(), deposit_attestation_signer: signer_address()}
+      ctx = ctx(%{xochi_config: config(), deposit_attestation_signer: signer_address()})
 
       assert {:ok, result} = ExecuteDepositRoute.run(params(), ctx)
       assert result.intent_id == @intent_id
@@ -103,13 +123,13 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     test "binds an atom agent principal for the later poll action" do
       store = Checkpoint.ETS.new()
 
-      ctx = %{
-        xochi_config: config(),
-        deposit_attestation_signer: signer_address(),
-        checkpoint: store,
-        agent_id: :route_agent,
-        clock: fn -> 1_800_000_000 end
-      }
+      ctx =
+        ctx(%{
+          xochi_config: config(),
+          deposit_attestation_signer: signer_address(),
+          checkpoint: store,
+          agent_id: :route_agent
+        })
 
       assert {:ok, %{intent_id: @intent_id}} = ExecuteDepositRoute.run(params(), ctx)
 
@@ -124,21 +144,46 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     end
 
     test "fails closed when the attestation does not recover to the pinned signer" do
-      ctx = %{
-        xochi_config: config(),
-        deposit_attestation_signer: "0x000000000000000000000000000000000000dead"
-      }
+      ctx =
+        ctx(%{
+          xochi_config: config(),
+          deposit_attestation_signer: "0x000000000000000000000000000000000000dead"
+        })
 
       assert {:error, :attestation_mismatch} = ExecuteDepositRoute.run(params(), ctx)
     end
 
     test "fails closed when no signer is pinned" do
-      ctx = %{xochi_config: config(), capabilities: Capabilities.fallback()}
-      assert {:error, :deposit_signer_unavailable} = ExecuteDepositRoute.run(params(), ctx)
+      ctx = ctx(%{xochi_config: config()})
+      assert {:error, :deposit_signer_unpinned} = ExecuteDepositRoute.run(params(), ctx)
+    end
+
+    test "refuses a v1 venue by its advertised version" do
+      ctx =
+        ctx(%{
+          xochi_config: config(),
+          deposit_attestation_signer: signer_address(),
+          capabilities: Fixture.capabilities(version: "xochi-deposit-attestation:v1")
+        })
+
+      assert {:error, {:unsupported_deposit_attestation_version, "xochi-deposit-attestation:v1"}} =
+               ExecuteDepositRoute.run(params(), ctx)
+    end
+
+    test "refuses once the attested deadline has passed on the context clock" do
+      ctx =
+        ctx(%{
+          xochi_config: config(),
+          deposit_attestation_signer: signer_address(),
+          clock: fn -> 1_900_000_000 end
+        })
+
+      assert {:error, {:deposit_deadline_passed, %{deadline: 1_900_000_000}}} =
+               ExecuteDepositRoute.run(params(), ctx)
     end
 
     test "rejects an EVM origin (deposit routes are non-EVM only)" do
-      ctx = %{xochi_config: config(), deposit_attestation_signer: signer_address()}
+      ctx = ctx(%{xochi_config: config(), deposit_attestation_signer: signer_address()})
 
       assert {:error, {:unsupported_origin_vm, _}} =
                ExecuteDepositRoute.run(params(%{from_chain_id: 8453}), ctx)
@@ -154,7 +199,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     @eure_base "0xbf6e2966A9C3D99C9E4D069E04f7Bdb9C8aa762C"
 
     test "a non-USD destination without a positive min_to_amount is refused before any quote" do
-      ctx = %{xochi_config: config(), deposit_attestation_signer: signer_address()}
+      ctx = ctx(%{xochi_config: config(), deposit_attestation_signer: signer_address()})
 
       for floor <- [nil, "0", " 0 "] do
         assert {:error, {:unpriced_asset, %{side: :destination, chain_id: 8453, peg: "EUR"}}} =
@@ -175,7 +220,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     }
 
     test "a quote is judged on the lowest amount it states" do
-      ctx = %{xochi_config: config(@eure_quote), deposit_attestation_signer: signer_address()}
+      ctx =
+        ctx(%{xochi_config: config(@eure_quote), deposit_attestation_signer: signer_address()})
+
       run = &ExecuteDepositRoute.run(params(%{to_token: @eure_base, min_to_amount: &1}), ctx)
 
       assert {:ok, %{deposit_address: @deposit_addr, min_to_amount: "865000000000000000"}} =
@@ -187,17 +234,32 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
                %{floor: 866_000_000_000_000_000, lowest: 865_000_000_000_000_000}}} =
                run.("866000000000000000")
 
-      # Authoritative for a dollar destination too; this quote states no minimum.
-      ctx = %{xochi_config: config(), deposit_attestation_signer: signer_address()}
+      # Authoritative for a dollar destination too, judged on the stated minimum.
+      ctx = ctx(%{xochi_config: config(), deposit_attestation_signer: signer_address()})
 
-      assert {:error, {:delivery_below_floor, %{to_amount: "995000", lowest: 995_000}}} =
-               ExecuteDepositRoute.run(params(%{min_to_amount: "995001"}), ctx)
+      assert {:error,
+              {:delivery_below_floor,
+               %{to_amount: "995000", min_to_amount: "990025", lowest: 990_025}}} =
+               ExecuteDepositRoute.run(params(%{min_to_amount: "990026"}), ctx)
     end
 
-    test "a high stated minimum does not hide a low estimate" do
+    test "a stated minimum above the estimate is refused, even when genuinely signed" do
       # A hostile quote: 1 wei estimated, a reassuring minimum beside it.
       quote = %{"to_amount" => "1", "min_to_amount" => "900000000000000000"}
-      ctx = %{xochi_config: config(quote), deposit_attestation_signer: signer_address()}
+      ctx = ctx(%{xochi_config: config(quote), deposit_attestation_signer: signer_address()})
+
+      assert {:error,
+              {:inconsistent_quote_amounts,
+               %{to_amount: "1", min_to_amount: "900000000000000000"}}} =
+               ExecuteDepositRoute.run(
+                 params(%{to_token: @eure_base, min_to_amount: "850000000000000000"}),
+                 ctx
+               )
+    end
+
+    test "a low estimate below the floor is refused" do
+      quote = %{"to_amount" => "1", "min_to_amount" => "1"}
+      ctx = ctx(%{xochi_config: config(quote), deposit_attestation_signer: signer_address()})
 
       assert {:error, {:delivery_below_floor, %{lowest: 1}}} =
                ExecuteDepositRoute.run(
@@ -212,7 +274,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
         "min_to_amount" => 865_000_000_000_000_000
       }
 
-      ctx = %{xochi_config: config(quote), deposit_attestation_signer: signer_address()}
+      ctx = ctx(%{xochi_config: config(quote), deposit_attestation_signer: signer_address()})
 
       # Through `call/2`, which validates the output schema: an integer
       # `min_to_amount` passed the floor and then failed `:string`.
@@ -224,20 +286,22 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     end
 
     test "an integral JSON float comes back as its integer string" do
-      ctx = %{
-        xochi_config: config(%{"to_amount" => 960_000.0}),
-        deposit_attestation_signer: signer_address()
-      }
+      ctx =
+        ctx(%{
+          xochi_config: config(%{"to_amount" => 960_000.0, "min_to_amount" => 955_200}),
+          deposit_attestation_signer: signer_address()
+        })
 
       assert {:ok, %{to_amount: "960000"}} = ExecuteDepositRoute.call(params(), ctx)
     end
 
     test "a fractional or inexact JSON float amount is refused, not reformatted" do
       for amount <- [960_000.5, 1.0e30] do
-        ctx = %{
-          xochi_config: config(%{"to_amount" => amount}),
-          deposit_attestation_signer: signer_address()
-        }
+        ctx =
+          ctx(%{
+            xochi_config: config(%{"to_amount" => amount}),
+            deposit_attestation_signer: signer_address()
+          })
 
         assert {:error, {:invalid_quote_amount, %{field: :to_amount, value: ^amount}}} =
                  ExecuteDepositRoute.call(params(), ctx)
@@ -245,7 +309,8 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
     end
 
     test "a floor in the source's units on a non-USD destination is refused before any quote" do
-      ctx = %{xochi_config: config(@eure_quote), deposit_attestation_signer: signer_address()}
+      ctx =
+        ctx(%{xochi_config: config(@eure_quote), deposit_attestation_signer: signer_address()})
 
       # 0.99 written at USDT's 6 decimals: about 10^-12 EURe at EURe's 18.
       assert {:error, {:implausible_min_to_amount, %{par_to_amount: 1_000_000_000_000_000_000}}} =
@@ -259,10 +324,11 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
 
     test "a floor that is not an integer of atomic units is refused, not ignored" do
       # This quote would deliver 0.000001 USDC for 1 USDT.
-      ctx = %{
-        xochi_config: config(%{"to_amount" => "1"}),
-        deposit_attestation_signer: signer_address()
-      }
+      ctx =
+        ctx(%{
+          xochi_config: config(%{"to_amount" => "1"}),
+          deposit_attestation_signer: signer_address()
+        })
 
       # 79 digits is past any uint256; a million took a quarter second to parse,
       # and a few million raised `SystemLimitError` rather than a refusal.

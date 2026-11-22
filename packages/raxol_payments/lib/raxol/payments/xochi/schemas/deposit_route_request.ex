@@ -9,6 +9,12 @@ defmodule Raxol.Payments.Xochi.Schemas.DepositRouteRequest do
   validates the origin fields as Tron base58 and the destination fields as EVM
   `0x`-hex. Only a Tron origin is supported; other non-EVM origins reject at
   `validate/1`.
+
+  Every field here is part of the v3 `deposit_attestation` the quote is verified
+  against (`Raxol.Payments.Xochi.DepositAttestation`): the optional
+  `refund_address` (Tron base58: where a failed deposit is returned, ahead of
+  `wallet`) and stealth meta-address (`0x` + 33-byte compressed keys) are bound
+  as sent, and an omitted one is bound as absent.
   """
 
   alias Raxol.Payments.Tron
@@ -25,6 +31,9 @@ defmodule Raxol.Payments.Xochi.Schemas.DepositRouteRequest do
     :to_token,
     :from_amount,
     :recipient_address,
+    :refund_address,
+    :stealth_spending_pub_key,
+    :stealth_viewing_pub_key,
     :trust_score,
     settlement_preference: "public",
     slippage_bps: 50
@@ -38,6 +47,9 @@ defmodule Raxol.Payments.Xochi.Schemas.DepositRouteRequest do
           to_token: String.t(),
           from_amount: String.t(),
           recipient_address: String.t() | nil,
+          refund_address: String.t() | nil,
+          stealth_spending_pub_key: String.t() | nil,
+          stealth_viewing_pub_key: String.t() | nil,
           trust_score: non_neg_integer() | nil,
           settlement_preference: String.t(),
           slippage_bps: non_neg_integer()
@@ -70,6 +82,25 @@ defmodule Raxol.Payments.Xochi.Schemas.DepositRouteRequest do
         {:error, {:invalid_from_amount, "must be a positive base-unit integer string"}}
 
       true ->
+        validate_optionals(req)
+    end
+  end
+
+  # The optional attested fields: absent is bound as absent, present must be
+  # well-formed.
+  defp validate_optionals(%__MODULE__{} = req) do
+    cond do
+      # A refund executes on the origin chain, so it is a Tron address.
+      not (is_nil(req.refund_address) or Tron.Address.valid?(req.refund_address)) ->
+        {:error, {:invalid_refund_address, "refund address must be a Tron base58 address"}}
+
+      not optional_pub_key?(req.stealth_spending_pub_key) ->
+        {:error, {:invalid_stealth_spending_pub_key, "must be 0x + 66 hex chars"}}
+
+      not optional_pub_key?(req.stealth_viewing_pub_key) ->
+        {:error, {:invalid_stealth_viewing_pub_key, "must be 0x + 66 hex chars"}}
+
+      true ->
         :ok
     end
   end
@@ -88,7 +119,17 @@ defmodule Raxol.Payments.Xochi.Schemas.DepositRouteRequest do
       "slippage_bps" => req.slippage_bps
     }
     |> Schemas.put_non_nil("trust_score", req.trust_score)
+    |> Schemas.put_non_nil("refund_address", req.refund_address)
+    |> Schemas.put_non_nil("stealth_spending_pub_key", req.stealth_spending_pub_key)
+    |> Schemas.put_non_nil("stealth_viewing_pub_key", req.stealth_viewing_pub_key)
   end
+
+  defp optional_pub_key?(nil), do: true
+
+  defp optional_pub_key?("0x" <> hex) when byte_size(hex) == 66,
+    do: match?({:ok, _}, Base.decode16(hex, case: :mixed))
+
+  defp optional_pub_key?(_), do: false
 
   defp positive_int_string?(amount) when is_binary(amount) do
     match?({n, ""} when n > 0, Integer.parse(amount))
