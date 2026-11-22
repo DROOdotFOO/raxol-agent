@@ -5,6 +5,7 @@ defmodule Raxol.Payments.Checkpoint.ContextStoreTest do
   alias Raxol.Agent.ContextStore
   alias Raxol.Payments.Checkpoint
   alias Raxol.Payments.Checkpoint.ContextStore, as: Bridge
+  alias Raxol.Payments.Checkpoint.Lock
 
   @ids [:cp_bridge_a, :cp_bridge_b, :cp_bridge_crash]
 
@@ -47,13 +48,11 @@ defmodule Raxol.Payments.Checkpoint.ContextStoreTest do
         end)
       end
 
-    pids =
-      for _ <- tasks do
-        assert_receive {:ready, pid}
-        pid
-      end
+    # Every task is waiting for :go before any gets it. Each task is linked, so
+    # one that crashes fails the test instead of leaving this receive waiting.
+    for %Task{pid: pid} <- tasks, do: receive(do: ({:ready, ^pid} -> :ok))
 
-    Enum.each(pids, &send(&1, :go))
+    Enum.each(tasks, &send(&1.pid, :go))
     results = Task.await_many(tasks)
 
     assert Enum.count(results, &(&1 == :ok)) == 1
@@ -69,22 +68,31 @@ defmodule Raxol.Payments.Checkpoint.ContextStoreTest do
 
     holder =
       spawn(fn ->
-        :global.set_lock({resource, self()}, [node()])
-        send(parent, {:locked, self()})
-
-        receive do
-          :stop -> :ok
-        end
+        Lock.with_lock(resource, fn ->
+          send(parent, {:locked, self()})
+          receive(do: (:stop -> :ok))
+        end)
       end)
 
-    assert_receive {:locked, ^holder}
+    receive(do: ({:locked, ^holder} -> :ok))
     ref = Process.monitor(holder)
     task = Task.async(fn -> Checkpoint.put_new(store, "after_crash", %{owner: :survivor}) end)
 
     Process.exit(holder, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^holder, :killed}
+    receive(do: ({:DOWN, ^ref, :process, ^holder, reason} -> assert(reason == :killed)))
     assert :ok = Task.await(task)
     assert {:ok, %{owner: :survivor}} = Checkpoint.fetch(store, "after_crash")
+  end
+
+  test "concurrent writes to different keys of one store all land" do
+    store = Bridge.new(:cp_bridge_a)
+    keys = for n <- 1..32, do: "k#{n}"
+
+    keys
+    |> Enum.map(&Task.async(fn -> Checkpoint.put(store, &1, %{key: &1}) end))
+    |> Task.await_many()
+
+    for key <- keys, do: assert({:ok, %{key: ^key}} = Checkpoint.fetch(store, key))
   end
 
   test "sweep removes only expired records" do
@@ -113,7 +121,7 @@ defmodule Raxol.Payments.Checkpoint.ContextStoreTest do
 
     {:ok, writer} = Task.start(fn -> Checkpoint.put(store, "k", %{intent_id: "int_1"}) end)
     ref = Process.monitor(writer)
-    assert_receive {:DOWN, ^ref, :process, ^writer, _reason}, 1000
+    receive(do: ({:DOWN, ^ref, :process, ^writer, _reason} -> :ok))
 
     # The writer is gone; the record persists in the store the test process owns,
     # the way an agent's in-flight intent outlives the crashed agent.
