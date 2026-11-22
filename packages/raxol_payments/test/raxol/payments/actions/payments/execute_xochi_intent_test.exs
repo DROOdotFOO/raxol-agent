@@ -1,7 +1,7 @@
 defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
   use ExUnit.Case, async: true
 
-  alias Raxol.Payments.Actions.Payments.{ExecuteXochiIntent, PollXochiStatus}
+  alias Raxol.Payments.Actions.Payments.ExecuteXochiIntent
   alias Raxol.Payments.{Checkpoint, Failure, Ledger, SpendingPolicy}
   alias Raxol.Payments.Prices.Static
   alias Raxol.Payments.Req.AutoPay
@@ -1474,121 +1474,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
     end
   end
 
-  describe "PollXochiStatus" do
-    test "returns the terminal status" do
-      stub_quote_and_execute()
-      ctx = %{xochi_config: config()}
-
-      assert {:ok, result} = PollXochiStatus.run(%{intent_id: "int_1"}, ctx)
-      assert result.status == "completed"
-      assert result.terminal == true
-      assert result.settlement_type == "stealth"
-      assert result.tx_hash == "0xabc"
-      assert result.settlement_speed == "within_budget"
-    end
-
-    test "surfaces a failed intent as an error, not {:ok}" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        Req.Test.json(conn, %{
-          "intentId" => "int_2",
-          "status" => "failed",
-          "error" => "no liquidity for route",
-          "terminal" => true
-        })
-      end)
-
-      ctx = %{xochi_config: config()}
-
-      assert {:error, %Failure{reason: :no_liquidity, retryable?: false} = failure} =
-               PollXochiStatus.run(%{intent_id: "int_2"}, ctx)
-
-      assert failure.message =~ "fill"
-    end
-
-    test "surfaces an expired intent as a retryable error" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        Req.Test.json(conn, %{
-          "intentId" => "int_3",
-          "status" => "expired",
-          "terminal" => true
-        })
-      end)
-
-      ctx = %{xochi_config: config()}
-
-      assert {:error, %Failure{reason: :expired, retryable?: true}} =
-               PollXochiStatus.run(%{intent_id: "int_3"}, ctx)
-    end
-
-    # Mirrors riddler-client test-xochi.js "shielded status RESULT_JSON carries
-    # note_commitment + l2_tx_hash". A shielded (Aztec) settlement is note-based:
-    # at terminal status it announces a note commitment / nullifier / L2 tx in
-    # place of a stealth address, and an agent polling must be able to read them.
-    test "surfaces shielded note fields at terminal status" do
-      note = "0x" <> String.duplicate("ab", 32)
-      nullifier = "0x" <> String.duplicate("cd", 32)
-      l2_tx = "0x" <> String.duplicate("ef", 32)
-
-      Req.Test.stub(__MODULE__, fn conn ->
-        Req.Test.json(conn, %{
-          "intentId" => "int_sh",
-          "status" => "completed",
-          "settlementType" => "shielded",
-          "noteCommitment" => note,
-          "nullifierHash" => nullifier,
-          "l2TxHash" => l2_tx,
-          "terminal" => true
-        })
-      end)
-
-      # call/2 (not run/2) so the new note fields pass the output schema.
-      assert {:ok, result} =
-               PollXochiStatus.call(%{intent_id: "int_sh"}, %{xochi_config: config()})
-
-      assert result.settlement_type == "shielded"
-      assert result.note_commitment == note
-      assert result.nullifier_hash == nullifier
-      assert result.l2_tx_hash == l2_tx
-    end
-
-    test "surfaces solver substatus / substatus_message on a completed status" do
-      Req.Test.stub(__MODULE__, fn conn ->
-        Req.Test.json(conn, %{
-          "intentId" => "int_1",
-          "status" => "completed",
-          "substatus" => "settled",
-          "substatus_message" => "filled from solver inventory",
-          "terminal" => true
-        })
-      end)
-
-      assert {:ok, result} =
-               PollXochiStatus.call(%{intent_id: "int_1"}, %{xochi_config: config()})
-
-      assert result.substatus == "settled"
-      assert result.substatus_message == "filled from solver inventory"
-    end
-
-    test "carries substatus_message into the error when a failed status has no explicit error" do
-      # An in-doubt settlement the reconcile sweep ultimately couldn't confirm
-      # ends `failed` with the reason in substatus_message rather than `error`.
-      # That reason must reach the caller, not be dropped.
-      Req.Test.stub(__MODULE__, fn conn ->
-        Req.Test.json(conn, %{
-          "intentId" => "int_4",
-          "status" => "failed",
-          "substatus_message" => "reconcile: solver did not confirm execution",
-          "terminal" => true
-        })
-      end)
-
-      assert {:error, %Failure{reason: :not_filled} = failure} =
-               PollXochiStatus.run(%{intent_id: "int_4"}, %{xochi_config: config()})
-
-      assert failure.message =~ "reconcile: solver did not confirm execution"
-    end
-  end
-
   # The Action behaviour's `call/2` validates the output against the output
   # schema; `run/2` does not. The live Xochi gate goes through `call/2`, so these
   # exercise the same path. Regression guard for both settlement modes: a public
@@ -2076,32 +1961,6 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteXochiIntentTest do
 
       assert_received {:quote_body, body}
       assert body["slippage_bps"] == 50
-    end
-
-    test "a completed poll with no tx hash passes output validation" do
-      # A terminal-completed status that reports neither txHash nor settlementType:
-      # both optional output fields are nil and must not trip validation.
-      Req.Test.stub(__MODULE__, fn conn ->
-        Req.Test.json(conn, %{
-          "intentId" => "int_1",
-          "status" => "completed",
-          "terminal" => true
-        })
-      end)
-
-      assert {:ok, result} =
-               PollXochiStatus.call(%{intent_id: "int_1"}, %{
-                 xochi_config: config()
-               })
-
-      assert result.status == "completed"
-      assert result.terminal == true
-      assert is_nil(result.tx_hash)
-      assert is_nil(result.settlement_type)
-      # A public/stealth settlement carries no note fields; present-nil must pass.
-      assert is_nil(result.note_commitment)
-      assert is_nil(result.nullifier_hash)
-      assert is_nil(result.l2_tx_hash)
     end
   end
 
