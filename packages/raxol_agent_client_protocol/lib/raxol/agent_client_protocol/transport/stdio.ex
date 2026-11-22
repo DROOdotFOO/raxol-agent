@@ -104,6 +104,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   require Logger
 
   alias Raxol.AgentClientProtocol.Transport.Framer
+  alias Raxol.Core.ChildEnv, as: CoreEnv
 
   @behaviour Raxol.AgentClientProtocol.Transport
 
@@ -160,31 +161,60 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     * `:owner` — pid to receive inbound messages; defaults to `nil`.
     * `:cd` — working directory for the child process.
     * `:env` — list of `{name, value}` environment overrides, passed
-      to `Port.open/2`'s `:env` option ahead of the scrub below.
+      to `Port.open/2`'s `:env` option ahead of the scrub below. A name is a
+      string or charlist; a value is a string, a charlist, or `false` to
+      unset. Anything else (`nil`, an integer) raises `ArgumentError`.
     * `:scrub_env` — `false` to skip the credential scrub; default `true`.
+      Any other value raises `ArgumentError`, so a missing setting passed
+      through as `nil` cannot turn the scrub off.
     * `:unset_env` — more variable names (strings) to unset in the child.
+    * `:pass` — names (strings, exact case) the scrub lets through to this
+      child after all. The only allowlist this transport honours; see below.
     * `:max_frame_bytes`, `:max_json_depth` — see "Limits".
 
-  The child inherits the node's environment plus `:env`, minus every
-  variable whose name looks like a credential (case-insensitive): a suffix
-  of `_KEY`, `_KEY_ID`, `_APIKEY`, `_TOKEN`, `_PRIVKEY`, `_SECRET`,
-  `_PASSWORD`, `_PASS`, `_PASSPHRASE`, `_MNEMONIC`, `_SEED_PHRASE`,
-  `_CREDENTIALS`, `_DSN` or `_RPC`; an `RPC_` name segment (`RPC_BASE`,
-  `BASE_RPC_URL`), which commonly embeds a provider key; `MNEMONIC`,
-  `SEED_PHRASE`, `SSH_AUTH_SOCK`; and `OP_SESSION_*`. Names in
-  `:unset_env` are unset too. That is the whole list: this package reads no
-  application config, so a host's own secret list (raxol's
-  `Raxol.Core.ChildEnv` `extra_secrets:`/`pass:`) applies only if the host
-  passes it here. Names only raxol_core's wider pattern or named list catches
-  (`DATABASE_URL`, `PGPASSWORD`, `API_KEYS`, `SECRET_KEY_BASE`,
-  `RELEASE_COOKIE`) are inherited; raxol_agent's
-  `Raxol.Agent.ChildEnv.unset_names/0`, passed as `:unset_env`, adds them.
+  The child inherits the node's environment plus `:env`, minus what
+  `Raxol.Core.ChildEnv` denies, the scrub raxol's directive shells and MCP
+  stdio servers get:
+
+    * every variable whose name looks like a credential (case-insensitive):
+      a `_`-separated segment such as `KEY`, `KEYS`, `APIKEY`, `TOKEN`,
+      `SECRET`, `PASSWORD`, `PASSPHRASE`, `MNEMONIC` or `CREDENTIALS`
+      anywhere in the name; a database or broker URL (`DATABASE_URL`,
+      `REDIS_URL`, ...); `PGPASSWORD`; `RPC` anywhere but in `GRPC`;
+    * raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
+      `SSH_AUTH_SOCK`, raxol's own keys) and the operator's
+      `config :raxol_core, Raxol.Core.ChildEnv, extra_secrets:`, set or not;
+    * and, on top of Core, a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
+      `SEED_PHRASE`, and `OP_SESSION_*`, which raxol_core 2.9's pattern
+      misses;
+
+  minus this call's `:pass`.
+
+  **Core's `pass:` list is not honoured here.** The operator's
+  `config :raxol_core, Raxol.Core.ChildEnv, pass:` lets names through to
+  directive shells and MCP servers the operator runs; a spawned ACP agent is
+  third-party code, so every name on that list is unset in it too (set or
+  not, credential-shaped or not), unless this call's `:pass` names it.
+
+  Precedence, highest first: a name given in `:env` is set as given; a name
+  in `:unset_env` is unset; a name in `:pass` is inherited; otherwise the
+  scrub decides. See `Raxol.Core.ChildEnv` for what no pattern catches.
 
   An agent is third-party code. To hand it one of those credentials (an
   agent that reads its own provider key, say), name it in `:env`, or pass
-  `scrub_env: false` to inherit everything. A process running as the same
-  user can still read the node's own launch environment
-  (`/proc/<pid>/environ`); the scrub only stops inheritance.
+  `scrub_env: false` to inherit everything (`:unset_env` is then ignored). A
+  process running as the same user can still read the node's own launch
+  environment (`/proc/<pid>/environ`); the scrub only stops inheritance.
+
+  The environment is built in the calling process, before the transport
+  starts, so these raise from this call and no agent is spawned:
+
+    * `ArgumentError` for a malformed `Raxol.Core.ChildEnv` config (an
+      unknown or repeated key, a name that is not a string) or a malformed
+      `:env`, `:scrub_env`, `:unset_env` or `:pass`;
+    * `RuntimeError` when `Raxol.Core.ChildEnv` cannot be loaded: a release
+      that leaves raxol_core out (see the README's "Releases" note). The
+      scrub fails closed; `scrub_env: false` does not need raxol_core.
 
   Returns `{:error, :executable_not_found}` if `cmd` cannot be resolved.
   """
@@ -197,8 +227,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
       path ->
         owner = Keyword.get(opts, :owner)
-        spawn_opts = Keyword.take(opts, [:cd, :env, :scrub_env, :unset_env])
-        init_arg = {:spawn, path, args, spawn_opts, owner, limits(opts)}
+        init_arg = {:spawn, path, args, build_spawn_opts(opts), owner, limits(opts)}
         {:ok, pid} = GenServer.start_link(__MODULE__, init_arg)
         {:ok, %__MODULE__{pid: pid}}
     end
@@ -252,7 +281,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   end
 
   def init({:spawn, path, args, spawn_opts, owner, limits}) do
-    port_opts = [:binary, :exit_status, args: args] ++ build_spawn_opts(spawn_opts)
+    port_opts = [:binary, :exit_status, args: args] ++ spawn_opts
     port = Port.open({:spawn_executable, String.to_charlist(path)}, port_opts)
     {:ok, %{new_state(:spawn, owner, limits) | port: port}}
   end
@@ -313,39 +342,160 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     end
   end
 
+  # Built in the caller (see `start_spawn/3`): a malformed config or option,
+  # or a missing raxol_core, raises there instead of crashing the transport.
   @spec build_spawn_opts(keyword()) :: keyword()
   defp build_spawn_opts(opts) do
-    env = Keyword.get(opts, :env, [])
+    env = opts |> Keyword.get(:env, []) |> validate_env!()
 
-    unset =
-      if Keyword.get(opts, :scrub_env, true),
-        do: scrubbed_env(env, Keyword.get(opts, :unset_env, [])),
-        else: []
+    env =
+      case Keyword.get(opts, :scrub_env, true) do
+        true ->
+          unset = names!(opts, :unset_env)
+          scrubbed_env(env, unset, names!(opts, :pass))
 
-    Keyword.take(opts, [:cd]) ++ [env: env ++ unset]
+        false ->
+          env
+
+        other ->
+          raise ArgumentError, ":scrub_env must be true or false, got: #{inspect(other)}"
+      end
+
+    Keyword.take(opts, [:cd]) ++ [env: env]
   end
 
-  # This package has no dependency on raxol_core to share
-  # `Raxol.Core.ChildEnv`'s wider pattern through. raxol_agent's
-  # `child_env_test.exs` checks that every name matched here is one
-  # `Raxol.Agent.ChildEnv` denies; `stdio_test.exs` pins what this matches.
-  @credential ~r/(_KEY|_KEY_ID|_APIKEY|_TOKEN|_PRIVKEY|_SECRET|_PASSWORD|_PASS|_PASSPHRASE|_MNEMONIC|_SEED_PHRASE|_CREDENTIALS|_DSN|_RPC)\z|(\A|_)RPC_|\A(MNEMONIC|SEED_PHRASE|SSH_AUTH_SOCK)\z|\AOP_SESSION_/i
+  @spec names!(keyword(), :unset_env | :pass) :: [String.t()]
+  defp names!(opts, key) do
+    case Keyword.get(opts, key, []) do
+      names when is_list(names) ->
+        Enum.map(names, fn
+          name when is_binary(name) ->
+            name
 
+          name ->
+            raise ArgumentError,
+                  "#{inspect(key)} must be a list of strings, got an entry of shape #{type(name)}"
+        end)
+
+      other ->
+        raise ArgumentError, "#{inspect(key)} must be a list of strings, got: #{type(other)}"
+    end
+  end
+
+  # The same `{name, value}` shapes on both paths, as charlists for
+  # `Port.open/2`, which would crash the transport on a `nil` or an integer.
+  @spec validate_env!(term()) :: [{charlist(), charlist() | false}]
+  defp validate_env!(env) when is_list(env) do
+    Enum.each(env, fn
+      {name, value}
+      when (is_binary(name) or is_list(name)) and
+             (is_binary(value) or is_list(value) or value == false) ->
+        :ok
+
+      entry ->
+        raise ArgumentError,
+              ":env entries must be {name, value | false} with string or charlist " <>
+                "names and values, got an entry of shape #{entry_shape(entry)}"
+    end)
+
+    Enum.map(env, fn {name, value} -> {to_charlist(name), charlist_or_false(value)} end)
+  end
+
+  defp validate_env!(env),
+    do: raise(ArgumentError, ":env must be a list, got: #{entry_shape(env)}")
+
+  @spec charlist_or_false(String.t() | charlist() | false) :: charlist() | false
+  defp charlist_or_false(false), do: false
+  defp charlist_or_false(value), do: to_charlist(value)
+
+  # The type of a rejected entry, never its contents, which may be a key.
+  @spec entry_shape(term()) :: String.t()
+  defp entry_shape({name, value}), do: "{#{type(name)}, #{type(value)}}"
+  defp entry_shape(term), do: type(term)
+
+  @spec type(term()) :: String.t()
+  defp type(term) when is_binary(term), do: "string"
+  defp type(term) when is_list(term), do: "list"
+  defp type(term) when is_atom(term), do: inspect(term)
+  defp type(term) when is_integer(term), do: "integer"
+  defp type(term) when is_tuple(term), do: "tuple"
+  defp type(_term), do: "other"
+
+  # Core's pattern is pinned in `stdio_test.exs`: the gap list is right only
+  # for it, so a raxol_core release that changes it fails this package's
+  # build before it can narrow what agents inherit. raxol_core 2.9.1 adds
+  # these shapes to its own pattern; the list stays until this package
+  # requires it.
+  @gaps ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
+
+  # The names this transport scrubs on top of `Raxol.Core.ChildEnv`
+  # (case-insensitive). Internal: `Raxol.Agent.ChildEnv` applies the same list
+  # to directive shells, so there is one copy of it. Removed once this package
+  # requires raxol_core 2.9.1, whose pattern covers these names.
   @doc false
-  @spec credential_pattern() :: Regex.t()
-  def credential_pattern, do: @credential
+  @spec credential_gaps() :: Regex.t()
+  def credential_gaps, do: @gaps
 
-  # Every credential-looking variable of the node, plus `extra` (set or
-  # not), that the caller's `:env` does not name, unset (`false`) in the
-  # child.
-  @spec scrubbed_env(list(), [String.t()]) :: [{charlist(), false}]
-  defp scrubbed_env(env, extra) do
+  @doc """
+  Whether a spawned agent is denied `name`: `Raxol.Core.ChildEnv` denies it
+  (its pattern or named set), it is on Core's `pass:` list (which this
+  transport does not honour), or it has a shape Core 2.9 misses (a `_PASS`,
+  `_SEED_PHRASE` or `_DSN` suffix, `SEED_PHRASE`, `OP_SESSION_*`), and it is
+  not in `opts[:pass]`. A spawn's `:env` and `:unset_env` are not
+  consulted. Raises like `start_spawn/3` on a malformed config or a missing
+  raxol_core.
+  """
+  @spec secret?(String.t(), keyword()) :: boolean()
+  def secret?(name, opts \\ []) when is_binary(name) and is_list(opts) do
+    core!()
+    denied?(name, core_pass_upcase(), names!(opts, :pass))
+  end
+
+  # Core matches its named set case-insensitively but `pass:` exactly, so
+  # `pass: ["SSH_AUTH_SOCK"]` makes Core let `ssh_auth_sock` through as well.
+  # Matching Core's `pass:` case-insensitively here denies every such variant.
+  @spec denied?(String.t(), [String.t()], [String.t()]) :: boolean()
+  defp denied?(name, core_pass_upcase, pass) do
+    name not in pass and
+      (String.upcase(name) in core_pass_upcase or CoreEnv.secret?(name) or
+         Regex.match?(@gaps, name))
+  end
+
+  @spec core_pass_upcase() :: [String.t()]
+  defp core_pass_upcase, do: Enum.map(CoreEnv.pass(), &String.upcase/1)
+
+  # The caller's `env`, then, unset (`false`): `unset` and every name a child
+  # is denied, set or not for Core's named set and `pass:` list, otherwise if
+  # the node has it; minus `pass`, and minus whatever `env` names.
+  @spec scrubbed_env(list(), [String.t()], [String.t()]) :: [{charlist(), charlist() | false}]
+  defp scrubbed_env(env, unset, pass) do
+    core!()
+    core_pass = CoreEnv.pass()
+    core_pass_upcase = Enum.map(core_pass, &String.upcase/1)
     given = MapSet.new(env, fn {name, _value} -> to_string(name) end)
-    present = for {name, _value} <- System.get_env(), Regex.match?(@credential, name), do: name
+    present = System.get_env() |> Map.keys() |> Enum.filter(&denied?(&1, core_pass_upcase, pass))
+    named = Enum.reject(CoreEnv.secrets() ++ core_pass, &(&1 in pass))
 
-    for name <- Enum.uniq(present ++ Enum.map(extra, &to_string/1)),
-        name not in given,
-        do: {String.to_charlist(name), false}
+    removed =
+      for name <- Enum.uniq(unset ++ named ++ present),
+          name not in given,
+          do: {String.to_charlist(name), false}
+
+    env ++ removed
+  end
+
+  # Fail closed: without raxol_core's code (a release that leaves it out),
+  # there is no scrub to apply, and spawning unscrubbed is not an option.
+  @spec core!() :: :ok
+  defp core! do
+    if Code.ensure_loaded?(CoreEnv) do
+      :ok
+    else
+      raise "Raxol.Core.ChildEnv is not available, so a spawned agent's environment " <>
+              "cannot be scrubbed. A release must ship raxol_core: add " <>
+              "`applications: [raxol_core: :load]` to it (see the " <>
+              "raxol_agent_client_protocol README), or pass scrub_env: false."
+    end
   end
 
   @impl GenServer

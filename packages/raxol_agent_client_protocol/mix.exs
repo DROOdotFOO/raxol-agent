@@ -19,7 +19,9 @@ defmodule RaxolAgentClientProtocol.MixProject do
       name: "Raxol Agent Client Protocol",
       source_url: @source_url,
       dialyzer: [
-        plt_add_apps: [:mix, :ex_unit],
+        # raxol_core is `runtime: false` and :telemetry arrives only through it,
+        # so neither is in the PLT unless named.
+        plt_add_apps: [:mix, :ex_unit, :raxol_core, :telemetry],
         flags: [:error_handling, :underspecs],
         ignore_warnings: ".dialyzer_ignore.exs"
       ]
@@ -44,16 +46,16 @@ defmodule RaxolAgentClientProtocol.MixProject do
   defp deps do
     [
       {:jason, "~> 1.4"},
+      # `Raxol.Core.ChildEnv`, the credential scrub `Transport.Stdio` applies to
+      # a spawned agent, shared with the rest of raxol. `runtime: false`: this
+      # package only calls that one module, which needs no application state,
+      # so a host does not start raxol_core (or the `:mnesia` its `.app`
+      # lists). A host that builds a release must ship the code: see the
+      # README's "Releases" note.
+      {:raxol_core, "~> 2.9", runtime: false},
 
       # Dev/test only
       {:stream_data, "~> 1.1", only: [:dev, :test]},
-      # Test-only, deliberately NOT a runtime dependency: every emit site in
-      # `lib/` stays `Code.ensure_loaded?(:telemetry)`-guarded so the published
-      # package still has no telemetry requirement. Without it present under
-      # MIX_ENV=test, though, those guards are always false and
-      # `Raxol.AgentClientProtocol.Test.InvariantSentinel` can never observe an
-      # invariant -- the guard would be decorative.
-      {:telemetry, "~> 1.0", only: [:dev, :test]},
       {:ex_json_schema, "~> 0.10", only: [:dev, :test]},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

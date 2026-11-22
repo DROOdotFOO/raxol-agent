@@ -10,15 +10,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Breaking: `Transport.Stdio.start_spawn/3` no longer hands a spawned
-  agent the node's credentials.** Variables whose name ends in
-  `_KEY`, `_KEY_ID`, `_APIKEY`, `_TOKEN`, `_PRIVKEY`, `_SECRET`, `_PASSWORD`,
-  `_PASS`, `_PASSPHRASE`, `_MNEMONIC`, `_SEED_PHRASE`, `_CREDENTIALS`, `_DSN` or
-  `_RPC` (case-insensitive), every `RPC_` name, `MNEMONIC`, `SEED_PHRASE`,
-  `SSH_AUTH_SOCK` and `OP_SESSION_*` are unset unless named in `:env`;
-  `:unset_env` adds names of the caller's own. An agent that reads its own
-  provider key from the environment needs it passed in `:env`, or
-  `scrub_env: false` for the old behaviour. Breaking for such agents, hence
-  0.2.0.
+  agent the node's credentials.** It applies `Raxol.Core.ChildEnv`, the scrub
+  raxol's directive shells and MCP stdio servers use. Unset unless named in
+  `:env` or the new `:pass`:
+  - any name with a credential word as a `_`-separated segment (`KEY`,
+    `KEYS`, `APIKEY`, `TOKEN`, `SECRET`, `PASSWORD`, `PASSWD`, `PASSPHRASE`,
+    `MNEMONIC`, `CREDENTIALS`, ...), case-insensitive, so `API_KEYS`
+    and a bare `TOKEN` go too;
+  - database and broker URLs (`DATABASE_URL`, `REDIS_URL`, ...),
+    `PGPASSWORD`, and `RPC` anywhere in a name but `GRPC`;
+  - raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
+    `SSH_AUTH_SOCK`, raxol's own keys) and the operator's `extra_secrets:`;
+  - on top of Core, names with a `_PASS`, `_SEED_PHRASE` or `_DSN` suffix,
+    `SEED_PHRASE` and `OP_SESSION_*`, which Core 2.9's pattern misses.
+    `Transport.Stdio.credential_gaps/0`, which holds them for raxol_agent to
+    reuse, is internal (`@doc false`), not public API: it goes away once
+    this package requires raxol_core 2.9.1, which covers those names.
+
+  Also:
+  - **Core's node-wide `pass:` list is not honoured.** A name the operator
+    lets through to directive shells or MCP servers with
+    `config :raxol_core, Raxol.Core.ChildEnv, pass:` is unset in a spawned
+    ACP agent, which is third-party code. A spawn hands an agent a name with
+    its own `:pass` option (exact names) or `:env`.
+  - Precedence, highest first: `:env` (set as given), `:unset_env` (unset),
+    `:pass` (inherited), then the scrub.
+  - Raised from `start_spawn/3` in the caller, before anything is spawned:
+    `ArgumentError` for a malformed `Raxol.Core.ChildEnv` config or a
+    malformed `:env` (a `nil` value, say), `:scrub_env` (anything but
+    `true`/`false`), `:unset_env` or `:pass`; `RuntimeError` when
+    `Raxol.Core.ChildEnv` is not loadable (see below).
+  - New: `Transport.Stdio.secret?/2` says whether a name is scrubbed.
+
+  An agent that reads its own provider key from the environment needs it
+  passed in `:env` or `:pass`, or `scrub_env: false` for the old behaviour.
+  Breaking for such agents, hence 0.2.0.
+- **Requires `raxol_core ~> 2.9` as a `runtime: false` dependency.** Only
+  `Raxol.Core.ChildEnv`'s code is used, so raxol_core is not started, nor the
+  `:mnesia` its `.app` lists, and `:telemetry` stays optional. A Mix release
+  leaves a `runtime: false` dependency out: a release that does not already
+  start raxol_core must add `applications: [raxol_core: :load]`, or
+  `start_spawn/3` raises rather than spawn an agent unscrubbed (README,
+  "Releases").
 - Also ships the connection, delivery, journal writer and attach-policy
   robustness and security fixes merged in #27.
 - **A cancelled request is now answered.** After `$/cancel_request` the

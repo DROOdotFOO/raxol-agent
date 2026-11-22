@@ -59,9 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crash reports (`redact_status(status, keys, failure: true)`).
 - `Directive.Shell` renders its `env` names but not their values.
 - Requires `raxol_agent_client_protocol ~> 0.2.0`, whose stdio transport
-  scrubs a spawned agent's environment by its own suffix pattern (every
-  name it matches is one `Raxol.Agent.ChildEnv` denies), and
+  scrubs a spawned agent's environment with `Raxol.Core.ChildEnv` plus
+  the `_PASS`, `_SEED_PHRASE`, `_DSN`, `SEED_PHRASE` and `OP_SESSION_*`
+  shapes Core misses, and
   `raxol_core ~> 2.9`, whose `Raxol.Core.ChildEnv` this delegates to.
+  `Raxol.Agent.ChildEnv` takes those gap shapes from the transport's
+  internal `credential_gaps/0`, so there is one copy. An ACP agent still inherits this package's named list (the
+  Catalog key variables, `ORDER_*` URLs, `PROTON_UID`, the sidecar URL)
+  unless its spawner passes `unset_env: Raxol.Agent.ChildEnv.unset_names()`.
+  That transport ignores `Raxol.Core.ChildEnv`'s `pass:`, so a name passed
+  to directive shells is not handed to ACP agents.
   **Upgrade note:** 2.9 also rejects an unknown or repeated key in
   `config :raxol_core, Raxol.Core.ChildEnv` (a misspelt `extra_secret:`,
   say). A shell directive then answers `%{exit_status: :error, output:
