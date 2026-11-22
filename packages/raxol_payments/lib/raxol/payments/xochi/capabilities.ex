@@ -40,7 +40,7 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   lifetime.
   """
 
-  alias Raxol.Payments.Assets
+  alias Raxol.Payments.{Assets, EIP712}
 
   @type vm_type :: :evm | :tvm | :svm
   @type role :: :origin | :destination
@@ -397,7 +397,7 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   # EVM addresses compare case-insensitively; base58 forms are case-sensitive.
   defp normalize_address(caps, chain_id, address) do
     case vm_type(caps, chain_id) do
-      :evm -> String.downcase(address)
+      :evm -> EIP712.normalize_address(address)
       _ -> address
     end
   end

@@ -28,6 +28,8 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
   `personal_sign`.
   """
 
+  alias Raxol.Payments.EIP712
+
   @message_prefix "xochi-deposit-attestation:v1"
 
   @type fields :: %{
@@ -74,7 +76,7 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
     with {:ok, {r, s, recovery_id}} <- decode_signature(hex),
          digest = Raxol.Payments.Eip191.digest(message(fields)),
          {:ok, pubkey} <- ExSecp256k1.recover(digest, r, s, recovery_id) do
-      {:ok, Raxol.Payments.EIP712.address_from_pubkey(pubkey)}
+      {:ok, EIP712.address_from_pubkey(pubkey)}
     else
       _ -> {:error, :invalid_signature}
     end
@@ -113,9 +115,9 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
 
   # -- Private --
 
-  # EVM addresses lowercased; base58 (Tron/Solana) values verbatim. Non-address
-  # strings (intent/quote ids) never reach here.
-  defp normalize_address("0x" <> _ = address), do: String.downcase(address)
+  # EVM addresses as lowercase `0x` hex; base58 (Tron/Solana) values verbatim.
+  # Non-address strings (intent/quote ids) never reach here.
+  defp normalize_address("0x" <> _ = address), do: "0x" <> EIP712.normalize_address(address)
   defp normalize_address(other), do: other
 
   defp decode_signature(hex) do
@@ -128,5 +130,5 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
     end
   end
 
-  defp addr_eq?(a, b), do: String.downcase(a) == String.downcase(b)
+  defp addr_eq?(a, b), do: EIP712.normalize_address(a) == EIP712.normalize_address(b)
 end

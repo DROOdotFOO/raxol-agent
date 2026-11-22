@@ -20,6 +20,8 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
 
   use Mix.Task
 
+  alias Raxol.Payments.EIP712
+
   @impl true
   def run(argv) do
     Mix.Task.run("app.start")
@@ -54,6 +56,5 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
   end
 
   defp normalize_address(nil), do: nil
-  defp normalize_address("0x" <> _ = addr), do: addr
-  defp normalize_address(addr) when is_binary(addr), do: "0x" <> addr
+  defp normalize_address(addr) when is_binary(addr), do: "0x" <> EIP712.normalize_address(addr)
 end
