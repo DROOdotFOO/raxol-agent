@@ -155,7 +155,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
 
     test "fails closed when no signer is pinned" do
       ctx = ctx(%{xochi_config: config()})
-      assert {:error, :deposit_signer_unavailable} = ExecuteDepositRoute.run(params(), ctx)
+      assert {:error, :deposit_signer_unpinned} = ExecuteDepositRoute.run(params(), ctx)
     end
 
     test "refuses a v1 venue by its advertised version" do

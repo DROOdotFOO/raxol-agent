@@ -30,9 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{:invalid_quote_amount, detail}` for an absent or non-decimal `to_amount` /
   `min_to_amount` (now required); `{:inconsistent_quote_amounts, detail}`;
   `{:invalid_quote_id, detail}`; `:recipient_is_destination_token`; and
-  `{:newline_in_field, field}`. The signer still comes only from the operator
-  pin (or, outside production with the pin relaxed, the matrix as before); the
-  matrix is now always read, for its version. API changes:
+  `{:newline_in_field, field}`. The signer comes only from the operator pin
+  (next entry); the matrix is read for its version only. API changes:
   `DepositAttestation.message/1` returns `{:ok, message} | {:error, _}`,
   `verify/3` takes `%{signer:, version:, now:}`, and a signature must carry its
   `0x` prefix with `v` in {0, 1, 27, 28}. The deposit instructions add
@@ -41,22 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   optional `refund_address` (Tron base58) and `stealth_spending_pub_key` /
   `stealth_viewing_pub_key`. `payment_execute_deposit_route` passes its
   context `:clock` through.
-- **Breaking (deployment config): a production release must pin the
-  deposit-attestation signer.** `Protocols.Xochi.deposit_route_quote/3` and
-  `verify_deposit_route/4` no longer fall back to the capability matrix's
-  `deposit_attestation_signer` (served by the same endpoint as the quote)
-  unless `config :raxol_payments, :require_deposit_signer_pin` is exactly
-  `false`; unset, it is required when `Raxol.Payments.Deployment.production?/0`.
-  An unpinned run fails with `{:error, :deposit_signer_unpinned}`. Set
-  `config :raxol_payments, :xochi_deposit_attestation_signer, "0x..."` (or pass
-  `:deposit_attestation_signer`) in a release that serves deposit routes.
-  Development and tests still fall back. A pin that is not `0x` + 40 hex is
-  refused with `{:error, :invalid_deposit_signer_pin}`. New
-  `Protocols.Xochi.assert_deposit_signer_pinned!/0,2`, called at boot, raise
-  on a malformed pin or a fail-open configuration, as
-  `assert_origin_pull_pinned!/2` does for the solver pin. Note that a required
-  but unset pin passes the boot check and refuses every deposit route. Using
-  the matrix signer logs a warning.
+- **Breaking (deployment config): the deposit-attestation signer comes only
+  from an operator pin, in every deployment.** `Protocols.Xochi.deposit_route_quote/3`
+  and `verify_deposit_route/4` take it from `:deposit_attestation_signer`, else
+  `config :raxol_payments, :xochi_deposit_attestation_signer`, and never from
+  the capability matrix's `deposit_attestation_signer` (served by the same
+  endpoint as the quote, so a compromised endpoint could attest its own forged
+  deposit address). Unpinned, every deposit route fails with
+  `{:error, :deposit_signer_unpinned}`, development and tests included: set the
+  pin in their config or pass it. A pin that is not `0x` + 40 hex is refused
+  with `{:error, :invalid_deposit_signer_pin}`. `Capabilities` no longer
+  parses `deposit_attestation_signer` (`deposit_attestation_signer/1` is
+  removed), and `:require_deposit_signer_pin` is gone: there is no fallback
+  left to relax. New `Protocols.Xochi.assert_deposit_signer_pinned!/0,1`,
+  called at boot by a release that serves deposit routes, raise on an unset or
+  malformed pin.
 - A served ERC-3009 `to` or Permit2 `spender` must be a clean `0x` + 40-hex
   address (`Raxol.Payments.EIP712.address?/1`), whether or not a solver pin is
   set, so an unpinned development pull that served a padded or bare-hex `to`
@@ -108,7 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pin with a wrong checksum is refused (`:invalid_deposit_signer_pin`, and
   `assert_deposit_signer_pinned!` raises), as are solver allowlist entries and
   `--solver`/`ORDER_SOLVER`. Addresses the endpoint serves (a pull `to` or
-  `spender`, the capability matrix's signer) are checked for shape only.
+  `spender`) are checked for shape only.
 - Origin-pull solver allowlist entries are trimmed and kept only when they
   pass `address?/1`. A configured allowlist with no valid entry refuses every
   pull instead of reading as unset. `origin_pull_pin_env_config!/0` raises on

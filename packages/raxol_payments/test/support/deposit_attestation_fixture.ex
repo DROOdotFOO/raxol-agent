@@ -76,14 +76,10 @@ defmodule Raxol.Payments.Test.DepositAttestationFixture do
     "0x" <> Base.encode16(EIP712.pack_signature(sig), case: :lower)
   end
 
-  @doc """
-  A capability matrix advertising `version` (default v3) and, optionally, a
-  matrix signer.
-  """
+  @doc "A capability matrix advertising `version` (default v3)."
   @spec capabilities(keyword()) :: Capabilities.t()
   def capabilities(opts \\ []) do
     Capabilities.fallback()
-    |> Map.put(:deposit_attestation_signer, Keyword.get(opts, :signer))
     |> Map.put(
       :deposit_attestation_version,
       Keyword.get(opts, :version, DepositAttestation.version())

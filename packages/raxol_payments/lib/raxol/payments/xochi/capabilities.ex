@@ -60,7 +60,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
           source: :live | :fallback,
           chains: [chain()],
           tokens: [token()],
-          deposit_attestation_signer: String.t() | nil,
           deposit_attestation_version: String.t() | nil
         }
 
@@ -136,7 +135,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
            source: :live,
            chains: parsed_chains,
            tokens: Enum.flat_map(tokens, &parse_token/1),
-           deposit_attestation_signer: parse_signer(matrix["deposit_attestation_signer"]),
            deposit_attestation_version: parse_version(matrix["deposit_attestation_version"])
          }}
     end
@@ -161,11 +159,9 @@ defmodule Raxol.Payments.Xochi.Capabilities do
         Enum.map(Assets.evm_tokens(), fn {symbol, by_chain} ->
           %{symbol: symbol, roles: [:origin, :destination], addresses: by_chain}
         end),
-      # No live matrix means no published signer; a deposit-route verify then
-      # fails closed (nothing to pin the attestation against).
-      deposit_attestation_signer: nil,
-      # Nor an advertised attestation version, so a deposit route is refused
-      # rather than verified against a field set the solver never confirmed.
+      # No live matrix means no advertised attestation version, so a deposit
+      # route is refused rather than verified against a field set the solver
+      # never confirmed.
       deposit_attestation_version: nil
     }
   end
@@ -245,14 +241,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   def chain_ids(%{chains: chains}), do: Enum.map(chains, & &1.chain_id)
 
   @doc """
-  The pinned deposit-route attestation signer (lowercased `0x`), or `nil` when
-  the matrix does not publish one (a deposit-route verify then fails closed).
-  """
-  @spec deposit_attestation_signer(t()) :: String.t() | nil
-  def deposit_attestation_signer(%{deposit_attestation_signer: signer}), do: signer
-  def deposit_attestation_signer(_), do: nil
-
-  @doc """
   The deposit-attestation version tag the solver advertises (e.g.
   `"xochi-deposit-attestation:v3"`), or `nil` when the matrix does not publish
   one. Compared against `Raxol.Payments.Xochi.DepositAttestation.version/0`, so
@@ -313,16 +301,6 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   end
 
   def valid_address?(_caps, _chain, _address), do: false
-
-  # The published attestation signer must be a well-formed EVM address; a
-  # malformed value is treated as absent (nil), so verify fails closed rather
-  # than pinning against garbage.
-  defp parse_signer(signer) when is_binary(signer) do
-    normalized = signer |> String.trim() |> String.downcase()
-    if Regex.match?(~r/^0x[0-9a-f]{40}$/, normalized), do: normalized, else: nil
-  end
-
-  defp parse_signer(_), do: nil
 
   defp parse_version(version) when is_binary(version) and version != "", do: version
   defp parse_version(_), do: nil

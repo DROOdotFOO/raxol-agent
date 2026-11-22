@@ -26,10 +26,9 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
     * `:checkpoint` -- optional private checkpoint store that records that
       principal's ownership before returning the deposit instructions.
     * `:deposit_attestation_signer` -- optional operator pin for the expected
-      signer; otherwise `config :raxol_payments, :xochi_deposit_attestation_signer`,
-      otherwise, only when `:require_deposit_signer_pin` is `false` (unset, it
-      follows production; see `Protocols.Xochi.deposit_route_quote/3`), the
-      live capability matrix's `deposit_attestation_signer`.
+      signer; otherwise `config :raxol_payments, :xochi_deposit_attestation_signer`.
+      With neither, the route is refused (`:deposit_signer_unpinned`); the
+      capability matrix is never a source of the signer.
 
   ## Delivery floor: a pre-funding filter, not a bound
 
@@ -55,8 +54,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
   including a v1 venue), `:missing_deposit_deadline`,
   `{:deposit_deadline_passed, detail}` (against `:clock`),
   `{:inconsistent_quote_amounts, detail}`, `{:invalid_quote_id, detail}`,
-  `:recipient_is_destination_token`, `{:newline_in_field, field}`,
-  `:deposit_signer_unavailable`, `:deposit_signer_unpinned`,
+  `:recipient_is_destination_token`, `{:newline_in_field, field}`, `:deposit_signer_unpinned`,
   `:invalid_deposit_signer_pin`, `:not_a_deposit_route`, `{:not_solvable, reason}`,
   `{:unpriced_asset, detail}`, `{:invalid_min_to_amount, value}`,
   `{:implausible_min_to_amount, detail}`, `{:delivery_below_floor, detail}`,

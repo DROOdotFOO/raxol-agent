@@ -1,11 +1,9 @@
 defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
-  # async: false -- sets the global :deployment, :require_deposit_signer_pin
-  # and :xochi_deposit_attestation_signer.
+  # async: false -- sets the global :deployment and
+  # :xochi_deposit_attestation_signer.
   use ExUnit.Case, async: false
 
-  # The matrix fallback logs a warning.
-  @moduletag :capture_log
-
+  alias Raxol.Payments.EIP712
   alias Raxol.Payments.Protocols.Xochi
   alias Raxol.Payments.Test.DepositAttestationFixture, as: Fixture
   alias Raxol.Payments.Xochi.Capabilities
@@ -17,7 +15,7 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
   @config %{base_url: "https://xochi.test"}
 
   setup do
-    for key <- [:deployment, :require_deposit_signer_pin, :xochi_deposit_attestation_signer] do
+    for key <- [:deployment, :xochi_deposit_attestation_signer] do
       previous = Application.fetch_env(:raxol_payments, key)
       Application.delete_env(:raxol_payments, key)
 
@@ -33,123 +31,115 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
   end
 
   describe "verify_deposit_route/4 signer resolution" do
-    test "outside production an unpinned run falls back to the capability matrix signer" do
-      Application.put_env(:raxol_payments, :deployment, :development)
-
-      assert {:ok, %{deposit_address: @deposit_addr}} = verify(capabilities: matrix(signer()))
-    end
-
-    test "in production the capability matrix signer is refused without an operator pin" do
-      Application.put_env(:raxol_payments, :deployment, :production)
-
-      assert {:error, :deposit_signer_unpinned} = verify(capabilities: matrix(signer()))
-    end
-
-    test "in production an operator pin verifies, from opts or from config" do
-      Application.put_env(:raxol_payments, :deployment, :production)
-
-      assert {:ok, _} = verify(capabilities: matrix(nil), deposit_attestation_signer: signer())
+    test "an operator pin verifies, from opts or from config" do
+      assert {:ok, %{deposit_address: @deposit_addr}} =
+               verify(deposit_attestation_signer: signer())
 
       Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, signer())
-      assert {:ok, _} = verify(capabilities: matrix(nil))
+      assert {:ok, _} = verify([])
     end
 
-    test "the pin is never overridden by a matrix signer that disagrees" do
-      Application.put_env(:raxol_payments, :deployment, :development)
-      attacker = "0x000000000000000000000000000000000000dEaD"
-
-      assert {:error, :attestation_mismatch} =
-               verify(capabilities: matrix(signer()), deposit_attestation_signer: attacker)
-    end
-
-    test "explicit config wins over the production default, both ways" do
-      Application.put_env(:raxol_payments, :deployment, :production)
-      Application.put_env(:raxol_payments, :require_deposit_signer_pin, false)
-      assert {:ok, _} = verify(capabilities: matrix(signer()))
-
-      Application.put_env(:raxol_payments, :deployment, :development)
-      Application.put_env(:raxol_payments, :require_deposit_signer_pin, true)
-      assert {:error, :deposit_signer_unpinned} = verify(capabilities: matrix(signer()))
-    end
-
-    test "a malformed operator pin is refused, not trusted or skipped" do
-      Application.put_env(:raxol_payments, :deployment, :development)
-      "0x" <> bare = signer()
-
-      for pin <- [bare, signer() <> "\n", " " <> signer(), "0x" <> signer(), "not-an-address"] do
-        assert {:error, :invalid_deposit_signer_pin} =
-                 verify(capabilities: matrix(signer()), deposit_attestation_signer: pin)
-      end
-    end
-  end
-
-  describe "operator pin edge cases" do
-    test "an empty opts pin does not mask a configured pin" do
-      Application.put_env(:raxol_payments, :deployment, :development)
-      Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, signer())
-      attacker_matrix = matrix("0x000000000000000000000000000000000000dEaD")
-
-      for pin <- ["", nil] do
-        assert {:ok, _} = verify(capabilities: attacker_matrix, deposit_attestation_signer: pin)
+    test "unpinned is refused in every deployment" do
+      for deployment <- [:development, :test, :production] do
+        Application.put_env(:raxol_payments, :deployment, deployment)
+        assert {:error, :deposit_signer_unpinned} = verify([])
       end
     end
 
-    test "a checksummed or 0X pin verifies" do
-      Application.put_env(:raxol_payments, :deployment, :production)
-      "0x" <> hex = signer()
-
-      for pin <- ["0X" <> hex, "0x" <> String.upcase(hex)],
-          do:
-            assert({:ok, _} = verify(capabilities: matrix(nil), deposit_attestation_signer: pin))
-    end
-
-    test "any configured value but false requires the pin" do
-      Application.put_env(:raxol_payments, :deployment, :development)
-
-      for value <- [true, nil, "true", "false", 1] do
-        Application.put_env(:raxol_payments, :require_deposit_signer_pin, value)
-        assert {:error, :deposit_signer_unpinned} = verify(capabilities: matrix(signer()))
-      end
-    end
-
-    test "the matrix is read for its version only; a required pin never takes its signer" do
-      Application.put_env(:raxol_payments, :deployment, :production)
+    test "a live matrix publishing the genuine signer is never trusted for it" do
       Capabilities.reset()
       on_exit(&Capabilities.reset/0)
       test_pid = self()
+
+      wire = %{
+        "chains" => [%{"chain_id" => 8453, "chain_name" => "Base"}],
+        "tokens" => [],
+        "deposit_attestation_signer" => signer(),
+        "deposit_attestation_version" => "xochi-deposit-attestation:v3"
+      }
 
       config = %{
         base_url: "https://xochi.test",
         req_options: [
           plug: fn conn ->
             send(test_pid, {:fetched, conn.request_path})
-            Plug.Conn.send_resp(conn, 500, "")
+
+            conn
+            |> Plug.Conn.put_resp_content_type("application/json")
+            |> Plug.Conn.send_resp(200, Jason.encode!(wire))
           end
         ]
       }
 
       quote_resp = QuoteResponse.from_json(quote_body())
 
+      # Unpinned: refused before the matrix is even fetched.
       assert {:error, :deposit_signer_unpinned} =
                Xochi.verify_deposit_route(config, request(), quote_resp, clock: &now/0)
 
-      assert_received {:fetched, "/api/capabilities"}
+      refute_received {:fetched, _}
 
-      # Pinned, but the matrix is unreachable: no advertised version, refused.
-      assert {:error, {:unsupported_deposit_attestation_version, nil}} =
+      # Pinned: the same matrix is read, for its version only.
+      assert {:ok, _} =
                Xochi.verify_deposit_route(config, request(), quote_resp,
                  deposit_attestation_signer: signer(),
                  clock: &now/0
                )
 
-      Application.put_env(:raxol_payments, :require_deposit_signer_pin, false)
-
-      assert {:error, :deposit_signer_unavailable} =
-               Xochi.verify_deposit_route(config, request(), quote_resp, clock: &now/0)
+      assert_received {:fetched, "/api/capabilities"}
     end
 
-    test "a pin with a wrong EIP-55 checksum is refused; a served matrix signer's case is not checked" do
-      Application.put_env(:raxol_payments, :deployment, :development)
+    test "a pinned run against an unreachable matrix has no advertised version" do
+      Capabilities.reset()
+      on_exit(&Capabilities.reset/0)
+
+      config = %{
+        base_url: "https://xochi.test",
+        req_options: [plug: fn conn -> Plug.Conn.send_resp(conn, 500, "") end]
+      }
+
+      assert {:error, {:unsupported_deposit_attestation_version, nil}} =
+               Xochi.verify_deposit_route(
+                 config,
+                 request(),
+                 QuoteResponse.from_json(quote_body()),
+                 deposit_attestation_signer: signer(),
+                 clock: &now/0
+               )
+    end
+
+    test "a pin for another signer is a mismatch" do
+      assert {:error, :attestation_mismatch} =
+               verify(deposit_attestation_signer: "0x000000000000000000000000000000000000dEaD")
+    end
+
+    test "a malformed operator pin is refused, not trusted or skipped" do
+      "0x" <> bare = signer()
+
+      for pin <- [bare, signer() <> "\n", " " <> signer(), "0x" <> signer(), "not-an-address"] do
+        assert {:error, :invalid_deposit_signer_pin} = verify(deposit_attestation_signer: pin)
+      end
+    end
+  end
+
+  describe "operator pin edge cases" do
+    test "an empty opts pin does not mask a configured pin" do
+      Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, signer())
+
+      for pin <- ["", nil] do
+        assert {:ok, _} = verify(deposit_attestation_signer: pin)
+      end
+    end
+
+    test "a checksummed or 0X pin verifies" do
+      "0x" <> hex = signer()
+
+      for pin <- ["0X" <> hex, "0x" <> String.upcase(hex)] do
+        assert {:ok, _} = verify(deposit_attestation_signer: pin)
+      end
+    end
+
+    test "a pin with a wrong EIP-55 checksum is refused" do
       # Lowercase with one letter upcased: mixed case that is not the EIP-55
       # form, whichever letter it is.
       [{index, _}] = Regex.run(~r/[a-f]/, signer(), return: :index) |> Enum.take(1)
@@ -161,68 +151,51 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       refute EIP712.address?(wrong_case)
 
       assert {:error, :invalid_deposit_signer_pin} =
-               verify(capabilities: matrix(nil), deposit_attestation_signer: wrong_case)
-
-      assert {:ok, _} = verify(capabilities: matrix(wrong_case))
-    end
-
-    test "a malformed matrix signer is not trusted" do
-      Application.put_env(:raxol_payments, :deployment, :development)
-
-      for bad <- ["not-an-address", signer() <> " ", String.slice(signer(), 2..-1//1)] do
-        assert {:error, :deposit_signer_unavailable} = verify(capabilities: matrix(bad))
-      end
+               verify(deposit_attestation_signer: wrong_case)
     end
   end
 
-  describe "assert_deposit_signer_pinned!/2" do
-    test "raises when no valid pin is set and the pin is not required" do
+  describe "assert_deposit_signer_pinned!/1" do
+    test "raises when no pin is set" do
       for pin <- [nil, ""] do
-        assert :ok = Xochi.assert_deposit_signer_pinned!(pin, "false")
-
         assert_raise ArgumentError, ~r/deposit-attestation signer is not pinned/, fn ->
-          Xochi.assert_deposit_signer_pinned!(pin, false)
+          Xochi.assert_deposit_signer_pinned!(pin)
         end
       end
+    end
 
+    test "raises on a set but malformed pin" do
       for pin <- ["0x1234", 42] do
         assert_raise ArgumentError, ~r/not a valid 0x address/, fn ->
-          Xochi.assert_deposit_signer_pinned!(pin, false)
+          Xochi.assert_deposit_signer_pinned!(pin)
         end
       end
     end
 
-    test "passes with a valid pin, or when the pin is required" do
-      assert :ok = Xochi.assert_deposit_signer_pinned!(signer(), false)
-      assert :ok = Xochi.assert_deposit_signer_pinned!(signer(), true)
-      assert :ok = Xochi.assert_deposit_signer_pinned!(nil, true)
-    end
-
-    test "raises on a set but malformed pin, even when the pin is required" do
-      assert_raise ArgumentError, ~r/not a valid 0x address/, fn ->
-        Xochi.assert_deposit_signer_pinned!("0x1234", true)
-      end
+    test "passes with a valid pin" do
+      assert :ok = Xochi.assert_deposit_signer_pinned!(signer())
     end
   end
 
   describe "assert_deposit_signer_pinned!/0" do
-    test "reads the configured pin and requirement" do
-      Application.put_env(:raxol_payments, :deployment, :development)
+    test "reads the configured pin, in every deployment" do
+      for deployment <- [:development, :production] do
+        Application.put_env(:raxol_payments, :deployment, deployment)
+        Application.delete_env(:raxol_payments, :xochi_deposit_attestation_signer)
 
-      assert_raise ArgumentError, ~r/fail-open/, fn -> Xochi.assert_deposit_signer_pinned!() end
+        assert_raise ArgumentError, ~r/not pinned/, fn ->
+          Xochi.assert_deposit_signer_pinned!()
+        end
 
-      Application.put_env(:raxol_payments, :deployment, :production)
-      assert :ok = Xochi.assert_deposit_signer_pinned!()
+        Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, "0xbad")
 
-      Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, "0xbad")
+        assert_raise ArgumentError, ~r/not a valid 0x address/, fn ->
+          Xochi.assert_deposit_signer_pinned!()
+        end
 
-      assert_raise ArgumentError, ~r/not a valid 0x address/, fn ->
-        Xochi.assert_deposit_signer_pinned!()
+        Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, signer())
+        assert :ok = Xochi.assert_deposit_signer_pinned!()
       end
-
-      Application.put_env(:raxol_payments, :xochi_deposit_attestation_signer, signer())
-      Application.put_env(:raxol_payments, :require_deposit_signer_pin, false)
-      assert :ok = Xochi.assert_deposit_signer_pinned!()
     end
   end
 
@@ -231,13 +204,13 @@ defmodule Raxol.Payments.Protocols.XochiDepositSignerPinTest do
       @config,
       request(),
       QuoteResponse.from_json(quote_body()),
-      Keyword.put_new(opts, :clock, &now/0)
+      opts
+      |> Keyword.put_new(:clock, &now/0)
+      |> Keyword.put_new(:capabilities, Fixture.capabilities())
     )
   end
 
   defp now, do: @now
-
-  defp matrix(signer), do: Fixture.capabilities(signer: signer)
 
   defp request do
     %DepositRouteRequest{
