@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: deposit-route attestations are verified as
+  `xochi-deposit-attestation:v3`; v1 is refused.** Riddler has issued only v3
+  since Riddler#862/#870, so the v1 verifier (seven lines, origin leg only)
+  rejected every live quote and accepted only historical v1 signatures, which
+  bind no depositor, recipient or destination and are replayable onto another
+  caller's request. `Xochi.DepositAttestation` now rebuilds Riddler's
+  eighteen-line EIP-191 message byte for byte, conformance-tested over every
+  vector Riddler publishes (vendored as
+  `test/fixtures/deposit_attestation_vectors.json`, sha256 pinned beside it).
+  `Protocols.Xochi.verify_deposit_route/4` binds the caller-supplied half
+  (wallet, origin chain/token/amount, destination chain/token, resolved
+  recipient, refund address, stealth meta-address, settlement preference) from
+  the request rather than the response, so a genuine attestation for any other
+  deal is `{:error, :attestation_mismatch}`. New refusals:
+  `{:unsupported_deposit_attestation_version, advertised}` when the capability
+  matrix's new `deposit_attestation_version` is not v3 (absent, including the
+  static fallback, counts as unsupported); `:missing_deposit_deadline` and
+  `{:deposit_deadline_passed, detail}` against an injectable `:clock`;
+  `{:invalid_quote_amount, detail}` for an absent or non-decimal `to_amount` /
+  `min_to_amount` (now required); `{:inconsistent_quote_amounts, detail}`;
+  `{:invalid_quote_id, detail}`; `:recipient_is_destination_token`; and
+  `{:newline_in_field, field}`. The signer still comes only from the operator
+  pin (or, outside production with the pin relaxed, the matrix as before); the
+  matrix is now always read, for its version. API changes:
+  `DepositAttestation.message/1` returns `{:ok, message} | {:error, _}`,
+  `verify/3` takes `%{signer:, version:, now:}`, and a signature must carry its
+  `0x` prefix with `v` in {0, 1, 27, 28}. The deposit instructions add
+  `refund_address` and `settlement_preference`, drop the unattested
+  `expires_at`, and always carry `min_to_amount`. `DepositRouteRequest` gains
+  optional `refund_address` (Tron base58) and `stealth_spending_pub_key` /
+  `stealth_viewing_pub_key`. `payment_execute_deposit_route` passes its
+  context `:clock` through.
 - **Breaking (deployment config): a production release must pin the
   deposit-attestation signer.** `Protocols.Xochi.deposit_route_quote/3` and
   `verify_deposit_route/4` no longer fall back to the capability matrix's
