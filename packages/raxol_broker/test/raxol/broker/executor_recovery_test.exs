@@ -6,6 +6,7 @@ defmodule Raxol.Broker.ExecutorRecoveryTest do
   """
   use Raxol.Broker.Test.ExecutorCase, async: true
 
+  alias Raxol.Agent.Secret
   alias Raxol.Broker.{Executor, Intent, Journal}
   alias Raxol.Broker.Executor.{Place, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
@@ -186,8 +187,11 @@ defmodule Raxol.Broker.ExecutorRecoveryTest do
   describe "status redaction" do
     test ":sys.get_status hides the receipt key, session spec and account", ctx do
       executor = start_executor!(ctx)
-      {:status, _pid, _mod, [_pdict, _sys, _parent, _dbg, misc]} = :sys.get_status(executor)
+      key = :sys.get_state(executor).key
+      {:status, _pid, _mod, [pdict, _sys, _parent, _dbg, misc]} = :sys.get_status(executor)
       dump = inspect(misc, structs: false, limit: :infinity)
+
+      refute inspect(pdict, limit: :infinity) =~ inspect(key)
 
       refute dump =~ @account
       assert dump =~ "client_spec: :redacted"
@@ -300,18 +304,21 @@ defmodule Raxol.Broker.ExecutorRecoveryTest do
         catalog: Catalog.static(),
         journal: ctx.journal,
         account: @account,
-        key: key,
+        key: Secret.new(key),
         timeout: 5_000
       }
 
       {:ok, executor: executor, intent: intent, gid: gid, key: key, env: env}
     end
 
-    test "a receipt verified under another key is refused; nothing is sent", ctx do
+    test "a key that is not a Secret is refused; nothing is sent", ctx do
       receipt = ReviewReceipt.issue(ctx.key, ctx.intent, ctx.gid)
-      env = %{ctx.env | key: :crypto.strong_rand_bytes(32)}
 
-      assert Place.run(receipt, ctx.intent, ctx.gid, env) == {:error, :invalid_receipt}
+      for key <- [ctx.key, nil] do
+        env = %{ctx.env | key: key}
+        assert Place.run(receipt, ctx.intent, ctx.gid, env) == {:error, :invalid_receipt}
+      end
+
       assert Fake.calls(ctx.server, "place_") == []
       refute "placing" in types(ctx.path, ctx.gid)
     end
@@ -353,7 +360,7 @@ defmodule Raxol.Broker.ExecutorRecoveryTest do
 
       stop_and_wait(ctx.executor)
       ExecutorIdentity.assume!(ctx.journal)
-      env = %{ctx.env | key: state.key}
+      env = %{ctx.env | key: Secret.new(state.key)}
 
       assert {:error, _refused} = Place.run(receipt, ctx.intent, ctx.gid, env)
 

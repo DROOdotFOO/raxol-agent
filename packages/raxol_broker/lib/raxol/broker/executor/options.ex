@@ -8,6 +8,8 @@ defmodule Raxol.Broker.Executor.Options do
   # `receive after` and `Process.send_after/3` refuse anything above
   # 4_294_967_295 ms; the cap leaves headroom under that.
   @max_timeout 4_294_000_000
+  # What a stopping supervisor waits beyond one place call.
+  @shutdown_headroom 5_000
 
   @type t :: %{
           journal: atom() | pid(),
@@ -71,8 +73,10 @@ defmodule Raxol.Broker.Executor.Options do
     end
   end
 
-  defp place_shutdown(ms) when is_integer(ms) and ms > 0 and ms <= @max_timeout, do: ms + 5_000
-  defp place_shutdown(_unset_or_refused), do: @default_timeout + 5_000
+  defp place_shutdown(ms) when is_integer(ms) and ms > 0 and ms <= @max_timeout,
+    do: ms + @shutdown_headroom
+
+  defp place_shutdown(_unset_or_refused), do: @default_timeout + @shutdown_headroom
 
   defp fetch_timeouts(opts) do
     with {:ok, review_timeout} <- fetch_timeout(opts, :review_timeout),

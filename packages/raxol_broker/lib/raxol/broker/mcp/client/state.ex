@@ -63,7 +63,7 @@ defmodule Raxol.Broker.MCP.Client.State do
 
   @doc """
   `term` with every credential replaced and a state's config, queue and
-  requests cut to what is safe to print (`format_status/1`).
+  requests cut to what is safe to print (the client's `format_status/1`).
   """
   @spec scrub(term()) :: term()
   def scrub(%Credential{}), do: :redacted_credential

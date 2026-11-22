@@ -36,7 +36,9 @@ defmodule Raxol.Broker.Journal do
   Group writes wait `:infinity` by default; a caller that gives up does not
   undo its write. Each Writer call is bounded by `:write_deadline` (default
   60 s); a Writer that misses it is killed and the journal stops with
-  `{:writer_stalled, ms}`, since the write may still land.
+  `{:writer_stalled, ms}`. It never answers `{:error, _}` there: the write
+  may still land, and a `placing` landing after its group was closed as
+  refused would turn an unsent order into a counted unknown.
 
   On start the chain is verified. A damaged journal stays up but refuses
   every append and query. On a healthy one, every group left open is closed:
@@ -45,7 +47,9 @@ defmodule Raxol.Broker.Journal do
 
   Queries read an ETS table named after the server. An order counts toward
   `today_notional/2` and `orders_last_minute/2` from its `placing` record
-  until a `:failed` response; cancels never count. `placing_for_intent/2`
+  until a `:failed` response; cancels never count. The day boundary is the
+  caller's, a UTC instant. Queries are `{:error, _}` while the journal is
+  damaged or down, so a context left `nil` denies. `placing_for_intent/2`
   is the executor's idempotency check. `verify/1` walks the chain on disk
   now, where `status/1` reports what start found.
   """
@@ -94,11 +98,13 @@ defmodule Raxol.Broker.Journal do
   `:write_deadline`, the milliseconds each Writer call may take before the
   journal kills the Writer and stops (default 60_000, see "Writes and recovery").
   """
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, Keyword.put(opts, :name, name), name: name)
   end
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
   end

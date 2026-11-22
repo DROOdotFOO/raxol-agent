@@ -34,20 +34,23 @@ defmodule Raxol.Broker.MCP.Client do
   from `:backoff`'s `:base_ms` (default 500) up to `:max_ms` (default 8000),
   at most `:retries` times (default 3), unless the delay would pass the
   caller's timeout or one more failure could open the circuit breaker
-  (counting in-flight requests and scheduled retries). Order tools never
-  take this path, so a throttled order is never resent.
+  (counting in-flight requests and scheduled retries). Sustained throttling
+  can still open it (5 failures, 30 s), and calls then answer `{:error,
+  :breaker_open}`. Order tools never take this path, so a throttled order
+  is never resent.
 
   A transient connect failure (5xx or throttle at the handshake, a timeout,
   a transport or DNS failure) is retried the same way on a new inner client,
   at most `:retries` times in a run. A run that ends without connecting
   answers every call with its failure until a cooldown of `:base_ms *
-  2^(retries + failed runs - 1)` (capped at `:max_ms`) ends.
+  2^(retries + failed runs - 1)` (capped at `:max_ms`) ends; an expired
+  credential still refreshes meanwhile, and a successful connect resets it.
 
   ## Options
 
   `:credential` (else read from the store), `:store`, `:url`, `:auth`
   (options for `Raxol.Agent.Auth.Robinhood.refresh/2`), `:mcp` (extra
-  `Raxol.MCP.Client` spec keys), `:refresh_skew`, `:backoff`,
+  `Raxol.MCP.Client` spec keys), `:refresh_skew`, `:backoff` (`{:invalid_backoff, v}` if invalid),
   `:connect_timeout`, `:clock` (monotonic milliseconds, read for the
   cooldown) and `:name`. Neither `Inspect` nor `format_status/1` shows the
   credential, and no log line carries a token.
@@ -523,7 +526,7 @@ defmodule Raxol.Broker.MCP.Client do
     end
   end
 
-  # A legacy session handshakes after the probe; `await_ready/2` waits for
+  # A legacy session handshakes after the probe; `Upstream.await_ready/2` waits for
   # that. The inner client is fail-fast, so a failed connect or handshake
   # (a 401, a throttle) answers the wait at once instead of after the budget.
   # The whole attempt, both tool lists included, shares one `timeout` budget,

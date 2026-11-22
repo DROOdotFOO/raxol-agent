@@ -10,11 +10,9 @@ defmodule Raxol.Broker.Executor do
       placing      Raxol.Broker.Executor.Place, with the ReviewReceipt
       order        :placed | :pending_approval | :failed | :unknown
 
-  The executor sets the context's `policy`, `today_notional` (a rolling 24
-  hours back from `:clock`), `orders_last_minute` and `review_warnings`; the
-  other fields come from the caller. Intent and context are rebuilt from
-  plain data (`Raxol.Broker.Policy.normalize/2`) in the caller and again
-  here, so no protocol of caller data runs in this process.
+  The executor sets the context's `policy`, `today_notional` (rolling 24 h
+  back from `:clock`), `orders_last_minute` and `review_warnings`. Intent
+  and context are rebuilt from plain data in the caller and again here.
 
   ## Guards
 
@@ -31,37 +29,42 @@ defmodule Raxol.Broker.Executor do
       `journal_error`, and the order may exist at the broker.
     * An intent id whose group reached `placing` without failing is
       `{:ok, :duplicate}`; every place also sends a `ref_id` derived from it.
+      Pass `:id` to the `Raxol.Broker.Intent` constructor, or a re-run gets
+      a fresh id and can place twice.
     * A review saying `customer_approval_required` makes a successful place
       `:pending_approval`; it keeps counting and its intent stays a duplicate.
 
   A post-review ASK parks the group and returns `{:ask, group_id, prompts}`.
   `approve/3` re-reads the counters, journals the approval and re-runs the
-  policy (DENY ends the group); `decline/3` and `close/3` end it. Parked
-  groups live in this process; on start every group the journal still has
-  open is closed with `:executor_restarted`.
+  policy (DENY ends the group); an approve refused before the approval is
+  journaled leaves the group parked. `decline/3` and `close/3` end it.
+  Parked groups live in this process; on start every open group is closed
+  with `:executor_restarted`.
 
   The review runs in a task, so `parked/2` and `await_port/2` answer during
-  it; other calls queue, and a queued caller that dies is dropped. The place
-  call runs in this process. The port (`Raxol.Broker.Executor.Port.MCP`)
-  connects after `init/1`; until it is ready `run/3` and `approve/3` return
-  `{:error, :port_not_ready}`. A port that dies is restarted with backoff
-  (`:reconnect_ms`, doubling to 60 s) and never restarts the executor.
+  it; other calls queue (a dead caller is dropped). The port
+  (`Raxol.Broker.Executor.Port.MCP`) connects after `init/1`; until it is
+  ready `run/3` and `approve/3` are `{:error, :port_not_ready}`. A dead port
+  reconnects with backoff (doubling to 60 s), never restarting the executor.
 
   ## Options
 
-  `:policy` and `:session` (a `Raxol.MCP.Client` spec, sandboxed in
-  dry-run) and `:account_number` are required. `:journal` (atom or pid),
-  `:mode` (`:dry_run`; `:armed` is `{:error, :not_armed}`), `:clock` (a
-  zero-arity function returning a UTC `DateTime`, 5 s budget),
-  `:review_timeout` and `:place_timeout` (ms, default 30 s),
-  `:reconnect_ms` (default 1 s), `:shutdown` (default `place_timeout +
-  5_000`) and `:name` are optional. Invalid values stop the start.
+  Required: `:policy` (`{:invalid_policy, r}`), `:session` (a sandboxed
+  `Raxol.MCP.Client` spec, `:session_required`), `:account_number`.
+  Optional: `:journal` (atom or pid, `{:invalid_journal, v}`), `:mode`
+  (`:armed` is `:not_armed`), `:clock` (zero-arity, UTC `DateTime`, 5 s;
+  a bad result is `{:error, {:context, r}}`), `:review_timeout`,
+  `:place_timeout` (default 30 s) and `:reconnect_ms` (default 1 s), all ms
+  in 1..4_294_000_000 (`{:invalid_timeout, key, v}`), `:name`. These stop
+  the start; `:shutdown` (default `place_timeout + 5_000`) raises in
+  `child_spec/1`. A second executor on a journal gets `{:journal_claimed, pid}`.
   """
 
   use GenServer
 
   require Logger
 
+  alias Raxol.Agent.Secret
   alias Raxol.Broker.Executor.{Options, Parked, Place, Port, Review, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
   alias Raxol.Broker.{Intent, Journal, Plain, Policy}
@@ -650,7 +653,7 @@ defmodule Raxol.Broker.Executor do
       catalog: state.catalog,
       journal: state.journal,
       account: state.account,
-      key: state.key,
+      key: Secret.new(state.key),
       timeout: state.place_timeout,
       customer_approval_required: customer_approval_required
     }

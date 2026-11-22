@@ -10,6 +10,7 @@ defmodule Raxol.Broker.Executor.PlaceTest do
   """
   use ExUnit.Case, async: true
 
+  alias Raxol.Agent.Secret
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Broker.Executor.{Place, Port, ReviewReceipt}
   alias Raxol.Broker.Executor.Port.MCP, as: PortMCP
@@ -44,7 +45,7 @@ defmodule Raxol.Broker.Executor.PlaceTest do
       catalog: Catalog.static(),
       journal: name,
       account: @account,
-      key: key,
+      key: Secret.new(key),
       timeout: 5_000,
       customer_approval_required: false
     }
@@ -155,7 +156,7 @@ defmodule Raxol.Broker.Executor.PlaceTest do
       task =
         Task.async(fn ->
           receipt = ReviewReceipt.issue(own, intent, group)
-          Place.run(receipt, intent, group, %{ctx.env | key: own})
+          Place.run(receipt, intent, group, %{ctx.env | key: Secret.new(own)})
         end)
 
       assert Task.await(task) == {:error, {:not_claimant, group}}

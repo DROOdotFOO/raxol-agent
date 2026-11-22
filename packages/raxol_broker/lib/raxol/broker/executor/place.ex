@@ -7,7 +7,8 @@ defmodule Raxol.Broker.Executor.Place do
   `Raxol.Broker.Executor.Port.call/4`, and no module in the app uses dynamic
   dispatch.
 
-  `run/4` re-checks everything itself, whatever its caller checked:
+  `run/4` re-checks everything itself, whatever its caller checked. Steps 1
+  and 2 catch bugs inside the executor; step 3 is the access control:
 
     1. the `Raxol.Broker.Executor.ReviewReceipt` verifies, for this whole
        intent and this group id, under `env.key`, the key the executor
@@ -24,9 +25,8 @@ defmodule Raxol.Broker.Executor.Place do
        journal takes (`:infinity`): a caller-side timeout would leave a
        queued `placing` landing after the executor gave up on it;
     4. the tool is called once, with `ref_id` (a UUID derived from the intent
-       id) on a place. Robinhood deduplicates retries on it. An order placed
-       after the owner approved it carries its approval id instead, so
-       `ref_id` does not find that order;
+       id) on a place, which Robinhood deduplicates on (an order placed after
+       an owner approval carries the approval id instead);
     5. the response is journaled as `{:order, status, response}`, also with
        no caller-side timeout.
 
@@ -60,6 +60,7 @@ defmodule Raxol.Broker.Executor.Place do
       other server error). The order may exist, and it keeps counting.
   """
 
+  alias Raxol.Agent.Secret
   alias Raxol.Broker.{Intent, Journal}
   alias Raxol.Broker.Executor.{Port, Review, ReviewReceipt}
   alias Raxol.Broker.Tools.Catalog
@@ -71,7 +72,7 @@ defmodule Raxol.Broker.Executor.Place do
           catalog: Catalog.session(),
           journal: Journal.server(),
           account: String.t(),
-          key: binary(),
+          key: Secret.t(),
           timeout: timeout(),
           customer_approval_required: boolean()
         }
@@ -85,7 +86,7 @@ defmodule Raxol.Broker.Executor.Place do
   @doc """
   Place (or cancel) `intent` for journal group `group_id` with `receipt`.
 
-  The receipt is verified under `env.key`.
+  The receipt is verified under `env.key`, a `Raxol.Agent.Secret`.
 
   `{:ok, status, response}` once the order call ran and its response is
   journaled. `{:error, :invalid_receipt}` and any other `{:error, reason}`
@@ -95,7 +96,7 @@ defmodule Raxol.Broker.Executor.Place do
   """
   @spec run(ReviewReceipt.t(), Intent.t(), String.t(), env()) :: outcome()
   def run(receipt, %Intent{} = intent, group_id, env) do
-    with :ok <- ReviewReceipt.verify(receipt, env.key, intent, group_id),
+    with :ok <- verify(receipt, env.key, intent, group_id),
          {:ok, tool, args} <- permitted_call(intent, env),
          :ok <- journal(group_id, {:placing}, env.journal) do
       {status, response} = send_order(tool, args, intent, env)
@@ -106,6 +107,12 @@ defmodule Raxol.Broker.Executor.Place do
       end
     end
   end
+
+  # Wrapped so the key prints redacted if `env` ever reaches a crash report.
+  defp verify(receipt, %Secret{} = key, intent, group_id),
+    do: Secret.with_revealed(key, &ReviewReceipt.verify(receipt, &1, intent, group_id))
+
+  defp verify(_receipt, _key, _intent, _group_id), do: {:error, :invalid_receipt}
 
   defp send_order(tool, args, intent, env) do
     env.port
