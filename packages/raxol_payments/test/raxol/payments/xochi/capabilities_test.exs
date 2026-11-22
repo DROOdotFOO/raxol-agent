@@ -141,6 +141,27 @@ defmodule Raxol.Payments.Xochi.CapabilitiesTest do
     end
   end
 
+  describe "deposit_attestation_version/1" do
+    test "reads the advertised version tag, nil when absent, empty or not a string" do
+      v3 = "xochi-deposit-attestation:v3"
+
+      assert {:ok, caps} =
+               Capabilities.parse(Map.put(@wire_evm, "deposit_attestation_version", v3))
+
+      assert Capabilities.deposit_attestation_version(caps) == v3
+
+      for absent <- [nil, "", 3] do
+        assert {:ok, caps} =
+                 Capabilities.parse(Map.put(@wire_evm, "deposit_attestation_version", absent))
+
+        assert Capabilities.deposit_attestation_version(caps) == nil
+      end
+
+      assert Capabilities.deposit_attestation_version(Capabilities.fallback()) == nil
+      assert Capabilities.deposit_attestation_version(%{}) == nil
+    end
+  end
+
   describe "deposit_attestation_signer/1 (#400)" do
     @signer "0x000000000000000000000000000000000000dead"
 

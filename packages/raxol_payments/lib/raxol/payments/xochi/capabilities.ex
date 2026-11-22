@@ -60,7 +60,8 @@ defmodule Raxol.Payments.Xochi.Capabilities do
           source: :live | :fallback,
           chains: [chain()],
           tokens: [token()],
-          deposit_attestation_signer: String.t() | nil
+          deposit_attestation_signer: String.t() | nil,
+          deposit_attestation_version: String.t() | nil
         }
 
   @table __MODULE__
@@ -135,7 +136,8 @@ defmodule Raxol.Payments.Xochi.Capabilities do
            source: :live,
            chains: parsed_chains,
            tokens: Enum.flat_map(tokens, &parse_token/1),
-           deposit_attestation_signer: parse_signer(matrix["deposit_attestation_signer"])
+           deposit_attestation_signer: parse_signer(matrix["deposit_attestation_signer"]),
+           deposit_attestation_version: parse_version(matrix["deposit_attestation_version"])
          }}
     end
   end
@@ -161,7 +163,10 @@ defmodule Raxol.Payments.Xochi.Capabilities do
         end),
       # No live matrix means no published signer; a deposit-route verify then
       # fails closed (nothing to pin the attestation against).
-      deposit_attestation_signer: nil
+      deposit_attestation_signer: nil,
+      # Nor an advertised attestation version, so a deposit route is refused
+      # rather than verified against a field set the solver never confirmed.
+      deposit_attestation_version: nil
     }
   end
 
@@ -248,6 +253,16 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   def deposit_attestation_signer(_), do: nil
 
   @doc """
+  The deposit-attestation version tag the solver advertises (e.g.
+  `"xochi-deposit-attestation:v3"`), or `nil` when the matrix does not publish
+  one. Compared against `Raxol.Payments.Xochi.DepositAttestation.version/0`, so
+  a field-set skew is named directly instead of surfacing as a failed recovery.
+  """
+  @spec deposit_attestation_version(t()) :: String.t() | nil
+  def deposit_attestation_version(%{deposit_attestation_version: version}), do: version
+  def deposit_attestation_version(_), do: nil
+
+  @doc """
   VM family for a chain id; `nil` when the matrix does not list the chain.
   An unknown chain has no known address rules, so it is never assumed EVM.
   """
@@ -308,6 +323,9 @@ defmodule Raxol.Payments.Xochi.Capabilities do
   end
 
   defp parse_signer(_), do: nil
+
+  defp parse_version(version) when is_binary(version) and version != "", do: version
+  defp parse_version(_), do: nil
 
   defp parse_chain(%{"chain_id" => id} = chain) when is_integer(id) and id > 0 do
     case parse_vm_type(chain["vm_type"]) do
