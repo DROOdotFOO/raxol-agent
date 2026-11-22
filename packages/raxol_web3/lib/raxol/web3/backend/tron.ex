@@ -2,13 +2,9 @@ defmodule Raxol.Web3.Backend.Tron do
   @moduledoc """
   The Tron backend, over three MCP upstreams with three different session models.
 
-  ADR-0033 decision 3 and ADR-0039 for the contract, ADR-0037 for the client
-  that reaches a stateful MCP origin. Every figure below was measured on
-  2026-09-14 unless it says otherwise, and the ones that are guesses say so.
-
-  Tron matters more here than its position in the survey suggests: ADR-0033's
-  motivating case is an FX venue, and Tron carries a disproportionate share of
-  the stablecoin supply that venue settles in.
+  ADR-0033 decision 3 and ADR-0039 for the contract; `Raxol.MCP.Client` reaches
+  the stateful MCP origins. Every figure below was measured on 2026-09-14
+  unless it says otherwise, and the ones that are guesses say so.
 
   ## Three sources, three session models, one contract
 
@@ -19,7 +15,7 @@ defmodule Raxol.Web3.Backend.Tron do
   | TronScan (`mcp.tronscan.org/mcp`) | legacy, `mcp-session-id` | `:serialized` | 119 |
 
   The concurrency policy is passed to `Raxol.MCP.Client` rather than
-  reimplemented here (ADR-0037 decision 6). TronScan is the reason the policy
+  reimplemented here. TronScan is the reason the policy
   exists: two parallel calls on one session answered 500 for both, reproducibly,
   while sequential calls immediately after succeeded and the session survived.
 
@@ -27,13 +23,14 @@ defmodule Raxol.Web3.Backend.Tron do
   TronGrid's `tools/list` alone was 269,860 bytes on 2026-09-14. None of that
   text reaches a served tool definition or an annotation: upstream names appear
   only as arguments this module chooses, and upstream prose travels only inside
-  a result payload that the normalizers below take structured fields out of.
+  a result payload that the normalizers take structured
+  fields out of.
 
   ## Two encodings for one account
 
   The reference is `{:tron, value}` and accepts Base58Check or hex for the same
   account. `Raxol.Web3.Tron.Address.canonical/1` collapses them, and it is
-  applied ONCE, at the edge, in `account/1`. Everything below that point holds
+  applied ONCE, at the edge, before any request. Everything past that point holds
   Base58, so a cache key, a cursor scope and a rate-limit spend cannot differ
   by encoding for one account. The upstreams make the point themselves: a
   single `getTransactionById` response carried `owner_address` in Base58 and
@@ -114,16 +111,20 @@ defmodule Raxol.Web3.Backend.Tron do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode, only: [dig: 2, int: 1]
+
   alias Raxol.MCP.Client
   alias Raxol.MCP.Client.Era
+
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Backend.SQD
+  alias Raxol.Web3.Backend.Tron.Errors
+  alias Raxol.Web3.Backend.Tron.Normalize
+  alias Raxol.Web3.Backend.Tron.Sources
   alias Raxol.Web3.Cache
-  alias Raxol.Web3.Cursor
   alias Raxol.Web3.MCPCall
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.Tables
-  alias Raxol.Web3.Tron.Address
   alias Raxol.Web3.TTL
 
   # `:http_opts` is an operator's own keyword list and may carry an
@@ -134,7 +135,7 @@ defmodule Raxol.Web3.Backend.Tron do
   @enforce_keys [:source, :chain_ref]
   defstruct [:source, :chain_ref, :client, http_opts: [], cache?: true]
 
-  @type source :: :trongrid | :sqd | :tronscan
+  @type source :: Sources.source()
 
   @type t :: %__MODULE__{
           source: source(),
@@ -143,43 +144,6 @@ defmodule Raxol.Web3.Backend.Tron do
           http_opts: keyword(),
           cache?: boolean()
         }
-
-  # The registered CAIP-2 form for Tron mainnet is the genesis-block prefix.
-  @chain_ref "tron:0x2b6653dc"
-
-  # Dated 2026-09-14. `tron:mainnet` is the spelling operators and upstreams
-  # reach for, so it is accepted on ingest and collapsed here rather than in
-  # three source-specific places. Data, so a new alias is a table row.
-  @chain_aliases %{
-    "tron:mainnet" => @chain_ref,
-    @chain_ref => @chain_ref
-  }
-
-  # Probed 2026-09-14. `network` is the upstream's own name for this chain and
-  # is an argument this module chooses, never a name it forwards.
-  @sources %{
-    trongrid: %{
-      url: "https://mcp.trongrid.io/mcp",
-      stateful?: true,
-      concurrency: :pooled,
-      tools: 149,
-      network: nil
-    },
-    sqd: %{
-      url: "https://portal.sqd.dev/mcp",
-      stateful?: false,
-      concurrency: :stateless,
-      tools: 31,
-      network: "tron-mainnet"
-    },
-    tronscan: %{
-      url: "https://mcp.tronscan.org/mcp",
-      stateful?: true,
-      concurrency: :serialized,
-      tools: 119,
-      network: nil
-    }
-  }
 
   # A GUESS, and labelled one because Tron's documentation refuses to publish a
   # free-tier figure and warns against hardcoding the commonly cited ones. It
@@ -203,26 +167,6 @@ defmodule Raxol.Web3.Backend.Tron do
   # constant, which would be a number we asserted instead of read.
   @block_time_sample 100
 
-  @trongrid_capabilities [
-    :get_transaction,
-    :account_info,
-    :list_transactions,
-    :token_balances,
-    :list_token_transfers,
-    :get_block
-  ]
-
-  # No `list_transactions/3`: the only account-scoped transaction tools take a
-  # single `fromAddress` or `toAddress`, so "the transactions of this address"
-  # would be two half-answers stitched together. `getTransferList` answers
-  # transfers in both directions and is `list_token_transfers/3`.
-  @tronscan_capabilities [
-    :get_transaction,
-    :account_info,
-    :token_balances,
-    :list_token_transfers
-  ]
-
   @doc """
   Build a handle for one source.
 
@@ -238,8 +182,9 @@ defmodule Raxol.Web3.Backend.Tron do
   """
   @spec new(source(), keyword()) :: {:ok, Backend.t()} | {:error, term()}
   def new(source, opts \\ []) when is_atom(source) do
-    with {:ok, config} <- Map.fetch(@sources, source) |> ok_or({:unsupported_source, source}),
-         {:ok, chain_ref} <- canonical_chain_ref(Keyword.get(opts, :chain_ref, @chain_ref)),
+    with {:ok, config} <- Sources.fetch(source),
+         {:ok, chain_ref} <-
+           Sources.canonical_chain_ref(Keyword.get(opts, :chain_ref, Sources.chain_ref())),
          {:ok, client} <- client(config, opts) do
       state = %__MODULE__{
         source: source,
@@ -274,7 +219,7 @@ defmodule Raxol.Web3.Backend.Tron do
   """
   @spec client_spec(source(), keyword()) :: Supervisor.child_spec()
   def client_spec(source, opts \\ []) when is_atom(source) do
-    config = Map.fetch!(@sources, source)
+    config = Sources.fetch!(source)
     name = Keyword.get(opts, :name, default_client_name(source))
 
     spec =
@@ -316,11 +261,11 @@ defmodule Raxol.Web3.Backend.Tron do
 
   @doc "The source table, with its dated session and concurrency facts. Data, not behaviour."
   @spec sources() :: %{source() => map()}
-  def sources, do: @sources
+  def sources, do: Sources.all()
 
   @doc "The accepted chain references and what each one canonicalizes to. Dated 2026-09-14."
   @spec chain_aliases() :: %{String.t() => String.t()}
-  def chain_aliases, do: @chain_aliases
+  def chain_aliases, do: Sources.chain_aliases()
 
   @impl Backend
   def backend, do: :tron
@@ -339,9 +284,7 @@ defmodule Raxol.Web3.Backend.Tron do
   def supported_chain_ids(%__MODULE__{chain_ref: chain_ref}), do: [chain_ref]
 
   @impl Backend
-  def capabilities(%__MODULE__{source: :trongrid}), do: @trongrid_capabilities
-  def capabilities(%__MODULE__{source: :tronscan}), do: @tronscan_capabilities
-  def capabilities(%__MODULE__{source: :sqd}), do: []
+  def capabilities(%__MODULE__{source: source}), do: Sources.capabilities(source)
 
   # Two writers, so two key shapes, and each handle names the one its own
   # outbound path records. `Raxol.Web3.HTTP` keys on a hashed origin id;
@@ -351,8 +294,6 @@ defmodule Raxol.Web3.Backend.Tron do
   @impl Backend
   def health_key(%__MODULE__{source: :sqd} = state), do: {:origin, origin_id(state)}
   def health_key(%__MODULE__{} = state), do: {:origin, Era.origin(uri(state))}
-
-  # -- required ----------------------------------------------------------------
 
   @impl Backend
   def chain_info(%__MODULE__{source: :sqd} = state) do
@@ -375,7 +316,7 @@ defmodule Raxol.Web3.Backend.Tron do
 
   def chain_info(%__MODULE__{source: :trongrid} = state) do
     with {:ok, head} <- call(state, "getBlock", %{"detail" => false}, :chain_stats),
-         {:ok, height} <- block_number(head),
+         {:ok, height} <- Normalize.block_number(head),
          {:ok, earlier} <- sample_block(state, height - @block_time_sample) do
       {:ok,
        %{
@@ -392,11 +333,11 @@ defmodule Raxol.Web3.Backend.Tron do
 
   def chain_info(%__MODULE__{source: :tronscan} = state) do
     with {:ok, body} <- call(state, "getStatsOverview", %{}, :chain_stats),
-         {:ok, stats} <- first_row(body, :stats_overview) do
+         {:ok, stats} <- Normalize.first_row(body, :stats_overview) do
       {:ok,
        %{
          chain_ref: state.chain_ref,
-         average_block_time_ms: seconds_to_ms(stats["avgBlockTime"]),
+         average_block_time_ms: Normalize.seconds_to_ms(stats["avgBlockTime"]),
          total_blocks: int(stats["totalBlockCount"]),
          total_transactions: int(stats["totalTransaction"]),
          total_addresses: int(stats["totalAddress"])
@@ -407,22 +348,22 @@ defmodule Raxol.Web3.Backend.Tron do
   @impl Backend
   def block_height(%__MODULE__{source: :sqd} = state) do
     with {:ok, body} <- call(state, "portal_get_network_info", network(state)),
-         {:ok, height} <- dig_int(body, ["head", "number"], :sqd_head) do
+         {:ok, height} <- Normalize.dig_int(body, ["head", "number"], :sqd_head) do
       {:ok,
        %{
          height: height,
          finalized_height: int(dig(body, ["finalized_head", "number"])),
          unit: :block,
-         indexer: sqd_indexer(body)
+         indexer: Normalize.sqd_indexer(body)
        }}
     end
   end
 
   def block_height(%__MODULE__{source: :trongrid} = state) do
     with {:ok, head} <- call(state, "getBlock", %{"detail" => false}),
-         {:ok, height} <- block_number(head),
+         {:ok, height} <- Normalize.block_number(head),
          {:ok, irreversible} <- call(state, "solidityGetBlock", %{"detail" => false}),
-         {:ok, finalized} <- block_number(irreversible) do
+         {:ok, finalized} <- Normalize.block_number(irreversible) do
       # `indexer: nil` rather than a cheerful `%{finished?: true}`: this
       # upstream publishes no indexing status, and claiming a component is
       # healthy is worse than saying nothing about it.
@@ -434,42 +375,40 @@ defmodule Raxol.Web3.Backend.Tron do
     query = %{"limit" => @page_limit, "sort" => "-number"}
 
     with {:ok, body} <- call(state, "getBlocks", query),
-         {:ok, rows} <- rows(body, :blocks),
-         {:ok, height} <- first_block_number(rows) do
+         {:ok, rows} <- Normalize.rows(body, :blocks),
+         {:ok, height} <- Normalize.first_block_number(rows) do
       {:ok,
        %{
          height: height,
-         finalized_height: highest_confirmed(rows),
+         finalized_height: Normalize.highest_confirmed(rows),
          unit: :block,
          indexer: nil
        }}
     end
   end
 
-  # -- optional ----------------------------------------------------------------
-
   @impl Backend
   def get_transaction(%__MODULE__{source: :trongrid} = state, hash) when is_binary(hash) do
     with {:ok, body} <- call(state, "getTransactionById", %{"value" => hash}, :transaction) do
-      trongrid_transaction(body)
+      Normalize.trongrid_transaction(body)
     end
   end
 
   def get_transaction(%__MODULE__{source: :tronscan} = state, hash) when is_binary(hash) do
     with {:ok, body} <- call(state, "getTransactionDetail", %{"hash" => hash}, :transaction) do
-      tronscan_transaction(body)
+      Normalize.tronscan_transaction(body)
     end
   end
 
   @impl Backend
   def account_info(%__MODULE__{source: :trongrid} = state, account_ref) do
-    with {:ok, address} <- account(account_ref),
+    with {:ok, address} <- Normalize.account(account_ref),
          {:ok, body} <- call(state, "getAccountInfo", %{"address" => address}, :account),
-         {:ok, record} <- first_row(body, :account),
+         {:ok, record} <- Normalize.first_row(body, :account),
          {:ok, balance} <- Backend.money(record["balance"], :balance) do
       {:ok,
        %{
-         ref: {:tron, canonical!(record["address"], address)},
+         ref: {:tron, Normalize.canonical_or(record["address"], address)},
          balance: balance,
          # Code presence, from the account record's own account type. No
          # `:kind`: Tron draws no distinction that changes how `balance` is
@@ -483,18 +422,18 @@ defmodule Raxol.Web3.Backend.Tron do
   end
 
   def account_info(%__MODULE__{source: :tronscan} = state, account_ref) do
-    with {:ok, address} <- account(account_ref),
+    with {:ok, address} <- Normalize.account(account_ref),
          {:ok, body} <- call(state, "getAccountDetail", %{"address" => address}, :account),
          {:ok, balance} <- Backend.money(body["balance"], :balance) do
       {:ok,
        %{
-         ref: {:tron, canonical!(body["address"], address)},
+         ref: {:tron, Normalize.canonical_or(body["address"], address)},
          balance: balance,
          contract?: is_map(body["contractInfo"]) or body["accountType"] == 2,
          verified?: false,
          # The explorer's own label for the address, which is data in a result
          # payload rather than a tool description, and `nil` when unlabelled.
-         name: presence(body["addressTag"]),
+         name: Normalize.presence(body["addressTag"]),
          ens: nil
        }}
     end
@@ -502,14 +441,14 @@ defmodule Raxol.Web3.Backend.Tron do
 
   @impl Backend
   def list_transactions(%__MODULE__{source: :trongrid} = state, account_ref, opts \\ []) do
-    with {:ok, address} <- account(account_ref) do
+    with {:ok, address} <- Normalize.account(account_ref) do
       fingerprint_page(
         state,
         "getAccountTransactions",
         %{"address" => address},
         :tron_account_transactions,
         opts,
-        &trongrid_list_transaction/1
+        &Normalize.trongrid_list_transaction/1
       )
     end
   end
@@ -518,11 +457,11 @@ defmodule Raxol.Web3.Backend.Tron do
   def token_balances(state, account_ref, opts \\ [])
 
   def token_balances(%__MODULE__{source: :trongrid} = state, account_ref, opts) do
-    with :ok <- no_cursor(opts),
-         {:ok, address} <- account(account_ref),
+    with :ok <- Paging.no_cursor(Keyword.get(opts, :cursor)),
+         {:ok, address} <- Normalize.account(account_ref),
          {:ok, body} <- call(state, "getAccountInfo", %{"address" => address}, :account),
-         {:ok, record} <- first_row(body, :account),
-         {:ok, items} <- trongrid_token_balances(record) do
+         {:ok, record} <- Normalize.first_row(body, :account),
+         {:ok, items} <- Normalize.trongrid_token_balances(record) do
       # One call and no cursor: the account record is one object rather than a
       # page, so `next` is `nil` because there is no second page and not
       # because paging was declined. Measured 2026-09-14, the widest holder
@@ -532,28 +471,15 @@ defmodule Raxol.Web3.Backend.Tron do
   end
 
   def token_balances(%__MODULE__{source: :tronscan} = state, account_ref, opts) do
-    with {:ok, address} <- account(account_ref) do
+    with {:ok, address} <- Normalize.account(account_ref) do
       offset_page(
         state,
         "getAccountTokens",
         %{"address" => address},
         :tronscan_account_tokens,
         opts,
-        &tronscan_token_balance/1
+        &Normalize.tronscan_token_balance/1
       )
-    end
-  end
-
-  # This read mints no cursor, so it accepts none. Answering page one again for
-  # a cursor nobody minted is the silent rewind the opaque-cursor rule exists
-  # to prevent, and it is indistinguishable from a walk that ended.
-  # `:wrong_scope` is the reason `Raxol.Web3.Cursor` already has for it and the
-  # one `Raxol.Web3.Backend.Solana` mints for the same case; the endpoint atom
-  # this used to carry named no cursor endpoint at all.
-  defp no_cursor(opts) do
-    case Keyword.get(opts, :cursor) do
-      nil -> :ok
-      _held -> {:error, {:invalid_cursor, :wrong_scope}}
     end
   end
 
@@ -561,27 +487,27 @@ defmodule Raxol.Web3.Backend.Tron do
   def list_token_transfers(state, account_ref, opts \\ [])
 
   def list_token_transfers(%__MODULE__{source: :trongrid} = state, account_ref, opts) do
-    with {:ok, address} <- account(account_ref) do
+    with {:ok, address} <- Normalize.account(account_ref) do
       fingerprint_page(
         state,
         "getAccountTrc20Transactions",
         %{"address" => address},
         :tron_account_trc20_transfers,
         opts,
-        &trongrid_token_transfer/1
+        &Normalize.trongrid_token_transfer/1
       )
     end
   end
 
   def list_token_transfers(%__MODULE__{source: :tronscan} = state, account_ref, opts) do
-    with {:ok, address} <- account(account_ref) do
+    with {:ok, address} <- Normalize.account(account_ref) do
       offset_page(
         state,
         "getTransferList",
         %{"address" => address},
         :tronscan_transfer_list,
         opts,
-        &tronscan_token_transfer/1
+        &Normalize.tronscan_token_transfer/1
       )
     end
   end
@@ -591,11 +517,9 @@ defmodule Raxol.Web3.Backend.Tron do
     query = %{"detail" => false, "id_or_num" => to_string(number)}
 
     with {:ok, body} <- call(state, "getBlock", query, :block) do
-      {:ok, trongrid_block(body)}
+      {:ok, Normalize.trongrid_block(body)}
     end
   end
-
-  # -- the outbound path -------------------------------------------------------
 
   # `class` names the cache class, or `nil` for a request that must not be
   # cached. The key fragment is built from the tool name and the argument map
@@ -652,9 +576,9 @@ defmodule Raxol.Web3.Backend.Tron do
 
   defp dispatch(%__MODULE__{client: client}, tool, arguments, _extra) do
     case call_tool(client, tool, arguments) do
-      {:ok, %{content: content, is_error: false}} -> content_payload(content)
+      {:ok, %{content: content, is_error: false}} -> Errors.content_payload(content)
       {:ok, %{is_error: true}} -> {:error, {:upstream_refused, :unknown}}
-      {:error, reason} -> {:error, client_error(reason)}
+      {:error, reason} -> {:error, Errors.client_error(reason)}
     end
   end
 
@@ -682,91 +606,29 @@ defmodule Raxol.Web3.Backend.Tron do
     |> Keyword.merge(extra)
   end
 
-  # `result.content[0].text` holds a JSON string, so there are two decodes:
-  # `Raxol.MCP.Client` did the envelope and this does the text.
-  defp content_payload([%{"text" => text} | _rest]) when is_binary(text) do
-    case Jason.decode(text) do
-      {:ok, payload} when is_map(payload) -> payload_result(payload)
-      {:ok, _other} -> {:error, {:decode_failed, :not_an_object}}
-      {:error, _reason} -> {:error, {:decode_failed, :mcp_content}}
-    end
-  end
-
-  defp content_payload(_other), do: {:error, {:decode_failed, :mcp_content}}
-
-  # The one recognised refusal shape inside a successful tool result from the
-  # two stateful sources: a payload whose `error` is a string and which
-  # carries nothing else to read. Measured 2026-09-14, that is how TronScan
-  # announces its pagination ceiling, and the announcement is prose in a
-  # language this repository's own lint would refuse, so the class is
-  # `:unknown` rather than a reading of the words.
-  defp payload_result(%{"error" => reason} = payload) when is_binary(reason) do
-    if map_size(payload) == 1, do: {:error, {:upstream_refused, :unknown}}, else: {:ok, payload}
-  end
-
-  defp payload_result(payload), do: {:ok, payload}
-
   # SQD announces a refusal as a nested object with a machine-readable code,
   # and it puts that object in both places a tool result can carry one: an
   # `isError: true` result, and a plain result whose payload is the object.
-  # The code is read in both arms because it is the same refusal in both,
-  # and reading one arm only was the bug: both RECORDED refusals from this
-  # source carry `isError: true`, so every one of them collapsed to
-  # `{:upstream_refused, :unknown}` and became final.
-  #
-  # The reading itself is `Raxol.Web3.Backend.SQD`'s rather than this
-  # module's, because `Raxol.Web3.Backend.Solana` reads the same endpoint and
-  # the two copies of this had already disagreed twice: once about
-  # `unknown_network` and once about which arm carries the object. One
-  # endpoint, one reading.
+  # Both arms are read, and the reading is `Raxol.Web3.Backend.SQD`'s so that
+  # this backend and `Raxol.Web3.Backend.Solana` classify the endpoint alike.
   defp sqd_result(state, payload) do
     case SQD.refusal(payload, network_name(state)) do
-      nil -> payload_result(payload)
+      nil -> Errors.payload_result(payload)
       reason -> {:error, reason}
     end
   end
 
   defp sqd_refusal(state, payload), do: SQD.announced(payload, network_name(state))
 
-  # Every reason `Raxol.MCP.Client` produces, mapped onto the closed taxonomy in
-  # `Raxol.Web3.Backend`. Nothing upstream travels: a JSON-RPC error contributes
-  # its numeric code and never its message.
-  defp client_error({:http, status}), do: {:http, status}
-  defp client_error({:redirect_refused, status}), do: {:http, status}
-  defp client_error({:too_large, limit}), do: {:too_large, limit}
-  defp client_error({:timeout, stage}), do: {:timeout, stage}
-  defp client_error(:timeout), do: {:timeout, :deadline}
-  defp client_error({:transport, reason}), do: {:transport, reason}
-  defp client_error({:blocked, reason}), do: {:blocked, reason}
-  defp client_error({:not_ready, _status}), do: {:transport, :not_ready}
-  # Retryable, and a source error rather than an answer, so the router fails
-  # over to the next candidate instead of returning a saturated queue.
-  defp client_error(:busy), do: {:transport, :busy}
-  defp client_error(:session_rejected), do: {:transport, :session_rejected}
-  defp client_error(:breaker_open), do: {:breaker_open, :unknown}
-  defp client_error(:dns_failed), do: {:dns_failed, :unknown}
-
-  defp client_error(%{"code" => code}) when is_integer(code) do
-    {:upstream_refused, code_class(code)}
-  end
-
-  defp client_error(_other), do: {:transport, :unknown}
-
-  defp code_class(-32_601), do: :not_found
-  defp code_class(-32_602), do: :not_found
-  defp code_class(code) when code in [401, -32_001], do: :auth
-  defp code_class(code) when code in [429, -32_005], do: :rate_limit
-  defp code_class(_code), do: :unknown
-
-  defp origin_id(state), do: Origin.id(uri(state))
+  defp origin_id(state), do: Paging.origin_id(uri(state))
 
   defp uri(%__MODULE__{} = state), do: URI.new!(url(state))
 
-  defp url(%__MODULE__{source: source}), do: Map.fetch!(@sources, source).url
+  defp url(%__MODULE__{source: source}), do: Sources.fetch!(source).url
 
   defp network(%__MODULE__{} = state), do: %{"network" => network_name(state)}
 
-  defp network_name(%__MODULE__{source: source}), do: Map.fetch!(@sources, source).network
+  defp network_name(%__MODULE__{source: source}), do: Sources.fetch!(source).network
 
   # Chain identity, confirmed rather than asserted. The upstream names the
   # network and the VM family it indexed, and a handle that asked for Tron and
@@ -774,22 +636,21 @@ defmodule Raxol.Web3.Backend.Tron do
   defp confirm_network(%{"vm" => "tron", "network_type" => "mainnet"}), do: :ok
   defp confirm_network(_body), do: {:error, {:decode_failed, :network_identity}}
 
-  # -- pagination --------------------------------------------------------------
-
   # TronGrid pages on an opaque `fingerprint`. `meta.links.next` is a full
   # upstream URL carrying that fingerprint, and it is read only as the signal
   # that another page exists: the next request is composed here from the tool
   # and the argument map, never by following somebody else's URL.
   defp fingerprint_page(state, tool, base, endpoint, opts, mapper) do
-    with {:ok, params} <- cursor_params(state, endpoint, Keyword.get(opts, :cursor)),
+    with {:ok, params} <-
+           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
          arguments = Map.merge(base, Map.put(params, "limit", @page_limit)),
          {:ok, body} <- call(state, tool, arguments, :list),
-         {:ok, rows} <- rows(body, :page),
+         {:ok, rows} <- Normalize.rows(body, :page),
          {:ok, items} <- Backend.map_rows(rows, mapper, endpoint) do
       {:ok,
        %{
          items: items,
-         next: mint(state, endpoint, next_fingerprint(body))
+         next: Paging.next_cursor(next_fingerprint(body), origin_id(state), endpoint)
        }}
     end
   end
@@ -799,17 +660,18 @@ defmodule Raxol.Web3.Backend.Tron do
   # spending a token on a request the upstream documents as refused, and the
   # error is the same one the upstream's own refusal maps to.
   defp offset_page(state, tool, base, endpoint, opts, mapper) do
-    with {:ok, params} <- cursor_params(state, endpoint, Keyword.get(opts, :cursor)),
+    with {:ok, params} <-
+           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
          start = int(params["start"]) || 0,
          :ok <- within_ceiling(start),
          arguments = Map.merge(base, %{"start" => start, "limit" => @page_limit}),
          {:ok, body} <- call(state, tool, arguments, :list),
-         {:ok, rows} <- rows(body, :page),
+         {:ok, rows} <- Normalize.rows(body, :page),
          {:ok, items} <- Backend.map_rows(rows, mapper, endpoint) do
       {:ok,
        %{
          items: items,
-         next: mint(state, endpoint, next_offset(body, start))
+         next: Paging.next_cursor(next_offset(body, start), origin_id(state), endpoint)
        }}
     end
   end
@@ -840,339 +702,6 @@ defmodule Raxol.Web3.Backend.Tron do
     end
   end
 
-  defp mint(_state, _endpoint, nil), do: nil
-  defp mint(state, endpoint, params), do: Cursor.encode(params, origin_id(state), endpoint)
-
-  defp cursor_params(_state, _endpoint, nil), do: {:ok, %{}}
-
-  defp cursor_params(state, endpoint, cursor) do
-    case Cursor.decode(cursor, origin_id(state), endpoint) do
-      {:ok, params} -> {:ok, params}
-      {:error, reason} -> {:error, {:invalid_cursor, reason}}
-    end
-  end
-
-  # -- normalization -----------------------------------------------------------
-
-  defp trongrid_transaction(body) when is_map(body) do
-    contract = contract_call(body)
-    raw = body |> field("raw_data") |> object()
-
-    with {:ok, value} <- Backend.money(contract["amount"] || contract["call_value"], :value) do
-      {:ok,
-       %{
-         hash: body["txID"],
-         status: contract_status(body),
-         # `getTransactionInfoById` is the tool that carries a block and a fee,
-         # and it currently refuses its own output. TronScan is the source that
-         # answers those fields.
-         block: nil,
-         timestamp: epoch_ms(raw["timestamp"]),
-         from: ref(contract["owner_address"]),
-         to: ref(counterparty(contract)),
-         value: value,
-         fee: nil,
-         method: contract_type(raw["contract"])
-       }}
-    end
-  end
-
-  defp trongrid_transaction(_body), do: {:error, {:decode_failed, :transaction}}
-
-  defp trongrid_list_transaction(item) when is_map(item) do
-    contract = contract_call(item)
-
-    with {:ok, value} <- Backend.money(contract["amount"] || contract["call_value"], :value),
-         {:ok, fee} <- Backend.money(ret_fee(item), :fee) do
-      {:ok, trongrid_transaction_row(item, contract, value, fee)}
-    end
-  end
-
-  defp trongrid_list_transaction(_item), do: {:error, {:decode_failed, :transaction_row}}
-
-  # A listed transaction answers its own block and its own fee, which is why
-  # this row is wider than the one `trongrid_transaction/1` can build out of
-  # `getTransactionById` alone.
-  defp trongrid_transaction_row(item, contract, value, fee) do
-    %{
-      hash: item["txID"],
-      status: contract_status(item),
-      block: int(item["blockNumber"]),
-      timestamp: epoch_ms(item["block_timestamp"]),
-      from: ref(contract["owner_address"]),
-      to: ref(counterparty(contract)),
-      value: value,
-      fee: fee,
-      method: item |> field("raw_data") |> field("contract") |> contract_type()
-    }
-  end
-
-  defp tronscan_transaction(body) when is_map(body) do
-    with {:ok, fee} <- Backend.money(body |> field("cost") |> field("fee"), :fee) do
-      {:ok,
-       %{
-         hash: body["hash"],
-         status: ret_status(body["contractRet"]),
-         block: int(body["block"]),
-         timestamp: epoch_ms(body["timestamp"]),
-         from: ref(body["ownerAddress"]),
-         to: ref(body["toAddress"]),
-         value: nil,
-         fee: fee,
-         method: method_name(body["contractType"])
-       }}
-    end
-  end
-
-  defp tronscan_transaction(_body), do: {:error, {:decode_failed, :transaction}}
-
-  defp trongrid_block(body) do
-    raw = body |> field("block_header") |> field("raw_data") |> object()
-
-    %{
-      height: int(raw["number"]),
-      hash: body["blockID"],
-      timestamp: epoch_ms(raw["timestamp"]),
-      transactions_count: body |> field("transactions") |> length_or_nil(),
-      miner: ref(raw["witness_address"])
-    }
-  end
-
-  # Both standards out of one account record. TRC-20 arrives as a list of
-  # single-key maps from contract address to an amount string; TRC-10 as a list
-  # of `key`/`value` pairs whose key is the numeric asset id. Neither list is
-  # guaranteed by anything but the upstream's habit, so a row that is not the
-  # shape claimed fails the read rather than raising inside the walk: the
-  # router fails over on `{:decode_failed, _}`, and a `FunctionClauseError`
-  # here would abort the read and carry the row into its own message.
-  #
-  # An ABSENT list is empty rather than a failure, because an account holding
-  # one standard and not the other omits the key it has nothing for.
-  defp trongrid_token_balances(record) do
-    with {:ok, trc20} <- trc20_pairs(field(record, "trc20")),
-         {:ok, trc10} <- trc10_pairs(field(record, "assetV2")) do
-      Backend.map_rows(trc20 ++ trc10, &token_balance_row/1, :token_balance_row)
-    end
-  end
-
-  defp trc20_pairs(nil), do: {:ok, []}
-
-  defp trc20_pairs(entries) when is_list(entries) do
-    entries
-    |> Enum.reduce_while({:ok, []}, fn
-      entry, {:ok, acc} when is_map(entry) ->
-        {:cont, {:ok, Enum.reduce(entry, acc, &[{:trc20, elem(&1, 0), elem(&1, 1)} | &2])}}
-
-      _row, {:ok, _acc} ->
-        {:halt, {:error, {:decode_failed, :token_balance_row}}}
-    end)
-    |> reversed()
-  end
-
-  defp trc20_pairs(_other), do: {:error, {:decode_failed, :token_balances}}
-
-  defp trc10_pairs(nil), do: {:ok, []}
-
-  defp trc10_pairs(entries) when is_list(entries) do
-    entries
-    |> Enum.reduce_while({:ok, []}, fn
-      %{"key" => id, "value" => amount}, {:ok, acc} ->
-        {:cont, {:ok, [{:trc10, id, amount} | acc]}}
-
-      _row, {:ok, _acc} ->
-        {:halt, {:error, {:decode_failed, :token_balance_row}}}
-    end)
-    |> reversed()
-  end
-
-  defp trc10_pairs(_other), do: {:error, {:decode_failed, :token_balances}}
-
-  defp reversed({:ok, pairs}), do: {:ok, Enum.reverse(pairs)}
-  defp reversed({:error, _reason} = error), do: error
-
-  defp token_balance_row({:trc10, id, amount}) do
-    with {:ok, parsed} <- Backend.money(amount, :amount) do
-      {:ok, %{token: token(nil, "TRC-10"), amount: parsed, token_id: asset_id(id)}}
-    end
-  end
-
-  defp token_balance_row({:trc20, contract, amount}) do
-    with {:ok, parsed} <- Backend.money(amount, :amount) do
-      {:ok, %{token: token(canonical(contract), "TRC-20"), amount: parsed, token_id: nil}}
-    end
-  end
-
-  # A TRC-10 id is the key of a `key`/`value` pair, so it is whatever the
-  # upstream put there. A binary or an integer is an asset id; anything else is
-  # not one, and rendering it with `to_string/1` would either raise or put
-  # upstream structure in the field a caller keys a token by.
-  defp asset_id(id) when is_binary(id), do: id
-  defp asset_id(id) when is_integer(id), do: Integer.to_string(id)
-  defp asset_id(_other), do: nil
-
-  defp tronscan_token_balance(item) when is_map(item) do
-    {address, token_id} = token_identity(item["tokenId"])
-
-    with {:ok, amount} <- Backend.money(item["balance"], :amount) do
-      {:ok,
-       %{
-         token: %{
-           address: address,
-           symbol: presence(item["tokenAbbr"]),
-           name: presence(item["tokenName"]),
-           decimals: int(item["tokenDecimal"]),
-           type: token_type(item["tokenType"], item["tokenId"])
-         },
-         amount: amount,
-         token_id: token_id
-       }}
-    end
-  end
-
-  defp tronscan_token_balance(_item), do: {:error, {:decode_failed, :token_balance_row}}
-
-  defp trongrid_token_transfer(item) when is_map(item) do
-    info = item |> field("token_info") |> object()
-
-    with {:ok, amount} <- Backend.money(item["value"], :amount) do
-      {:ok,
-       %{
-         token: %{
-           address: canonical(info["address"]),
-           symbol: presence(info["symbol"]),
-           name: presence(info["name"]),
-           decimals: int(info["decimals"]),
-           type: "TRC-20"
-         },
-         amount: amount,
-         from: ref(item["from"]),
-         to: ref(item["to"]),
-         block: nil,
-         timestamp: epoch_ms(item["block_timestamp"]),
-         transaction: item["transaction_id"]
-       }}
-    end
-  end
-
-  defp trongrid_token_transfer(_item), do: {:error, {:decode_failed, :token_transfer_row}}
-
-  defp tronscan_token_transfer(item) when is_map(item) do
-    with {:ok, amount} <- Backend.money(item["amount"], :amount) do
-      {:ok, tronscan_transfer_row(item, amount)}
-    end
-  end
-
-  defp tronscan_token_transfer(_item), do: {:error, {:decode_failed, :token_transfer_row}}
-
-  defp tronscan_transfer_row(item, amount) do
-    %{
-      token: tronscan_transfer_token(item),
-      amount: amount,
-      from: ref(item["transferFromAddress"]),
-      to: ref(item["transferToAddress"]),
-      block: int(item["block"]),
-      timestamp: epoch_ms(item["timestamp"]),
-      transaction: item["transactionHash"]
-    }
-  end
-
-  # A transfer describes the token it moves under `tokenInfo`, with the same
-  # keys a balance row spells at its top level, so the identity split and the
-  # symbol/name/decimals triple are read here rather than beside the fields
-  # that belong to the transfer itself.
-  defp tronscan_transfer_token(item) do
-    info = item |> field("tokenInfo") |> object()
-    {address, _token_id} = token_identity(info["tokenId"])
-
-    %{
-      address: address,
-      symbol: presence(info["tokenAbbr"]),
-      name: presence(info["tokenName"]),
-      decimals: int(info["tokenDecimal"]),
-      type: token_type(info["tokenType"], info["tokenId"])
-    }
-  end
-
-  # The native asset has neither an address nor an asset id, a TRC-10 has an id
-  # and no address, and a TRC-20 has an address and no id. One function so the
-  # three cases cannot drift apart between the balance and the transfer mapper.
-  defp token_identity("_"), do: {nil, nil}
-
-  defp token_identity(id) when is_binary(id) do
-    if numeric?(id), do: {nil, id}, else: {canonical(id), nil}
-  end
-
-  defp token_identity(_absent), do: {nil, nil}
-
-  defp token_type(_upstream, "_"), do: "TRX"
-  defp token_type("trc10", _id), do: "TRC-10"
-  defp token_type("trc20", _id), do: "TRC-20"
-  defp token_type("trc721", _id), do: "TRC-721"
-  defp token_type("trc1155", _id), do: "TRC-1155"
-  defp token_type(_other, _id), do: nil
-
-  defp token(address, type) do
-    %{address: address, symbol: nil, name: nil, decimals: nil, type: type}
-  end
-
-  defp contract_call(body) do
-    body
-    |> field("raw_data")
-    |> field("contract")
-    |> rows_of()
-    |> List.first()
-    |> field("parameter")
-    |> field("value")
-    |> object()
-  end
-
-  defp contract_type([%{"type" => type} | _rest]) when is_binary(type), do: type
-  defp contract_type(_absent), do: nil
-
-  # The recipient is named differently per contract type, and none of the three
-  # is a fallback for the others: a transfer names `to_address`, a contract call
-  # names the contract it calls, and a resource delegation names the receiver.
-  defp counterparty(contract) do
-    contract["to_address"] || contract["contract_address"] || contract["receiver_address"]
-  end
-
-  defp contract_status(body) do
-    body |> field("ret") |> rows_of() |> List.first() |> field("contractRet") |> ret_status()
-  end
-
-  defp ret_status("SUCCESS"), do: :success
-  defp ret_status(nil), do: :pending
-  defp ret_status(_reverted), do: :reverted
-
-  # The fee of a listed transaction lives in the same first `ret` entry that
-  # carries the `contractRet` `contract_status/1` reads.
-  defp ret_fee(item) do
-    item |> field("ret") |> rows_of() |> List.first() |> field("fee")
-  end
-
-  defp sqd_indexer(body) do
-    indexing = body |> field("indexing") |> object()
-
-    # `:indexed_ratio` is absent rather than computed: this upstream publishes
-    # a lag in blocks and in seconds and no ratio at all, and a 1.0 here would
-    # be a fabricated number in the one field that exists so lag is visible.
-    %{finished?: body["real_time"] == true}
-    |> put_measure(:lag_blocks, int(indexing["finalized_lag_blocks"]))
-    |> put_measure(:lag_seconds, int(indexing["finalized_lag_seconds"]))
-  end
-
-  defp put_measure(indexer, _key, nil), do: indexer
-  defp put_measure(indexer, key, value), do: Map.put(indexer, key, value)
-
-  # -- reading the upstream shapes ---------------------------------------------
-
-  defp block_number(body) do
-    case int(dig(body, ["block_header", "raw_data", "number"])) do
-      number when is_integer(number) -> {:ok, number}
-      nil -> {:error, {:decode_failed, :block}}
-    end
-  end
-
   defp sample_block(state, height) when height > 0 do
     call(state, "getBlock", %{"detail" => false, "id_or_num" => to_string(height)}, :block)
   end
@@ -1188,103 +717,6 @@ defmodule Raxol.Web3.Backend.Tron do
     end
   end
 
-  defp first_block_number([%{"number" => number} | _rest]), do: {:ok, int(number)}
-  defp first_block_number(_rows), do: {:error, {:decode_failed, :blocks}}
-
-  # The irreversible view, from the flag the explorer publishes per block. A
-  # page with no confirmed row is `nil` rather than the head: the shape exists
-  # so a consumer can compute a confirmation depth, and reporting the head
-  # twice would make that depth zero.
-  defp highest_confirmed(rows) do
-    rows
-    |> Enum.filter(&(field(&1, "confirmed") == true))
-    |> Enum.map(&int(field(&1, "number")))
-    |> Enum.reject(&is_nil/1)
-    |> Enum.max(fn -> nil end)
-  end
-
-  defp rows(%{"data" => rows}, _tag) when is_list(rows), do: {:ok, rows}
-  defp rows(_body, tag), do: {:error, {:decode_failed, tag}}
-
-  defp first_row(body, tag) do
-    case rows(body, tag) do
-      {:ok, [row | _rest]} when is_map(row) -> {:ok, row}
-      {:ok, _empty} -> {:error, {:upstream_refused, :not_found}}
-      error -> error
-    end
-  end
-
-  defp dig_int(body, path, tag) do
-    case int(dig(body, path)) do
-      value when is_integer(value) -> {:ok, value}
-      nil -> {:error, {:decode_failed, tag}}
-    end
-  end
-
-  # The upstream's own value at a path, or `nil` where the path does not lead
-  # to one. `get_in/2` raises on the way through anything that is not a map,
-  # and every value on the way through belongs to the upstream.
-  defp dig(value, path), do: Enum.reduce(path, value, fn key, inner -> field(inner, key) end)
-
-  defp field(map, key) when is_map(map), do: Map.get(map, key)
-  defp field(_other, _key), do: nil
-
-  defp object(value) when is_map(value), do: value
-  defp object(_other), do: %{}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
-
-  # -- the account reference ---------------------------------------------------
-
-  # The one place either encoding is accepted, and the one place it collapses.
-  # Everything below holds Base58, so nothing downstream can key a cache, a
-  # cursor scope or a rate-limit spend on the spelling a caller happened to use.
-  defp account({:tron, value}) when is_binary(value) do
-    case Address.canonical(value) do
-      {:ok, base58} -> {:ok, base58}
-      {:error, :invalid_address} -> {:error, {:unsupported_account_ref, :tron}}
-    end
-  end
-
-  defp account({tag, _value}), do: {:error, {:unsupported_account_ref, tag}}
-  defp account(_other), do: {:error, {:unsupported_account_ref, :unknown}}
-
-  defp ref(nil), do: nil
-
-  defp ref(value) when is_binary(value) do
-    case Address.canonical(value) do
-      {:ok, base58} -> {:tron, base58}
-      {:error, :invalid_address} -> nil
-    end
-  end
-
-  defp ref(_other), do: nil
-
-  defp canonical(nil), do: nil
-
-  defp canonical(value) when is_binary(value) do
-    case Address.canonical(value) do
-      {:ok, base58} -> base58
-      {:error, :invalid_address} -> nil
-    end
-  end
-
-  defp canonical(_other), do: nil
-
-  # The address we asked about is the fallback, because a response that echoes
-  # nothing back still describes the account that was requested.
-  defp canonical!(value, requested), do: canonical(value) || requested
-
-  defp canonical_chain_ref(chain_ref) when is_binary(chain_ref) do
-    case Map.fetch(@chain_aliases, chain_ref) do
-      {:ok, canonical} -> {:ok, canonical}
-      :error -> {:error, {:unsupported_chain, chain_ref}}
-    end
-  end
-
-  defp canonical_chain_ref(other), do: {:error, {:unsupported_chain, other}}
-
   defp client(%{stateful?: false}, _opts), do: {:ok, nil}
 
   defp client(%{stateful?: true}, opts) do
@@ -1293,53 +725,4 @@ defmodule Raxol.Web3.Backend.Tron do
       client -> {:ok, client}
     end
   end
-
-  # -- scalars -----------------------------------------------------------------
-
-  defp ok_or({:ok, _value} = ok, _reason), do: ok
-  defp ok_or(:error, reason), do: {:error, reason}
-
-  defp numeric?(value) when is_binary(value) do
-    match?({_number, ""}, Integer.parse(value))
-  end
-
-  defp presence(nil), do: nil
-  defp presence(""), do: nil
-  defp presence(value) when is_binary(value), do: value
-  defp presence(_other), do: nil
-
-  defp length_or_nil([]), do: nil
-  defp length_or_nil(list) when is_list(list), do: length(list)
-  defp length_or_nil(_other), do: nil
-
-  defp seconds_to_ms(value) when is_number(value), do: value * 1000
-  defp seconds_to_ms(_other), do: nil
-
-  defp epoch_ms(value) when is_integer(value) do
-    case DateTime.from_unix(value, :millisecond) do
-      {:ok, datetime} -> datetime
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp epoch_ms(_other), do: nil
-
-  # `contractType` is an integer on this upstream, and `to_string/1` on
-  # whatever else an upstream might put there raises rather than naming a
-  # method. A shape this module does not read is no method name at all.
-  defp method_name(value) when is_integer(value), do: Integer.to_string(value)
-  defp method_name(value) when is_binary(value), do: presence(value)
-  defp method_name(_other), do: nil
-
-  defp int(nil), do: nil
-  defp int(value) when is_integer(value), do: value
-
-  defp int(value) when is_binary(value) do
-    case Integer.parse(value) do
-      {number, ""} -> number
-      _invalid -> nil
-    end
-  end
-
-  defp int(_other), do: nil
 end

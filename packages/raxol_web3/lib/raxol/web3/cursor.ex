@@ -2,7 +2,7 @@ defmodule Raxol.Web3.Cursor do
   @moduledoc """
   An opaque, authenticated, scope-bound pagination cursor.
 
-  ADR-0038 decision 8. Every surveyed upstream paginates differently, and one
+  ADR-0038 decision 8. Every probed upstream paginates differently, and one
   of them caps `start + limit` at 10000, so ADR-0033 §3 requires an opaque
   cursor in both directions rather than an offset we cannot honour uniformly.
   Blockscout's own `next_page_params` proves the point from the other side:
@@ -95,7 +95,7 @@ defmodule Raxol.Web3.Cursor do
     tron_account_transactions: ~w(fingerprint),
     tron_account_trc20_transfers: ~w(fingerprint),
     # Measured from live TronScan responses on 2026-09-14. This is the one
-    # upstream in the survey that pages on a bare offset, and it refuses
+    # probed upstream that pages on a bare offset, and it refuses
     # `start + limit > 10000` with an error inside a successful tool result.
     # The ceiling is the reason ADR-0033 decision 3 refuses to expose an
     # offset at all: the pair lives inside the signed payload, the caller

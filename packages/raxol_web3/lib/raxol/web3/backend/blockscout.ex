@@ -70,12 +70,15 @@ defmodule Raxol.Web3.Backend.Blockscout do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode,
+    only: [field: 2, iso8601: 1, object: 1, ok_or: 2, page_rows: 1, rows_of: 1]
+
   alias Raxol.Web3.Backend
-  alias Raxol.Web3.Cursor
+  alias Raxol.Web3.Backend.Cache
+  alias Raxol.Web3.Backend.Decode
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.HTTP
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.RPC
-  alias Raxol.Web3.TTL
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and `:rpc_url` often embeds a provider key, so
@@ -179,7 +182,7 @@ defmodule Raxol.Web3.Backend.Blockscout do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
-  # -- required ----------------------------------------------------------------
+  defp origin_id(state), do: Paging.origin_id("https://#{state.host}/")
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
@@ -267,8 +270,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
     end
   end
 
-  # -- optional ----------------------------------------------------------------
-
   @impl Backend
   def get_block(%__MODULE__{} = state, number) do
     with {:ok, body} <- get(state, "/api/v2/blocks/#{segment(number)}", %{}, :block),
@@ -278,7 +279,7 @@ defmodule Raxol.Web3.Backend.Blockscout do
        %{
          height: height,
          hash: body["hash"],
-         timestamp: timestamp(body["timestamp"]),
+         timestamp: iso8601(body["timestamp"]),
          transactions_count: count,
          miner: address_ref(body["miner"])
        }}
@@ -348,8 +349,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
     RPC.eth_call(url, call, Map.get(call, :block, "latest"), state.http_opts)
   end
 
-  # -- the outbound path -------------------------------------------------------
-
   # `class` names the cache class, or `nil` for a request that must not be
   # cached. The key fragment is built here, from the endpoint's own path and
   # its own query map, and never from the assembled URI: that is what keeps a
@@ -358,15 +357,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
   defp get(state, path, query \\ %{}, class \\ nil) do
     state
     |> url(path, query)
-    |> HTTP.get(cache_opts(state, path, query, class))
-    |> decode()
-  end
-
-  defp cache_opts(state, _path, _query, nil), do: state.http_opts
-  defp cache_opts(%{cache?: false} = state, _path, _query, _class), do: state.http_opts
-
-  defp cache_opts(state, path, query, class) do
-    Keyword.put(state.http_opts, :cache, key: {path, query}, ttl_ms: TTL.for(class))
+    |> HTTP.get(Cache.opts(state.http_opts, state.cache?, {path, query}, class))
+    |> Decode.json_object()
   end
 
   defp url(state, path, query) when map_size(query) == 0, do: "https://#{state.host}#{path}"
@@ -383,66 +375,23 @@ defmodule Raxol.Web3.Backend.Blockscout do
   defp segment(value) when is_integer(value), do: Integer.to_string(value)
   defp segment(value) when is_binary(value), do: URI.encode(value, &URI.char_unreserved?/1)
 
-  # A non-2xx carries no body onward: a 403 challenge page is HTML written by
-  # someone else, and ADR-0038 decision 6 keeps upstream text out of an error
-  # term. The status is what the router classifies on.
-  defp decode({:ok, %{status: status, body: body}}) when status in 200..299 do
-    case Jason.decode(body) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _other} -> {:error, {:decode_failed, :not_an_object}}
-      {:error, _reason} -> {:error, {:decode_failed, :json}}
-    end
-  end
-
-  defp decode({:ok, %{status: status}}), do: {:error, {:http, status}}
-  defp decode({:error, _reason} = error), do: error
-
   # Every list shares the `:list` class, and the cursor's decoded parameters are
   # part of the key: page two of a walk is a different cache entry from page
   # one, which is the only way a cached page and a cursor can coexist without
   # one serving the other's contents.
   defp page(state, path, endpoint, opts, mapper) do
-    with {:ok, query} <- cursor_query(state, endpoint, Keyword.get(opts, :cursor)),
+    with {:ok, query} <-
+           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
          {:ok, body} <- get(state, path, query, :list),
          {:ok, rows} <- page_rows(body["items"]),
          {:ok, items} <- Backend.map_rows(rows, mapper, endpoint) do
       {:ok,
        %{
          items: items,
-         next: next_cursor(state, body["next_page_params"], endpoint)
+         next: Paging.next_cursor(body["next_page_params"], origin_id(state), endpoint)
        }}
     end
   end
-
-  # An absent list is an empty page, and a list-shaped key holding something
-  # else is a body that is not what it claimed rather than a page with no
-  # rows: an empty page would report an account as holding nothing.
-  defp page_rows(nil), do: {:ok, []}
-  defp page_rows(rows) when is_list(rows), do: {:ok, rows}
-  defp page_rows(_other), do: {:error, {:decode_failed, :page}}
-
-  # `Raxol.Web3.Cursor.encode/3` takes a map or `nil`, and `next_page_params`
-  # is whatever the upstream put under that key: anything else is the last
-  # page rather than a `FunctionClauseError` on the way out of a successful
-  # read.
-  defp next_cursor(state, params, endpoint) when is_map(params) do
-    Cursor.encode(params, origin_id(state), endpoint)
-  end
-
-  defp next_cursor(_state, _absent, _endpoint), do: nil
-
-  defp cursor_query(_state, _endpoint, nil), do: {:ok, %{}}
-
-  defp cursor_query(state, endpoint, cursor) do
-    case Cursor.decode(cursor, origin_id(state), endpoint) do
-      {:ok, params} -> {:ok, params}
-      {:error, reason} -> {:error, {:invalid_cursor, reason}}
-    end
-  end
-
-  defp origin_id(state), do: Origin.id(URI.new!("https://#{state.host}/"))
-
-  # -- normalization -----------------------------------------------------------
 
   defp transaction(item) when is_map(item) do
     fee = item |> field("fee") |> object()
@@ -461,7 +410,7 @@ defmodule Raxol.Web3.Backend.Blockscout do
       hash: item["hash"],
       status: status(item["status"]),
       block: block,
-      timestamp: timestamp(item["timestamp"]),
+      timestamp: iso8601(item["timestamp"]),
       from: address_ref(item["from"]),
       to: address_ref(item["to"]),
       value: value,
@@ -492,7 +441,7 @@ defmodule Raxol.Web3.Backend.Blockscout do
          from: address_ref(item["from"]),
          to: address_ref(item["to"]),
          block: block,
-         timestamp: timestamp(item["timestamp"]),
+         timestamp: iso8601(item["timestamp"]),
          transaction: item["transaction_hash"]
        }}
     end
@@ -564,15 +513,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
   defp status("error"), do: :reverted
   defp status(_pending), do: :pending
 
-  defp field(map, key) when is_map(map), do: Map.get(map, key)
-  defp field(_other, _key), do: nil
-
-  defp object(value) when is_map(value), do: value
-  defp object(_other), do: %{}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
-
   # Advisory, so a failure here is `nil` rather than a failed read: the lag is
   # extra information about a height, not the height.
   defp indexer(state) do
@@ -601,9 +541,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
   end
 
   defp chain_id(other), do: {:error, {:unsupported_chain, other}}
-
-  defp ok_or({:ok, _value} = ok, _reason), do: ok
-  defp ok_or(:error, reason), do: {:error, reason}
 
   # The one place a caller's account reference becomes a path segment, so the
   # FORMAT is checked here rather than at the tool boundary: validation sits on
@@ -650,15 +587,4 @@ defmodule Raxol.Web3.Backend.Blockscout do
   end
 
   defp float(_other), do: nil
-
-  defp timestamp(nil), do: nil
-
-  defp timestamp(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} -> datetime
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp timestamp(_other), do: nil
 end

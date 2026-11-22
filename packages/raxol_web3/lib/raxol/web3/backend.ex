@@ -52,7 +52,7 @@ defmodule Raxol.Web3.Backend do
       tool is `get_party`. Tron has dual Base58 and hex encoding, and a Solana
       account may be a wallet, a token account, a PDA or a program.
     * Pagination is an opaque cursor in both directions, never an offset or a
-      page number. Every surveyed upstream paginates differently and one caps
+      page number. Every probed upstream paginates differently and one caps
       `start + limit` at 10000, so an offset would leak a limit we cannot
       honour uniformly. See `Raxol.Web3.Cursor`.
 
@@ -309,8 +309,6 @@ defmodule Raxol.Web3.Backend do
 
   @type list_opts :: [cursor: Cursor.t() | nil]
 
-  # -- identity and capability -------------------------------------------------
-
   @doc "What this backend is, for logs, config and the router's failover order."
   @callback backend() :: atom()
 
@@ -350,12 +348,8 @@ defmodule Raxol.Web3.Backend do
   """
   @callback health_key(state :: term()) :: Raxol.MCP.CircuitBreaker.key() | nil
 
-  # -- required ----------------------------------------------------------------
-
   @callback chain_info(state :: term()) :: {:ok, chain_info()} | {:error, error()}
   @callback block_height(state :: term()) :: {:ok, height()} | {:error, error()}
-
-  # -- optional ----------------------------------------------------------------
 
   # The four reads about a thing on the chain rather than about the chain,
   # optional per ADR-0039. Each needs an index over things of its kind: over
@@ -469,8 +463,6 @@ defmodule Raxol.Web3.Backend do
   @spec required() :: keyword(non_neg_integer())
   def required, do: @required
 
-  # -- composing the request ---------------------------------------------------
-
   @doc """
   Add one header to a `Raxol.Web3.HTTP` option list, keeping the operator's.
 
@@ -493,8 +485,6 @@ defmodule Raxol.Web3.Backend do
       [header | Enum.reject(headers, fn {supplied, _value} -> supplied == name end)]
     end)
   end
-
-  # -- reading an upstream row -------------------------------------------------
 
   @doc """
   A monetary figure as a non-negative integer, or a decode failure naming it.

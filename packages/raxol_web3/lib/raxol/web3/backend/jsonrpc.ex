@@ -91,11 +91,13 @@ defmodule Raxol.Web3.Backend.JSONRPC do
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode, only: [rows_of: 1]
+
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Backend.Cache
+  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Cursor
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.RPC
-  alias Raxol.Web3.TTL
 
   # Probed 2026-09-14: this endpoint answered `eth_chainId` with `0x1237`, which
   # is 4663, and `eth_blockNumber` with `0x3bd25de`. A table entry is a claim
@@ -214,8 +216,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
     with :ok <- check_chain_id(state),
@@ -241,8 +241,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
       {:ok, %{height: height, finalized_height: finalized, unit: :block, indexer: nil}}
     end
   end
-
-  # -- declared ----------------------------------------------------------------
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, hash) when is_binary(hash) do
@@ -317,19 +315,14 @@ defmodule Raxol.Web3.Backend.JSONRPC do
 
   def raw_request(%__MODULE__{}, _malformed), do: {:error, {:unsupported, :rpc_method}}
 
-  # -- the outbound path -------------------------------------------------------
-
   # One place composes a cache class onto an RPC call, as the REST backend's
   # `get/4` does for a path. The key fragment is the method and its own
   # arguments, never the URL: a bring-your-own-node deployment carries its
   # credential in the host or the path, and ADR-0033 section 7 names cache keys
   # as one of the four places a credential leaks. `Raxol.Web3.HTTP` composes the
   # fragment with the origin id.
-  defp rpc_opts(state, _fragment, nil), do: state.http_opts
-  defp rpc_opts(%__MODULE__{cache?: false} = state, _fragment, _class), do: state.http_opts
-
   defp rpc_opts(state, fragment, class) do
-    Keyword.put(state.http_opts, :cache, key: fragment, ttl_ms: TTL.for(class))
+    Cache.opts(state.http_opts, state.cache?, fragment, class)
   end
 
   # Both halves of an account read share the `:account` class. Code gets the
@@ -400,8 +393,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
     end
   end
 
-  # -- the log walk ------------------------------------------------------------
-
   # Page one establishes the head and pins the walk to it. Every later page
   # takes both numbers from the cursor, so the walk terminates: a walk that
   # re-read the head each page would chase a chain that keeps producing blocks.
@@ -447,6 +438,8 @@ defmodule Raxol.Web3.Backend.JSONRPC do
     end
   end
 
+  defp origin_id(state), do: Paging.origin_id(state.url)
+
   defp next_cursor(_state, %{to: to, walk_to: walk_to}) when to >= walk_to, do: nil
 
   defp next_cursor(state, %{to: to, walk_to: walk_to}) do
@@ -456,10 +449,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
       :rpc_logs
     )
   end
-
-  defp origin_id(state), do: Origin.id(URI.new!(state.url))
-
-  # -- normalization -----------------------------------------------------------
 
   defp transaction(item, receipt) do
     %{
@@ -508,9 +497,6 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   end
 
   defp log(_item), do: {:error, {:decode_failed, :log_row}}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
 
   # No receipt is a transaction the node holds but has not mined, which the
   # contract calls `:pending`. A mined receipt with no `status` field is

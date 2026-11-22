@@ -220,8 +220,6 @@ defmodule Raxol.Web3.FX.Sleuth do
   @spec canonical_symbol(String.t()) :: String.t()
   def canonical_symbol(symbol), do: Map.get(@canonical, String.upcase(symbol, :ascii), symbol)
 
-  # -- arguments -----------------------------------------------------------------
-
   defp stables_query(opts) do
     Enum.reduce_while(opts, {:ok, []}, fn {key, value}, {:ok, acc} ->
       case param(key, value) do
@@ -254,8 +252,6 @@ defmodule Raxol.Web3.FX.Sleuth do
 
   # Sleuth looks up by its own names; `EURe` is `EURE` there.
   defp sleuth_symbol(symbol), do: String.upcase(symbol)
-
-  # -- transport -----------------------------------------------------------------
 
   # The body is decoded here so the cache stage can be told which 200s are worth
   # keeping: one that is not the documented envelope is a failure, and replaying
@@ -306,8 +302,6 @@ defmodule Raxol.Web3.FX.Sleuth do
   defp status_error(429, _argument), do: {:upstream_refused, :rate_limit}
   defp status_error(400, argument) when is_binary(argument), do: {:invalid_argument, argument}
   defp status_error(status, _argument), do: {:http, status}
-
-  # -- decoding ------------------------------------------------------------------
 
   # A JSON object. Not `%{}`: under `floats: :decimals` a number such as `1.5`
   # decodes to a `%Decimal{}`, and a struct matches `%{}`.

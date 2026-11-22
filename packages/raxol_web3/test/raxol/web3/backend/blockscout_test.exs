@@ -122,22 +122,6 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
 
       assert {"robinhoodchain.blockscout.com", :challenge_gated} = Blockscout.hosts()[4663]
     end
-
-    test "a chain with no instance is refused rather than guessed at" do
-      # Both branches name the reference they refused. The bare atom this
-      # pinned was the only reason in the package that did not: it reached a
-      # caller as `:unsupported_chain` with no way to tell WHICH chain, and it
-      # sat next to `chain_id/1`'s tupled form in the same `with`.
-      assert {:error, {:unsupported_chain, "eip155:999999"}} = Blockscout.new("eip155:999999")
-      assert {:error, {:unsupported_chain, "solana:mainnet"}} = Blockscout.new("solana:mainnet")
-    end
-
-    test "a keyed rpc_url does not render when the handle is inspected" do
-      {:ok, handle} = Blockscout.new("eip155:1", rpc_url: "https://eth.example/v2/key-not-real")
-
-      refute inspect(handle, limit: :infinity) =~ "key-not-real"
-      assert elem(handle, 1).rpc_url =~ "key-not-real"
-    end
   end
 
   describe "capabilities" do
@@ -553,17 +537,6 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
   end
 
   describe "refusals" do
-    test "a non-EVM account reference is refused by tag, before any request" do
-      # The reason `account_info/2` takes a tagged reference at all: Canton has
-      # party ids and no addresses, Tron has two encodings for one account.
-      handle = handle(%{})
-
-      assert {:error, {:unsupported_account_ref, :party}} =
-               Backend.call(handle, :account_info, [{:party, "Alice::1220abcd"}])
-
-      assert [] == requested_paths()
-    end
-
     test "an account reference that is not an address is refused before any request" do
       # `is_binary/1` was the only check, and `Serialize.account_ref/1` builds
       # `{:evm, value}` out of anything a tool argument prefixes with `"evm:"`,

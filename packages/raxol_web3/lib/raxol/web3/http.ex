@@ -255,8 +255,6 @@ defmodule Raxol.Web3.HTTP do
 
   defp remaining(deadline), do: max(deadline - now_ms(), 0)
 
-  # -- stage 2: the cache ------------------------------------------------------
-
   # After the vet and before the bucket, and both halves of that matter. Before
   # the vet, a cache hit would answer for a target we had not checked, so a
   # host that resolved into the reject set since the entry was written would
@@ -318,8 +316,6 @@ defmodule Raxol.Web3.HTTP do
     end
   end
 
-  # -- stage 1: vet ------------------------------------------------------------
-
   # A refused target names no host. `:invalid_url` covers both a malformed URL
   # and an `http://` one, which is the same answer to a caller: this is not a
   # target we will dial.
@@ -333,12 +329,8 @@ defmodule Raxol.Web3.HTTP do
   # never reaches: the vet is stage 1 and a failed vet returns here instead.
   # So a recorded failure cannot spare the NEXT caller anything, because that
   # caller's vet runs first and pays the same resolution budget whatever the
-  # breaker says. The record only becomes readable once resolution starts
-  # working again, which is the one moment the origin is known to be reachable
-  # -- so the old clause's single observable effect was to quarantine an
-  # origin for `recovery_ms` at the instant it recovered. The comment it
-  # carried ("every call paying for the same lookup") described a gate that
-  # does not sit on this path.
+  # breaker says. Recording it would only quarantine an origin for
+  # `recovery_ms` at the instant resolution recovered.
   #
   # A name that does not resolve is still a failure and still fails over:
   # `Raxol.Web3.Router` fails over on `{:dns_failed, _}` without consulting
@@ -369,8 +361,6 @@ defmodule Raxol.Web3.HTTP do
     end
   end
 
-  # -- stage 2: the token bucket -----------------------------------------------
-
   defp take_token(origin_id, opts) do
     limit = rate_limit(opts)
 
@@ -390,8 +380,6 @@ defmodule Raxol.Web3.HTTP do
     |> Keyword.put_new(:refill_per_second, @default_refill_per_second)
   end
 
-  # -- stage 3: the circuit breaker --------------------------------------------
-
   defp check_breaker(origin_id, opts) do
     case CircuitBreaker.check(Tables.breakers(), {:origin, origin_id}, breaker_opts(opts)) do
       :open ->
@@ -404,8 +392,6 @@ defmodule Raxol.Web3.HTTP do
   end
 
   defp breaker_opts(opts), do: Keyword.get(opts, :breaker, [])
-
-  # -- stages 4 and 5: the pinned dial and the bounded read --------------------
 
   defp exchange(vetted, method, deadline, opts) do
     stage = Keyword.get(opts, :exchange, &dial_and_read/3)
@@ -493,8 +479,6 @@ defmodule Raxol.Web3.HTTP do
   # than a connect timeout: the attempts that did happen may each have been
   # well inside `:connect_timeout_ms`.
   defp dial_error({:budget_exhausted, _failures}), do: {:timeout, :deadline}
-
-  # -- stage 6: health, and the closed taxonomy --------------------------------
 
   defp record_health({:ok, response}, origin_id, opts) do
     if unhealthy_status?(response.status),
