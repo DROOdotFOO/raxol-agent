@@ -65,6 +65,7 @@ defmodule Raxol.Web3.FX.Sleuth do
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Scope
 
   # `:base_url` too: per `Raxol.Web3.Origin`, a host can name an account.
   @derive {Inspect, except: [:http_opts, :base_url, :api_key]}
@@ -267,13 +268,20 @@ defmodule Raxol.Web3.FX.Sleuth do
       |> Keyword.put_new(:max_bytes, @max_bytes)
       |> Backend.put_header({"authorization", "Bearer " <> sleuth.api_key})
       |> Backend.put_header({"accept", "application/json"})
-      |> put_cache(sleuth.cache?, {path, query}, decoder)
+      |> put_cache(sleuth.cache?, {scope(sleuth), {path, query}}, decoder)
 
     case HTTP.get(url, opts) do
       {:ok, %{status: status, body: body}} when status in 200..299 -> decoder.(body)
       {:ok, %{status: status}} -> {:error, status_error(status, argument)}
       {:error, _} = error -> error
     end
+  end
+
+  # The key travels as a header, so it is part of the source: two keys on one
+  # URL are two tenants and share no cache entry.
+  defp scope(sleuth) do
+    headers = Keyword.get(sleuth.http_opts, :headers, [])
+    Scope.id(sleuth.base_url, [{"authorization", "Bearer " <> sleuth.api_key} | headers])
   end
 
   defp put_cache(opts, false, _fragment, _decoder), do: opts

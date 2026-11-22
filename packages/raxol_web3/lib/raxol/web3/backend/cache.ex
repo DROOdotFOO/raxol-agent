@@ -2,10 +2,13 @@ defmodule Raxol.Web3.Backend.Cache do
   @moduledoc """
   Composes a response-cache entry onto `Raxol.Web3.HTTP` options.
 
-  The key is a fragment the backend builds from its own path or method and
-  parameters, never from an assembled URL, which is what keeps a credential
-  out of a cache key by construction. `Raxol.Web3.HTTP` prefixes it with the
-  origin id.
+  The key is `{scope, fragment}`. The fragment is built from the backend's own
+  path or method and parameters, never from an assembled URL, which keeps a
+  credential out of a cache key by construction. The scope
+  (`Raxol.Web3.Scope.of/2` of the handle's base URL and headers) keeps two
+  sources behind one host, told apart by path, query or header, from sharing
+  entries.
+  `Raxol.Web3.Cache` describes the full entry key.
   """
 
   alias Raxol.Web3.TTL
@@ -16,10 +19,10 @@ defmodule Raxol.Web3.Backend.Cache do
   caches nothing; both leave `opts` untouched. Only `false` turns caching
   off: any other value caches, as the backends always read the option.
   """
-  @spec opts(keyword(), term(), term(), TTL.class() | nil) :: keyword()
-  def opts(opts, _cache?, _key, nil), do: opts
-  def opts(opts, false, _key, _class), do: opts
+  @spec opts(keyword(), Raxol.Web3.Scope.t(), term(), term(), TTL.class() | nil) :: keyword()
+  def opts(opts, _scope, _cache?, _key, nil), do: opts
+  def opts(opts, _scope, false, _key, _class), do: opts
 
-  def opts(opts, _cache?, key, class),
-    do: Keyword.put(opts, :cache, key: key, ttl_ms: TTL.for(class))
+  def opts(opts, scope, _cache?, key, class),
+    do: Keyword.put(opts, :cache, key: {scope, key}, ttl_ms: TTL.for(class))
 end

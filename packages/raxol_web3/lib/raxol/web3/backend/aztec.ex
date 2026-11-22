@@ -63,23 +63,23 @@ defmodule Raxol.Web3.Backend.Aztec do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
-  alias Raxol.Web3.Backend.Paging
+  alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Origin
+  alias Raxol.Web3.Scope
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and `:base_url` carries the API key as a path
   # segment (`/v1/<key>`), so neither is something `inspect/1` may render: a
   # handle reaches an operator through `Raxol.Web3.Router.candidates/3`, and a
   # crash anywhere below formats the struct whole into a log line.
-  # `:base_digest` still identifies the handle.
   @derive {Inspect, except: [:http_opts, :base_url]}
-  @enforce_keys [:chain_ref, :base_url, :network, :source, :base_digest]
+  @enforce_keys [:chain_ref, :base_url, :network, :source]
   defstruct [
     :chain_ref,
     :base_url,
     :network,
     :source,
-    :base_digest,
     http_opts: [],
     cache?: true
   ]
@@ -89,7 +89,6 @@ defmodule Raxol.Web3.Backend.Aztec do
           base_url: String.t(),
           network: String.t(),
           source: :aztecscan | :chicmoz,
-          base_digest: String.t(),
           http_opts: keyword(),
           cache?: boolean()
         }
@@ -162,7 +161,6 @@ defmodule Raxol.Web3.Backend.Aztec do
         base_url: base_url,
         network: network,
         source: source,
-        base_digest: base_digest(base_url),
         http_opts: Keyword.put_new(Keyword.get(opts, :http_opts, []), :rate_limit, @rate_limit),
         cache?: Keyword.get(opts, :cache, true)
       }
@@ -199,7 +197,7 @@ defmodule Raxol.Web3.Backend.Aztec do
   def capabilities(%__MODULE__{}), do: @optional
 
   @impl Backend
-  def health_key(%__MODULE__{} = state), do: {:origin, Paging.origin_id(state.base_url)}
+  def health_key(%__MODULE__{} = state), do: {:origin, Origin.for_url(state.base_url)}
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
@@ -245,16 +243,19 @@ defmodule Raxol.Web3.Backend.Aztec do
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, hash) when is_binary(hash) do
-    case object(get(state, "/l2/tx-effects/#{segment(hash)}", :transaction, :addressed)) do
-      {:ok, body} -> mined(body)
-      {:error, {:upstream_refused, :not_found}} -> pooled(state, hash)
-      {:error, _reason} = error -> error
+    with {:ok, segment} <- PathSegment.encode(hash, "hash") do
+      case object(get(state, "/l2/tx-effects/#{segment}", :transaction, :addressed)) do
+        {:ok, body} -> mined(body)
+        {:error, {:upstream_refused, :not_found}} -> pooled(state, segment)
+        {:error, _reason} = error -> error
+      end
     end
   end
 
   @impl Backend
   def get_block(%__MODULE__{} = state, number) do
-    with {:ok, body} <- object(get(state, "/l2/blocks/#{segment(number)}", :block, :addressed)),
+    with {:ok, segment} <- PathSegment.encode(number, "block"),
+         {:ok, body} <- object(get(state, "/l2/blocks/#{segment}", :block, :addressed)),
          {:ok, height} <- block_number(body) do
       variables = body |> dig(["header", "globalVariables"]) |> Decode.object()
 
@@ -274,11 +275,12 @@ defmodule Raxol.Web3.Backend.Aztec do
   @impl Backend
   def contract_metadata(%__MODULE__{} = state, account_ref) do
     with {:ok, address} <- aztec_address(account_ref),
+         {:ok, segment} <- PathSegment.encode(address, "address"),
          {:ok, body} <-
            object(
              get(
                state,
-               "/l2/contract-instances/#{segment(address)}",
+               "/l2/contract-instances/#{segment}",
                :contract_metadata,
                :addressed
              )
@@ -367,39 +369,26 @@ defmodule Raxol.Web3.Backend.Aztec do
   # cached. `resource` decides what a 404 means, and it is the endpoint's own
   # shape rather than the response's text that decides it: see the moduledoc.
   #
-  # The cache key fragment is `{base_digest, path}`, never the assembled URL.
-  # On this upstream the credential is a PATH SEGMENT rather than a query
-  # parameter, so it must stay out of the key while still distinguishing the
-  # prefix it was fetched under: `Raxol.Web3.HTTP` keys on
-  # `{origin_id, fragment}` and `Raxol.Web3.Origin.canonical/1` is only
-  # `scheme://host:port`, so a bare path fragment named the prefix in neither
-  # half. Two handles on one host with different key prefixes then shared
-  # entries, and one key was served a body fetched under another. A digest
-  # rather than the prefix keeps the credential out by construction.
+  # The cache key is the path under the handle's scope, never the assembled
+  # URL. On this upstream the credential is a PATH SEGMENT, so the scope
+  # (`Raxol.Web3.Scope.of/2` of the base URL and headers) is what keeps two key
+  # prefixes on one host from sharing entries, and it carries nothing back.
   defp get(state, path, class, resource) do
     url = state.base_url <> path
 
     url
-    |> HTTP.get(Cache.opts(state.http_opts, state.cache?, {state.base_digest, path}, class))
+    |> HTTP.get(Cache.opts(state.http_opts, scope(state), state.cache?, path, class))
     |> decode(resource)
   end
 
   # Most endpoints answer an object, and the two stats reads answer a bare
   # number or string (`l2/latest-height` does too). Guarding here rather than
   # inside `decode/2` is what lets both kinds share one outbound path.
+  defp scope(state), do: Scope.of(state.base_url, state.http_opts)
+
   defp object({:ok, body}) when is_map(body), do: {:ok, body}
   defp object({:ok, _other}), do: {:error, {:decode_failed, :not_an_object}}
   defp object({:error, _reason} = error), do: error
-
-  # A truncated SHA-256 of the whole base URL, prefix included. ADR-0033
-  # section 7 names a cache key as one of the four places a credential leaks,
-  # so the key segment is never in the fragment itself; 128 bits of digest is
-  # enough to tell two prefixes apart and carries nothing back.
-  defp base_digest(base_url) do
-    :crypto.hash(:sha256, base_url)
-    |> Base.url_encode64(padding: false)
-    |> binary_part(0, 16)
-  end
 
   # Any JSON term, not only an object: `l2/latest-height` answers a bare
   # number and `l2/stats/average-block-time` a bare string, so requiring an
@@ -437,13 +426,10 @@ defmodule Raxol.Web3.Backend.Aztec do
   defp decode({:ok, %{status: status}}, _resource), do: {:error, {:http, status}}
   defp decode({:error, _reason} = error, _resource), do: error
 
-  # Percent-encodes everything outside the unreserved set, so a caller-supplied
-  # hash or address cannot carry a `/` or a `?` and reshape the path it is
-  # interpolated into. There is no error variant for a malformed id, and there
-  # should not be: the upstream is what decides whether an id exists, and an
-  # encoded id that does not exist is a clean 404.
-  defp segment(value) when is_integer(value), do: Integer.to_string(value)
-  defp segment(value) when is_binary(value), do: URI.encode(value, &URI.char_unreserved?/1)
+  # Every caller-supplied id reaches a path through
+  # `Raxol.Web3.Backend.PathSegment.encode/2`, and anything outside its
+  # allowlist is refused before a request. A well-formed id that does not
+  # exist is still the upstream's clean 404.
 
   defp resolve(default_url, nil), do: {:ok, default_url, source(default_url)}
 
@@ -538,8 +524,9 @@ defmodule Raxol.Web3.Backend.Aztec do
     end
   end
 
-  defp pooled(state, hash) do
-    with {:ok, body} <- object(get(state, "/l2/txs/#{segment(hash)}", :transaction, :addressed)) do
+  # `segment` is the hash as `get_transaction/2` already checked and encoded it.
+  defp pooled(state, segment) do
+    with {:ok, body} <- object(get(state, "/l2/txs/#{segment}", :transaction, :addressed)) do
       {:ok,
        %{
          hash: body["txHash"],

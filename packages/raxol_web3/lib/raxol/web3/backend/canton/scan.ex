@@ -15,7 +15,9 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
+  alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Scope
 
   @typedoc "The fields of a Canton handle this module reads."
   @type state :: %{
@@ -50,6 +52,11 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   @doc false
   @spec paths() :: %{atom() => {:get | :post, String.t()}}
   def paths, do: @paths
+
+  # The Scan source's scope: cache keys and cursors are bound to it.
+  @doc false
+  @spec scope(state()) :: Scope.t()
+  def scope(state), do: Scope.of(state.scan_url, state.http_opts)
 
   # The token-bucket seed for both Canton upstreams.
   @doc false
@@ -91,26 +98,26 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   end
 
   # A path parameter rather than a table row, so it composes the path itself.
-  # The id reaches here from a caller, so it is percent-encoded against the
-  # unreserved set rather than with `URI.encode/1`'s default predicate: that
-  # predicate leaves `/`, `?` and `#` alone, so it is not a defence at all --
-  # `URI.encode("../../v0/admin?x=1")` is its own input, and an id shaped like
-  # that would walk off `/updates/` on a credentialed host and pick its own
-  # path and query.
-  # `GET /updates/{id}`, with the id percent-encoded against the unreserved set.
+  # The id reaches here from a caller, so it goes through
+  # `Raxol.Web3.Backend.PathSegment.encode/2`, whose allowlist admits no `/`,
+  # `?`, `#`, `.` or `%`, so it can neither walk off `/updates/` nor become a
+  # dot segment a resolving proxy would turn into the API root with the
+  # credential attached.
   @doc false
   @spec get_update(state(), String.t()) :: {:ok, map()} | {:error, Backend.error()}
   def get_update(state, update_id) do
-    state
-    |> url("/updates/#{URI.encode(update_id, &URI.char_unreserved?/1)}", %{})
-    |> HTTP.get(scan_opts(state, "/updates", %{"id" => update_id}, :transaction))
-    |> Decode.json_object()
+    with {:ok, segment} <- PathSegment.encode(update_id, "update_id") do
+      state
+      |> url("/updates/#{segment}", %{})
+      |> HTTP.get(scan_opts(state, "/updates", %{"id" => update_id}, :transaction))
+      |> Decode.json_object()
+    end
   end
 
   defp scan_opts(state, path, fragment, class) do
     state.http_opts
     |> Keyword.put_new(:rate_limit, @rate_limit)
-    |> Cache.opts(state.cache?, {path, fragment}, class)
+    |> Cache.opts(scope(state), state.cache?, {path, fragment}, class)
   end
 
   defp url(state, path, query) when map_size(query) == 0, do: state.scan_url <> path

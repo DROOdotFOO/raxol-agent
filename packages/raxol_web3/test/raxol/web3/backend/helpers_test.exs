@@ -4,6 +4,8 @@ defmodule Raxol.Web3.Backend.HelpersTest do
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
   alias Raxol.Web3.Backend.Paging
+  alias Raxol.Web3.Backend.PathSegment
+  alias Raxol.Web3.Scope
 
   describe "Decode" do
     test "dig, field, object and rows_of read a wrong-typed value as absent" do
@@ -57,19 +59,23 @@ defmodule Raxol.Web3.Backend.HelpersTest do
   end
 
   describe "Paging" do
-    test "a minted cursor round-trips only against its own origin and endpoint" do
-      origin = Paging.origin_id("https://example.invalid/v0")
-      other = Paging.origin_id("https://other.invalid/v0")
-      cursor = Paging.next_cursor(%{"after" => 5}, origin, :canton_holdings_state)
+    test "a minted cursor round-trips only against its own scope and endpoint" do
+      scope = Scope.id("https://example.invalid/v0")
+      other = Scope.id("https://other.invalid/v0")
+      same_host = Scope.id("https://example.invalid/v1")
+      cursor = Paging.next_cursor(%{"after" => 5}, scope, :canton_holdings_state)
 
-      assert Paging.cursor_params(cursor, origin, :canton_holdings_state) ==
+      assert Paging.cursor_params(cursor, scope, :canton_holdings_state) ==
                {:ok, %{"after" => 5}}
 
       assert {:error, {:invalid_cursor, _}} =
                Paging.cursor_params(cursor, other, :canton_holdings_state)
 
-      assert {:error, {:invalid_cursor, _}} = Paging.cursor_params(cursor, origin, :rpc_logs)
-      assert Paging.cursor_params(nil, origin, :rpc_logs) == {:ok, %{}}
+      assert {:error, {:invalid_cursor, _}} =
+               Paging.cursor_params(cursor, same_host, :canton_holdings_state)
+
+      assert {:error, {:invalid_cursor, _}} = Paging.cursor_params(cursor, scope, :rpc_logs)
+      assert Paging.cursor_params(nil, scope, :rpc_logs) == {:ok, %{}}
     end
 
     test "a non-map is the last page, and an unpaginated read refuses any cursor" do
@@ -80,15 +86,118 @@ defmodule Raxol.Web3.Backend.HelpersTest do
     end
   end
 
-  describe "Cache.opts/4" do
+  describe "Cache.opts/5" do
     test "adds a cache entry only for a classed request on a caching handle" do
-      assert [cache: [key: {:k}, ttl_ms: ttl], x: 1] = Cache.opts([x: 1], true, {:k}, :catalog)
+      assert [cache: [key: {"s", {:k}}, ttl_ms: ttl], x: 1] =
+               Cache.opts([x: 1], "s", true, {:k}, :catalog)
+
       assert is_integer(ttl)
-      assert Cache.opts([x: 1], true, {:k}, nil) == [x: 1]
-      assert Cache.opts([x: 1], false, {:k}, :catalog) == [x: 1]
+      assert Cache.opts([x: 1], "s", true, {:k}, nil) == [x: 1]
+      assert Cache.opts([x: 1], "s", false, {:k}, :catalog) == [x: 1]
 
       # Any value but `false` caches, so a stray `cache: nil` never crashes a read.
-      assert [cache: _, x: 1] = Cache.opts([x: 1], nil, {:k}, :catalog)
+      assert [cache: _, x: 1] = Cache.opts([x: 1], "s", nil, {:k}, :catalog)
+    end
+  end
+
+  describe "PathSegment.encode/2" do
+    test "an id in the allowlist passes, and nothing else does" do
+      hash = "0x" <> String.duplicate("ab", 32)
+      assert PathSegment.encode(hash, "hash") == {:ok, hash}
+      assert PathSegment.encode("latest", "block") == {:ok, "latest"}
+      assert PathSegment.encode("1220abc::def", "update_id") == {:ok, "1220abc%3A%3Adef"}
+      assert PathSegment.encode(12, "block") == {:ok, "12"}
+
+      refused =
+        [
+          ".",
+          "..",
+          "",
+          "...",
+          ". ",
+          ".. ",
+          "..;",
+          "..;/x",
+          "%2e%2e",
+          "%252e",
+          "..%00",
+          "\u00c0\u00ae",
+          <<0xC0, 0xAE>>,
+          "%u002e",
+          "a/b",
+          "a\\b",
+          "a?b",
+          "a#b",
+          "a b",
+          "a.b",
+          String.duplicate("a", 257),
+          -1,
+          nil,
+          1.5
+        ]
+
+      for id <- refused do
+        assert PathSegment.encode(id, "hash") == {:error, {:invalid_argument, "hash"}},
+               inspect(id)
+      end
+    end
+  end
+
+  describe "Scope.id/2 and Scope.of/2" do
+    test "one source is one scope, however its URL is spelled" do
+      base = Scope.id("https://Node.Example/v2/KEY")
+
+      assert Scope.id("https://node.example:443/v2/KEY/") == base
+      assert Scope.id("HTTPS://node.example/v2/KEY#frag") == base
+    end
+
+    test "two sources behind one host are two scopes" do
+      scopes =
+        Enum.map(
+          [
+            "https://node.example/v2/KEY-A",
+            "https://node.example/v2/KEY-B",
+            "https://node.example/eth",
+            "https://node.example/polygon",
+            "https://node.example/?api-key=A",
+            "https://node.example/?api-key=B",
+            "https://user:pass@node.example/"
+          ],
+          &Scope.id/1
+        )
+
+      assert length(Enum.uniq(scopes)) == length(scopes)
+    end
+
+    test "a credential or tenant in a header is part of the scope" do
+      url = "https://node.example/"
+
+      assert Scope.id(url, [{"Authorization", "Bearer A"}, {"x-tenant", "t"}]) ==
+               Scope.id(url, [{"x-tenant", "t"}, {"authorization", "Bearer A"}])
+
+      refute Scope.id(url, [{"authorization", "Bearer A"}]) ==
+               Scope.id(url, [{"authorization", "Bearer B"}])
+
+      refute Scope.id(url, [{"authorization", "Bearer A"}]) == Scope.id(url)
+      assert Scope.of(url, headers: [{"a", "1"}], rate_limit: []) == Scope.id(url, [{"a", "1"}])
+    end
+
+    test "a host is lower-cased for ASCII only" do
+      # The Kelvin sign folds to `k` under Unicode rules but dials differently.
+      refute Scope.id("https://\u212Aey.example/") == Scope.id("https://key.example/")
+    end
+
+    test "a scope carries nothing of the URL, and is not a plain digest of it" do
+      url = "https://node.example/v2/KEY-not-real"
+      scope = Scope.id(url)
+
+      refute scope =~ "KEY"
+      refute scope =~ "node.example"
+
+      plain =
+        :crypto.hash(:sha256, url) |> binary_part(0, 16) |> Base.url_encode64(padding: false)
+
+      refute scope == plain
     end
   end
 end

@@ -104,14 +104,11 @@ defmodule Raxol.Web3.Backend.AztecReadsTest do
     end
 
     test "a hash cannot reshape the path it is interpolated into" do
-      assert {:error, {:upstream_refused, :not_found}} =
-               Backend.call(handle(%{}), :get_transaction, ["../../l2/info?x=1"])
+      assert {:error, {:invalid_argument, "hash"}} =
+               Backend.call(handle(%{}), :get_transaction, ["l2/info?x=1"])
 
-      # Percent-encoded to the unreserved set, so the separators a caller
-      # supplied are data in one segment rather than structure in the path.
-      encoded = "..%2F..%2Fl2%2Finfo%3Fx%3D1"
-
-      assert endpoints() == ["/l2/tx-effects/#{encoded}", "/l2/txs/#{encoded}"]
+      # Refused before a request exists: a separator is outside the allowlist.
+      assert endpoints() == []
     end
   end
 

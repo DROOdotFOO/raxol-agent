@@ -6,8 +6,8 @@ defmodule Raxol.Web3.Backend.SolanaReadsTest do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Solana
   alias Raxol.Web3.Cursor
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.Router
+  alias Raxol.Web3.Scope
 
   @mainnet "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
 
@@ -27,8 +27,8 @@ defmodule Raxol.Web3.Backend.SolanaReadsTest do
       assert length(page.items) == 2
       assert is_binary(page.next)
 
-      origin = Origin.id(URI.new!("https://api.mainnet-beta.solana.com/"))
-      assert {:ok, params} = Cursor.decode(page.next, origin, :solana_address_signatures)
+      scope = Scope.id("https://api.mainnet-beta.solana.com/")
+      assert {:ok, params} = Cursor.decode(page.next, scope, :solana_address_signatures)
 
       # The last signature of the page, which is what `before` takes.
       assert params["before"] ==
@@ -109,8 +109,8 @@ defmodule Raxol.Web3.Backend.SolanaReadsTest do
     test "a cursor minted for another endpoint is refused before the request is built" do
       handle = rpc(%{"getSignaturesForAddress" => fixture("rpc_signatures.json")})
 
-      origin = Origin.id(URI.new!("https://api.mainnet-beta.solana.com/"))
-      foreign = Cursor.encode(%{"block_number" => 1}, origin, :address_transactions)
+      scope = Scope.id("https://api.mainnet-beta.solana.com/")
+      foreign = Cursor.encode(%{"block_number" => 1}, scope, :address_transactions)
 
       assert {:error, {:invalid_cursor, :wrong_scope}} =
                Backend.call(handle, :list_transactions, [@wallet, [cursor: foreign]])

@@ -8,8 +8,8 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
   alias Raxol.Web3.Backend.Tron
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.MCP.Tools
-  alias Raxol.Web3.Origin
   alias Raxol.Web3.Router
+  alias Raxol.Web3.Scope
   alias Raxol.Web3.Tables
 
   # A Binance cold wallet, in both encodings, and they are the same account:
@@ -82,12 +82,25 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
       # case, and it is a `Raxol.Web3.Cursor.reason/0` variant rather than an
       # endpoint atom naming an endpoint no cursor is scoped to.
       handle = stateful(:trongrid, %{"getAccountInfo" => "trongrid_account_info.sse"})
-      held = offset_cursor(25)
+      held = offset_cursor(handle, 25)
 
       assert {:error, {:invalid_cursor, :wrong_scope}} =
                Tron.token_balances(state(handle), {:tron, @base58}, cursor: held)
 
       assert calls() == []
+    end
+
+    test "a cursor minted through one MCP client is refused through another" do
+      # A stateful source's credential lives in its client, so two clients on
+      # one URL are two tenants: neither walks the other's cursor.
+      routes = %{"getTransferList" => "tronscan_transfer_list.sse"}
+      first = stateful(:tronscan, routes)
+      second = stateful(:tronscan, routes)
+
+      assert {:error, {:invalid_cursor, :wrong_scope}} =
+               paged_transfers(second, offset_cursor(first, 25))
+
+      assert {:ok, _page} = paged_transfers(first, offset_cursor(first, 25))
     end
 
     test "a cursor minted for one endpoint is refused on another" do
@@ -96,7 +109,7 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
       wrong_scope =
         Cursor.encode(
           %{"start" => 25, "limit" => 25},
-          tronscan_origin(),
+          scope(handle),
           :tronscan_account_tokens
         )
 
@@ -108,11 +121,11 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
       handle = stateful(:tronscan, %{"getTransferList" => "tronscan_transfer_list.sse"})
 
       # 9975 + 25 is exactly the ceiling and is allowed; 9990 + 25 is not.
-      assert {:ok, _page} = paged_transfers(handle, offset_cursor(9975))
+      assert {:ok, _page} = paged_transfers(handle, offset_cursor(handle, 9975))
       assert [{_tool, %{"start" => 9975}}] = calls()
 
       assert {:error, {:upstream_refused, :unknown}} =
-               paged_transfers(handle, offset_cursor(9990))
+               paged_transfers(handle, offset_cursor(handle, 9990))
 
       # And nothing was asked. Spending the upstream's budget on a request its
       # own documented rule refuses is the half of "fail honestly" a return
@@ -133,7 +146,7 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
       handle = stateful(:tronscan, %{"getTransferList" => "tronscan_transfer_list.sse"})
 
       # The fixture reports 1,860 rows, so a walk standing at 1,850 is the end.
-      assert {:ok, page} = paged_transfers(handle, offset_cursor(1850))
+      assert {:ok, page} = paged_transfers(handle, offset_cursor(handle, 1850))
       assert page.next == nil
     end
 
@@ -158,11 +171,15 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
     Tron.list_token_transfers(state(handle), {:tron, @base58}, cursor: cursor)
   end
 
-  defp offset_cursor(start) do
-    Cursor.encode(%{"start" => start, "limit" => 25}, tronscan_origin(), :tronscan_transfer_list)
+  defp offset_cursor(handle, start) do
+    Cursor.encode(%{"start" => start, "limit" => 25}, scope(handle), :tronscan_transfer_list)
   end
 
-  defp tronscan_origin, do: Origin.id(URI.new!(Tron.sources().tronscan.url))
+  # A stateful source's scope is its URL and its MCP client, as `Tron` builds it.
+  defp scope(handle) do
+    state = state(handle)
+    Scope.id(Tron.sources()[state.source].url, [{"x-raxol-mcp-client", inspect(state.client)}])
+  end
 
   describe "errors carry no upstream text" do
     test "the archive's nested error object is classified by its code, not its prose" do

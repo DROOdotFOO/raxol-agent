@@ -183,7 +183,8 @@ defmodule Raxol.Web3.HTTP do
     * `:rate_limit` - `[capacity:, refill_per_second:]` for this origin's bucket.
     * `:breaker` - `[failure_threshold:, recovery_ms:]`.
     * `:cache` - `[key:, ttl_ms:, cacheable:]`. `:key` is the fragment half of
-      the `{origin_id, fragment}` entry key and `:ttl_ms` its lifetime.
+      the `{origin_id, fragment}` entry key (for a backend, `{scope, key}`;
+      see `Raxol.Web3.Cache`) and `:ttl_ms` its lifetime.
       `:cacheable` is optional, a `(response -> boolean())` predicate that
       decides whether a 2xx response is a success at the PAYLOAD level; see
       `store/3`'s comment for why a status is not enough on its own.
@@ -262,7 +263,8 @@ defmodule Raxol.Web3.HTTP do
   # else's budget for a request we are not making, which defeats the point of
   # caching a free-tier upstream at all.
   #
-  # The key is `{origin_id, fragment}`, and the fragment comes from the caller.
+  # The key is `{origin_id, fragment}`, and the fragment comes from the caller
+  # (a backend's carries its scope; see `Raxol.Web3.Cache`).
   # The request URI is never an input: an API key travels as a query parameter
   # on one of the upstreams this package targets, and ADR-0033 section 7 names
   # cache keys as one of the four places a credential leaks.

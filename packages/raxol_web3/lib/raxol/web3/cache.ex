@@ -23,8 +23,11 @@ defmodule Raxol.Web3.Cache do
   ## Keys never come from a URL
 
   `Raxol.Web3.HTTP` composes a key as `{origin_id, fragment}`, where the
-  fragment is supplied by the backend from its own endpoint name and the
-  parameters that endpoint declares. The request URI is never an input. That is
+  fragment is supplied by the caller. A backend's fragment is
+  `{scope, endpoint_key}` (see `Raxol.Web3.Backend.Cache.opts/5`): the scope,
+  `Raxol.Web3.Scope.of/2` of its base URL and headers, keeps two sources
+  behind one host apart, and the endpoint key is built from the endpoint's
+  own name and the parameters it declares. The request URI is never an input. That is
   ADR-0033 §7's rule about cache keys made structural rather than reviewed: an
   API key travels as a query parameter on one of the upstreams this package
   targets, so a key derived from a URI is a credential written into a table

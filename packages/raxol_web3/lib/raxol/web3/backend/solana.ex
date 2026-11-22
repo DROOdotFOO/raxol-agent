@@ -74,6 +74,8 @@ defmodule Raxol.Web3.Backend.Solana do
   alias Raxol.Web3.Backend.SQD
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.MCPCall
+  alias Raxol.Web3.Origin
+  alias Raxol.Web3.Scope
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and an operator's `:url` override often embeds a
@@ -353,7 +355,7 @@ defmodule Raxol.Web3.Backend.Solana do
   defp signature_page(state, account_ref, cursor) do
     with {:ok, pubkey} <- pubkey(account_ref),
          {:ok, params} <-
-           Paging.cursor_params(cursor, origin_id(state), :solana_address_signatures),
+           Paging.cursor_params(cursor, scope(state), :solana_address_signatures),
          {:ok, body} <-
            RPC.call(state, "getSignaturesForAddress", [pubkey, page_config(params)], :list) do
       Normalize.signature_rows(body)
@@ -419,7 +421,7 @@ defmodule Raxol.Web3.Backend.Solana do
     opts =
       state.http_opts
       |> Keyword.put_new(:rate_limit, @sqd_rate_limit)
-      |> Cache.opts(state.cache?, {tool, arguments}, class)
+      |> Cache.opts(scope(state), state.cache?, {tool, arguments}, class)
 
     case MCPCall.call(state.url, tool, arguments, opts) do
       {:ok, payload} -> sqd_result(payload, state)
@@ -447,11 +449,13 @@ defmodule Raxol.Web3.Backend.Solana do
         nil
 
       signature ->
-        Cursor.encode(%{"before" => signature}, origin_id(state), :solana_address_signatures)
+        Cursor.encode(%{"before" => signature}, scope(state), :solana_address_signatures)
     end
   end
 
-  defp origin_id(state), do: Paging.origin_id(state.url)
+  defp origin_id(state), do: Origin.for_url(state.url)
+
+  defp scope(state), do: Scope.of(state.url, state.http_opts)
 
   defp signature(%{"signature" => signature}) when is_binary(signature), do: signature
   defp signature(_absent), do: nil

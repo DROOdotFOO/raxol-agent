@@ -115,6 +115,7 @@ defmodule Raxol.Web3.Backend.Tron do
 
   alias Raxol.MCP.Client
   alias Raxol.MCP.Client.Era
+  alias Raxol.Web3.Origin
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Paging
@@ -124,6 +125,7 @@ defmodule Raxol.Web3.Backend.Tron do
   alias Raxol.Web3.Backend.Tron.Sources
   alias Raxol.Web3.Cache
   alias Raxol.Web3.MCPCall
+  alias Raxol.Web3.Scope
   alias Raxol.Web3.Tables
   alias Raxol.Web3.TTL
 
@@ -537,14 +539,14 @@ defmodule Raxol.Web3.Backend.Tron do
   # for a target that has since resolved into the reject set, and before the
   # token bucket, so a hit spends nobody's budget. A stateful source cannot
   # reach that stage, because its outbound path is `Raxol.MCP.Client`, so the
-  # same table and the same TTL class are applied one layer up with the same
-  # `{origin_id, fragment}` key shape.
+  # same table and the same TTL class are applied one layer up. Both key on
+  # the source's scope, so the key shape is the same either way.
   defp through_cache(%__MODULE__{source: :sqd} = state, tool, arguments, key, class) do
-    dispatch(state, tool, arguments, cache: [key: key, ttl_ms: TTL.for(class)])
+    dispatch(state, tool, arguments, cache: [key: {scope(state), key}, ttl_ms: TTL.for(class)])
   end
 
   defp through_cache(%__MODULE__{} = state, tool, arguments, key, class) do
-    full_key = {origin_id(state), key}
+    full_key = {scope(state), key}
 
     case Cache.get(full_key) do
       {:ok, payload} ->
@@ -620,7 +622,18 @@ defmodule Raxol.Web3.Backend.Tron do
 
   defp sqd_refusal(state, payload), do: SQD.announced(payload, network_name(state))
 
-  defp origin_id(state), do: Paging.origin_id(uri(state))
+  defp origin_id(state), do: Origin.for_url(uri(state))
+
+  # A stateful source's credential lives in its `Raxol.MCP.Client`, not in
+  # `:http_opts`, so the client is part of the source: two handles on two
+  # clients share no cache entry and accept no cursor of the other's.
+  defp scope(%__MODULE__{client: nil} = state), do: Scope.of(url(state), state.http_opts)
+
+  defp scope(%__MODULE__{client: client} = state) do
+    Scope.id(url(state), [{"x-raxol-mcp-client", inspect(client)} | headers(state)])
+  end
+
+  defp headers(state), do: Keyword.get(state.http_opts, :headers, [])
 
   defp uri(%__MODULE__{} = state), do: URI.new!(url(state))
 
@@ -642,7 +655,7 @@ defmodule Raxol.Web3.Backend.Tron do
   # and the argument map, never by following somebody else's URL.
   defp fingerprint_page(state, tool, base, endpoint, opts, mapper) do
     with {:ok, params} <-
-           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
+           Paging.cursor_params(Keyword.get(opts, :cursor), scope(state), endpoint),
          arguments = Map.merge(base, Map.put(params, "limit", @page_limit)),
          {:ok, body} <- call(state, tool, arguments, :list),
          {:ok, rows} <- Normalize.rows(body, :page),
@@ -650,7 +663,7 @@ defmodule Raxol.Web3.Backend.Tron do
       {:ok,
        %{
          items: items,
-         next: Paging.next_cursor(next_fingerprint(body), origin_id(state), endpoint)
+         next: Paging.next_cursor(next_fingerprint(body), scope(state), endpoint)
        }}
     end
   end
@@ -661,7 +674,7 @@ defmodule Raxol.Web3.Backend.Tron do
   # error is the same one the upstream's own refusal maps to.
   defp offset_page(state, tool, base, endpoint, opts, mapper) do
     with {:ok, params} <-
-           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
+           Paging.cursor_params(Keyword.get(opts, :cursor), scope(state), endpoint),
          start = int(params["start"]) || 0,
          :ok <- within_ceiling(start),
          arguments = Map.merge(base, %{"start" => start, "limit" => @page_limit}),
@@ -671,7 +684,7 @@ defmodule Raxol.Web3.Backend.Tron do
       {:ok,
        %{
          items: items,
-         next: Paging.next_cursor(next_offset(body, start), origin_id(state), endpoint)
+         next: Paging.next_cursor(next_offset(body, start), scope(state), endpoint)
        }}
     end
   end

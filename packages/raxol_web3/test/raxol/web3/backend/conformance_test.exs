@@ -154,6 +154,47 @@ defmodule Raxol.Web3.Backend.ConformanceTest do
     refute_received {:request, _path}
   end
 
+  # Dot segments in every spelling a server might normalize, and separators.
+  # Each would
+  # resolve off its endpoint on a server or proxy that normalizes paths.
+  @dot_ids [
+    ".",
+    "..",
+    "",
+    "%2e",
+    "%2E%2e",
+    ".%2e",
+    "%252e%252e",
+    "..%2Fadmin",
+    "x/../y",
+    "..\\x",
+    "%2e%2e%5cx",
+    "..;",
+    "..;/x",
+    "...",
+    ". ",
+    "..%00",
+    "%u002e%u002e"
+  ]
+
+  test "an id outside the path allowlist is refused before any request" do
+    calls = [
+      blockscout: [get_transaction: & &1, get_block: & &1],
+      aztec: [get_transaction: & &1, get_block: & &1, contract_metadata: &{:aztec, &1}],
+      canton: [get_transaction: & &1]
+    ]
+
+    handles = Map.new(handles())
+
+    for {name, callbacks} <- calls, {callback, wrap} <- callbacks, id <- @dot_ids do
+      assert {:error, {:invalid_argument, _field}} =
+               Backend.call(handles[name], callback, [wrap.(id)]),
+             "#{name}.#{callback} sent #{inspect(id)}"
+    end
+
+    refute_received {:request, _path}
+  end
+
   test "a credential never renders when a handle is inspected, and is still held" do
     for {name, {_module, state} = handle} <- handles() do
       refute inspect(handle, limit: :infinity) =~ @secret, "#{name} renders a credential"

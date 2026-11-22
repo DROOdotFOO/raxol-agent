@@ -77,8 +77,11 @@ defmodule Raxol.Web3.Backend.Blockscout do
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
   alias Raxol.Web3.Backend.Paging
+  alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Origin
   alias Raxol.Web3.RPC
+  alias Raxol.Web3.Scope
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and `:rpc_url` often embeds a provider key, so
@@ -182,7 +185,10 @@ defmodule Raxol.Web3.Backend.Blockscout do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
-  defp origin_id(state), do: Paging.origin_id("https://#{state.host}/")
+  defp origin_id(state), do: Origin.for_url("https://#{state.host}/")
+
+  # The REST base is the chain's host and nothing else, so the scope is too.
+  defp scope(state), do: Scope.of("https://#{state.host}/", state.http_opts)
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
@@ -220,7 +226,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, hash) when is_binary(hash) do
-    with {:ok, body} <- get(state, "/api/v2/transactions/#{segment(hash)}", %{}, :transaction) do
+    with {:ok, segment} <- PathSegment.encode(hash, "hash"),
+         {:ok, body} <- get(state, "/api/v2/transactions/#{segment}", %{}, :transaction) do
       transaction(body)
     end
   end
@@ -272,7 +279,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
 
   @impl Backend
   def get_block(%__MODULE__{} = state, number) do
-    with {:ok, body} <- get(state, "/api/v2/blocks/#{segment(number)}", %{}, :block),
+    with {:ok, segment} <- PathSegment.encode(number, "block"),
+         {:ok, body} <- get(state, "/api/v2/blocks/#{segment}", %{}, :block),
          {:ok, height} <- Backend.int(body["height"], :height),
          {:ok, count} <- Backend.int(body["transactions_count"], :transactions_count) do
       {:ok,
@@ -353,11 +361,12 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # cached. The key fragment is built here, from the endpoint's own path and
   # its own query map, and never from the assembled URI: that is what keeps a
   # credential-bearing query parameter out of a cache key by construction
-  # rather than by review. `Raxol.Web3.HTTP` composes it with the origin id.
+  # rather than by review. It sits under the handle's scope, and
+  # `Raxol.Web3.HTTP` adds the origin id.
   defp get(state, path, query \\ %{}, class \\ nil) do
     state
     |> url(path, query)
-    |> HTTP.get(Cache.opts(state.http_opts, state.cache?, {path, query}, class))
+    |> HTTP.get(Cache.opts(state.http_opts, scope(state), state.cache?, {path, query}, class))
     |> Decode.json_object()
   end
 
@@ -367,13 +376,9 @@ defmodule Raxol.Web3.Backend.Blockscout do
     "https://#{state.host}#{path}?#{URI.encode_query(query)}"
   end
 
-  # Percent-encodes everything outside the unreserved set, so a caller-supplied
-  # hash, address or block identifier cannot carry a `/`, a `?` or a `#` and
-  # reshape the path it is interpolated into. `URI.encode/1`'s default
-  # predicate leaves all three alone and would be no defence at all.
-  # `Raxol.Web3.Backend.Aztec` encodes its own path parameters the same way.
-  defp segment(value) when is_integer(value), do: Integer.to_string(value)
-  defp segment(value) when is_binary(value), do: URI.encode(value, &URI.char_unreserved?/1)
+  # For an address `evm_address/1` has already validated: encoding it is
+  # defence in depth, not the check.
+  defp segment(address) when is_binary(address), do: URI.encode(address, &URI.char_unreserved?/1)
 
   # Every list shares the `:list` class, and the cursor's decoded parameters are
   # part of the key: page two of a walk is a different cache entry from page
@@ -381,14 +386,14 @@ defmodule Raxol.Web3.Backend.Blockscout do
   # one serving the other's contents.
   defp page(state, path, endpoint, opts, mapper) do
     with {:ok, query} <-
-           Paging.cursor_params(Keyword.get(opts, :cursor), origin_id(state), endpoint),
+           Paging.cursor_params(Keyword.get(opts, :cursor), scope(state), endpoint),
          {:ok, body} <- get(state, path, query, :list),
          {:ok, rows} <- page_rows(body["items"]),
          {:ok, items} <- Backend.map_rows(rows, mapper, endpoint) do
       {:ok,
        %{
          items: items,
-         next: Paging.next_cursor(body["next_page_params"], origin_id(state), endpoint)
+         next: Paging.next_cursor(body["next_page_params"], scope(state), endpoint)
        }}
     end
   end
@@ -552,8 +557,9 @@ defmodule Raxol.Web3.Backend.Blockscout do
   #
   # Rejecting beats encoding for this one: this upstream has exactly one
   # address shape, and a percent-encoded traversal is a 404 a caller cannot act
-  # on. `segment/1` still wraps every interpolation, so a path parameter added
-  # later cannot reopen the hole.
+  # on. `segment/1` still encodes every address it interpolates, and every
+  # other id goes through `Raxol.Web3.Backend.PathSegment.encode/2`'s
+  # allowlist, so a path parameter added later cannot reopen the hole.
   #
   # Case is carried through rather than normalized: an EIP-55 checksum is the
   # caller's own typo protection, and downcasing it would throw that away.

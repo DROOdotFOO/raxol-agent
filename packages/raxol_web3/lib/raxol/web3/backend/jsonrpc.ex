@@ -95,9 +95,10 @@ defmodule Raxol.Web3.Backend.JSONRPC do
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Cache
-  alias Raxol.Web3.Backend.Paging
   alias Raxol.Web3.Cursor
+  alias Raxol.Web3.Origin
   alias Raxol.Web3.RPC
+  alias Raxol.Web3.Scope
 
   # Probed 2026-09-14: this endpoint answered `eth_chainId` with `0x1237`, which
   # is 4663, and `eth_blockNumber` with `0x3bd25de`. A table entry is a claim
@@ -319,10 +320,10 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   # `get/4` does for a path. The key fragment is the method and its own
   # arguments, never the URL: a bring-your-own-node deployment carries its
   # credential in the host or the path, and ADR-0033 section 7 names cache keys
-  # as one of the four places a credential leaks. `Raxol.Web3.HTTP` composes the
-  # fragment with the origin id.
+  # as one of the four places a credential leaks. The fragment sits under the
+  # handle's scope, and `Raxol.Web3.HTTP` adds the origin id.
   defp rpc_opts(state, fragment, class) do
-    Cache.opts(state.http_opts, state.cache?, fragment, class)
+    Cache.opts(state.http_opts, scope(state), state.cache?, fragment, class)
   end
 
   # Both halves of an account read share the `:account` class. Code gets the
@@ -403,7 +404,7 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   end
 
   defp window(state, cursor) do
-    case Cursor.decode(cursor, origin_id(state), :rpc_logs) do
+    case Cursor.decode(cursor, scope(state), :rpc_logs) do
       {:ok, %{"from_block" => from, "to_block" => to}}
       when is_integer(from) and is_integer(to) ->
         {:ok, bounded(state, from, to)}
@@ -438,14 +439,16 @@ defmodule Raxol.Web3.Backend.JSONRPC do
     end
   end
 
-  defp origin_id(state), do: Paging.origin_id(state.url)
+  defp origin_id(state), do: Origin.for_url(state.url)
+
+  defp scope(state), do: Scope.of(state.url, state.http_opts)
 
   defp next_cursor(_state, %{to: to, walk_to: walk_to}) when to >= walk_to, do: nil
 
   defp next_cursor(state, %{to: to, walk_to: walk_to}) do
     Cursor.encode(
       %{"from_block" => to + 1, "to_block" => walk_to},
-      origin_id(state),
+      scope(state),
       :rpc_logs
     )
   end
