@@ -30,6 +30,11 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
   `Raxol.Payments.Checkpoint.Lock`. That makes `put_new/3` one owner per key,
   and keeps a write from erasing a concurrent one. `fetch/2` reads without it.
 
+  The lock lives in the `raxol_payments` application tree and fails closed: a
+  write whose lock is not running, or exits mid-write, is aborted and the
+  caller exits with `{:lock_lost, resource}`, rather than returning as though
+  the checkpoint were stored.
+
   ## Durability
 
   Inherits `ContextStore`'s durability: its ETS table survives a process crash
@@ -99,7 +104,15 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
   # loads, applies and saves), so two unlocked writes to one store lose one of
   # them: a `put` landing inside `put_new`'s fetch-then-write would erase the
   # claim `put_new` just made. All writes to a store therefore take its lock.
-  defp with_lock(store_id, fun), do: Lock.with_lock({__MODULE__, store_id}, fun)
+  #
+  # `fun` runs in the lock's short-lived writer process, and `ContextStore`
+  # creates its ETS table in whichever process first touches it, so the
+  # caller creates it first: a table the writer created would die with it,
+  # and every checkpoint with the table.
+  defp with_lock(store_id, fun) do
+    :ok = @context_store.init()
+    Lock.with_lock({__MODULE__, store_id}, fun)
+  end
 
   # Called with the store's lock held; the lock is not reentrant.
   defp write(store_id, key, record) do

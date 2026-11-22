@@ -25,6 +25,16 @@ defmodule Raxol.Payments.Checkpoint.ContextStoreTest do
     assert :error = Checkpoint.fetch(store, "k")
   end
 
+  test "a first write creates the ContextStore table for the caller, not the lock's writer" do
+    # The test process owns the table `setup` created, so it may drop it.
+    :ets.delete(:raxol_agent_contexts)
+    store = Bridge.new(:cp_bridge_a)
+
+    assert :ok = Checkpoint.put(store, "k", %{intent_id: "int_1"})
+    assert :ets.info(:raxol_agent_contexts, :owner) == self()
+    assert {:ok, %{intent_id: "int_1"}} = Checkpoint.fetch(store, "k")
+  end
+
   test "put overwrites the prior record" do
     store = Bridge.new(:cp_bridge_a)
     Checkpoint.put(store, "k", %{intent_id: "int_1", status: :dispatched})
@@ -68,8 +78,12 @@ defmodule Raxol.Payments.Checkpoint.ContextStoreTest do
 
     holder =
       spawn(fn ->
+        caller = self()
+
+        # `fun` runs in the lock's writer process; killing the caller below
+        # aborts that writer too.
         Lock.with_lock(resource, fn ->
-          send(parent, {:locked, self()})
+          send(parent, {:locked, caller})
           receive(do: (:stop -> :ok))
         end)
       end)
