@@ -17,6 +17,8 @@ on:
       - 'packages/raxol_agent_client_protocol/**'
       - 'packages/raxol_web3/**'
       - 'docker/Dockerfile.raxol-cli'
+      # The toolchain pin the Docker build reads.
+      - 'mise.toml'
       - '.github/workflows/mcp-smoke.yml'
   workflow_dispatch:
 
@@ -39,6 +41,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # mise.toml is the one toolchain pin; the Dockerfile's default is for local
+      # builds only.
+      - name: Read the Elixir pin
+        id: pin
+        run: |
+          elixir="$(sed -n 's/^elixir = "\(.*\)"$/\1/p' mise.toml)"
+          [[ -n "$elixir" ]] || { echo "::error::no elixir pin in mise.toml"; exit 1; }
+          echo "image=elixir:$elixir" >> "$GITHUB_OUTPUT"
+
       # The release workflow's build, read from its cache when warm. Writes go
       # to a scope of their own, so a pull request never seeds a release build,
       # and `mode=min` keeps only the final layers so per-PR caches stay small.
@@ -49,6 +60,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.raxol-cli
+          build-args: ELIXIR_IMAGE=${{ steps.pin.outputs.image }}
           target: export
           outputs: type=local,dest=out
           cache-from: |
@@ -59,7 +71,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
       # The launcher's vendored layout (what `scripts/pack.sh` produces), so
       # no package has to exist on a registry.

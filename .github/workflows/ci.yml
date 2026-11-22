@@ -57,7 +57,7 @@ jobs:
         if: matrix.package == 'raxol_payments' || matrix.package == 'raxol_cli'
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Cache pinned @xochi/spec
         if: matrix.package == 'raxol_payments'

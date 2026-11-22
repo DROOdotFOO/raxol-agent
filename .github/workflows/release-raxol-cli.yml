@@ -65,6 +65,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # mise.toml is the one toolchain pin; the Dockerfile's default is for local
+      # builds only.
+      - name: Read the Elixir pin
+        id: pin
+        run: |
+          elixir="$(sed -n 's/^elixir = "\(.*\)"$/\1/p' mise.toml)"
+          [[ -n "$elixir" ]] || { echo "::error::no elixir pin in mise.toml"; exit 1; }
+          echo "image=elixir:$elixir" >> "$GITHUB_OUTPUT"
+
       # Native build for the runner's arch (no --platform): amd64 -> raxol_cli_linux,
       # arm64 -> raxol_cli_linux_arm. Exports the binary via the `export` stage.
       - name: Build runtime binary
@@ -72,6 +81,7 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.raxol-cli
+          build-args: ELIXIR_IMAGE=${{ steps.pin.outputs.image }}
           target: export
           outputs: type=local,dest=out
           cache-from: type=gha,scope=cli-${{ matrix.arch }}
@@ -94,7 +104,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
       # `raxol mcp` through the npm launcher, from the vendored layout
       # `scripts/pack.sh` produces: boots the runtime in MCP mode, lists the
@@ -207,7 +217,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download built binaries

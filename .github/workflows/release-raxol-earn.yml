@@ -67,12 +67,22 @@ jobs:
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/raxol-earn-v') }}
             type=ref,event=branch
 
+      # mise.toml is the one toolchain pin; the Dockerfile's default is for local
+      # builds only.
+      - name: Read the Elixir pin
+        id: pin
+        run: |
+          elixir="$(sed -n 's/^elixir = "\(.*\)"$/\1/p' mise.toml)"
+          [[ -n "$elixir" ]] || { echo "::error::no elixir pin in mise.toml"; exit 1; }
+          echo "image=elixir:$elixir" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: docker/Dockerfile.raxol-earn
+          build-args: ELIXIR_IMAGE=${{ steps.pin.outputs.image }}
           platforms: linux/amd64
           push: ${{ steps.flags.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
