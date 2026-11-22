@@ -381,9 +381,7 @@ defmodule Raxol.Agent.Session.Supervisor do
   # handles the exit, a moment after the process is gone, so a read in that
   # moment still returns them: a tree that `stop_session/1` just stopped would
   # read as running. Every read here keeps only processes that are alive.
-  # Registry pids are local, so `Process.alive?/1` is exact for them.
-  @spec live([{pid(), value}]) :: [{pid(), value}] when value: term()
-  defp live(entries), do: Enum.filter(entries, fn {pid, _value} -> Process.alive?(pid) end)
+  defp live(entries), do: Session.Registration.live(entries)
 
   # Prefer terminate_child (synchronous, removes the DynSup child); fall back
   # to a direct stop for a tree that was not started under DynSup.

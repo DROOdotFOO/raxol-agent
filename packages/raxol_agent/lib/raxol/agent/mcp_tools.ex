@@ -397,8 +397,10 @@ defmodule Raxol.Agent.McpTools do
   defp names([]), do: "none"
   defp names(names), do: Enum.join(names, ", ")
 
+  # An id whose holder has exited is free: the next start replaces the
+  # Registry's leftover entry.
   defp id_free(id) do
-    case Registry.lookup(@registry, id) do
+    case Session.Registration.live(Registry.lookup(@registry, id)) do
       [] -> :ok
       [_holder] -> {:error, in_use(id)}
     end
@@ -474,7 +476,7 @@ defmodule Raxol.Agent.McpTools do
 
   # The offset the journal had reached, as the bridge that opened it found it.
   defp continued(id) do
-    case Registry.lookup(@registry, {:emit_bridge, id}) do
+    case Session.Registration.live(Registry.lookup(@registry, {:emit_bridge, id})) do
       [{bridge, _value}] -> EmitBridge.prior_offset(bridge) || 0
       [] -> 0
     end

@@ -91,8 +91,13 @@ defmodule Raxol.Agent.McpTools.Ownership do
   def session_of(id),
     do: Enum.find(sessions(), fn {_session_id, meta} -> Map.get(meta, :id) == id end)
 
+  # Only sessions whose process is alive: a just-ended one's entry lingers
+  # until the Registry handles its exit.
   defp sessions do
-    Registry.select(@registry, [{{{:session, :"$1"}, :_, :"$2"}, [], [{{:"$1", :"$2"}}]}])
+    @registry
+    |> Registry.select([{{{:session, :"$1"}, :"$2", :"$3"}, [], [{{:"$2", {{:"$1", :"$3"}}}}]}])
+    |> Session.Registration.live()
+    |> Enum.map(fn {_pid, session} -> session end)
   rescue
     ArgumentError -> []
   end
