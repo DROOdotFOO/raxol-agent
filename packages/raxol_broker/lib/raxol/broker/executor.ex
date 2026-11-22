@@ -205,7 +205,7 @@ defmodule Raxol.Broker.Executor do
       policy: config.policy,
       review_timeout: config.review_timeout,
       place_timeout: config.place_timeout,
-      key: :crypto.strong_rand_bytes(32),
+      key: Secret.new(:crypto.strong_rand_bytes(32)),
       client_spec: client_spec,
       port: nil,
       port_status: :connecting,
@@ -564,7 +564,7 @@ defmodule Raxol.Broker.Executor do
   end
 
   defp post_review(state, %{intent: intent, group_id: group_id} = pending) do
-    receipt = ReviewReceipt.issue(state.key, intent, group_id)
+    receipt = ReviewReceipt.issue(Secret.reveal(state.key), intent, group_id)
     verdict = Policy.evaluate(intent, pending.context)
 
     case {append(state, group_id, {:verdict, :post_review, verdict}), verdict} do
@@ -653,7 +653,7 @@ defmodule Raxol.Broker.Executor do
       catalog: state.catalog,
       journal: state.journal,
       account: state.account,
-      key: Secret.new(state.key),
+      key: state.key,
       timeout: state.place_timeout,
       customer_approval_required: customer_approval_required
     }

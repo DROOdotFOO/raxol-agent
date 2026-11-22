@@ -185,13 +185,29 @@ defmodule Raxol.Broker.ExecutorRecoveryTest do
   end
 
   describe "status redaction" do
+    test "the receipt key is a Secret: no state, status or inspect shows its bytes", ctx do
+      executor = start_executor!(ctx)
+      state = :sys.get_state(executor)
+      assert %Secret{} = state.key
+      bytes = inspect(Secret.reveal(state.key), limit: :infinity)
+
+      {:status, _pid, _mod, [pdict, _sys, _parent, _dbg, misc]} = :sys.get_status(executor)
+
+      for shown <- [
+            inspect(state, limit: :infinity),
+            inspect(misc, limit: :infinity),
+            inspect(misc, structs: false, limit: :infinity),
+            inspect(pdict, limit: :infinity),
+            inspect(Executor.format_status(%{state: state}), limit: :infinity)
+          ] do
+        refute shown =~ bytes
+      end
+    end
+
     test ":sys.get_status hides the receipt key, session spec and account", ctx do
       executor = start_executor!(ctx)
-      key = :sys.get_state(executor).key
-      {:status, _pid, _mod, [pdict, _sys, _parent, _dbg, misc]} = :sys.get_status(executor)
+      {:status, _pid, _mod, [_pdict, _sys, _parent, _dbg, misc]} = :sys.get_status(executor)
       dump = inspect(misc, structs: false, limit: :infinity)
-
-      refute inspect(pdict, limit: :infinity) =~ inspect(key)
 
       refute dump =~ @account
       assert dump =~ "client_spec: :redacted"
@@ -360,7 +376,7 @@ defmodule Raxol.Broker.ExecutorRecoveryTest do
 
       stop_and_wait(ctx.executor)
       ExecutorIdentity.assume!(ctx.journal)
-      env = %{ctx.env | key: Secret.new(state.key)}
+      env = %{ctx.env | key: state.key}
 
       assert {:error, _refused} = Place.run(receipt, ctx.intent, ctx.gid, env)
 
