@@ -17,7 +17,7 @@ defmodule RaxolEarn.MixProject do
       dialyzer: [
         # raxol_agent is a `runtime: false` dependency (see deps/0), so it is
         # not in the derived application tree; earn calls it directly.
-        plt_add_apps: [:raxol_agent],
+        plt_add_apps: [:raxol_agent, :mix],
         ignore_warnings: ".dialyzer_ignore.exs"
       ],
       description: description(),

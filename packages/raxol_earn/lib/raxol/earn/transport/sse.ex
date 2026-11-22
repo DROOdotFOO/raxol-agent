@@ -7,10 +7,10 @@ defmodule Raxol.Earn.Transport.SSE do
 
   `connect/2` spawns a `Task` that opens an HTTP GET to the SSE
   endpoint via `Req` with a streaming `:into` callback. The callback
-  parses SSE frames line-by-line and forwards each completed event
-  to the configured owner pid as `{:transport, entry_map}`.
+  parses each completed SSE frame and forwards it to the configured
+  owner pid as `{:transport, entry_map}`.
 
-  The Task's pid is stashed in the transport's config so
+  The Task is kept in an ETS table held in the transport's config so
   `disconnect/1` can kill it.
 
   ## SSE frame format
@@ -46,6 +46,7 @@ defmodule Raxol.Earn.Transport.SSE do
   @behaviour Raxol.Earn.Transport
 
   alias Raxol.Earn.Auth
+  alias Raxol.Earn.Transport.SSE.Parser
 
   @doc """
   Build a transport.
@@ -76,8 +77,6 @@ defmodule Raxol.Earn.Transport.SSE do
 
     %{adapter: __MODULE__, config: config}
   end
-
-  # -- Transport behaviour --
 
   @impl Raxol.Earn.Transport
   def connect(%{config: cfg}, %{owner: owner}) do
@@ -173,12 +172,10 @@ defmodule Raxol.Earn.Transport.SSE do
   @impl Raxol.Earn.Transport
   def send_message(transport, key, content, content_type) do
     # The v2 SDK distinguishes "stream send" from "REST post"; for our
-    # purposes both go through POST /messages and the stream picks up the
+    # purposes both go through post_message/4 and the stream picks up the
     # echoed entry via SSE. So we delegate.
     post_message(transport, key, content, content_type)
   end
-
-  # -- SSE streaming --
 
   defp stream_loop(owner, url, headers, req_options) do
     opts =
@@ -186,18 +183,14 @@ defmodule Raxol.Earn.Transport.SSE do
         url: url,
         method: :get,
         headers: headers,
-        # SSE is a long-lived stream. An idle provider (no jobs) receives no events for
-        # long stretches, so the default receive_timeout fires and drops a HEALTHY
-        # connection -- the reconnect churn we saw on fly. Wait generously between chunks
-        # (10 min, far longer than any server keepalive interval); a genuine drop
-        # surfaces as a transport ERROR (not a timeout) and the Agent reconnects, and a
-        # rare silent half-open still recovers within one window. Retries are the Agent's
-        # job, not Req's.
+        # An idle provider sees no events for long stretches, and the default
+        # receive_timeout would drop a healthy connection. 10 min is far beyond
+        # any server keepalive; a real drop surfaces as a transport error and
+        # the Agent reconnects. Retries are the Agent's job, not Req's.
         receive_timeout: 600_000,
         retry: false,
         into: fn {:data, data}, {req, resp} ->
-          handle_chunk(owner, data)
-          {:cont, {req, resp}}
+          {:cont, {req, feed(owner, resp, data)}}
         end
       ] ++ req_options
 
@@ -210,20 +203,11 @@ defmodule Raxol.Earn.Transport.SSE do
     end
   end
 
-  defp handle_chunk(owner, data) do
-    # Buffer partials in the process dictionary; this task is short-lived
-    # per connection so there's no leakage.
-    buffer = Process.get(:sse_buffer, "")
-    accumulated = buffer <> data
-
-    {frames, rest} = Raxol.Earn.Transport.SSE.Parser.split_frames(accumulated)
-    Process.put(:sse_buffer, rest)
-
-    for frame <- frames do
-      case Raxol.Earn.Transport.SSE.Parser.parse_frame(frame) do
-        {:ok, entry} -> send(owner, {:transport, entry})
-        {:error, _} -> :ok
-      end
-    end
+  # The unterminated tail of the stream rides in the response's private map,
+  # the accumulator Req threads through every `:into` call.
+  defp feed(owner, resp, data) do
+    {entries, rest} = Parser.feed(Req.Response.get_private(resp, :sse_buffer, ""), data)
+    Enum.each(entries, &send(owner, {:transport, &1}))
+    Req.Response.put_private(resp, :sse_buffer, rest)
   end
 end

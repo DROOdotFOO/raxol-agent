@@ -388,4 +388,70 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
       assert :ok = Order.preflight_pull(cfg, %{pull_authorization: nil}, %{}, [])
     end
   end
+
+  describe "the 7702 wallet's signing provider" do
+    alias Mix.Tasks.RaxolEarn.Order.Signer
+
+    defmodule Health do
+      @moduledoc false
+      @behaviour Plug
+
+      @impl true
+      def init(address), do: address
+
+      @impl true
+      def call(conn, address) do
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(200, Jason.encode!(%{status: "ok", address: address}))
+      end
+    end
+
+    setup do
+      previous = System.get_env("RAXOL_ACP_SIDECAR_URL")
+      on_exit(fn -> restore_env("RAXOL_ACP_SIDECAR_URL", previous) end)
+    end
+
+    test "targets the sidecar that reports the 7702 account" do
+      url = serve_health(Signer.Sma7702Wallet.address())
+
+      assert %{adapter: Raxol.Earn.ProviderAdapter.Privy, config: config} =
+               Signer.signing_provider()
+
+      assert config.sidecar_url == url
+      assert config.address == Signer.Sma7702Wallet.address()
+      assert Order.privy_provider().config.sidecar_url == url
+    end
+
+    test "refuses to sign through a sidecar holding another wallet" do
+      serve_health("0x" <> String.duplicate("ab", 20))
+
+      %Mix.Error{message: message} = assert_raise(Mix.Error, &Signer.signing_provider/0)
+      assert message =~ "WRONG wallet"
+    end
+  end
+
+  describe "a sidecar that stops answering" do
+    alias Mix.Tasks.RaxolEarn.Order.Errors
+
+    test "is reported as stopped, not as failing to start" do
+      message = Errors.sidecar({:sidecar_unhealthy, :health_timeout})
+
+      assert message =~ "stopped answering /health"
+      refute message =~ "did not start"
+    end
+  end
+
+  defp serve_health(address) do
+    ref = make_ref()
+    {:ok, _} = Plug.Cowboy.http(__MODULE__.Health, address, port: 0, ref: ref)
+    on_exit(fn -> Plug.Cowboy.shutdown(ref) end)
+
+    url = "http://127.0.0.1:#{:ranch.get_port(ref)}"
+    System.put_env("RAXOL_ACP_SIDECAR_URL", url)
+    url
+  end
+
+  defp restore_env(name, nil), do: System.delete_env(name)
+  defp restore_env(name, value), do: System.put_env(name, value)
 end
