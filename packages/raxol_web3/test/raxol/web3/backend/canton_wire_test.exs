@@ -201,19 +201,16 @@ defmodule Raxol.Web3.Backend.CantonWireTest do
     end
 
     test "an update id cannot escape the /updates/ prefix or add a query" do
-      # `URI.encode/1`'s default predicate leaves `/`, `?` and `#` unescaped, so
-      # it encoded this id to itself and the composed path was
-      # `/v0/updates/../../v0/admin?x=1#y`: an arbitrary path, with a query of
-      # the caller's choosing, on a credentialed host. The id arrives from a
-      # model -- it is the `hash` argument of `web3_get_transaction`.
+      # `URI.encode/1`'s default predicate leaves `/`, `?` and `#` unescaped,
+      # which would let this id pick its own path and query on a credentialed
+      # host. The id arrives from a model: the `hash` of `web3_get_transaction`.
+      # A dot segment is refused outright; see the conformance test.
       handle = handle(scan_routes())
 
-      assert {:error, {:http, 404}} =
-               Backend.call(handle, :get_transaction, ["../../v0/admin?x=1#y"])
+      assert {:error, {:invalid_argument, "update_id"}} =
+               Backend.call(handle, :get_transaction, ["v0/admin?x=1#y"])
 
-      assert [requested] = requested_paths()
-      assert "/v0/updates/" <> encoded = requested
-      refute String.contains?(encoded, ["/", "?", "#"])
+      assert [] = requested_paths()
     end
   end
 

@@ -15,6 +15,7 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
+  alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
 
   @typedoc "The fields of a Canton handle this module reads."
@@ -91,20 +92,20 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
   end
 
   # A path parameter rather than a table row, so it composes the path itself.
-  # The id reaches here from a caller, so it is percent-encoded against the
-  # unreserved set rather than with `URI.encode/1`'s default predicate: that
-  # predicate leaves `/`, `?` and `#` alone, so it is not a defence at all --
-  # `URI.encode("../../v0/admin?x=1")` is its own input, and an id shaped like
-  # that would walk off `/updates/` on a credentialed host and pick its own
-  # path and query.
-  # `GET /updates/{id}`, with the id percent-encoded against the unreserved set.
+  # The id reaches here from a caller, so it goes through
+  # `Raxol.Web3.Backend.PathSegment.encode/2`: percent-encoded against the
+  # unreserved set, so it cannot carry `/`, `?` or `#` and walk off
+  # `/updates/`, and refused when it is or decodes into `.` or `..`, which a
+  # resolving proxy would turn into the API root with the credential attached.
   @doc false
   @spec get_update(state(), String.t()) :: {:ok, map()} | {:error, Backend.error()}
   def get_update(state, update_id) do
-    state
-    |> url("/updates/#{URI.encode(update_id, &URI.char_unreserved?/1)}", %{})
-    |> HTTP.get(scan_opts(state, "/updates", %{"id" => update_id}, :transaction))
-    |> Decode.json_object()
+    with {:ok, segment} <- PathSegment.encode(update_id, "update_id") do
+      state
+      |> url("/updates/#{segment}", %{})
+      |> HTTP.get(scan_opts(state, "/updates", %{"id" => update_id}, :transaction))
+      |> Decode.json_object()
+    end
   end
 
   defp scan_opts(state, path, fragment, class) do

@@ -569,28 +569,23 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
     end
 
     test "a transaction hash cannot escape the /transactions/ prefix" do
-      # The hash arrives from a model as the `web3_get_transaction` argument
-      # and has no single format to validate against, so encoding is what
-      # holds: `URI.encode/1`'s default predicate leaves `/`, `?` and `#`
-      # alone and was not a defence anywhere in this package.
+      # The hash arrives from a model as the `web3_get_transaction` argument.
+      # Anything outside the id allowlist is refused before a request exists.
       handle = handle(%{})
 
-      assert {:error, {:http, 404}} =
-               Backend.call(handle, :get_transaction, ["../../v2/admin?x=1#y"])
+      assert {:error, {:invalid_argument, "hash"}} =
+               Backend.call(handle, :get_transaction, ["v2/admin?x=1#y"])
 
-      assert [requested] = requested_paths()
-      assert "/api/v2/transactions/" <> encoded = requested
-      refute String.contains?(encoded, ["/", "?", "#"])
+      assert [] = requested_paths()
     end
 
     test "a block identifier cannot escape the /blocks/ prefix" do
       handle = handle(%{})
 
-      assert {:error, {:http, 404}} = Backend.call(handle, :get_block, ["../../v2/admin"])
+      assert {:error, {:invalid_argument, "block"}} =
+               Backend.call(handle, :get_block, ["v2/admin"])
 
-      assert [requested] = requested_paths()
-      assert "/api/v2/blocks/" <> encoded = requested
-      refute String.contains?(encoded, "/")
+      assert [] = requested_paths()
     end
 
     test "a non-2xx becomes a status, carrying no upstream body" do

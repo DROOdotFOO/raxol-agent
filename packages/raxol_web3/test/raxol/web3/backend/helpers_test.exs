@@ -4,6 +4,7 @@ defmodule Raxol.Web3.Backend.HelpersTest do
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
   alias Raxol.Web3.Backend.Paging
+  alias Raxol.Web3.Backend.PathSegment
 
   describe "Decode" do
     test "dig, field, object and rows_of read a wrong-typed value as absent" do
@@ -89,6 +90,49 @@ defmodule Raxol.Web3.Backend.HelpersTest do
 
       # Any value but `false` caches, so a stray `cache: nil` never crashes a read.
       assert [cache: _, x: 1] = Cache.opts([x: 1], nil, {:k}, :catalog)
+    end
+  end
+
+  describe "PathSegment.encode/2" do
+    test "an id in the allowlist passes, and nothing else does" do
+      hash = "0x" <> String.duplicate("ab", 32)
+      assert PathSegment.encode(hash, "hash") == {:ok, hash}
+      assert PathSegment.encode("latest", "block") == {:ok, "latest"}
+      assert PathSegment.encode("1220abc::def", "update_id") == {:ok, "1220abc%3A%3Adef"}
+      assert PathSegment.encode(12, "block") == {:ok, "12"}
+
+      refused =
+        [
+          ".",
+          "..",
+          "",
+          "...",
+          ". ",
+          ".. ",
+          "..;",
+          "..;/x",
+          "%2e%2e",
+          "%252e",
+          "..%00",
+          "\u00c0\u00ae",
+          <<0xC0, 0xAE>>,
+          "%u002e",
+          "a/b",
+          "a\\b",
+          "a?b",
+          "a#b",
+          "a b",
+          "a.b",
+          String.duplicate("a", 257),
+          -1,
+          nil,
+          1.5
+        ]
+
+      for id <- refused do
+        assert PathSegment.encode(id, "hash") == {:error, {:invalid_argument, "hash"}},
+               inspect(id)
+      end
     end
   end
 end

@@ -64,6 +64,7 @@ defmodule Raxol.Web3.Backend.Aztec do
   alias Raxol.Web3.Backend.Cache
   alias Raxol.Web3.Backend.Decode
   alias Raxol.Web3.Backend.Paging
+  alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
 
   # `:http_opts` is an operator's own keyword list and may carry an
@@ -245,16 +246,19 @@ defmodule Raxol.Web3.Backend.Aztec do
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, hash) when is_binary(hash) do
-    case object(get(state, "/l2/tx-effects/#{segment(hash)}", :transaction, :addressed)) do
-      {:ok, body} -> mined(body)
-      {:error, {:upstream_refused, :not_found}} -> pooled(state, hash)
-      {:error, _reason} = error -> error
+    with {:ok, segment} <- PathSegment.encode(hash, "hash") do
+      case object(get(state, "/l2/tx-effects/#{segment}", :transaction, :addressed)) do
+        {:ok, body} -> mined(body)
+        {:error, {:upstream_refused, :not_found}} -> pooled(state, segment)
+        {:error, _reason} = error -> error
+      end
     end
   end
 
   @impl Backend
   def get_block(%__MODULE__{} = state, number) do
-    with {:ok, body} <- object(get(state, "/l2/blocks/#{segment(number)}", :block, :addressed)),
+    with {:ok, segment} <- PathSegment.encode(number, "block"),
+         {:ok, body} <- object(get(state, "/l2/blocks/#{segment}", :block, :addressed)),
          {:ok, height} <- block_number(body) do
       variables = body |> dig(["header", "globalVariables"]) |> Decode.object()
 
@@ -274,11 +278,12 @@ defmodule Raxol.Web3.Backend.Aztec do
   @impl Backend
   def contract_metadata(%__MODULE__{} = state, account_ref) do
     with {:ok, address} <- aztec_address(account_ref),
+         {:ok, segment} <- PathSegment.encode(address, "address"),
          {:ok, body} <-
            object(
              get(
                state,
-               "/l2/contract-instances/#{segment(address)}",
+               "/l2/contract-instances/#{segment}",
                :contract_metadata,
                :addressed
              )
@@ -437,13 +442,10 @@ defmodule Raxol.Web3.Backend.Aztec do
   defp decode({:ok, %{status: status}}, _resource), do: {:error, {:http, status}}
   defp decode({:error, _reason} = error, _resource), do: error
 
-  # Percent-encodes everything outside the unreserved set, so a caller-supplied
-  # hash or address cannot carry a `/` or a `?` and reshape the path it is
-  # interpolated into. There is no error variant for a malformed id, and there
-  # should not be: the upstream is what decides whether an id exists, and an
-  # encoded id that does not exist is a clean 404.
-  defp segment(value) when is_integer(value), do: Integer.to_string(value)
-  defp segment(value) when is_binary(value), do: URI.encode(value, &URI.char_unreserved?/1)
+  # Every caller-supplied id reaches a path through
+  # `Raxol.Web3.Backend.PathSegment.encode/2`: encoded against the unreserved set,
+  # and refused when it is or decodes into a dot segment. A well-formed id that
+  # does not exist is still the upstream's clean 404.
 
   defp resolve(default_url, nil), do: {:ok, default_url, source(default_url)}
 
@@ -538,8 +540,9 @@ defmodule Raxol.Web3.Backend.Aztec do
     end
   end
 
-  defp pooled(state, hash) do
-    with {:ok, body} <- object(get(state, "/l2/txs/#{segment(hash)}", :transaction, :addressed)) do
+  # `segment` is the hash as `get_transaction/2` already checked and encoded it.
+  defp pooled(state, segment) do
+    with {:ok, body} <- object(get(state, "/l2/txs/#{segment}", :transaction, :addressed)) do
       {:ok,
        %{
          hash: body["txHash"],
