@@ -7,57 +7,61 @@ defmodule Raxol.Payments.Protocols.Xochi.DepositSignerPin do
   # quote, so a compromised endpoint could publish its own key and attest a
   # forged deposit address: that fallback is refused when the pin is required
   # (`config :raxol_payments, :require_deposit_signer_pin`, default
-  # `Raxol.Payments.Deployment.production?/0`). Public entry points are
-  # delegated from `Raxol.Payments.Protocols.Xochi`, which documents them.
+  # `Raxol.Payments.Deployment.production?/0`). `resolve/2` backs signer
+  # resolution in `Raxol.Payments.Protocols.Xochi`, which delegates
+  # `assert_pinned!/0,2` and documents them.
 
-  alias Raxol.Payments.Deployment
-
-  @address_re ~r/\A0[xX][0-9a-fA-F]{40}\z/
+  alias Raxol.Payments.{Deployment, EIP712}
 
   @type error ::
           :deposit_signer_unpinned | :invalid_deposit_signer_pin | :deposit_signer_unavailable
 
-  @doc """
-  Resolve the signer. `matrix_signer` is called only when no operator pin is
-  set and the pin is not required.
-  """
+  # Resolve the signer. `matrix_signer` is called only when no operator pin is
+  # set and the pin is not required.
   @spec resolve(keyword(), (-> String.t() | nil)) :: {:ok, String.t()} | {:error, error()}
   def resolve(opts, matrix_signer) when is_function(matrix_signer, 0) do
     case operator_pin(opts) do
       nil -> fallback(required?(), matrix_signer)
-      pin -> validate_pin(pin)
+      pin -> if EIP712.address?(pin), do: {:ok, pin}, else: {:error, :invalid_deposit_signer_pin}
     end
   end
 
   # Fail-open: no valid pin and the pin not required, so the matrix signer
-  # (the quote endpoint's own claim) would be trusted.
-  @spec fail_open?(term(), boolean()) :: boolean()
-  def fail_open?(pin, require_pin?), do: not valid?(pin) and require_pin? != true
+  # would be trusted. Required with no pin is not fail-open: it boots, and
+  # every deposit route is refused with `:deposit_signer_unpinned`.
+  @spec fail_open?(term(), term()) :: boolean()
+  def fail_open?(pin, require_pin?), do: not EIP712.address?(pin) and require_pin? != true
 
-  @spec assert_pinned!(term(), boolean()) :: :ok
+  @spec assert_pinned!() :: :ok
+  def assert_pinned!, do: assert_pinned!(configured_pin(), required?())
+
+  @spec assert_pinned!(term(), term()) :: :ok
   def assert_pinned!(pin, require_pin?) do
-    if fail_open?(pin, require_pin?) do
-      raise ArgumentError,
-            "Xochi deposit-attestation signer is not pinned (fail-open): deposit " <>
-              "routes would trust a signer published by the quote endpoint itself. " <>
-              "Set config :raxol_payments, :xochi_deposit_attestation_signer to the " <>
-              "canonical 0x signer address, or set :require_deposit_signer_pin to true."
-    end
+    cond do
+      unset(pin) != nil and not EIP712.address?(pin) ->
+        raise ArgumentError,
+              "Xochi deposit-attestation signer pin is not a 0x + 40-hex address."
 
-    :ok
-  end
+      fail_open?(pin, require_pin?) ->
+        raise ArgumentError,
+              "Xochi deposit-attestation signer is not pinned (fail-open): deposit " <>
+                "routes would trust a signer published by the quote endpoint itself. " <>
+                "Set config :raxol_payments, :xochi_deposit_attestation_signer to the " <>
+                "canonical 0x signer address, or set :require_deposit_signer_pin to true."
 
-  defp operator_pin(opts) do
-    case opts[:deposit_attestation_signer] ||
-           Application.get_env(:raxol_payments, :xochi_deposit_attestation_signer) do
-      "" -> nil
-      pin -> pin
+      true ->
+        :ok
     end
   end
 
-  defp validate_pin(pin) do
-    if valid?(pin), do: {:ok, pin}, else: {:error, :invalid_deposit_signer_pin}
-  end
+  defp operator_pin(opts), do: unset(opts[:deposit_attestation_signer]) || configured_pin()
+
+  defp configured_pin,
+    do: unset(Application.get_env(:raxol_payments, :xochi_deposit_attestation_signer))
+
+  defp unset(nil), do: nil
+  defp unset(""), do: nil
+  defp unset(pin), do: pin
 
   defp fallback(true, _matrix_signer), do: {:error, :deposit_signer_unpinned}
 
@@ -68,10 +72,13 @@ defmodule Raxol.Payments.Protocols.Xochi.DepositSignerPin do
     end
   end
 
-  # Explicit config wins both ways; unset, a deployed release requires the pin.
+  # Unset, a deployed release requires the pin. Only an explicit `false`
+  # relaxes it; any other configured value requires it.
   defp required? do
-    Application.get_env(:raxol_payments, :require_deposit_signer_pin, Deployment.production?())
+    case Application.fetch_env(:raxol_payments, :require_deposit_signer_pin) do
+      {:ok, false} -> false
+      {:ok, _} -> true
+      :error -> Deployment.production?()
+    end
   end
-
-  defp valid?(pin), do: is_binary(pin) and Regex.match?(@address_re, pin)
 end

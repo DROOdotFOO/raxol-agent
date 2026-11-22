@@ -144,12 +144,12 @@ defmodule Raxol.Payments.Protocols.Xochi do
   Signer resolution, in precedence order: `opts[:deposit_attestation_signer]`
   (an operator's out-of-band pin), else `config :raxol_payments,
   :xochi_deposit_attestation_signer`, else the live capability matrix's
-  `deposit_attestation_signer`. A pin must be a `0x` + 40-hex address
-  (`{:error, :invalid_deposit_signer_pin}` otherwise). The matrix is served by
-  the quote endpoint itself, so when `config :raxol_payments,
-  :require_deposit_signer_pin` is true (the default in a deployed release,
-  `Raxol.Payments.Deployment.production?/0`) it is not consulted and an
-  unpinned run fails with `{:error, :deposit_signer_unpinned}`.
+  `deposit_attestation_signer`; `nil` and `""` count as unset. A pin must be a
+  `0x` + 40-hex address (`{:error, :invalid_deposit_signer_pin}` otherwise).
+  The matrix is served by the quote endpoint itself, so unless `config
+  :raxol_payments, :require_deposit_signer_pin` is exactly `false` (unset, it
+  follows `Raxol.Payments.Deployment.production?/0`) it is not consulted and
+  an unpinned run fails with `{:error, :deposit_signer_unpinned}`.
 
   ## Options
 
@@ -545,23 +545,26 @@ defmodule Raxol.Payments.Protocols.Xochi do
     as: :assert_pinned!
 
   @doc """
-  Raise when deposit routes would trust the capability matrix's attestation
-  signer (fail-open): `pin` is not a `0x` + 40-hex address and `require_pin?`
-  is not true. Call at boot in a fund-moving deployment, e.g.
-
-      Xochi.assert_deposit_signer_pinned!(
-        Application.get_env(:raxol_payments, :xochi_deposit_attestation_signer),
-        Application.get_env(
-          :raxol_payments,
-          :require_deposit_signer_pin,
-          Raxol.Payments.Deployment.production?()
-        )
-      )
+  Raise when `pin` is set but is not a `0x` + 40-hex address, or when deposit
+  routes would trust the capability matrix's attestation signer (fail-open: no
+  valid `pin` and `require_pin?` not true). A required pin that is unset is not
+  fail-open: the boot goes ahead and every deposit route is refused with
+  `{:error, :deposit_signer_unpinned}`. `assert_deposit_signer_pinned!/0`
+  reads both from config.
   """
-  @spec assert_deposit_signer_pinned!(term(), boolean()) :: :ok
+  @spec assert_deposit_signer_pinned!(term(), term()) :: :ok
   defdelegate assert_deposit_signer_pinned!(pin, require_pin?),
     to: DepositSignerPin,
     as: :assert_pinned!
+
+  @doc """
+  `assert_deposit_signer_pinned!/2` over the configured
+  `:xochi_deposit_attestation_signer` and `:require_deposit_signer_pin` (unset,
+  `Raxol.Payments.Deployment.production?/0`). Call it from the start-up of a
+  release that serves deposit routes.
+  """
+  @spec assert_deposit_signer_pinned!() :: :ok
+  defdelegate assert_deposit_signer_pinned!, to: DepositSignerPin, as: :assert_pinned!
 
   @doc """
   Reads the origin-pull solver pin from the environment, for the
