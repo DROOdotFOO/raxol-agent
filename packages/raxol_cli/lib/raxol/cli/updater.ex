@@ -86,11 +86,13 @@ defmodule Raxol.CLI.Updater do
 
   @doc """
   Runs `update/1` in a task linked to the caller, for `await_update/2` or
-  `cancel_update/1`; only the process that started it may call either.
+  `cancel_update/1`; only the process that started it may call either,
+  and only once per handle: a second call on the same handle never returns.
   Without `:work_dir` the update gets a fresh private scratch directory,
   removed when it is awaited or cancelled.
   """
-  @spec start_update(keyword()) :: {:ok, in_flight()} | {:error, File.posix()}
+  @spec start_update(keyword()) ::
+          {:ok, in_flight()} | {:error, File.posix() | :work_dir_not_empty}
   def start_update(opts \\ []) do
     with {:ok, work_dir, owns?} <- work_dir(opts) do
       task = Task.async(Core, :update, [Keyword.put(opts, :work_dir, work_dir)])

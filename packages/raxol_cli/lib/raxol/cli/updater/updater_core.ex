@@ -210,15 +210,21 @@ defmodule Raxol.CLI.Updater.Core do
   can write to: a new, unguessable name, `0700`. A name that already
   exists is an error, never reused, so on a shared `/tmp` another user
   cannot stage files where a verified download is about to be copied from.
+  It must still be empty once it is `0700`, which covers a permissive
+  umask leaving it writable between `mkdir` and `chmod`.
   """
-  @spec fresh_work_dir() :: {:ok, Path.t()} | {:error, File.posix()}
+  @spec fresh_work_dir() :: {:ok, Path.t()} | {:error, File.posix() | :work_dir_not_empty}
   def fresh_work_dir do
     name = "raxol_update_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
     dir = Path.join(System.tmp_dir!(), name)
 
     with :ok <- File.mkdir(dir),
-         :ok <- File.chmod(dir, 0o700) do
+         :ok <- File.chmod(dir, 0o700),
+         {:ok, []} <- File.ls(dir) do
       {:ok, dir}
+    else
+      {:ok, [_ | _]} -> {:error, :work_dir_not_empty}
+      {:error, _reason} = error -> error
     end
   end
 
