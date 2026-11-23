@@ -1,6 +1,6 @@
 defmodule Raxol.CLI.Updater.Core do
   @moduledoc """
-  Update flow and GenServer callbacks for `Raxol.CLI.Updater`.
+  The update flow behind `Raxol.CLI.Updater`.
 
   Every install follows one order: resolve the release from the manifest,
   fetch its `SHA256SUMS` and (unless the manifest turns provenance off) its
@@ -14,8 +14,6 @@ defmodule Raxol.CLI.Updater.Core do
   Functions take the options documented on `Raxol.CLI.Updater`; each
   defaults to the running installation.
   """
-  use Raxol.Core.Behaviours.BaseManager
-
   alias Raxol.CLI.Updater.{
     Archive,
     Manifest,
@@ -27,8 +25,6 @@ defmodule Raxol.CLI.Updater.Core do
 
   alias Raxol.CLI.Updater.Provenance.Policy
 
-  # --- Client API ---
-
   @spec check(keyword()) ::
           {:update_available, String.t()}
           | {:no_update, String.t()}
@@ -36,7 +32,7 @@ defmodule Raxol.CLI.Updater.Core do
   def check(opts \\ []) do
     with {:ok, manifest} <- Manifest.load(opts),
          {:ok, current} <- current_version(manifest, opts) do
-      if Keyword.get(opts, :force) == true or check_due?(),
+      if Keyword.get(opts, :force) == true or check_due?(opts),
         do:
           compare_release(
             manifest,
@@ -142,6 +138,7 @@ defmodule Raxol.CLI.Updater.Core do
     end
   end
 
+  @spec notify_if_update_available(keyword()) :: :ok
   def notify_if_update_available(opts \\ []) do
     case check(opts) do
       {:update_available, version} ->
@@ -164,8 +161,6 @@ defmodule Raxol.CLI.Updater.Core do
         :ok
     end
   end
-
-  # --- Shared lookups ---
 
   defp platform(opts) do
     case Keyword.fetch(opts, :platform) do
@@ -200,118 +195,42 @@ defmodule Raxol.CLI.Updater.Core do
         with :ok <- File.mkdir_p(dir), do: fun.(dir)
 
       :error ->
-        dir =
-          Path.join(
-            System.tmp_dir!(),
-            "raxol_update_#{System.unique_integer([:positive])}"
-          )
-
-        try do
-          with :ok <- File.mkdir_p(dir), do: fun.(dir)
-        after
-          File.rm_rf(dir)
+        with {:ok, dir} <- fresh_work_dir() do
+          try do
+            fun.(dir)
+          after
+            File.rm_rf(dir)
+          end
         end
     end
   end
 
-  # --- Server Callbacks ---
+  @doc """
+  Creates a scratch directory under the system temp dir that nobody else
+  can write to: a new, unguessable name, `0700`. A name that already
+  exists is an error, never reused, so on a shared `/tmp` another user
+  cannot stage files where a verified download is about to be copied from.
+  """
+  @spec fresh_work_dir() :: {:ok, Path.t()} | {:error, File.posix()}
+  def fresh_work_dir do
+    name = "raxol_update_" <> Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
+    dir = Path.join(System.tmp_dir!(), name)
 
-  @impl true
-  def init_manager(_opts) do
-    state = %{
-      settings: State.default_update_settings(),
-      status: :idle,
-      current_version: get_current_version(),
-      available_updates: [],
-      last_check: nil,
-      error: nil
-    }
-
-    {:ok, state}
-  end
-
-  @impl true
-  def handle_manager_call({:install_update, version}, _from, state) do
-    case self_update(version) do
-      :ok ->
-        {:reply, :ok, %{state | status: :installed, current_version: version, error: nil}}
-
-      {:no_update, _current} ->
-        {:reply, :ok, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, %{state | status: :error, error: reason}}
-    end
-  end
-
-  @impl true
-  def handle_manager_call(:get_update_settings, _from, state) do
-    {:reply, state.settings, state}
-  end
-
-  @impl true
-  def handle_manager_call({:set_update_settings, settings}, _from, state) do
-    {:reply, :ok, %{state | settings: settings}}
-  end
-
-  @impl true
-  def handle_manager_call(:check_for_updates, _from, state) do
-    case available_updates() do
-      {:ok, updates} ->
-        state = %{
-          state
-          | status: if(updates == [], do: :idle, else: :updates_available),
-            available_updates: updates,
-            last_check: DateTime.utc_now(),
-            error: nil
-        }
-
-        {:reply, {:ok, updates}, state}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, %{state | status: :error, error: reason}}
-    end
-  end
-
-  @impl true
-  def handle_manager_call(:get_update_status, _from, state) do
-    status = %{
-      current_version: state.current_version,
-      available_updates: state.available_updates,
-      last_check: state.last_check,
-      error: state.error
-    }
-
-    {:reply, status, state}
-  end
-
-  # --- Private Functions ---
-
-  defp available_updates do
-    with {:ok, manifest} <- Manifest.load() do
-      case check(force: true) do
-        {:update_available, version} ->
-          {:ok, tag} = Manifest.tag(manifest, version)
-
-          {:ok, [%{version: version, url: Manifest.release_page_url(manifest, tag)}]}
-
-        {:no_update, _current} ->
-          {:ok, []}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+    with :ok <- File.mkdir(dir),
+         :ok <- File.chmod(dir, 0o700) do
+      {:ok, dir}
     end
   end
 
   # Only the interval-gated (automatic) check reads and records the last
   # check time; a forced check neither consults nor resets it.
-  defp check_due? do
-    settings = State.get_update_settings()
+  defp check_due?(opts) do
+    path = State.path(opts)
+    settings = State.load(path)
     now = :os.system_time(:second)
 
-    if Validation.should_check_for_update?(settings, now) do
-      _ = State.set_update_settings(Validation.update_last_check(settings, now))
+    if State.check_due?(settings, now) do
+      _ = settings |> State.checked(now) |> State.save(path)
       true
     else
       false
@@ -477,13 +396,13 @@ defmodule Raxol.CLI.Updater.Core do
 
   defp backup_dir(opts) do
     Keyword.get_lazy(opts, :backup_dir, fn ->
-      State.get_update_settings().backup_path
+      State.load(State.path(opts)).backup_path
     end)
   end
 
   defp download_dir(opts) do
     Keyword.get_lazy(opts, :download_dir, fn ->
-      State.get_update_settings().download_path
+      State.load(State.path(opts)).download_path
     end)
   end
 

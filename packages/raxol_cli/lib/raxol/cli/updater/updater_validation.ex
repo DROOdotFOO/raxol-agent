@@ -25,10 +25,6 @@ defmodule Raxol.CLI.Updater.Validation do
     auto_check != false and now - last_check >= interval
   end
 
-  @spec update_last_check(map(), integer()) :: map()
-  def update_last_check(settings, now \\ :os.system_time(:second)),
-    do: Map.put(settings, :last_check, now)
-
   @spec compare_versions(String.t(), String.t()) ::
           {:update_available, String.t()} | {:no_update, String.t()}
   def compare_versions(current, latest) do
