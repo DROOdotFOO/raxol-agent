@@ -181,25 +181,7 @@ defmodule Raxol.Agent.Backend.HTTP do
 
       stream =
         Stream.resource(
-          fn ->
-            unless self() == caller do
-              send(task_pid, {:sse_stop, ref})
-
-              raise ArgumentError,
-                    "an HTTP backend stream must be read by the process that called stream/2"
-            end
-
-            %{
-              ref: ref,
-              task_pid: task_pid,
-              buffer: "",
-              provider: provider,
-              content: "",
-              usage: %{},
-              tool_calls_acc: %{},
-              limits: limits
-            }
-          end,
+          fn -> start_stream_state(caller, task_pid, ref, provider, limits) end,
           &stream_next/1,
           &stop_request/1
         )
@@ -263,6 +245,27 @@ defmodule Raxol.Agent.Backend.HTTP do
             {:cont, {req, resp}}
         end
     end
+  end
+
+  # The resource's start function, run in whichever process first reads it.
+  defp start_stream_state(caller, task_pid, ref, provider, limits) do
+    unless self() == caller do
+      send(task_pid, {:sse_stop, ref})
+
+      raise ArgumentError,
+            "an HTTP backend stream must be read by the process that called stream/2"
+    end
+
+    %{
+      ref: ref,
+      task_pid: task_pid,
+      buffer: "",
+      provider: provider,
+      content: "",
+      usage: %{},
+      tool_calls_acc: %{},
+      limits: limits
+    }
   end
 
   defp stream_next(%{buffer: :halt} = state), do: {:halt, state}

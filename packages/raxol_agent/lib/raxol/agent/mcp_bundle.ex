@@ -127,22 +127,7 @@ defmodule Raxol.Agent.McpBundle do
     |> Enum.map(&{&1, start_client(&1, start)})
     |> Enum.reduce(%{tools: [], servers: [], failed: []}, fn {spec, started}, acc ->
       name = spec_name(spec)
-
-      case resolve(started, name, deadline, interval, spec) do
-        {:ok, server, tools} ->
-          %{
-            acc
-            | tools: acc.tools ++ tools,
-              servers: [{name, server} | acc.servers]
-          }
-
-        {:error, reason} ->
-          Logger.warning(fn ->
-            "mcp bundle: server #{inspect(name)} skipped: #{inspect(reason)}"
-          end)
-
-          %{acc | failed: [{name, reason} | acc.failed]}
-      end
+      add_resolved(acc, name, resolve(started, name, deadline, interval, spec))
     end)
     |> then(
       &%{
@@ -151,6 +136,18 @@ defmodule Raxol.Agent.McpBundle do
           failed: Enum.reverse(&1.failed)
       }
     )
+  end
+
+  defp add_resolved(acc, name, {:ok, server, tools}) do
+    %{acc | tools: acc.tools ++ tools, servers: [{name, server} | acc.servers]}
+  end
+
+  defp add_resolved(acc, name, {:error, reason}) do
+    Logger.warning(fn ->
+      "mcp bundle: server #{inspect(name)} skipped: #{inspect(reason)}"
+    end)
+
+    %{acc | failed: [{name, reason} | acc.failed]}
   end
 
   # Never `Map.get(spec, :name, spec)`: a nameless spec would then ride into a

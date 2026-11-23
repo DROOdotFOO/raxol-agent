@@ -87,24 +87,28 @@ defmodule Raxol.Agent.Strategy.ReAct do
       Enum.reduce(tool_calls, {[], []}, fn tool_call, {msgs, results} ->
         name = Map.get(tool_call, "name")
 
-        case ToolConverter.dispatch_tool_call(tool_call, actions, context) do
-          {:ok, result} ->
-            msg = %{role: :user, content: "[Tool result for #{name}]: #{Jason.encode!(result)}"}
-            {[msg | msgs], [{name, result} | results]}
+        {msg, result} =
+          tool_outcome(name, ToolConverter.dispatch_tool_call(tool_call, actions, context))
 
-          {:ok, result, _commands} ->
-            msg = %{role: :user, content: "[Tool result for #{name}]: #{Jason.encode!(result)}"}
-            {[msg | msgs], [{name, result} | results]}
-
-          {:error, reason} ->
-            Logger.debug(fn -> "tool #{name} failed: #{inspect(reason)}" end)
-            msg = %{role: :user, content: ToolConverter.public_error(name, reason)}
-            {[msg | msgs], [{name, {:error, reason}} | results]}
-        end
+        {[msg | msgs], [{name, result} | results]}
       end)
 
     {Enum.reverse(msgs_rev), Enum.reverse(results_rev)}
   end
+
+  # The conversation message and the recorded result for one dispatched call.
+  defp tool_outcome(name, {:ok, result}), do: {tool_result_message(name, result), result}
+
+  defp tool_outcome(name, {:ok, result, _commands}),
+    do: {tool_result_message(name, result), result}
+
+  defp tool_outcome(name, {:error, reason}) do
+    Logger.debug(fn -> "tool #{name} failed: #{inspect(reason)}" end)
+    {%{role: :user, content: ToolConverter.public_error(name, reason)}, {:error, reason}}
+  end
+
+  defp tool_result_message(name, result),
+    do: %{role: :user, content: "[Tool result for #{name}]: #{Jason.encode!(result)}"}
 
   defp build_initial_messages(nil, prompt) do
     [%{role: :user, content: prompt}]

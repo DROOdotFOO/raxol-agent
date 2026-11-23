@@ -125,24 +125,27 @@ defmodule Raxol.Agent.Action do
         else: params
 
     with {:ok, validated} <- Schema.validate(params, meta.input_schema) do
-      case module.run(validated, context) do
-        {:ok, output} ->
-          output = maybe_after_run(module, output, context)
-          validate_output(output, meta.output_schema)
-
-        {:ok, output, commands} ->
-          output = maybe_after_run(module, output, context)
-
-          case validate_output(output, meta.output_schema) do
-            {:ok, validated_output} -> {:ok, validated_output, commands}
-            error -> error
-          end
-
-        {:error, _} = error ->
-          error
-      end
+      run_validated(module, validated, meta.output_schema, context)
     end
   end
+
+  defp run_validated(module, validated, output_schema, context) do
+    case module.run(validated, context) do
+      {:ok, output} ->
+        output = maybe_after_run(module, output, context)
+        validate_output(output, output_schema)
+
+      {:ok, output, commands} ->
+        output = maybe_after_run(module, output, context)
+        with_commands(validate_output(output, output_schema), commands)
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp with_commands({:ok, validated_output}, commands), do: {:ok, validated_output, commands}
+  defp with_commands(error, _commands), do: error
 
   defp maybe_after_run(module, output, context) do
     if function_exported?(module, :after_run, 2),
