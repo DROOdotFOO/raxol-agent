@@ -1,98 +1,61 @@
 defmodule Raxol.Broker.MCP.Fake do
   @moduledoc """
   Robinhood's agent MCP server, in process and scripted: the backend for the
-  broker's tests, dry runs and backtests, so nothing here needs a funded US
-  account or the network.
+  broker's tests, dry runs and backtests, with no funded account or network.
 
-  It is the legacy-era reference server (`Raxol.MCP.Client.ReferenceServer`:
-  `initialize`, `Mcp-Session-Id`, real JSON-RPC) reached through the HTTP
-  transport's `:exchange` seam, so the client's whole pre-socket pipeline runs
-  for real. `session/1` is a `Raxol.Broker.Executor.Port.MCP` spec (marked
-  sandbox); `client_opts/2` is a complete, isolated option list for
-  `Raxol.Broker.MCP.Client` (a synthetic credential that can never refresh,
-  so the user's stored credential and Robinhood's token endpoint are never
-  touched); `mcp_opts/1` is only its `:mcp` part.
+  It is the legacy-era reference server (`Raxol.MCP.Client.ReferenceServer`)
+  behind the HTTP transport's `:exchange` seam, so the client's pre-socket
+  pipeline runs for real. `session/1` is a sandbox
+  `Raxol.Broker.Executor.Port.MCP` spec; `client_opts/2` is an isolated option
+  list for `Raxol.Broker.MCP.Client` with a synthetic, never-refreshing
+  credential; `mcp_opts/1` is its `:mcp` part.
 
   ## Tools
 
-  The captured tool list (`Raxol.Broker.Tools.Catalog.recorded_tools/0`, see
-  the capture's provenance). The scenario answers `get_accounts`,
-  `get_equity_quotes`, `get_equity_positions`, `get_equity_orders`,
-  `get_alert_log` and the equity, option and crypto `review_*`/`preview_*`,
-  `place_*` and `cancel_*` tools in this module's shapes, not Robinhood's;
-  any other served tool answers a JSON-RPC error.
+  The captured list (`Raxol.Broker.Tools.Catalog.recorded_tools/0`). The
+  scenario answers `get_accounts`, `get_equity_quotes`, `get_equity_positions`,
+  `get_equity_orders`, `get_alert_log` and the equity, option and crypto
+  `review_*`/`preview_*`, `place_*` and `cancel_*` tools in this module's shapes;
+  any other tool answers a JSON-RPC error.
 
-  ## Scenario
+  ## Scenario (`scenario/1`, `start/1`)
 
-  `scenario/1` (or `start/1` directly) takes:
+    * `:account` - the tradable account (default `"FAKE-0001"`)
+    * `:quotes` - `%{symbol => price}`; unlisted symbols are omitted
+    * `:positions`, `:alerts` - answered by `get_equity_positions`, `get_alert_log`
+    * `:warnings` - the `"alerts"` every `review_*` returns (default `[]`)
+    * `:reject` - symbols whose `place_*` answers `isError: true`
+    * `:trade_approvals` - `true`: reviews carry `"customer_approval_required"`
+      and `place_*` returns a pending `"approval_id"`, creating no order
+    * `:order_states` - states per `get_equity_orders` call (default
+      `["queued"]`); `cancel_*` moves to `"cancelled"`
+    * `:accept` - accepted access tokens (default: every token)
+    * `:tools` - extra tool definitions; one with a default's name replaces it
+    * `:faults` - see below
 
-    * `:account` - the one tradable account `get_accounts` lists
-      (default `"FAKE-0001"`).
-    * `:quotes` - `%{symbol => price}`; `get_equity_quotes` and every review
-      quote it. A symbol not listed is omitted from the answer.
-    * `:positions` - maps, answered by `get_equity_positions`.
-    * `:alerts` - fired alerts, answered by `get_alert_log`.
-    * `:warnings` - the `"alerts"` every `review_*` returns (default `[]`).
-    * `:reject` - symbols whose `place_*` answers `isError: true`.
-    * `:trade_approvals` - `true` models an account with trade approvals on:
-      every `review_*` carries `"customer_approval_required": true`, and a
-      `place_*` answers a pending approval (`"approval_id"`, in the Fake's
-      own shape) and creates no order (default `false`).
-    * `:order_states` - the states a placed order moves through, one step per
-      `get_equity_orders` call (default `["queued"]`). `cancel_*` moves an
-      order to `"cancelled"`.
-    * `:accept` - the access tokens the Fake accepts (see Authorization and
-      refusals; default unset: every token).
-    * `:tools` - tool definitions (wire form) served in addition to the
-      default list; one with a default tool's name replaces it. This is how a
-      test serves a tool the capture lacks, or a changed schema.
-    * `:faults` - see below.
-
-  `place_*` is idempotent on `ref_id`, as Robinhood documents it: the same
-  `ref_id` answers the same order and creates no second one.
+  `place_*` is idempotent on `ref_id`.
 
   ## Faults
 
-  Each fault is `{match, fault}` or `{match, fault, times}` (default once).
-  `match` is a tool name, a JSON-RPC method (`"initialize"`), or `:any`. The
-  first entry matching a request is consumed; a faulted request never reaches
-  the scenario, so it places nothing and is not in `calls/1`.
+  `{match, fault}` or `{match, fault, times}` (default once); `match` is a tool
+  name, a JSON-RPC method or `:any`. A fault is consumed before authorization or
+  routing, places nothing and is not in `calls/1`.
 
-    * `{:http, status}` - an HTTP error (429, 5xx). The client sees only the
-      status: the transport drops a non-2xx response's headers.
-    * `:malformed` - a 200 whose body is not JSON. The client finds no reply
-      in it, so the call gets no answer and ends at its call timeout.
-    * `{:slow, ms}` - answers normally after `ms`.
-    * `:closed` - a transport failure with no response,
-      `{:error, {:transport, :closed}}` as the real exchange reports it.
-    * `:hold` - waits until `release/1`, then answers normally. A gate for
-      tests that need callers queued behind a connect, without a sleep.
-    * `{:error, reason}` - the exchange fails with `reason` and no response,
-      for the transport's other failures, e.g. `{:timeout, :connect}`,
-      `{:timeout, :deadline}` or `{:task_down, :killed}`.
+    * `{:http, status}` - an HTTP error (headers are dropped by the transport)
+    * `:malformed` - a non-JSON 200; the call ends at its timeout
+    * `{:slow, ms}` - answers normally after `ms`
+    * `:closed` - `{:error, {:transport, :closed}}`
+    * `:hold` - waits for `release/1`, then answers
+    * `{:error, reason}` - e.g. `{:timeout, :connect}`, `{:task_down, :killed}`
 
-  A fault pre-empts everything below: it is consumed before the request is
-  authorized or routed.
+  ## Authorization
 
-  ## Authorization and refusals
-
-  With `:accept` set (or after `accept/2`), a request whose
-  `Authorization: Bearer` token is not one of those gets the 401 Robinhood
-  answers an invalid token, `www-authenticate` and body as recorded with the
-  auth exchange on 2026-10-02/03 (`priv/robinhood/invalid_token_401.json`).
-  Unset, every token is accepted, which is what `client_opts/2` relies on.
-  After `forbid_calls/1` every authorized `tools/call` answers 403.
-
-  `server/discover` always gets the plain-text 400 Robinhood serves for it
-  (observed 2026-10-03, `priv/robinhood/discover_400.json`), not a JSON-RPC
-  method-not-found, so a spec that is not pinned to the legacy era fails
-  against the Fake as it would against Robinhood. `session/1` and
-  `client_opts/2` are pinned.
-
-  Every exchange is in `requests/1` from the moment it arrives (status
-  `:pending` until it answers); every `tools/call` that reached the scenario
-  is in `calls/1` with its arguments. Neither records a header, so the bearer
-  token is never kept.
+  With `:accept` (or `accept/2`), a wrong bearer token gets Robinhood's recorded
+  401 (`priv/robinhood/invalid_token_401.json`). After `forbid_calls/1` every
+  `tools/call` answers 403. `server/discover` always gets Robinhood's plain-text
+  400 (`priv/robinhood/discover_400.json`), so an unpinned spec fails here as it
+  would live. `requests/1` lists every exchange (`:pending` until answered);
+  `calls/1` every `tools/call` that reached the scenario. No header is recorded.
   """
 
   alias Raxol.Agent.Auth.Credential
@@ -346,8 +309,6 @@ defmodule Raxol.Broker.MCP.Fake do
     )
   end
 
-  # -- the wire ---------------------------------------------------------------
-
   # Recorded on arrival, so an exchange that never answers (a `:hang` hook, a
   # `{:slow, ms}` fault, a task the transport killed) is still counted.
   defp exchange(fake, vetted, request, opts) do
@@ -477,8 +438,6 @@ defmodule Raxol.Broker.MCP.Fake do
 
   defp respond_with(:closed, _answer), do: {:error, {:transport, :closed}}
   defp respond_with({:error, _reason} = error, _answer), do: error
-
-  # -- tools/call -------------------------------------------------------------
 
   defp answer(fake, "tools/call", %{"name" => name} = params) do
     args = params["arguments"] || %{}
@@ -626,8 +585,6 @@ defmodule Raxol.Broker.MCP.Fake do
       "content" => [%{"type" => "text", "text" => Jason.encode!(body)}],
       "isError" => is_error
     }
-
-  # -- scenario validation ----------------------------------------------------
 
   defp known_keys!(opts) do
     case Keyword.keys(opts) -- @keys do

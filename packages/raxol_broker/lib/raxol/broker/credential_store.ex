@@ -107,8 +107,6 @@ defmodule Raxol.Broker.CredentialStore do
     end
   end
 
-  # -- envelope ---------------------------------------------------------------
-
   defp aad(version), do: "raxol_broker.credential|v#{version}|" <> @purpose
 
   defp seal(plaintext, <<_::256>> = key) do
@@ -168,8 +166,6 @@ defmodule Raxol.Broker.CredentialStore do
       _invalid -> {:error, :corrupt_store}
     end
   end
-
-  # -- reading ----------------------------------------------------------------
 
   defp read_trusted(file) do
     case File.lstat(file) do
@@ -248,8 +244,6 @@ defmodule Raxol.Broker.CredentialStore do
       uid -> stat.uid == uid
     end
   end
-
-  # -- writing ----------------------------------------------------------------
 
   defp ensure_dir(dir) do
     case File.lstat(dir) do
