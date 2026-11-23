@@ -65,23 +65,43 @@ defmodule Raxol.Earn.Wallet.SCA do
     # Alchemy multiplexes bundler + paymaster on one URL; default to it.
     paymaster_url = Keyword.get(opts, :paymaster_url, bundler_url)
 
+    cfg = %{
+      account: account,
+      chain: chain,
+      signer: signer,
+      entity_id: entity_id,
+      bundler_url: bundler_url,
+      entry_point: entry_point,
+      paymaster_policy_id: paymaster_policy_id,
+      paymaster_url: paymaster_url
+    }
+
+    quote do
+      unquote(wallet_functions(cfg))
+      unquote(provisioning_functions(cfg))
+      unquote(user_operation_functions(cfg))
+    end
+  end
+
+  # The `Raxol.Payments.Wallet` callbacks and the UserOperation signer.
+  defp wallet_functions(cfg) do
     quote do
       @behaviour Raxol.Payments.Wallet
 
       @impl true
-      def address, do: unquote(account)
+      def address, do: unquote(cfg.account)
 
       @impl true
-      def chain_id, do: unquote(chain)
+      def chain_id, do: unquote(cfg.chain)
 
       @impl true
       def sign_message(message) do
         Raxol.Earn.Wallet.SCA.sign_message(
           message,
-          unquote(signer),
-          unquote(chain),
-          unquote(account),
-          unquote(entity_id)
+          unquote(cfg.signer),
+          unquote(cfg.chain),
+          unquote(cfg.account),
+          unquote(cfg.entity_id)
         )
       end
 
@@ -91,10 +111,10 @@ defmodule Raxol.Earn.Wallet.SCA do
           domain,
           types,
           message,
-          unquote(signer),
-          unquote(chain),
-          unquote(account),
-          unquote(entity_id)
+          unquote(cfg.signer),
+          unquote(cfg.chain),
+          unquote(cfg.account),
+          unquote(cfg.entity_id)
         )
       end
 
@@ -104,13 +124,18 @@ defmodule Raxol.Earn.Wallet.SCA do
       @doc "Sign a UserOperation hash and return the packed UO signature."
       @spec sign_user_op_hash(<<_::256>>) :: {:ok, binary()} | {:error, term()}
       def sign_user_op_hash(uo_hash) do
-        Raxol.Earn.Wallet.SCA.sign_user_op_hash(uo_hash, unquote(signer))
+        Raxol.Earn.Wallet.SCA.sign_user_op_hash(uo_hash, unquote(cfg.signer))
       end
+    end
+  end
 
+  # Nonce key, counterfactual address and the self-deploy / session-key setup.
+  defp provisioning_functions(cfg) do
+    quote do
       @doc "Modular Account v2 nonce key for this account's session entity."
       @spec nonce_key(non_neg_integer()) :: non_neg_integer()
       def nonce_key(parallel_key \\ 0) do
-        Raxol.Earn.Wallet.SCA.ModularAccount.nonce_key(unquote(entity_id), true, parallel_key)
+        Raxol.Earn.Wallet.SCA.ModularAccount.nonce_key(unquote(cfg.entity_id), true, parallel_key)
       end
 
       @doc """
@@ -120,7 +145,7 @@ defmodule Raxol.Earn.Wallet.SCA do
       """
       @spec predicted_address(non_neg_integer()) :: String.t()
       def predicted_address(salt \\ 0) do
-        Raxol.Earn.Wallet.SCA.Provisioning.predict_address(unquote(signer).address(), salt)
+        Raxol.Earn.Wallet.SCA.Provisioning.predict_address(unquote(cfg.signer).address(), salt)
       end
 
       @doc """
@@ -130,7 +155,7 @@ defmodule Raxol.Earn.Wallet.SCA do
       """
       @spec deploy_init_code(non_neg_integer()) :: binary()
       def deploy_init_code(salt \\ 0) do
-        Raxol.Earn.Wallet.SCA.Provisioning.deploy_init_code(unquote(signer).address(), salt)
+        Raxol.Earn.Wallet.SCA.Provisioning.deploy_init_code(unquote(cfg.signer).address(), salt)
       end
 
       @doc """
@@ -142,22 +167,27 @@ defmodule Raxol.Earn.Wallet.SCA do
       @spec own_session_key_install_calldata(keyword()) :: binary()
       def own_session_key_install_calldata(opts \\ []) do
         Raxol.Earn.Wallet.SCA.Provisioning.install_session_key_calldata(
-          unquote(signer).address(),
-          unquote(entity_id),
+          unquote(cfg.signer).address(),
+          unquote(cfg.entity_id),
           opts
         )
       end
+    end
+  end
 
+  # Bundler, paymaster and configuration accessors.
+  defp user_operation_functions(cfg) do
+    quote do
       @doc "Sign and send a UserOperation via the configured bundler."
       @spec send_user_operation(Raxol.Earn.Wallet.SCA.UserOp.t(), keyword()) ::
               {:ok, String.t()} | {:error, term()}
       def send_user_operation(op, opts \\ []) do
         Raxol.Earn.Wallet.SCA.send_user_operation(
           op,
-          unquote(signer),
-          unquote(bundler_url),
-          unquote(entry_point),
-          unquote(chain),
+          unquote(cfg.signer),
+          unquote(cfg.bundler_url),
+          unquote(cfg.entry_point),
+          unquote(cfg.chain),
           opts
         )
       end
@@ -172,9 +202,9 @@ defmodule Raxol.Earn.Wallet.SCA do
       def sponsor(op, opts \\ []) do
         Raxol.Earn.Wallet.SCA.sponsor(
           op,
-          unquote(paymaster_url),
-          unquote(paymaster_policy_id),
-          unquote(entry_point),
+          unquote(cfg.paymaster_url),
+          unquote(cfg.paymaster_policy_id),
+          unquote(cfg.entry_point),
           opts
         )
       end
@@ -194,11 +224,11 @@ defmodule Raxol.Earn.Wallet.SCA do
 
       @doc "The configured EntryPoint address."
       @spec entry_point() :: String.t()
-      def entry_point, do: unquote(entry_point)
+      def entry_point, do: unquote(cfg.entry_point)
 
       @doc "The configured session-key entity id (validating entity slot)."
       @spec signer_entity_id() :: non_neg_integer()
-      def signer_entity_id, do: unquote(entity_id)
+      def signer_entity_id, do: unquote(cfg.entity_id)
 
       @doc """
       The owner / session-key EOA address (the `:signer` wallet's address).
@@ -207,11 +237,11 @@ defmodule Raxol.Earn.Wallet.SCA do
       account, distinct from `address/0` (the SCA contract address).
       """
       @spec owner_address() :: String.t()
-      def owner_address, do: unquote(signer).address()
+      def owner_address, do: unquote(cfg.signer).address()
 
       @doc "The configured bundler URL (resolving `{:system, var}`)."
       @spec bundler_url() :: {:ok, String.t()} | {:error, term()}
-      def bundler_url, do: Raxol.Earn.Wallet.SCA.resolve_bundler_url(unquote(bundler_url))
+      def bundler_url, do: Raxol.Earn.Wallet.SCA.resolve_bundler_url(unquote(cfg.bundler_url))
 
       @doc """
       Poll the bundler for a UserOperation receipt by its hash. Returns
@@ -220,7 +250,7 @@ defmodule Raxol.Earn.Wallet.SCA do
       @spec await_user_operation(String.t(), keyword()) ::
               {:ok, map()} | {:error, term()}
       def await_user_operation(op_hash, opts \\ []) do
-        Raxol.Earn.Wallet.SCA.await_user_operation(op_hash, unquote(bundler_url), opts)
+        Raxol.Earn.Wallet.SCA.await_user_operation(op_hash, unquote(cfg.bundler_url), opts)
       end
     end
   end

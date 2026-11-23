@@ -253,40 +253,7 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
 
   # -- WebSocket frames --
 
-  defp handle_frame({:text, payload}, state) do
-    case Protocol.decode(payload) do
-      {:open, info} ->
-        ping = info["pingInterval"] || 25_000
-        state = %{state | phase: :awaiting_connect_ok, ping_interval_ms: ping}
-        send_frame(state, Protocol.encode_connect(state.auth))
-
-      {:connect_ok, _info} ->
-        state = %{state | phase: :ready}
-        notify(state, :ready)
-        state
-
-      {:event, name, args, ack_id} ->
-        notify(state, {:event, name, args, ack_id})
-        state
-
-      :ping ->
-        send_frame(state, Protocol.encode_pong())
-
-      :disconnect ->
-        teardown(state, :server_disconnect) |> schedule_reconnect()
-
-      :close ->
-        teardown(state, :server_close) |> schedule_reconnect()
-
-      {:connect_error, reason} ->
-        Logger.warning("[earn.ws] connect_error: #{inspect(reason)}")
-        teardown(state, {:connect_error, reason}) |> schedule_reconnect()
-
-      {:unknown, raw} ->
-        Logger.debug("[earn.ws] unknown frame: #{inspect(raw)}")
-        state
-    end
-  end
+  defp handle_frame({:text, payload}, state), do: handle_message(Protocol.decode(payload), state)
 
   defp handle_frame({:close, code, reason}, state) do
     Logger.debug("[earn.ws] websocket closed: #{inspect(code)} #{inspect(reason)}")
@@ -294,6 +261,41 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
   end
 
   defp handle_frame(_other, state), do: state
+
+  # One decoded Socket.IO message (`Protocol.decode/1`).
+  defp handle_message({:open, info}, state) do
+    ping = info["pingInterval"] || 25_000
+    state = %{state | phase: :awaiting_connect_ok, ping_interval_ms: ping}
+    send_frame(state, Protocol.encode_connect(state.auth))
+  end
+
+  defp handle_message({:connect_ok, _info}, state) do
+    state = %{state | phase: :ready}
+    notify(state, :ready)
+    state
+  end
+
+  defp handle_message({:event, name, args, ack_id}, state) do
+    notify(state, {:event, name, args, ack_id})
+    state
+  end
+
+  defp handle_message(:ping, state), do: send_frame(state, Protocol.encode_pong())
+
+  defp handle_message(:disconnect, state),
+    do: teardown(state, :server_disconnect) |> schedule_reconnect()
+
+  defp handle_message(:close, state), do: teardown(state, :server_close) |> schedule_reconnect()
+
+  defp handle_message({:connect_error, reason}, state) do
+    Logger.warning("[earn.ws] connect_error: #{inspect(reason)}")
+    teardown(state, {:connect_error, reason}) |> schedule_reconnect()
+  end
+
+  defp handle_message({:unknown, raw}, state) do
+    Logger.debug("[earn.ws] unknown frame: #{inspect(raw)}")
+    state
+  end
 
   # -- Send + reconnect helpers --
 

@@ -145,9 +145,8 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
   @impl Raxol.Earn.ProviderAdapter
   def send_calls(%{config: cfg} = adapter, chain_id, calls) do
-    with {:ok, client} <- rpc_client(adapter, chain_id),
-         {:ok, hashes} <- send_each(client, adapter, chain_id, calls, cfg.private_key) do
-      {:ok, hashes}
+    with {:ok, client} <- rpc_client(adapter, chain_id) do
+      send_each(client, adapter, chain_id, calls, cfg.private_key)
     end
   end
 

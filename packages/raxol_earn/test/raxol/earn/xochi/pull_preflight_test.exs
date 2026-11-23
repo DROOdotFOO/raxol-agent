@@ -407,6 +407,16 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
   describe "an isValidSignature that reverts" do
     # `eth_call` erroring rather than returning: what a reverting contract
     # actually looks like on the wire.
+    # The account's isValidSignature call fails with `error`; the Permit2
+    # separator read still answers.
+    defp erc1271_call_payload([%{"to" => to} | _], error) do
+      if String.downcase(to) == String.downcase(@account) do
+        %{"error" => error}
+      else
+        %{"result" => "0x" <> Base.encode16(@permit2_separator, case: :lower)}
+      end
+    end
+
     defp erc1271_error_chain(error) do
       plug = fn conn ->
         {:ok, body, conn} = Plug.Conn.read_body(conn)
@@ -421,13 +431,7 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
               %{"result" => "0xef0100" <> String.duplicate("11", 20)}
 
             "eth_call" ->
-              [%{"to" => to} | _] = req["params"]
-
-              if String.downcase(to) == String.downcase(@account) do
-                %{"error" => error}
-              else
-                %{"result" => "0x" <> Base.encode16(@permit2_separator, case: :lower)}
-              end
+              erc1271_call_payload(req["params"], error)
           end
 
         conn

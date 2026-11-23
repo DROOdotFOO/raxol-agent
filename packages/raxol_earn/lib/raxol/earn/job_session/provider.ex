@@ -134,27 +134,29 @@ defmodule Raxol.Earn.JobSession.Provider do
 
   defp do_accept_request(p, request, budget) do
     with :ok <- ensure_checkpoint(p) do
-      case HandlerSeam.invoke(p.handler, :request, request, ctx(p)) do
-        {:accept, response} ->
-          with {:ok, tx} <-
-                 HookClient.set_budget(
-                   p.adapter,
-                   p.chain_id,
-                   p.acp_core_address,
-                   p.job_id,
-                   budget.raw_amount
-                 ),
-               :ok = ck_put(p, :accept, %{"tx_hash" => tx}),
-               {:ok, :budget_set} <-
-                 JobSession.apply_event(p.session, :budget_set, %{tx_hash: tx}) do
-            {:ok, %{status: :budget_set, tx_hash: tx, response: response}}
-          end
-
-        {:reject, reason} ->
-          {:rejected, reason}
-      end
+      p.handler
+      |> HandlerSeam.invoke(:request, request, ctx(p))
+      |> answer_request(p, budget)
     end
   end
+
+  defp answer_request({:accept, response}, p, budget) do
+    with {:ok, tx} <-
+           HookClient.set_budget(
+             p.adapter,
+             p.chain_id,
+             p.acp_core_address,
+             p.job_id,
+             budget.raw_amount
+           ),
+         :ok = ck_put(p, :accept, %{"tx_hash" => tx}),
+         {:ok, :budget_set} <-
+           JobSession.apply_event(p.session, :budget_set, %{tx_hash: tx}) do
+      {:ok, %{status: :budget_set, tx_hash: tx, response: response}}
+    end
+  end
+
+  defp answer_request({:reject, reason}, _p, _budget), do: {:rejected, reason}
 
   @doc """
   Produce and submit the deliverable once the job is funded.
@@ -189,25 +191,24 @@ defmodule Raxol.Earn.JobSession.Provider do
 
   defp do_deliver(p, request) do
     with :ok <- ensure_checkpoint(p) do
-      case ck_fetch(p, :submit) do
-        # The write committed pre-crash but the mirror (or the API the session
-        # was rehydrated from) lagged: mirror and return, no handler, no tx.
-        {:ok, %{"tx_hash" => tx} = rec} when is_binary(tx) ->
-          with {:ok, :submitted} <-
-                 JobSession.apply_event(p.session, :submitted, %{tx_hash: tx, resumed: true}) do
-            {:ok, %{status: :submitted, tx_hash: tx, deliverable: pinned(rec), resumed: true}}
-          end
-
-        # The handler ran pre-crash but the write did not commit: reuse the
-        # pinned bytes so the exact same hash is (re)submitted.
-        {:ok, rec} ->
-          sign_submit(p, rec)
-
-        :error ->
-          run_handler_and_submit(p, request)
-      end
+      deliver_from(ck_fetch(p, :submit), p, request)
     end
   end
+
+  # The write committed pre-crash but the mirror (or the API the session
+  # was rehydrated from) lagged: mirror and return, no handler, no tx.
+  defp deliver_from({:ok, %{"tx_hash" => tx} = rec}, p, _request) when is_binary(tx) do
+    with {:ok, :submitted} <-
+           JobSession.apply_event(p.session, :submitted, %{tx_hash: tx, resumed: true}) do
+      {:ok, %{status: :submitted, tx_hash: tx, deliverable: pinned(rec), resumed: true}}
+    end
+  end
+
+  # The handler ran pre-crash but the write did not commit: reuse the
+  # pinned bytes so the exact same hash is (re)submitted.
+  defp deliver_from({:ok, rec}, p, _request), do: sign_submit(p, rec)
+
+  defp deliver_from(:error, p, request), do: run_handler_and_submit(p, request)
 
   defp run_handler_and_submit(p, request) do
     case HandlerSeam.invoke(p.handler, :deliver, request, ctx(p)) do

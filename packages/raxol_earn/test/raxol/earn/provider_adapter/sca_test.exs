@@ -334,37 +334,21 @@ defmodule Raxol.Earn.ProviderAdapter.SCATest do
     single_signer = ModularAccount.single_signer_validation_address()
     owner = SessionKey.address()
 
+    world = %{
+      deployed: deployed,
+      installed: installed,
+      op_success: op_success,
+      entry_point: entry_point,
+      single_signer: single_signer,
+      owner: owner
+    }
+
     plug = fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       req = Jason.decode!(body)
       send(events, {:rpc_call, req["method"], req["params"]})
 
-      result =
-        case req["method"] do
-          "eth_call" ->
-            eth_call_result(req["params"], entry_point, single_signer, owner, installed)
-
-          "eth_getCode" ->
-            if deployed, do: "0x60806040", else: "0x"
-
-          "alchemy_requestGasAndPaymasterAndData" ->
-            @gm_result
-
-          "eth_sendUserOperation" ->
-            @op_hash
-
-          "eth_getUserOperationReceipt" ->
-            user_op_receipt(req["params"], op_success)
-
-          "eth_getTransactionReceipt" ->
-            @receipt
-
-          "eth_getLogs" ->
-            @logs
-
-          _ ->
-            nil
-        end
+      result = rpc_result(req["method"], req["params"], world)
 
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
@@ -377,6 +361,20 @@ defmodule Raxol.Earn.ProviderAdapter.SCATest do
     Application.put_env(:raxol_earn, :rpc, url: @rpc_url, plug: plug)
     plug
   end
+
+  defp rpc_result("eth_call", params, w),
+    do: eth_call_result(params, w.entry_point, w.single_signer, w.owner, w.installed)
+
+  defp rpc_result("eth_getCode", _params, w), do: if(w.deployed, do: "0x60806040", else: "0x")
+  defp rpc_result("alchemy_requestGasAndPaymasterAndData", _params, _w), do: @gm_result
+  defp rpc_result("eth_sendUserOperation", _params, _w), do: @op_hash
+
+  defp rpc_result("eth_getUserOperationReceipt", params, w),
+    do: user_op_receipt(params, w.op_success)
+
+  defp rpc_result("eth_getTransactionReceipt", _params, _w), do: @receipt
+  defp rpc_result("eth_getLogs", _params, _w), do: @logs
+  defp rpc_result(_method, _params, _w), do: nil
 
   # eth_call dispatches on `to`: getNonce (EntryPoint), installed? getter
   # (single-signer module), or an arbitrary read (returns decimals = 6).

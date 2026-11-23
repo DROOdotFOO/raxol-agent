@@ -72,18 +72,7 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
             result(id, hex(21_000))
 
           "eth_sendRawTransaction" ->
-            case :ets.lookup(table, :fail_send) do
-              [{:fail_send, true}] ->
-                %{
-                  "jsonrpc" => "2.0",
-                  "id" => id,
-                  "error" => %{"code" => -32_000, "message" => "execution reverted"}
-                }
-
-              _ ->
-                n = :ets.update_counter(table, :tx_counter, 1)
-                result(id, "0x" <> String.pad_leading(Integer.to_string(n, 16), 64, "0"))
-            end
+            send_raw_result(table, id)
 
           # send_calls now confirms the tx before reporting success; a mined
           # receipt with status 0x1 keeps the nonce assertions focused on the
@@ -95,6 +84,22 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
       |> Plug.Conn.send_resp(200, Jason.encode!(payload))
+    end
+  end
+
+  # A revert when the test armed `:fail_send`, otherwise the next fake tx hash.
+  defp send_raw_result(table, id) do
+    case :ets.lookup(table, :fail_send) do
+      [{:fail_send, true}] ->
+        %{
+          "jsonrpc" => "2.0",
+          "id" => id,
+          "error" => %{"code" => -32_000, "message" => "execution reverted"}
+        }
+
+      _ ->
+        n = :ets.update_counter(table, :tx_counter, 1)
+        result(id, "0x" <> String.pad_leading(Integer.to_string(n, 16), 64, "0"))
     end
   end
 

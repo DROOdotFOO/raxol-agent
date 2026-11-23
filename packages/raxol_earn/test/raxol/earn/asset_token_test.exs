@@ -26,7 +26,7 @@ defmodule Raxol.Earn.AssetTokenTest do
 
     test "unknown chain raises" do
       assert_raise ArgumentError, ~r/unknown chain_id/, fn ->
-        AssetToken.usdc(1, 12345)
+        AssetToken.usdc(1, 12_345)
       end
     end
   end
