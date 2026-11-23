@@ -1,6 +1,4 @@
 defmodule Raxol.CLI.Updater do
-  use Raxol.Core.Behaviours.BaseManager
-
   @moduledoc """
   Version checks and verified self-update for a Burrito-packaged binary.
 
@@ -14,6 +12,9 @@ defmodule Raxol.CLI.Updater do
   workflow for that tag) before it is extracted or installed. The replaced
   executable is kept so `rollback_update/1` can restore it.
 
+  Nothing here runs a process of its own except `start_update/1`, which
+  runs one update in a task the caller owns and can cancel.
+
   ## Options
 
   Every function takes a keyword list; each option defaults to the running
@@ -25,141 +26,34 @@ defmodule Raxol.CLI.Updater do
     * `:current_version` - the installed version (default: the manifest's `:app`)
     * `:current_executable` - the binary to replace (default: the Burrito binary)
     * `:platform` - the manifest platform key (default: the host's)
-    * `:backup_dir`, `:download_dir` - default to the update settings' paths
+    * `:settings_path` - the settings file (default: `~/.raxol/update_settings.json`)
+    * `:backup_dir`, `:download_dir` - default to the settings' paths
     * `:work_dir` - scratch directory (default: a fresh temp dir, removed after)
   """
 
   alias Raxol.CLI.Updater.{Core, State}
 
-  # --- Client API ---
+  @type result :: :ok | {:no_update, String.t()} | {:error, term()}
 
-  # start_link is provided by BaseManager
+  @typedoc "An update running in a task linked to the process that started it."
+  @opaque in_flight :: %{task: Task.t(), work_dir: Path.t(), owns_work_dir?: boolean()}
 
-  def get_update_settings do
-    State.get_update_settings()
+  @spec get_update_settings(keyword()) :: State.t()
+  def get_update_settings(opts \\ []), do: opts |> State.path() |> State.load()
+
+  @spec set_update_settings(State.t(), keyword()) :: :ok | {:error, File.posix()}
+  def set_update_settings(%State{} = settings, opts \\ []),
+    do: State.save(settings, State.path(opts))
+
+  @spec default_update_settings() :: State.t()
+  def default_update_settings, do: State.new()
+
+  @doc "Enables or disables automatic update checks."
+  @spec set_auto_check(boolean(), keyword()) :: :ok | {:error, File.posix()}
+  def set_auto_check(enabled, opts \\ []) when is_boolean(enabled) do
+    path = State.path(opts)
+    path |> State.load() |> State.set_auto_check(enabled) |> State.save(path)
   end
-
-  def set_update_settings(settings) do
-    State.set_update_settings(settings)
-  end
-
-  def default_update_settings do
-    State.default_update_settings()
-  end
-
-  @doc "Downloads and verifies a release asset; see `install_update/3`."
-  def download_update(version, opts \\ []) do
-    Core.download_update(version, opts)
-  end
-
-  @doc "Re-verifies and installs an asset fetched by `download_update/2`."
-  def install_update(context, version, opts \\ []) do
-    Core.install_update(context, version, opts)
-  end
-
-  def handle_no_update(_context, {:no_update, _current_version}) do
-    :ok
-  end
-
-  @doc "Restores the executable the last install replaced."
-  def rollback_update(opts \\ []) do
-    Core.rollback_update(opts)
-  end
-
-  def get_current_version(opts \\ []) do
-    Core.get_current_version(opts)
-  end
-
-  @doc """
-  The executable an update would replace: `:current_executable`, else the
-  Burrito binary this node runs from; `{:error, :not_running_as_binary}` on a
-  plain `mix`/`iex` node.
-  """
-  def current_executable(opts \\ []) do
-    Core.current_executable(opts)
-  end
-
-  def get_available_versions(opts \\ []) do
-    Core.get_available_versions(opts)
-  end
-
-  def get_update_history do
-    State.get_update_history()
-  end
-
-  def clear_update_history do
-    State.clear_update_history()
-  end
-
-  def get_update_progress do
-    State.get_update_progress()
-  end
-
-  def cancel_update do
-    State.cancel_update()
-  end
-
-  def get_update_error do
-    State.get_update_error()
-  end
-
-  def clear_update_error do
-    State.clear_update_error()
-  end
-
-  def get_update_log do
-    State.get_update_log()
-  end
-
-  def clear_update_log do
-    State.clear_update_log()
-  end
-
-  def get_update_stats do
-    State.get_update_stats()
-  end
-
-  def clear_update_stats do
-    State.clear_update_stats()
-  end
-
-  def update(opts \\ []) do
-    Core.update(opts)
-  end
-
-  # --- Server Callbacks ---
-
-  @impl Raxol.Core.Behaviours.BaseManager
-  def init_manager(opts) do
-    Core.init(opts)
-  end
-
-  @impl Raxol.Core.Behaviours.BaseManager
-  def handle_manager_call({:install_update, version}, from, state) do
-    Core.handle_call({:install_update, version}, from, state)
-  end
-
-  @impl Raxol.Core.Behaviours.BaseManager
-  def handle_manager_call(:get_update_settings, from, state) do
-    Core.handle_call(:get_update_settings, from, state)
-  end
-
-  @impl Raxol.Core.Behaviours.BaseManager
-  def handle_manager_call({:set_update_settings, settings}, from, state) do
-    Core.handle_call({:set_update_settings, settings}, from, state)
-  end
-
-  @impl Raxol.Core.Behaviours.BaseManager
-  def handle_manager_call(:check_for_updates, from, state) do
-    Core.handle_call(:check_for_updates, from, state)
-  end
-
-  @impl Raxol.Core.Behaviours.BaseManager
-  def handle_manager_call(:get_update_status, from, state) do
-    Core.handle_call(:get_update_status, from, state)
-  end
-
-  # --- Public Helper Functions ---
 
   @doc """
   Checks whether a newer release than the installed version is published.
@@ -170,9 +64,9 @@ defmodule Raxol.CLI.Updater do
   Returns `{:update_available, version}`, `{:no_update, current_version}`,
   or `{:error, reason}`.
   """
-  def check_for_updates(opts \\ []) do
-    Core.check(opts)
-  end
+  @spec check_for_updates(keyword()) ::
+          {:update_available, String.t()} | {:no_update, String.t()} | {:error, term()}
+  def check_for_updates(opts \\ []), do: Core.check(opts)
 
   @doc """
   Updates the running binary to `version` (default: the newest release),
@@ -183,17 +77,103 @@ defmodule Raxol.CLI.Updater do
   `SHA256SUMS` and, with provenance required, the release's attestation
   covers it; a provenance failure is `{:error, {:provenance_failed, reason}}`.
   """
-  def self_update(version \\ nil, opts \\ []) do
-    Core.self_update(version, opts)
+  @spec self_update(String.t() | nil, keyword()) :: result()
+  def self_update(version \\ nil, opts \\ []), do: Core.self_update(version, opts)
+
+  @doc "`self_update/2` to `opts[:version]`, else to whatever `check_for_updates/1` finds."
+  @spec update(keyword() | map()) :: result()
+  def update(opts \\ []), do: Core.update(opts)
+
+  @doc """
+  Runs `update/1` in a task linked to the caller, for `await_update/2` or
+  `cancel_update/1`; only the process that started it may call either,
+  and only once per handle: a second call on the same handle never returns.
+  Without `:work_dir` the update gets a fresh private scratch directory,
+  removed when it is awaited or cancelled.
+  """
+  @spec start_update(keyword()) ::
+          {:ok, in_flight()} | {:error, File.posix() | :work_dir_not_empty}
+  def start_update(opts \\ []) do
+    with {:ok, work_dir, owns?} <- work_dir(opts) do
+      task = Task.async(Core, :update, [Keyword.put(opts, :work_dir, work_dir)])
+      {:ok, %{task: task, work_dir: work_dir, owns_work_dir?: owns?}}
+    end
   end
+
+  @doc """
+  Waits up to `timeout` for an update from `start_update/1` and returns its
+  result. An update still running at the timeout is stopped, as by
+  `cancel_update/1`, and the result is `{:error, :timeout}`.
+  """
+  @spec await_update(in_flight(), timeout()) :: result() | {:error, :timeout}
+  def await_update(%{task: task} = in_flight, timeout \\ :infinity) do
+    case Task.yield(task, timeout) || Task.shutdown(task) do
+      {:ok, result} -> result
+      {:exit, reason} -> {:error, {:exit, reason}}
+      nil -> {:error, :timeout}
+    end
+  after
+    remove_work_dir(in_flight)
+  end
+
+  @doc """
+  Stops an update from `start_update/1`. `:cancelled` when it was still
+  running, else `{:finished, result}` with the result it already had.
+
+  The executable is replaced by a single rename, so a cancelled update
+  leaves either the old binary or the new one in place, never a mix. On
+  Windows the swap is handed to a script that runs after a short delay;
+  a cancel that lands after that hand-off does not stop it.
+  """
+  @spec cancel_update(in_flight()) :: :cancelled | {:finished, result()}
+  def cancel_update(%{task: task} = in_flight) do
+    case Task.shutdown(task) do
+      nil -> :cancelled
+      {:ok, result} -> {:finished, result}
+      {:exit, reason} -> {:finished, {:error, {:exit, reason}}}
+    end
+  after
+    remove_work_dir(in_flight)
+  end
+
+  @doc "Downloads and verifies a release asset; see `install_update/3`."
+  @spec download_update(String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def download_update(version, opts \\ []), do: Core.download_update(version, opts)
+
+  @doc "Re-verifies and installs an asset fetched by `download_update/2`."
+  @spec install_update(map(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  def install_update(context, version, opts \\ []),
+    do: Core.install_update(context, version, opts)
+
+  @doc "Restores the executable the last install replaced."
+  @spec rollback_update(keyword()) :: :ok | {:error, term()}
+  def rollback_update(opts \\ []), do: Core.rollback_update(opts)
+
+  @spec get_current_version(keyword()) :: String.t() | nil
+  def get_current_version(opts \\ []), do: Core.get_current_version(opts)
+
+  @doc """
+  The executable an update would replace: `:current_executable`, else the
+  Burrito binary this node runs from; `{:error, :not_running_as_binary}` on a
+  plain `mix`/`iex` node.
+  """
+  @spec current_executable(keyword()) :: {:ok, Path.t()} | {:error, term()}
+  def current_executable(opts \\ []), do: Core.current_executable(opts)
+
+  @spec get_available_versions(keyword()) :: {:ok, [String.t()]} | {:error, term()}
+  def get_available_versions(opts \\ []), do: Core.get_available_versions(opts)
 
   @doc "Prints a notice when `check_for_updates/1` finds a newer release."
-  def notify_if_update_available(opts \\ []) do
-    Core.notify_if_update_available(opts)
+  @spec notify_if_update_available(keyword()) :: :ok
+  def notify_if_update_available(opts \\ []), do: Core.notify_if_update_available(opts)
+
+  defp work_dir(opts) do
+    case Keyword.fetch(opts, :work_dir) do
+      {:ok, dir} -> {:ok, dir, false}
+      :error -> with {:ok, dir} <- Core.fresh_work_dir(), do: {:ok, dir, true}
+    end
   end
 
-  @doc "Enables or disables automatic update checks."
-  def set_auto_check(enabled) when is_boolean(enabled) do
-    State.set_auto_check(enabled)
-  end
+  defp remove_work_dir(%{owns_work_dir?: true, work_dir: dir}), do: File.rm_rf(dir)
+  defp remove_work_dir(%{owns_work_dir?: false}), do: :ok
 end

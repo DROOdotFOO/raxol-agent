@@ -211,6 +211,83 @@ defmodule Raxol.CLI.UpdateTest do
     assert stderr =~ "unknown options"
   end
 
+  describe "the command line, exactly" do
+    @help """
+    Usage: raxol update [options]
+
+    Options:
+      --check            Check for an update without installing
+      --version VERSION  Install a specific CLI release version
+      -h, --help         Show this help
+
+    Downloads the matching Burrito binary from the latest raxol-cli GitHub
+    release, verifies it against SHA256SUMS and the release's Sigstore
+    provenance (built by this repository's release workflow for that tag),
+    and replaces the running binary.
+    The replaced binary is kept in ~/.raxol/backups/previous_version.
+
+    """
+
+    test "--help and -h print the usage without touching the network", ctx do
+      for flag <- ["--help", "-h"] do
+        out =
+          capture_io(fn -> assert Update.run([flag], runtime("http://127.0.0.1:1", ctx)) == 0 end)
+
+        assert out == @help
+      end
+    end
+
+    test "--check on the newest release reports it is up to date", ctx do
+      base = serve()
+      opts = runtime(base, ctx, current_version: "0.2.7")
+
+      out = capture_io(fn -> assert Update.run(["--check"], opts) == 0 end)
+
+      assert out == "Current version: 0.2.7\nRaxol is up to date\n"
+      assert File.read!(ctx.exe) == @old
+    end
+
+    test "--check with --version reports that release without installing", ctx do
+      base = serve()
+
+      out =
+        capture_io(fn ->
+          assert Update.run(["--check", "--version", "0.2.7"], runtime(base, ctx)) == 0
+        end)
+
+      assert out ==
+               "Current version: 0.2.6\nNew version available: 0.2.7\n" <>
+                 "Run `raxol update` to install the update\n"
+
+      assert File.read!(ctx.exe) == @old
+    end
+
+    test "an install prints every step", ctx do
+      base = serve()
+
+      out = capture_io(fn -> assert Update.run([], runtime(base, ctx)) == 0 end)
+
+      assert out ==
+               "Current version: 0.2.6\nNew version available: 0.2.7\n" <>
+                 "Downloading raxol-#{@platform}…\n" <>
+                 "✔ Updated to 0.2.7 (verified against SHA256SUMS)\n" <>
+                 "Restart raxol to use the new version\n"
+    end
+
+    test "usage errors exit 64 with one line on stderr", ctx do
+      runtime = runtime("http://127.0.0.1:1", ctx)
+
+      for {args, message} <- [
+            {["--wat"], "raxol update: unknown options: --wat\n"},
+            {["--check=maybe"], "raxol update: unknown options: --check maybe\n"},
+            {["now", "please"], "raxol update: unexpected arguments: now please\n"}
+          ] do
+        stderr = capture_io(:stderr, fn -> assert Update.run(args, runtime) == 64 end)
+        assert stderr == message, "for #{inspect(args)}"
+      end
+    end
+  end
+
   defp auto_opts(base, ctx, overrides \\ []) do
     auto =
       Keyword.merge(
