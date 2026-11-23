@@ -60,8 +60,6 @@ defmodule Raxol.Payments.Zksar.TrustScore do
   @spec weights() :: map()
   def weights, do: @type_weights
 
-  # -- Private --
-
   defp diminishing(1), do: 1.0
   defp diminishing(rank) when rank > 1, do: 1.0 / :math.log(rank + 1)
 end

@@ -60,9 +60,9 @@ defmodule Raxol.Payments.RebalancePolicyTest do
     end
 
     test "both halves of the pair error advise something the code can honour" do
-      # The advice used to be "unset the multiplier", which raises the OTHER half
-      # of this same rule when a cap is still configured. An error whose fix does
-      # not work is worse than no advice.
+      # "Unset the multiplier" would raise the OTHER half of this same rule when
+      # a cap is still configured. An error whose fix does not work is worse
+      # than no advice.
       for opts <- [
             [demand_multiplier: "0.1", demand_floor_cap: nil],
             [demand_multiplier: nil, demand_floor_cap: "500"]

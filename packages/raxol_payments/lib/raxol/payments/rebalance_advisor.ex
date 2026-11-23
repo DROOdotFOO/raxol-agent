@@ -117,8 +117,6 @@ defmodule Raxol.Payments.RebalanceAdvisor do
     recs
   end
 
-  # -- Gas refuel --
-
   defp refuel_recommendations(policy, balances, drain, price_fn) do
     gas = Map.get(balances, :gas, %{})
 
@@ -207,7 +205,7 @@ defmodule Raxol.Payments.RebalanceAdvisor do
     end
   end
 
-  # -- Inventory rebalance (per stable asset) --
+  # Inventory rebalance (per stable asset)
 
   defp inventory_recommendations(policy, balances, demand) do
     # A surplus can live on a chain that only appears in inventory_target, so scan
@@ -300,8 +298,6 @@ defmodule Raxol.Payments.RebalanceAdvisor do
   defp rail_for("USDC"), do: :cctp
   defp rail_for(_symbol), do: :bridge
 
-  # -- Telemetry --
-
   defp emit_recommendation({:refuel_gas, r}) do
     :telemetry.execute(
       [:raxol, :payments, :rebalance, :recommendation],
@@ -351,8 +347,6 @@ defmodule Raxol.Payments.RebalanceAdvisor do
       }
     )
   end
-
-  # -- helpers --
 
   defp inventory_balance(balances, chain, symbol) do
     get_in(balances, [:inventory, chain, symbol]) || Decimal.new(0)

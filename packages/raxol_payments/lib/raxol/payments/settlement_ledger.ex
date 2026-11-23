@@ -128,8 +128,6 @@ defmodule Raxol.Payments.SettlementLedger do
   # the Robinhood Chain stable `RebalancePolicy` already treats as one.
   @stablecoins ["USDC", "USDT", "USDBC", "PYUSD", "DAI", "USDG"]
 
-  # -- Public API --
-
   @doc """
   Record a completed fill. Idempotent by `intent_id`: a second record for the same
   intent returns `{:ok, :duplicate}` and does not overwrite or re-emit telemetry.
@@ -346,8 +344,6 @@ defmodule Raxol.Payments.SettlementLedger do
     }
   end
 
-  # -- BaseManager callbacks --
-
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
     table_name = Keyword.get(opts, :table_name, :raxol_payments_settlements)
@@ -410,8 +406,6 @@ defmodule Raxol.Payments.SettlementLedger do
     {:reply, entries, state}
   end
 
-  # -- Entry construction --
-
   defp build_entry(input) do
     fee_decimals = Map.get(input, :fee_decimals, 6)
     gas_chain_id = Map.get(input, :gas_chain_id) || Map.get(input, :to_chain_id)
@@ -462,8 +456,6 @@ defmodule Raxol.Payments.SettlementLedger do
     )
   end
 
-  # -- Filtering --
-
   defp filter_opts(opts),
     do: Keyword.take(opts, [:from_chain_id, :to_chain_id, :settlement_type, :since_ms])
 
@@ -477,7 +469,7 @@ defmodule Raxol.Payments.SettlementLedger do
     end)
   end
 
-  # -- Aggregation (pure; runs in the caller) --
+  # Aggregation (pure; runs in the caller)
 
   defp group_by(entries, key_fun, opts) do
     entries

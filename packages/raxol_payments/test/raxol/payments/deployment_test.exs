@@ -85,10 +85,8 @@ defmodule Raxol.Payments.DeploymentTest do
     end
 
     # The permissive half of this rule (`Raxol.Playground.Demos.ReplDemo`) and
-    # the restrictive half (here) must read ONE predicate. They did not before
-    # #1045's review: the demo read `config :raxol, :repl_exposed`, this read
-    # `config :raxol_payments, :repl_exposed`, and configuring the former
-    # enabled anonymous evaluation while a signing node still booted.
+    # the restrictive half (here) must read ONE predicate; two keys would let one
+    # enable anonymous evaluation while a signing node still boots.
     test "the canonical config key alone refuses the co-location" do
       {app, key} = Raxol.Core.Boundary.Evaluation.config_key()
       Application.put_env(:raxol_payments, :deployment, :production)

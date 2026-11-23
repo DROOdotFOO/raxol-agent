@@ -62,8 +62,6 @@ defmodule Mix.Tasks.Raxol.Docs.Tools do
     end
   end
 
-  # --- introspection --------------------------------------------------------
-
   defp load_actions do
     modules =
       Raxol.Agent.Actions.Skills.actions() ++
@@ -115,8 +113,6 @@ defmodule Mix.Tasks.Raxol.Docs.Tools do
 
   defp type_str(_), do: "any"
 
-  # --- rendering ------------------------------------------------------------
-
   defp build_doc(agent, payments) do
     total = length(agent) + length(payments)
     sensitive = Enum.count(agent ++ payments, & &1.sensitive)
@@ -167,8 +163,6 @@ defmodule Mix.Tasks.Raxol.Docs.Tools do
 
     header <> "\n" <> rows
   end
-
-  # --- helpers --------------------------------------------------------------
 
   defp one_line(text) do
     text

@@ -161,7 +161,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
     * `{:invalid_quote_id, %{field: field, value: value}}` -- an empty intent
       or quote id.
     * `:recipient_is_destination_token` -- funds paid to the token contract are
-      unspendable (raxol#869), and no signature can catch it.
+      unspendable, and no signature can catch it.
 
   The signer is only ever an operator's out-of-band pin:
   `opts[:deposit_attestation_signer]`, else `config :raxol_payments,
@@ -336,7 +336,7 @@ defmodule Raxol.Payments.Protocols.Xochi do
   end
 
   # The venue really would deliver to the token contract, so the signature
-  # verifies; the funds are still unspendable there (raxol#869).
+  # verifies; the funds are still unspendable there.
   # Case-folded on both sides: on today's EVM destinations that is the address
   # rule, and for a case-sensitive encoding it can only over-refuse.
   defp refuse_token_recipient(%{recipient: recipient, to_token: to_token}) do

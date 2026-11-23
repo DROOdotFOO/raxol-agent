@@ -61,8 +61,6 @@ defmodule Mix.Tasks.RaxolPayments.Anvil do
     end
   end
 
-  # --- option parsing ---
-
   defp parse_opts(argv) do
     {opts, _argv, _invalid} =
       OptionParser.parse(argv,
@@ -87,8 +85,6 @@ defmodule Mix.Tasks.RaxolPayments.Anvil do
       echo?: not Keyword.get(opts, :no_echo, false)
     ]
   end
-
-  # --- anvil ---
 
   @doc false
   def check_anvil_available do
@@ -176,8 +172,6 @@ defmodule Mix.Tasks.RaxolPayments.Anvil do
     end
   end
 
-  # --- echo server ---
-
   defp maybe_start_echo(opts) do
     if opts[:echo?] do
       case EchoServer.start_link(port: opts[:echo_port], amount: opts[:echo_amount]) do
@@ -188,8 +182,6 @@ defmodule Mix.Tasks.RaxolPayments.Anvil do
       :ok
     end
   end
-
-  # --- summary ---
 
   defp print_summary(opts, anvil_port) do
     Mix.shell().info("""
@@ -229,8 +221,6 @@ defmodule Mix.Tasks.RaxolPayments.Anvil do
       "disabled"
     end
   end
-
-  # --- errors ---
 
   defp format_error(:anvil_not_found) do
     """

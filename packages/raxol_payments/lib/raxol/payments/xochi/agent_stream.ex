@@ -2,16 +2,10 @@ defmodule Raxol.Payments.Xochi.AgentStream do
   @moduledoc """
   Emit signed swap activity to Xochi's privacy-first live agent stream.
 
-  A user subscribes their browser to a capability-scoped topic and watches their
-  own agents execute swaps in real time, with nothing identity-linked persisted
-  server-side. When a raxol agent executes a swap under a Mandate, it POSTs a
-  signed activity event to the user's topic via `POST /api/agent/announce`. The
-  worker relays it (no persistence) to the topic's Durable Object, which fans it
-  out to the browser. The client verifies each event's signature against the
-  Mandate it holds.
-
-  This module is the agent side of that contract. It byte-matches the Xochi wire
-  contract so client, worker, and agent can never drift.
+  An agent swapping under a Mandate POSTs a signed activity event to the user's
+  capability-scoped topic (`POST /api/agent/announce`); the worker relays it
+  without persistence to the browser, which verifies the signature against the
+  Mandate. This module byte-matches that wire contract.
 
   ## Capability model
 
@@ -35,15 +29,9 @@ defmodule Raxol.Payments.Xochi.AgentStream do
       }
 
       event = %{
-        intent_id: "intent-abc",
-        from_chain_id: 8453,
-        to_chain_id: 42161,
-        from_token: "0x...",
-        to_token: "0x...",
-        from_amount: "100000000",
-        to_amount: "99780000",
-        status: "completed",
-        ts: 1_700_000_000_000
+        intent_id: "intent-abc", from_chain_id: 8453, to_chain_id: 42161,
+        from_token: "0x...", to_token: "0x...", from_amount: "100000000",
+        to_amount: "99780000", status: "completed", ts: 1_700_000_000_000
       }
 
       :ok = Raxol.Payments.Xochi.AgentStream.announce(config, event)
@@ -267,8 +255,6 @@ defmodule Raxol.Payments.Xochi.AgentStream do
        }}
     end
   end
-
-  # -- Private --
 
   defp build_req(config) do
     validate_base_url!(config.xochi_api_url)

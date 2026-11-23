@@ -69,8 +69,6 @@ defmodule Raxol.Payments.ChainReader.JSONRPC do
 
   def get_erc20_balance(_state, _chain_id, _token, _owner), do: {:error, :invalid_argument}
 
-  # -- internal --
-
   defp pad_address("0x" <> hex), do: hex |> String.downcase() |> String.pad_leading(64, "0")
 
   defp parse_receipt(receipt) do

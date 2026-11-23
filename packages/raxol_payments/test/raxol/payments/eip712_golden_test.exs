@@ -27,7 +27,7 @@ defmodule Raxol.Payments.EIP712GoldenTest do
   @canonical_key "0x0000000000000000000000000000000000000000000000000000000000000001"
   @canonical_signer "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
 
-  # -- Xochi intent (viem-verified, mirrors riddler-client) --
+  # Xochi intent (viem-verified, mirrors riddler-client)
 
   @xochi_types %{
     "XochiIntent" => [
@@ -64,7 +64,7 @@ defmodule Raxol.Payments.EIP712GoldenTest do
   @xochi_signature "0xbe2545d815e4ce15d859e9bdee5bcb3a2f81e94a4b0fd0586220bd0235682d2f4bd1ea6082ddb8e59bb5557e91cb2f80e4dd3aef800e0fa4eabd0367a04c86061b"
   @xochi_golden_digest "0xdbed39b9cac50396d859f0b229f988208dcb9cc344ffe128e55cc9d72b50a704"
 
-  # -- x402 ERC-3009 ReceiveWithAuthorization --
+  # x402 ERC-3009 ReceiveWithAuthorization
 
   @erc3009_types %{
     "ReceiveWithAuthorization" => [
@@ -87,7 +87,7 @@ defmodule Raxol.Payments.EIP712GoldenTest do
   }
   @erc3009_golden_digest "0x794300931b17739ae0d4456a276138ccb6fe8ca18265210dd5849260902d1379"
 
-  # -- Permit2 PermitWitnessTransferFrom --
+  # Permit2 PermitWitnessTransferFrom
 
   @permit2_quote %{
     "request" => %{
@@ -130,8 +130,6 @@ defmodule Raxol.Payments.EIP712GoldenTest do
       {:ok, EIP712.pack_signature(sig)}
     end
   end
-
-  # -- Mandate --
 
   @mandate_attrs %{
     human_wallet: "0x1111111111111111111111111111111111111111",

@@ -12,8 +12,8 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
 
   v1 (seven lines, origin leg only) is refused: it proved the venue issued a
   deposit address for *an* intent, not that the intent is the caller's, so a
-  genuine v1 attestation is replayable onto someone else's request. Riddler has
-  issued only v3 since Riddler#862/#870.
+  genuine v1 attestation is replayable onto someone else's request. Riddler
+  issues only v3.
 
   ## Signed message (byte-exact with Riddler)
 
@@ -46,7 +46,7 @@ defmodule Raxol.Payments.Xochi.DepositAttestation do
       other value is verbatim (base58 is case-sensitive). `0X` is not folded.
     * `to_token` and `recipient` can hold a Canton party
       (`hint::1220<64 hex>`, free case-sensitive hint), so there only a value
-      that is entirely `0x` + hex is lowercased (Riddler#1254).
+      that is entirely `0x` + hex is lowercased.
     * Chain ids, `deposit_deadline` and the three amounts are decimal integers.
     * An absent optional (`deposit_deadline`, `refund_address`, either stealth
       key) is an empty line, never `null` and never an omitted line.

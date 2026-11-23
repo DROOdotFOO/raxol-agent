@@ -44,8 +44,6 @@ defmodule Raxol.Payments.Ledger do
           metadata: map()
         }
 
-  # -- Public API --
-
   @doc """
   Record a completed payment.
   """
@@ -286,8 +284,6 @@ defmodule Raxol.Payments.Ledger do
     end
   end
 
-  # -- BaseManager callbacks --
-
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
     table_name = Keyword.get(opts, :table_name, :raxol_payments_ledger)
@@ -492,8 +488,6 @@ defmodule Raxol.Payments.Ledger do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
-
-  # -- Private --
 
   # Drop tags past the TTL, then cap the map to its newest entries. Runs off the
   # sweep timer and the manual `sweep_reservations/1`, never on the tag hot path.

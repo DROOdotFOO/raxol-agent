@@ -115,8 +115,6 @@ defmodule Raxol.Payments.Wallets.Env do
     end
   end
 
-  # -- Private --
-
   # Sign a 32-byte digest with the revealed key. Always called inside
   # `Secret.with_revealed/2`, so a raising signing NIF cannot carry the key into
   # a crash report.

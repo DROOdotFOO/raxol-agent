@@ -47,7 +47,7 @@ defmodule Raxol.Payments.Deployment do
 
   defp release?, do: is_binary(System.get_env("RELEASE_NAME"))
 
-  # -- Boot gates (call at startup in a fund-moving deployment) --
+  # Boot gates (call at startup in a fund-moving deployment)
 
   @doc """
   True when Erlang distribution is disabled or running over TLS.

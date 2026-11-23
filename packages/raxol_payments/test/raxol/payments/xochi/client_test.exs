@@ -152,7 +152,7 @@ defmodule Raxol.Payments.Xochi.ClientTest do
     end
   end
 
-  # xochi#563: execute returns a one-time read capability; the reads present it
+  # Execute returns a one-time read capability; the reads present it
   # in a header so a stealth/shielded intent's on-chain legs come back.
   describe "read token" do
     @token "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
@@ -486,8 +486,6 @@ defmodule Raxol.Payments.Xochi.ClientTest do
       assert_raise ArgumentError, fn -> Client.claim(config, @claim_params) end
     end
   end
-
-  # -- Helpers --
 
   defp config(opts) do
     %{base_url: "https://api.xochi.fi", req_options: [plug: echo_plug(self())]}

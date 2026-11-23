@@ -13,8 +13,7 @@ defmodule Raxol.Payments.Test.CliSigner do
 
   ## Resolving the CLI
 
-  The taker CLI (formerly axol-io/riddler-sdk `packages/sdk-taker`) now lives
-  in the private Riddler repo as `packages/e2e-signer`. It is run from its
+  The taker CLI lives in the private Riddler repo as `packages/e2e-signer`. It is run from its
   built output, so build it first (`npm ci && npm run build` in
   `packages/e2e-signer`). Riddler is private, so `:cli_signer` stays a
   local-only tag.
@@ -139,8 +138,6 @@ defmodule Raxol.Payments.Test.CliSigner do
       checkout_dir -> if cli_present?(checkout_dir), do: checkout_dir
     end
   end
-
-  # -- Internals --
 
   defp resolve_cwd(opts) do
     cwd = opts[:cwd] || System.get_env("RIDDLER_CHECKOUT_DIR")

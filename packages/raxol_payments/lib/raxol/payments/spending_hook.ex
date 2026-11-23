@@ -76,8 +76,6 @@ defmodule Raxol.Payments.SpendingHook do
     end
   end
 
-  # -- Private --
-
   # Reserve the spend atomically in the gate so two concurrent Pay commands
   # cannot both pass a check before either records (the TOCTOU that a separate
   # check-then-record opens). `try_spend` checks the caps and records in one

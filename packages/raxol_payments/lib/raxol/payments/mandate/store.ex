@@ -50,8 +50,6 @@ defmodule Raxol.Payments.Mandate.Store do
   alias Raxol.Core.Stores.{Dets, Naming}
   alias Raxol.Payments.Mandate
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -140,8 +138,6 @@ defmodule Raxol.Payments.Mandate.Store do
   @spec by_member_table(atom()) :: atom()
   def by_member_table(server) when is_atom(server), do: :"#{server}.ByMember"
 
-  # -- BaseManager callbacks --
-
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
     name = Naming.registered_name!(__MODULE__)
@@ -213,7 +209,7 @@ defmodule Raxol.Payments.Mandate.Store do
   @impl GenServer
   def terminate(_reason, state), do: Dets.close(state.dets)
 
-  # -- Private: secondary index maintenance --
+  # Private: secondary index maintenance
 
   defp drop_secondary_indices(tables, hash) do
     case :ets.lookup(tables.primary, hash) do
@@ -226,7 +222,7 @@ defmodule Raxol.Payments.Mandate.Store do
     end
   end
 
-  # -- Private: DETS replay --
+  # Private: DETS replay
 
   # Re-insert a record read back from disk into all three live ETS
   # tables, rebuilding the secondary indices. Passed to

@@ -408,7 +408,7 @@ defmodule Raxol.Payments.Failure do
   # Anything else: transient transport errors become :network, the rest :unknown.
   def from(reason), do: network_or_unknown(reason)
 
-  # -- Builders for each family --
+  # Builders for each family
 
   defp settlement_failure(:completed, _error),
     do: build(:unknown, "The transfer reported completion as a failure.", false, :completed)
@@ -591,8 +591,6 @@ defmodule Raxol.Payments.Failure do
 
   defp invalid_request(detail),
     do: build(:invalid_request, "The payment request was invalid.", false, detail)
-
-  # -- Helpers --
 
   defp mapped_code(body) when is_map(body) do
     code = body["error"] || body["reason"]

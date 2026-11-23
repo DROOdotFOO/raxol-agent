@@ -82,8 +82,6 @@ defmodule Raxol.Payments.Test.ConformanceFixture do
     end
   end
 
-  # -- Internals --
-
   defp locate_path! do
     case do_locate() do
       nil -> raise not_found_message()
