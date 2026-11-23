@@ -44,7 +44,7 @@ defmodule Raxol.Earn.Xochi.PullPreflightRailsTest do
       assert details.signer_kind == :eoa
     end
 
-    # The #772 defect on this rail, in the direction it would actually appear:
+    # The versioned-domain defect on this rail, in the direction it would appear:
     # the token declares a `version` and the signer drops it, so the separator
     # the token rebuilds is not the one the signature covers. Nothing in the
     # payload looks wrong -- only the chain-sourced separator tells them apart.
@@ -107,8 +107,8 @@ defmodule Raxol.Earn.Xochi.PullPreflightRailsTest do
 
   # Every other test in this file signs with a digest the test builds. That is
   # fine for proving the checker distinguishes two digests, and useless for
-  # proving it agrees with the thing that will actually sign in production --
-  # which is the property #772 lost. Here the bundle comes out of
+  # proving it agrees with the thing that will actually sign in production.
+  # Here the bundle comes out of
   # `Xochi.sign_intent/3` itself, so a divergence anywhere in the real signing
   # path (domain projection, types projection, pull selection) fails this.
   describe "against a bundle the production signer produced" do
@@ -250,7 +250,7 @@ defmodule Raxol.Earn.Xochi.PullPreflightRailsTest do
 
       line =
         served
-        |> verify(pre_878_signature(served), @account, rpc: chain())
+        |> verify(versioned_domain_signature(served), @account, rpc: chain())
         |> PullPreflight.describe()
 
       assert line =~ "REJECTED"

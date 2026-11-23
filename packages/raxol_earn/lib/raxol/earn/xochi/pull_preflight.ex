@@ -3,16 +3,11 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
   Read-only check that the origin pull a buyer just signed will actually be
   accepted on chain, before anything is escrowed or funded.
 
-  The pull is the step that has failed every funded attempt on GitHub #772. It
-  fails at the far end of a long sequence -- quote, sign, `createJob`, fund,
-  provider `setBudget`, solver relay -- and reports back as a status string with
-  no detail (`validation_failed`, or a bare `pull_failed`), so each attempt cost
-  a job, an escrow, and a round trip through two other repositories to learn one
-  bit. This asks the two contracts involved the same question directly, for the
-  price of four read-only calls: `eth_chainId` (which chain the node speaks for),
-  `eth_getCode` (which branch the pull will take), and one `eth_call` each for
-  the separator and the signature check. An EOA buyer costs three -- there is no
-  `isValidSignature` to call.
+  A failed pull otherwise surfaces only at the end of quote, sign, `createJob`,
+  fund, `setBudget` and solver relay, as a bare `validation_failed` or
+  `pull_failed`. This asks the contracts directly in four read-only calls:
+  `eth_chainId`, `eth_getCode` (which branch the pull takes), and one `eth_call`
+  each for the separator and the signature check (an EOA buyer costs three).
 
   ## What it proves
 
@@ -21,84 +16,35 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
       digest     = keccak256(0x1901 || separator || structHash)
       magic      = Account.isValidSignature(digest, pull_signature)
 
-  A `0x1626ba7e` means the account vouches for that signature over that digest,
-  and the digest was built on the separator the verifier itself will rebuild. So
-  the pull's signature check passes.
-
-  The separator being READ rather than computed is the whole point. Checking our
-  own signature against a digest from our own `domain` projection is circular:
-  both sides of the comparison carry the same mistake and agree. #772 was exactly
-  that -- a `version` field we inserted and Permit2 never declared, which every
-  test agreed with because every test rebuilt the domain the same way we did.
-  Sourcing the domain half from the contract breaks the loop.
-
-  The struct half is not chain-sourced. It is encoded by `Raxol.Payments.EIP712`,
-  which the Permit2 and ERC-3009 conformance suites pin against ethers-generated
-  vectors, and projected into that encoder by
-  `Raxol.Payments.Protocols.Xochi.eip712_types/1` -- the SIGNER's own function,
-  called rather than mirrored. Those are two different guarantees and only the
-  first is a vector pin: what the shared call buys is that this module and the
-  signer cannot drift into rebuilding different struct hashes, which would
-  surface as a REJECTED verdict on a signature that was fine.
+  `0x1626ba7e` means the pull's signature check passes. The separator is READ,
+  not computed: checking our own signature against our own `domain` projection is
+  circular, since both sides carry the same mistake. The struct half is encoded by
+  `Raxol.Payments.EIP712` (vector-pinned) using the signer's own
+  `Raxol.Payments.Protocols.Xochi.eip712_types/1`, so the two cannot drift.
 
   ## What it does not prove
 
-  Only the signature check. A pull can still revert on allowance, balance,
-  an expired deadline, or a spent nonce, and this deliberately does not read
-  those: they are properties of funding time, not signing time, and the order
-  task reports the allowance separately.
+    * Allowance, balance, deadline or nonce: funding-time properties, not read.
+    * The corridor the operator asked for. `same_chain/2` compares the served
+      `domain.chainId` with the node only; binding to the requested origin is
+      `Protocols.Xochi.validate_pull/3`'s `:pull_chain` check, a precondition of
+      calling `verify/4`.
+    * Verifier policy beyond `ecrecover` on the EOA branch (a canonical 65 bytes,
+      `v` 27/28, recovered address equals the buyer).
+    * Later chain state: `signer_kind` is a snapshot, and a 7702 delegation set
+      or revoked before settlement changes the branch.
+    * The Xochi intent signature, whose domain has no `verifyingContract`.
+    * The witness type string. Permit2 concatenates it rather than sorting
+      referenced types; `OriginPullWitness` happens to sort before
+      `TokenPermissions`, so they agree. Renaming the witness could diverge
+      undetected; pinning the type string is that guard.
 
-  It does not bind the pull to the corridor the OPERATOR asked for. `same_chain/2`
-  compares the served `domain.chainId` against the node, never against a
-  requested origin -- so a pull for the wrong chain, checked against a node that
-  speaks for that wrong chain, passes here. That binding is
-  `Protocols.Xochi.validate_pull/3`'s `:pull_chain` check, which runs before
-  signing and is a precondition of using this module rather than a duplicate of
-  it. A caller reaching for `verify/4` on its own owes itself that check.
+  ## Outcomes
 
-  Three narrower limits are worth stating rather than leaving to be discovered.
-
-  The EOA branch checks what `ecrecover` checks: a canonical 65 bytes, `v` of 27
-  or 28, and a recovered address equal to the buyer's. Any acceptance policy the
-  verifier layers ON TOP of that -- signature malleability rules, for instance --
-  is the verifier's and is not modelled here, so a pass is a statement about
-  recovery rather than about every rule the contract may apply.
-
-  Both branches also read chain state at preflight time, and the pull happens
-  later. `signer_kind` in particular is a snapshot: a 7702 delegation set or
-  revoked between here and settlement moves the buyer between the ERC-1271 and
-  ecrecover branches, and the verdict was for the branch that was live when the
-  question was asked.
-
-  It also needs a `verifyingContract` to ask, so it covers the pull (Permit2 or
-  the ERC-3009 token) and not the Xochi intent signature, whose domain is keyed
-  by `salt` with no contract behind it.
-
-  One blind spot is worth naming, because it is the same shape as the bug this
-  exists to catch. Permit2 builds its `PermitWitnessTransferFrom` typehash by
-  concatenating a fixed stub with the caller's witness type string, where EIP-712
-  sorts referenced types alphabetically. For `OriginPullWitness` the two agree --
-  `OriginPullWitness` sorts before `TokenPermissions` -- so the struct hash here
-  matches Permit2's. A witness type renamed to sort after `TokenPermissions`
-  would diverge, and this check would not see it: it would encode the struct the
-  same wrong way the signer did, and both would agree. Only the domain half is
-  sourced from the chain. Pinning the witness type string is the guard for that,
-  not this.
-
-  ## Three outcomes, and which of them may spend money
-
-  `verify/4` answers `{:ok, _}`, `{:rejected, _}` or `{:inconclusive, _}`, and
-  the three are separate constructors rather than shades of `{:error, _}` on
-  purpose. A caller that funds on anything but `{:ok, _}` is spending money on an
-  unanswered question, and an `{:error, _}` catch-all is precisely how that
-  happens: every reason not yet enumerated lands in it silently, so the set of
-  ways to fund an unverifiable pull grows every time a new failure mode is added
-  here. With three constructors the caller must name what it does about each, and
-  a new reason joins an existing constructor rather than inventing a fourth path.
-
-  The split between `:rejected` and `:inconclusive` carries no safety weight --
-  neither may fund. It exists so the operator learns whether to fix the payload
-  or the environment.
+  `verify/4` answers `{:ok, _}`, `{:rejected, _}` or `{:inconclusive, _}`, never a
+  catch-all `{:error, _}`, so a caller must decide each explicitly. **Fund only
+  on `{:ok, _}`.** `:rejected` (fix the payload) and `:inconclusive` (fix the
+  environment) differ only in what the operator should fix.
   """
 
   alias Raxol.Earn.ABI
@@ -234,8 +180,6 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
       "check is not permission to escrow."
   end
 
-  # -- Internal --
-
   # The caller's answer to "who checks this signature", validated at the door so
   # a bad one stops at the call site rather than travelling in as a FunctionClause
   # from somewhere three functions deeper. Naming the verifier is a decision the
@@ -261,7 +205,7 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
   # made by the same party whose payload is under audit. Reading a separator from
   # an address the quote chose would let a hostile worker nominate a contract
   # whose DOMAIN_SEPARATOR() it controls, and the check would agree with the
-  # payload exactly the way #772's tests agreed with #772. So the served address
+  # payload it is auditing. So the served address
   # is never the pin -- it is only ever checked AGAINST one.
   defp verifying_contract(served, expected) do
     with {:ok, address} <- declared_verifier(served) do
@@ -513,20 +457,16 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
   end
 
   # An account that REVERTS rather than returning a value is a VERDICT, not a
-  # gap. This used to read every `eth_call` failure as `:inconclusive` on the
-  # grounds that a revert is indistinguishable from a node that dropped the
-  # call. It is not: `RPC.request/3` reports a node that answered with a
+  # gap. A revert is distinguishable from a node that dropped the call:
+  # `RPC.request/3` reports a node that answered with a
   # JSON-RPC error separately from one that could not be reached
   # (`{:transport, _}`), and by the time this runs the same client has already
   # answered `eth_chainId`, `eth_getCode` and `DOMAIN_SEPARATOR()`.
   #
-  # Collapsing the two mattered because it is the DEFAULT shape for the account
-  # this module was built for. Plenty of ERC-1271 implementations -- including
-  # smart accounts on the 7702 path of GitHub #772 -- revert on a bad signature
-  # instead of returning `0xffffffff`. Read as inconclusive, that stays soft
-  # under `--dry-run` and soft in the live gate, so the rehearsal scored PASS on
-  # exactly the defect it exists to find, and the funded run was left as the
-  # only thing catching it.
+  # Plenty of ERC-1271 implementations -- including 7702 smart accounts -- revert
+  # on a bad signature instead of returning `0xffffffff`. Read as inconclusive,
+  # that stays soft under `--dry-run` and in the live gate, so the rehearsal
+  # would PASS on exactly the defect it exists to find.
   #
   # Only an EXECUTION revert converts. A rate limit, a method the node does not
   # serve, an internal error -- all still `{:rpc_error, _}`, none of them a
@@ -693,7 +633,7 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
   defp describe_gap({:signer_kind_unavailable, account, _}),
     do: "eth_getCode did not answer for #{short(account)}, so the pull's own branch is unknown"
 
-  # An execution revert no longer lands here -- `classify_erc1271_failure/2`
+  # An execution revert never lands here -- `classify_erc1271_failure/2`
   # converts it to a rejection. What is left is the node failing to answer, or
   # answering with an error that says nothing about the signature (a rate limit,
   # an unserved method). Neither is a verdict, so neither may fund.

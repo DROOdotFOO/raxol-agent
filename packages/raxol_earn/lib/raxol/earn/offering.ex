@@ -29,10 +29,8 @@ defmodule Raxol.Earn.Offering do
         def handle_request(req, _ctx), do: {:accept, req}
 
         @impl true
-        def handle_deliver(req, _ctx) do
-          # do the work, return the deliverable
-          {:deliver, %{tx_hash: "0x...", stealth_addr: "0x..."}}
-        end
+        def handle_deliver(_req, _ctx),
+          do: {:deliver, %{tx_hash: "0x...", stealth_addr: "0x..."}}
       end
 
   ## What the macro injects

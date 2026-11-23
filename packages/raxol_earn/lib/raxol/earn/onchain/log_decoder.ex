@@ -55,8 +55,6 @@ defmodule Raxol.Earn.Onchain.LogDecoder do
           | {:topics, %{optional(pos_integer()) => String.t()}}
         ]
 
-  # -- Topic computation --
-
   @doc """
   Compute the 0x-prefixed lowercase hex of `keccak256(canonical_signature)`.
 
@@ -69,8 +67,6 @@ defmodule Raxol.Earn.Onchain.LogDecoder do
   def event_topic(canonical_signature) when is_binary(canonical_signature) do
     "0x" <> Base.encode16(ExKeccak.hash_256(canonical_signature), case: :lower)
   end
-
-  # -- Log lookup --
 
   @doc """
   Find the first log in `logs` whose `topics[0]` matches `event` and which
@@ -172,8 +168,6 @@ defmodule Raxol.Earn.Onchain.LogDecoder do
   defp normalize("0x" <> hex), do: "0x" <> String.downcase(hex)
   defp normalize(other) when is_binary(other), do: String.downcase(other)
 
-  # -- Indexed parameter decoders --
-
   @doc """
   Decode a 32-byte topic value (hex) as a `uint256`.
 
@@ -211,7 +205,7 @@ defmodule Raxol.Earn.Onchain.LogDecoder do
 
   def decode_address(other), do: {:error, {:bad_address, other}}
 
-  # -- Convenience: extract an indexed parameter --
+  # Convenience: extract an indexed parameter
 
   @doc """
   Find a log matching `event` (canonical signature or topic hash) under `opts`

@@ -45,7 +45,7 @@ defmodule Raxol.Earn.Xochi.CorridorAllowlist do
   @usdc_chains [1, 10, 137, 8453, 42_161]
 
   # USDT is a full any-direction relay mesh across the same five EVM chains (Base
-  # included). Mirrors Riddler's `Relay.Routes` `@usdt_chains` (riddler #526).
+  # included). Mirrors Riddler's `Relay.Routes` `@usdt_chains`.
   @usdt_chains [1, 10, 137, 8453, 42_161]
 
   # Robinhood Chain: USDG lives only here, so every USDG leg pivots on 4663.

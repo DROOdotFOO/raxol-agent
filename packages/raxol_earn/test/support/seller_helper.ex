@@ -21,7 +21,7 @@ defmodule Raxol.Earn.TestSupport.SellerHelper do
 
   Callers pass `seller_address:`. Unspecified values are cleared. The
   legacy `:wallet` and `:memo_opts` keys are accepted but ignored --
-  memos no longer require a separate signing wallet.
+  memos do not need a separate signing wallet.
   """
   @spec reset_seller(keyword()) :: :ok
   def reset_seller(opts \\ []) do

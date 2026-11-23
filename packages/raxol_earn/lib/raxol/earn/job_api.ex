@@ -68,8 +68,6 @@ defmodule Raxol.Earn.JobApi do
 
   @optional_callbacks register_agent: 2
 
-  # -- Dispatch --
-
   @spec browse_agents(t(), String.t(), browse_params()) ::
           {:ok, [agent_detail()]} | {:error, term()}
   def browse_agents(api, keyword, params \\ %{}) do

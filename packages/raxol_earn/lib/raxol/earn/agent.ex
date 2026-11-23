@@ -86,8 +86,6 @@ defmodule Raxol.Earn.Agent do
     stream_failures: 0
   ]
 
-  # -- Public API --
-
   @doc """
   Start a supervised agent.
 
@@ -195,8 +193,6 @@ defmodule Raxol.Earn.Agent do
   def post_message(server, key, content, content_type \\ "text") do
     GenServer.call(server, {:post_message, key, content, content_type})
   end
-
-  # -- GenServer callbacks --
 
   @impl GenServer
   def init(opts) do
@@ -331,8 +327,6 @@ defmodule Raxol.Earn.Agent do
   defp log_stream_end(_result, delay),
     do: Logger.info("ACP SSE stream ended; reconnecting in #{delay}ms")
 
-  # -- Stream --
-
   defp open_stream(state) do
     ctx = %{
       owner: self(),
@@ -342,8 +336,6 @@ defmodule Raxol.Earn.Agent do
 
     Transport.connect(state.transport, ctx)
   end
-
-  # -- Routing --
 
   defp route_entry(entry, state) do
     key = job_key(entry)

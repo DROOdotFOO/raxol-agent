@@ -67,8 +67,6 @@ defmodule Raxol.Earn.Auth do
   # Refresh ~60s before the JWT expires.
   @refresh_buffer_ms 60_000
 
-  # -- Public API --
-
   @doc """
   Start an Auth process.
 
@@ -111,8 +109,6 @@ defmodule Raxol.Earn.Auth do
   @spec get_state(GenServer.server()) :: t()
   def get_state(server), do: GenServer.call(server, :get_state)
 
-  # -- GenServer callbacks --
-
   @impl GenServer
   def init(opts) do
     state = %__MODULE__{
@@ -141,8 +137,6 @@ defmodule Raxol.Earn.Auth do
 
   @impl GenServer
   def format_status(status), do: Raxol.Agent.Secret.redact_status(status, [:token, :req_options])
-
-  # -- Internals --
 
   defp ensure_valid(state) do
     if token_still_valid?(state) do

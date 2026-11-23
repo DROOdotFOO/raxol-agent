@@ -74,8 +74,6 @@ defmodule Raxol.Earn.Transport do
               content_type :: String.t()
             ) :: :ok | {:error, term()}
 
-  # -- Dispatch helpers --
-
   @spec connect(t(), context()) :: :ok | {:error, term()}
   def connect(transport, ctx), do: transport.adapter.connect(transport, ctx)
 

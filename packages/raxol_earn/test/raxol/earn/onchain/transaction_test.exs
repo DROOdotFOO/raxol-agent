@@ -163,8 +163,6 @@ defmodule Raxol.Earn.Onchain.TransactionTest do
     end
   end
 
-  # -- Helpers --
-
   defp base_tx do
     Transaction.new(
       chain_id: 8453,

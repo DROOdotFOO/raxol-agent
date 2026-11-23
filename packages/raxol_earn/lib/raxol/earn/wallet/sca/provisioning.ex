@@ -178,8 +178,6 @@ defmodule Raxol.Earn.Wallet.SCA.Provisioning do
     selector <> head <> tail
   end
 
-  # -- Internal --
-
   defp validation_flags(opts) do
     user_op = if Keyword.get(opts, :user_op_validation, true), do: 1, else: 0
     signature = if Keyword.get(opts, :signature_validation, true), do: 2, else: 0

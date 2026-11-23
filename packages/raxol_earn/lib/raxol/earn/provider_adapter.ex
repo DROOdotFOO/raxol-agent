@@ -93,8 +93,6 @@ defmodule Raxol.Earn.ProviderAdapter do
 
   @callback supported_chain_ids(adapter()) :: [chain_id()]
 
-  # -- Dispatch helpers --
-
   @spec send_calls(adapter(), chain_id(), [call()]) :: {:ok, [String.t()]} | {:error, term()}
   def send_calls(adapter, chain_id, calls),
     do: adapter.adapter.send_calls(adapter, chain_id, calls)

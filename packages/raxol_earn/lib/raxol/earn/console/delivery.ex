@@ -61,8 +61,6 @@ defmodule Raxol.Earn.Console.Delivery do
     end
   end
 
-  # -- pipeline steps --------------------------------------------------------
-
   defp materialize(%{files: files}, job_id) do
     dir = Path.join(System.tmp_dir!(), "raxol_console_" <> sanitize(job_id))
     _ = File.rm_rf(dir)

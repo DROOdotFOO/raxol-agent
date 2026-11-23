@@ -135,8 +135,6 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
     %{adapter: __MODULE__, config: config}
   end
 
-  # -- ProviderAdapter callbacks --
-
   @impl Raxol.Earn.ProviderAdapter
   def get_address(%{config: %{address: addr}}), do: addr
 
@@ -205,8 +203,6 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
       RPC.request(client, "eth_getLogs", [params])
     end
   end
-
-  # -- Internals --
 
   defp rpc_client(%{config: %{chains: chains}}, chain_id) do
     case Map.fetch(chains, chain_id) do

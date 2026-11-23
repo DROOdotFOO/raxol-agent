@@ -293,8 +293,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCATest do
     end
   end
 
-  # -- Scaffolding --
-
   defp acp_call do
     %{
       to: @acp_core,
@@ -414,8 +412,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCATest do
     }
   end
 
-  # -- Assertion helpers --
-
   defp nonce_key_of_userop(%{"nonce" => "0x" <> hex}) do
     {nonce, ""} = Integer.parse(hex, 16)
     nonce >>> 64
@@ -434,8 +430,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCATest do
       0 -> Enum.reverse(acc)
     end
   end
-
-  # -- Byte helpers --
 
   defp down(s), do: String.downcase(s)
   defp hex(bin), do: "0x" <> Base.encode16(bin, case: :lower)

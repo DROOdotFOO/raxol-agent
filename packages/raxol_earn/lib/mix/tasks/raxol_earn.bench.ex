@@ -77,8 +77,6 @@ defmodule Mix.Tasks.RaxolEarn.Bench do
     if summary.gate_met?, do: :ok, else: System.halt(1)
   end
 
-  # -- Setup --
-
   defp seed_privkey_if_missing do
     case System.get_env(@bench_privkey_env) do
       nil -> System.put_env(@bench_privkey_env, @anvil_test_key)
@@ -105,8 +103,6 @@ defmodule Mix.Tasks.RaxolEarn.Bench do
       {:error, {:already_registered, _name}} -> :ok
     end
   end
-
-  # -- Reporting --
 
   defp print_report(summary, quiet?) do
     Mix.shell().info("")

@@ -79,7 +79,7 @@ defmodule Raxol.Earn.Xochi.SolverFeeLiveTest do
       principal_atomic =
         Assets.to_atomic(Decimal.new(ctx.amount), Assets.decimals(ctx.from, src_token))
 
-      # 1. Buyer signs a real Xochi intent for `principal_atomic`. Off-chain only.
+      # Buyer signs a real Xochi intent for `principal_atomic`. Off-chain only.
       request = %QuoteRequest{
         wallet: wallet,
         from_chain_id: ctx.from,
@@ -103,7 +103,7 @@ defmodule Raxol.Earn.Xochi.SolverFeeLiveTest do
         "signed_intent" => Map.new(bundle, fn {k, v} -> {to_string(k), v} end)
       }
 
-      # 2. Real SolverAgent, production path. The on-chain write is captured (Mock)
+      # Real SolverAgent, production path. The on-chain write is captured (Mock)
       #    but the budget VALUE it produces is real and asserted below.
       {solver, provider} = start_solver(wallet, ctx)
       job_id = Integer.to_string(System.unique_integer([:positive]))
@@ -112,7 +112,7 @@ defmodule Raxol.Earn.Xochi.SolverFeeLiveTest do
       Transport.Mock.deliver(solver.transport, job_created(ctx.from, job_id, wallet))
       Transport.Mock.deliver(solver.transport, requirement_msg(ctx.from, job_id, requirement))
 
-      # 3. Solver resolves the intent off LIVE Xochi and proposes the budget.
+      # Solver resolves the intent off LIVE Xochi and proposes the budget.
       session = await_budget(solver.pid, {ctx.from, job_id})
 
       expected = div(principal_atomic * ctx.fee_bps, 10_000)
@@ -127,7 +127,7 @@ defmodule Raxol.Earn.Xochi.SolverFeeLiveTest do
       assert session.budget_atomic == expected,
              "computed budget #{session.budget_atomic} is not #{ctx.fee_bps} bps of #{principal_atomic}"
 
-      # 4. The ON-CHAIN calldata carries exactly that budget.
+      # The ON-CHAIN calldata carries exactly that budget.
       assert [{_chain, [call]}] = ProviderAdapter.Mock.sent_calls(provider)
       assert call.to == Chain.mainnet().acp_core_address
 
@@ -141,8 +141,6 @@ defmodule Raxol.Earn.Xochi.SolverFeeLiveTest do
           "=> #{realized_bps} bps (fee_bps=#{ctx.fee_bps}, corridor #{ctx.from}->#{ctx.to})"
       )
     end
-
-    # -- Harness --
 
     defp start_solver(wallet, ctx) do
       transport = Transport.Mock.new()
@@ -234,8 +232,8 @@ defmodule Raxol.Earn.Xochi.SolverFeeLiveTest do
       end
     end
 
-    # Pin the origin-pull recipient to the verified XochiPull contracts (Riddler
-    # #591; Raxol.Payments.Xochi.PullContracts) with the pin REQUIRED. Origin pull
+    # Pin the origin-pull recipient to the verified XochiPull contracts
+    # (Raxol.Payments.Xochi.PullContracts) with the pin REQUIRED. Origin pull
     # + ERC-3009 now route through those per-chain contracts, not the bare solver
     # EOA the legacy pin matched, so this keeps the anti-drain guard ON (a quote
     # whose pull `to` is not a verified contract still aborts before signing) and

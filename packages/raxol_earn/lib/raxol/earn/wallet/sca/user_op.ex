@@ -144,8 +144,6 @@ defmodule Raxol.Earn.Wallet.SCA.UserOp do
     %{op | signature: signature}
   end
 
-  # -- Internal --
-
   # `accountGasLimits` and `gasFees` are bytes32 packed as
   # `(uint128(high) << 128) | uint128(low)` and stored big-endian.
   defp pack_gas_pair(high, low)

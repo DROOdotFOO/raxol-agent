@@ -45,8 +45,6 @@ defmodule Raxol.Earn.Buyer.Queue do
 
   @known_types [:budget_set, :submitted, :job_expired]
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -89,8 +87,6 @@ defmodule Raxol.Earn.Buyer.Queue do
   @spec defaults() :: map()
   def defaults, do: read_defaults()
 
-  # -- BaseManager callbacks --
-
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(_opts), do: {:ok, %{jobs: %{}}}
 
@@ -131,8 +127,6 @@ defmodule Raxol.Earn.Buyer.Queue do
     {:noreply, handle_event(event, state)}
   end
 
-  # -- Purchase origination --
-
   defp purchase(intent, defaults, state) do
     client = build_client(intent, defaults)
 
@@ -150,8 +144,6 @@ defmodule Raxol.Earn.Buyer.Queue do
         {:reply, {:error, reason}, state}
     end
   end
-
-  # -- Event handling --
 
   defp handle_event(%{type: :budget_set, job_id: job_id} = event, state) do
     with_job(:budget_set, job_id, state, fn client ->
@@ -211,8 +203,6 @@ defmodule Raxol.Earn.Buyer.Queue do
     drop(nil, Map.get(event, :job_id), :malformed, state)
   end
 
-  # -- Client construction --
-
   defp build_client(intent, defaults) do
     Client.new(
       adapter: defaults.provider_adapter,
@@ -250,8 +240,6 @@ defmodule Raxol.Earn.Buyer.Queue do
     end
   end
 
-  # -- Defaults --
-
   defp read_defaults do
     %{
       buyer_address: Application.get_env(:raxol_earn, :buyer_address),
@@ -283,8 +271,6 @@ defmodule Raxol.Earn.Buyer.Queue do
       %{adapter: _} = resolver -> resolver
     end
   end
-
-  # -- Helpers --
 
   defp with_job(type, job_id, state, fun) do
     case Map.fetch(state.jobs, job_id) do

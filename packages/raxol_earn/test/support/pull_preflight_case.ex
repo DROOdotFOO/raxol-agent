@@ -283,11 +283,10 @@ defmodule Raxol.Earn.Test.PullPreflightCase do
     sign_over(digest)
   end
 
-  # What the buyer emitted BEFORE #878: name/version/chainId/verifyingContract,
-  # with a version Permit2 never declared. This is the signature that reverted
-  # InvalidContractSignature() on Base and cost four funded attempts to find.
-  @spec pre_878_signature(map()) :: String.t()
-  def pre_878_signature(served) do
+  # A signature over name/version/chainId/verifyingContract, with a version
+  # Permit2 never declares. Permit2 reverts it with InvalidContractSignature().
+  @spec versioned_domain_signature(map()) :: String.t()
+  def versioned_domain_signature(served) do
     d = served["domain"]
 
     # The key is present and holds nil, which is exactly what the old

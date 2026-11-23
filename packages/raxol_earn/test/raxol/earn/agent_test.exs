@@ -245,8 +245,6 @@ defmodule Raxol.Earn.AgentTest do
     end
   end
 
-  # -- Helpers --
-
   defp eventually(check, attempts \\ 50)
   defp eventually(_check, 0), do: flunk("condition did not become true within 1s")
 

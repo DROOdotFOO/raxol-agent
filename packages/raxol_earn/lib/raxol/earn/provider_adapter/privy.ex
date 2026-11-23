@@ -95,8 +95,6 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
     %{adapter: __MODULE__, config: config}
   end
 
-  # -- ProviderAdapter callbacks --
-
   @impl Raxol.Earn.ProviderAdapter
   def get_address(%{config: %{address: addr}}), do: addr
 
@@ -167,8 +165,6 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
       RPC.request(client, "eth_getLogs", [build_log_filter(filter)])
     end
   end
-
-  # -- Internals --
 
   defp auth_key!(opts) do
     case Keyword.fetch(opts, :auth_key) do

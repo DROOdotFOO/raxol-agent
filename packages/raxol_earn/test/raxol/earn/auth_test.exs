@@ -73,8 +73,6 @@ defmodule Raxol.Earn.AuthTest do
     end
   end
 
-  # -- Credential loading --
-
   defp load_credentials do
     with {:ok, pk_hex} <- System.fetch_env("RAXOL_ACP_AGENT_PRIVATE_KEY"),
          {:ok, pk} <- decode_private_key(pk_hex) do

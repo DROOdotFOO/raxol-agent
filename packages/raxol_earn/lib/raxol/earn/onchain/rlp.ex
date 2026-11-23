@@ -59,8 +59,6 @@ defmodule Raxol.Earn.Onchain.Rlp do
     encode_list_prefix(byte_size(payload)) <> payload
   end
 
-  # -- Binary --
-
   defp encode_binary(<<byte>>) when byte < 0x80, do: <<byte>>
 
   defp encode_binary(bin) when byte_size(bin) <= 55 do
@@ -73,8 +71,6 @@ defmodule Raxol.Earn.Onchain.Rlp do
     <<0xB7 + byte_size(len_bytes)>> <> len_bytes <> bin
   end
 
-  # -- List prefix --
-
   defp encode_list_prefix(len) when len <= 55, do: <<0xC0 + len>>
 
   defp encode_list_prefix(len) do
@@ -82,7 +78,7 @@ defmodule Raxol.Earn.Onchain.Rlp do
     <<0xF7 + byte_size(len_bytes)>> <> len_bytes
   end
 
-  # -- Integer to minimal big-endian --
+  # Integer to minimal big-endian
 
   @doc false
   @spec to_minimal_be(non_neg_integer()) :: binary()
