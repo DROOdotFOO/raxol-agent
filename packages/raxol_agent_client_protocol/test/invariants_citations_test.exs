@@ -8,7 +8,7 @@ defmodule Raxol.AgentClientProtocol.InvariantsCitationsTest do
   # line must contain.
   @comment_citations %{
     "support/connection_case.ex:39" => "IC-8 pins Connection",
-    "integration/end_to_end_test.exs:301" => "IC-8",
+    "integration/end_to_end_test.exs:297" => "IC-8",
     "integration/end_to_end_test.exs:21" => "P-JS5",
     "attach_policy_test.exs:2" => "P-BUS4",
     "attach_policy_test.exs:165" => "CDI-1",

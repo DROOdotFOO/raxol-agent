@@ -189,8 +189,6 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
   @spec deny_wire() :: %{code: integer(), message: String.t()}
   def deny_wire, do: %{code: -32_000, message: "attach denied"}
 
-  # -- internals --------------------------------------------------------------
-
   @spec start_task(GenServer.server(), module(), map()) :: {:ok, Task.t()} | :error
   defp start_task(sup, policy, ctx) do
     {:ok, Task.Supervisor.async_nolink(sup, fn -> policy.authorize_attach(ctx) end)}

@@ -108,8 +108,6 @@ defmodule Raxol.AgentClientProtocol.Test.SessionCase do
   @spec turn_state(pid()) :: term()
   def turn_state(session), do: :sys.get_state(session).turn
 
-  # -- turn runners -----------------------------------------------------------
-
   @spec runner_ends(term()) :: (pid(), term() -> {:stop, term()})
   def runner_ends(reason), do: fn _s, _req -> {:stop, reason} end
 

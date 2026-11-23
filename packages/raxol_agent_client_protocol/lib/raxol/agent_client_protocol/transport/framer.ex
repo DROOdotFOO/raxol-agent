@@ -101,8 +101,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Framer do
     |> drain([])
   end
 
-  # -- Internal ---------------------------------------------------------
-
   # While skipping (mid-resync after an oversized frame), incoming bytes
   # are never accumulated into the buffer — only scanned for the next
   # `\n`, which cannot itself span a chunk boundary. This keeps memory

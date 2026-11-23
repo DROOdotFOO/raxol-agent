@@ -69,8 +69,6 @@ defmodule Raxol.AgentClientProtocol.Client do
   @spec callbacks() :: [{atom(), arity(), String.t()}]
   def callbacks, do: Codegen.callbacks(:client)
 
-  # -- Subscriptions ----------------------------------------------------------
-
   @doc """
   Registers `subscriber` for `{:acp_session_update, session_id, update}`
   broadcasts from `conn`. Idempotent: subscribing the same pid twice registers
@@ -118,8 +116,6 @@ defmodule Raxol.AgentClientProtocol.Client do
         {:raw, raw}
     end
   end
-
-  # -- Prompting --------------------------------------------------------------
 
   @doc """
   Sends `session/prompt` and returns `{:ok, {updates, response}}` with the
@@ -203,8 +199,6 @@ defmodule Raxol.AgentClientProtocol.Client do
     {:error, {reason, meta}}
   end
 
-  # -- use --------------------------------------------------------------------
-
   defmacro __using__(opts) do
     fs_sandbox = Keyword.get(opts, :fs_sandbox)
     fs_opts = Keyword.take(opts, [:fs_max_read_bytes])
@@ -263,8 +257,6 @@ defmodule Raxol.AgentClientProtocol.Client do
       defoverridable read_text_file: 2, write_text_file: 2
     end
   end
-
-  # -- Supervision ------------------------------------------------------------
 
   defmodule ConnectionSupervisor do
     @moduledoc false

@@ -121,8 +121,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Paired do
     :exit, _reason -> :ok
   end
 
-  # -- GenServer callbacks ---------------------------------------------
-
   @impl GenServer
   @spec init(server_state()) :: {:ok, server_state()}
   def init(state), do: {:ok, state}
@@ -172,8 +170,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Paired do
     state = emit(state, {:closed, :peer_closed})
     {:noreply, %{state | closed: true}}
   end
-
-  # -- Helpers ------------------------------------------------------------
 
   @spec initial_state() :: server_state()
   defp initial_state, do: %{owner: nil, peer: nil, closed: false, pending: []}

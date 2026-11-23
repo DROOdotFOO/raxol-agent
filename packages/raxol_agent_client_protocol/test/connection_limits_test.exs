@@ -13,7 +13,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionLimitsTest do
 
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.PromptResponse
 
-  # ===========================================================================
   # Inbound flood shedding (unbounded concurrent inbound dispatch — DoS).
   #
   # A hostile/slow peer that streams more concurrent inbound REQUESTS than the
@@ -21,7 +20,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionLimitsTest do
   # dispatch task set) without bound. The Connection must SHED the overflow —
   # answer `-32603` (server busy) and dispatch NOTHING — never block the link
   # and never let those maps grow past the cap.
-  # ===========================================================================
 
   defp start_agent_conn_capped(max_inbound) do
     task_sup = start_supervised!({Task.Supervisor, []})

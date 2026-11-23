@@ -254,8 +254,6 @@ defmodule Raxol.AgentClientProtocol.Connection do
     GenServer.call(conn, msg, timeout)
   end
 
-  # -- Lifecycle --------------------------------------------------------------
-
   @impl GenServer
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -383,8 +381,6 @@ defmodule Raxol.AgentClientProtocol.Connection do
     :ok
   end
 
-  # -- Callbacks --------------------------------------------------------------
-
   @impl GenServer
   def handle_call(msg, from, state), do: msg |> on_call(from, state) |> drain_check()
 
@@ -400,8 +396,6 @@ defmodule Raxol.AgentClientProtocol.Connection do
     do: {:stop, :normal, reply, Link.down(st)}
 
   defp drain_check(result), do: result
-
-  # -- Calls ------------------------------------------------------------------
 
   defp on_call({:request, method, params, timeout_ms}, from, state) do
     case Outbound.submit(state, method, params, timeout_ms, {:call, from}) do
@@ -437,8 +431,6 @@ defmodule Raxol.AgentClientProtocol.Connection do
     do: Inbound.reply(state, reply_ref, result)
 
   defp on_call(:close, _from, state), do: {:stop, :normal, :ok, Link.down(state)}
-
-  # -- Messages ---------------------------------------------------------------
 
   defp on_info({:outbound_timeout, id}, state), do: {:noreply, Outbound.timeout(state, id)}
 

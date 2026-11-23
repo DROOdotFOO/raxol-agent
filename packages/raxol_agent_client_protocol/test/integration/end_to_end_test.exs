@@ -55,9 +55,7 @@ defmodule Raxol.AgentClientProtocol.Integration.EndToEndTest do
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.PromptResponse
   alias Raxol.AgentClientProtocol.Schema.ContentBlock
 
-  # ===========================================================================
   # Reference agent + client handlers (a minimal, spec-faithful pair)
-  # ===========================================================================
 
   defmodule RefAgent do
     @moduledoc false
@@ -270,9 +268,7 @@ defmodule Raxol.AgentClientProtocol.Integration.EndToEndTest do
     end
   end
 
-  # ===========================================================================
   # Assembled-tree fixtures
-  # ===========================================================================
 
   setup do
     # Start EXACTLY the package Application's shared children (the assembled
@@ -407,9 +403,7 @@ defmodule Raxol.AgentClientProtocol.Integration.EndToEndTest do
     Enum.map(recs, & &1.kind)
   end
 
-  # ===========================================================================
-  # 1. Headline conversation + the MOAT
-  # ===========================================================================
+  # Headline conversation + the MOAT
 
   @tag :moat
   test "full conversation over Paired, then a second client reattaches and closes P-JS5" do
@@ -424,7 +418,6 @@ defmodule Raxol.AgentClientProtocol.Integration.EndToEndTest do
 
     %{client_conn: client1} = connect(agent_arg, :c1)
 
-    # -- session/new --
     {:ok, %NewSessionResponse{session_id: ^sid}} =
       Connection.request(
         client1,
@@ -433,7 +426,7 @@ defmodule Raxol.AgentClientProtocol.Integration.EndToEndTest do
         2_000
       )
 
-    # -- session/prompt: a full turn (2 updates + 2 permission round-trips) --
+    # session/prompt: a full turn (2 updates + 2 permission round-trips)
     prompt = PromptRequest.new(sid, [ContentBlock.from_string("hi")])
 
     turn =
@@ -509,9 +502,7 @@ defmodule Raxol.AgentClientProtocol.Integration.EndToEndTest do
     assert durable_offsets(journal) == [1, 2, 3, 4, 5, 6, 7, 8]
   end
 
-  # ===========================================================================
-  # 2. Reattach mid-turn finalizes from the persisted turn_completed
-  # ===========================================================================
+  # Reattach mid-turn finalizes from the persisted turn_completed
 
   @tag :midturn
   test "reattach mid-turn: a crashed origin's dangling turn is orphan-repaired ⇒ reattacher finalizes from the persisted turn_completed" do
@@ -559,9 +550,7 @@ defmodule Raxol.AgentClientProtocol.Integration.EndToEndTest do
     assert payload["outcome"] == "orphaned"
   end
 
-  # ===========================================================================
-  # 3. Denied attach — no token under Token policy ⇒ -32000, nothing registered
-  # ===========================================================================
+  # Denied attach — no token under Token policy ⇒ -32000, nothing registered
 
   @tag :denied
   test "denied attach: tokenless _raxol/session.load under Token policy gets -32000 (CDI-5)" do

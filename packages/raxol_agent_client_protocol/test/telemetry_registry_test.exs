@@ -119,8 +119,6 @@ defmodule Raxol.AgentClientProtocol.TelemetryRegistryTest do
     end
   end
 
-  # -- Scanner ----------------------------------------------------------------
-
   defp lib_root, do: Path.join(File.cwd!(), "lib")
 
   # Parse each source file and walk its AST for `[:raxol, ...]` list literals of

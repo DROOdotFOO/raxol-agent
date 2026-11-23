@@ -35,8 +35,6 @@ defmodule Raxol.AgentClientProtocol.Error do
 
   @known_fields ~w(code message data)
 
-  # -- Error code constants --------------------------------------------------
-
   @spec parse_error_code() :: integer()
   def parse_error_code, do: -32_700
 
@@ -60,8 +58,6 @@ defmodule Raxol.AgentClientProtocol.Error do
 
   @spec request_cancelled_code() :: integer()
   def request_cancelled_code, do: -32_800
-
-  # -- Convenience constructors ----------------------------------------------
 
   @spec parse_error() :: t()
   def parse_error, do: %__MODULE__{code: -32_700, message: "Parse error"}

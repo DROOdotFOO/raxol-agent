@@ -16,9 +16,8 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
 
   ## Opening the file
 
-  A path that is checked and then opened leaves a window in which a peer
-  that can change the tree inside the root swaps the file for a symlink. So
-  the file is opened first and the open handle verified afterwards: the
+  To close the check-then-open window, the file is opened first and the
+  open handle verified afterwards: the
   device and inode of the handle (`:file.read_file_info/1` on it) must equal
   those of the path re-resolved with `resolve/2` and read with
   `File.lstat/1`, which does not follow a symlink at the leaf, and both
@@ -57,13 +56,10 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
       blocks that one request until the FIFO has a writer.
     * A hard link inside the root to a file outside it is that file; hard
       links are not detected.
-    * On non-Unix file systems the inode is reported as zero, so the handle
-      check compares only the device and the file type.
+    * On non-Unix file systems (inode zero) only device and type are compared.
 
-  `fs_sandbox` confines the paths the peer names. It is not a boundary
-  against a peer that can also change the sandbox tree by other means
-  while requests run: the checks above narrow those races but do not close
-  them.
+  `fs_sandbox` confines the paths the peer names; it is not a boundary
+  against a peer that can also change the sandbox tree while requests run.
   """
 
   alias Raxol.AgentClientProtocol.Error

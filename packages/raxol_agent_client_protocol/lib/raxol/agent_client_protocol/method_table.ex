@@ -176,8 +176,6 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
 
   @rows @agent_rows ++ @client_rows ++ @protocol_rows ++ @ext_rows
 
-  # -- Compile-time invariants --------------------------------------------------
-
   check! = fn bad, message ->
     if bad != [], do: raise(CompileError, description: "MethodTable #{message}: #{inspect(bad)}")
   end
@@ -234,8 +232,6 @@ defmodule Raxol.AgentClientProtocol.MethodTable do
         do: {w, cap}
 
   check!.(bad_cap_paths, "capability path does not start at a capability struct field")
-
-  # -- API ----------------------------------------------------------------------
 
   @table_source __ENV__.file
 

@@ -133,10 +133,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionLifecycleTest do
       %{transport_ref: ref} = :sys.get_state(conn)
       cmon = Process.monitor(conn)
 
-      # stdin ends while the handler is still running. This used to stop the
-      # connection at once, terminating the dispatch task, so a peer that
-      # piped its requests and closed stdin got no reply to a request the
-      # agent was already answering.
+      # stdin ends while the handler is still running. A peer that pipes its
+      # requests and closes stdin must still get the reply the agent is
+      # already producing.
       send(conn, {:acp_transport, ref, {:closed, :eof}})
       refute_receive {:DOWN, ^cmon, :process, ^conn, _reason}, 200
 

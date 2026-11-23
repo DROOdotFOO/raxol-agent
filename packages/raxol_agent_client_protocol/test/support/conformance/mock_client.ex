@@ -27,8 +27,6 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockClient do
 
   @permission_denied_message "Permission denied by conformance runner"
 
-  # -- Client callbacks --------------------------------------------------------
-
   @impl true
   def session_update(notification, ctx) do
     Elixir.Agent.update(ctx.handler_state, fn state ->
@@ -81,7 +79,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockClient do
     FsSandbox.resolve(cwd, path)
   end
 
-  # -- Case-runner-only helpers (not protocol callbacks) -----------------------
+  # Case-runner-only helpers (not protocol callbacks)
 
   @doc "Fresh accumulator state for one case: `permission_mode` is `:approve_all` or `:deny_all`."
   @spec new_state(:approve_all | :deny_all) :: pid()

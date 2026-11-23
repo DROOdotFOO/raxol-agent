@@ -27,7 +27,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     def session_update(n, ctx), do: {:session_update_called, n, ctx}
   end
 
-  # -- decode/4 happy paths: :agent side ---------------------------------------
+  # decode/4 happy paths: :agent side
 
   describe "decode/4 on the :agent side" do
     test "session/prompt (normal request, params != nil)" do
@@ -59,11 +59,11 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
                Router.decode(:agent, :request, "session/prompt", %{})
     end
 
-    test "G6 finding-14 (C6): a wrong-typed sessionId propagates {:invalid_field, ...}, not {:ok, _}" do
+    test "a wrong-typed sessionId propagates {:invalid_field, ...}, not {:ok, _}" do
       # session/prompt with a non-string sessionId (acpx case
-      # acp.v1.errors.invalid_prompt_session_type / 011): used to decode fine
-      # and only fail downstream at the handler's session-registry lookup
-      # (-32603 Unknown session). `Connection` maps any non-method_not_found
+      # acp.v1.errors.invalid_prompt_session_type / 011) must fail at decode,
+      # not downstream at the handler's session-registry lookup (-32603 Unknown
+      # session). `Connection` maps any non-method_not_found
       # decode error here to -32602 (§4.1, see connection.ex + Inv-6 in
       # connection_test.exs for the missing-field case of this same mapping).
       assert {:error, {:invalid_field, "sessionId", 12_345}} =
@@ -73,7 +73,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
                })
     end
 
-    test "G6 finding-14 (C6): session/new with a wrong-typed or null cwd propagates {:invalid_field, ...}" do
+    test "session/new with a wrong-typed or null cwd propagates {:invalid_field, ...}" do
       # acpx cases 006 (cwd: 12345) and 015 (cwd: null).
       assert {:error, {:invalid_field, "cwd", 12_345}} =
                Router.decode(:agent, :request, "session/new", %{"cwd" => 12_345})
@@ -91,7 +91,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     # agent_types_test.exs`), not here.
   end
 
-  # -- decode/4 happy paths: :client side ---------------------------------------
+  # decode/4 happy paths: :client side
 
   describe "decode/4 on the :client side" do
     test "fs/read_text_file (normal request, params != nil)" do
@@ -120,7 +120,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- D1-2 fix: protocol / session_control rows generate no Router clause ----
+  # D1-2 fix: protocol / session_control rows generate no Router clause
 
   describe "layer: :protocol and layer: :session_control rows are absent from Router" do
     test "$/cancel_request falls through to method_not_found (Connection must pre-filter it)" do
@@ -137,7 +137,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- unknown method -> method_not_found ---------------------------------------
+  # unknown method -> method_not_found
 
   describe "unknown methods" do
     test "unknown request -> {:error, :method_not_found}" do
@@ -161,7 +161,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- ext ("_"-prefixed) passthrough: binary preserved end-to-end -------------
+  # ext ("_"-prefixed) passthrough: binary preserved end-to-end
 
   describe "ext passthrough" do
     test "request: binary method preserved, params passed through raw" do
@@ -182,7 +182,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- dispatch/4 --------------------------------------------------------------
+  # dispatch/4
 
   describe "dispatch/4" do
     test "normal request row calls handler with (params, ctx) and returns the handler's result" do
@@ -207,11 +207,10 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- I18 / I19: session/resume + session/set_config_option decode+dispatch --
-  # CORE session-method dispatch parity (see test/INVARIANTS.md). Both methods
-  # were schema-only before this: no test drove the wire method string through
-  # Router.decode/4 -> Router.dispatch/4 to its handler callback. These close
-  # that gap end-to-end at the dispatch layer (deterministic; no processes).
+  # I18 / I19: session/resume + session/set_config_option decode+dispatch
+  # CORE session-method dispatch parity (see test/INVARIANTS.md): the wire
+  # method string driven through Router.decode/4 -> Router.dispatch/4 to its
+  # handler callback (deterministic; no processes).
 
   describe "I18 session/resume decode + dispatch" do
     test "decode/4 (:agent) maps session/resume params to {:resume_session, ResumeSessionRequest}" do
@@ -267,7 +266,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- result_marker/1 (D1-4: computed once at send time, never re-derived) --
+  # result_marker/1 (D1-4: computed once at send time, never re-derived)
 
   describe "result_marker/1" do
     test "known request row -> {:decode, ResultModule}" do
@@ -289,7 +288,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- stale-codegen guard: the generated surface must track MethodTable --------
+  # stale-codegen guard: the generated surface must track MethodTable
   #
   # These iterate the WHOLE table, so any future row is auto-covered. They RED
   # the failure mode where a table row present but
@@ -327,7 +326,7 @@ defmodule Raxol.AgentClientProtocol.RouterTest do
     end
   end
 
-  # -- capability gating is out of scope for Router ----------------------------
+  # capability gating is out of scope for Router
   #
   # Per the design doc's D1-3 fix, Connection must consult MethodTable's
   # `capability` field and reject a gated-and-unnegotiated method with

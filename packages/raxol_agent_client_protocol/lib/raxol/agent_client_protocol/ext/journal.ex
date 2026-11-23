@@ -129,7 +129,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal do
 
   @optional_callbacks close: 1
 
-  # -- Lazy Writer start (→ WriterSupervisor) --------------------------------
+  # Lazy Writer start (→ WriterSupervisor)
 
   @doc """
   Start-or-lookup the single-publisher `Writer` for `session_id`, lazily, under
@@ -175,7 +175,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal do
     end
   end
 
-  # -- Live-bus registration facade (→ Writer, the single publisher) ----------
+  # Live-bus registration facade (→ Writer, the single publisher)
 
   @doc """
   Register `subscriber` for the live tail of `session_id`. Routed through the

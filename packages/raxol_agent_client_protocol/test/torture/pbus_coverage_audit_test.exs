@@ -68,9 +68,7 @@ defmodule Raxol.AgentClientProtocol.Torture.PbusCoverageAudit do
   alias Raxol.AgentClientProtocol.Test.ScriptedPeer
   alias Raxol.AgentClientProtocol.Transport.Paired
 
-  # ===========================================================================
   # Meta-test: the coverage map's citations are real, live, and current.
-  # ===========================================================================
 
   @citations [
     {"test/ext/reattach_test.exs",
@@ -165,7 +163,6 @@ defmodule Raxol.AgentClientProtocol.Torture.PbusCoverageAudit do
     end)
   end
 
-  # ===========================================================================
   # P-BUS2/J2 -- the third named dead injector: live-before-gate-arm.
   #
   # Cannot be realized against the REAL `Ext.Reattach.Subscriber` directly:
@@ -180,7 +177,6 @@ defmodule Raxol.AgentClientProtocol.Torture.PbusCoverageAudit do
   # order — consume a live message, THEN read h — on the raw Writer/Mem
   # primitives, and showing that a naive history-bounds decision made from
   # that late-read h reproduces the boundary record it already saw live.
-  # ===========================================================================
 
   describe "P-BUS2/J2 — DEAD live-before-gate-arm (added here, structural)" do
     test "P-BUS2/J2 DEAD: reading h AFTER a live record was already processed reproduces it in history (boundary dup)" do
@@ -217,7 +213,6 @@ defmodule Raxol.AgentClientProtocol.Torture.PbusCoverageAudit do
     end
   end
 
-  # ===========================================================================
   # P-BUS7 -- matrix conformance: (term x process) vs (json x stdio).
   #
   # Every existing reattach red drives the in-process, zero-copy `(term x
@@ -235,7 +230,6 @@ defmodule Raxol.AgentClientProtocol.Torture.PbusCoverageAudit do
   # process)` cell did (P-BUS7's "record/delivery sequence" conformance
   # target; UX frames are excluded from the P-BUS7 obligation by design, and
   # none of the three record kinds exercised here are UX frames).
-  # ===========================================================================
 
   describe "P-BUS7 — matrix conformance (added here)" do
     test "P-BUS7 matrix conformance: (term x process) reattach delivery == (json x stdio)-round-tripped delivery" do
@@ -280,11 +274,9 @@ defmodule Raxol.AgentClientProtocol.Torture.PbusCoverageAudit do
     end
   end
 
-  # ===========================================================================
   # J11 -- stock invisibility: disabled/unimplemented extension answers
   # -32601 through the REAL wire/Router/Connection path (not just the
   # generated-default UNIT assertion `agent_test.exs` already has).
-  # ===========================================================================
 
   defmodule StockAgent do
     @moduledoc false

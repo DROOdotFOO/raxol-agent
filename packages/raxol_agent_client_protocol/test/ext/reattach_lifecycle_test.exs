@@ -16,13 +16,13 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
   alias Raxol.AgentClientProtocol.Ext.Reattach
   alias Raxol.AgentClientProtocol.Test.FakeConnection
 
-  # -- Subscriber consumer clauses (unit): Lagged + cancel both stop the tail --
+  # Subscriber consumer clauses (unit): Lagged + cancel both stop the tail
 
   describe "subscriber lifecycle — Lagged and $/cancel_request stop the live tail" do
     test "on {:reattach_lagged, …} the subscriber emits its OWN forward_hi then stops" do
-      # A direct-delivery unit test of the consumer clause (the manufactured send
-      # that USED to masquerade as J6): the Writer's 3rd element is conservative;
-      # the SUBSCRIBER's own forward counter is what goes on the wire (exactness).
+      # A direct-delivery unit test of the consumer clause: the Writer's 3rd
+      # element is conservative; the SUBSCRIBER's own forward counter is what
+      # goes on the wire (exactness).
       {sid, j, _w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
       {conn, _ref, sub, :deferred} = attach(sid, j)
       _ = sync(sub)
@@ -81,7 +81,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
     end
   end
 
-  # -- J7: turn_completed totality / finalize-from-replay ---------------------
+  # J7: turn_completed totality / finalize-from-replay
 
   test "J7 — a reattacher finalizes a turn from replay (turn_started matched by turn_completed)" do
     {sid, j, _w} =
@@ -120,7 +120,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
     assert Enum.sort(started) == Enum.sort(completed)
   end
 
-  # -- fromOffset > h + 1 rejected --------------------------------------------
+  # fromOffset > h + 1 rejected
 
   test "fromOffset > h + 1 is rejected -32602 (minting a gap is illegal), carries highWatermark" do
     {sid, j, _w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
@@ -142,7 +142,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
     assert {:reply, ^ref2, {:ok, _}} = reply_entry(conn2)
   end
 
-  # -- CDI-6: force-close at grant.expires_at ---------------------------------
+  # CDI-6: force-close at grant.expires_at
 
   test "force-close at grant.expires_at cuts the live tail (CDI-6 [G5:S7])" do
     {sid, j, _w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
@@ -166,7 +166,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
     assert {:notify, "_raxol/session.closed", %{"reason" => "revoked"}} = closed
   end
 
-  # -- J9: fail-closed attach --------------------------------------------------
+  # J9: fail-closed attach
 
   describe "J9 — fail-closed attach (the CDI-1 funnel contract)" do
     test "a {:denied, _} verdict ⇒ -32000 deny envelope, NO registration, NO history, NO reply" do
@@ -250,7 +250,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
     end
   end
 
-  # -- §3.4: stock projection --------------------------------------------------
+  # §3.4: stock projection
 
   test "§3.4 stock projection: a non-offset-aware attacher gets session_update kinds only" do
     {sid, j, _w} =
@@ -273,7 +273,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
     assert delivered_offsets(conn) == [3]
   end
 
-  # -- Session→journal emit seam (§2.4): a LIVE turn fills the durable journal --
+  # Session→journal emit seam (§2.4): a LIVE turn fills the durable journal
   #
   # The reattach reds above drive a standalone Writer directly. This closes the
   # loop end-to-end: a real `Session` wired with `Emitter.Journal` runs a prompt
@@ -373,11 +373,11 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachLifecycleTest do
     end
   end
 
-  # Wave-6 conformance finding 13: the attach Subscriber must be supervised
+  # The attach Subscriber must be supervised
   # under the per-connection Session DynamicSupervisor (ctx.session_sup), NOT
   # bare-linked to the ephemeral handler task (whose :normal exit never signals
   # a plain link, leaking the Subscriber past the connection forever).
-  describe "supervised subscriber lifetime (finding 13)" do
+  describe "supervised subscriber lifetime" do
     test "default start supervises the Subscriber under session_sup; it dies with it" do
       {sid, j, _w} = start_writer()
       {:ok, conn} = FakeConnection.start_link()

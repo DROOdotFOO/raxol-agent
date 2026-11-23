@@ -13,13 +13,11 @@ defmodule Raxol.AgentClientProtocol.ConnectionFailureModesTest do
 
   alias Raxol.AgentClientProtocol.Schema.ClientTypes.ReadTextFileRequest
 
-  # ===========================================================================
   # §9. Failure-mode table -- rows not already exercised above (cited by row
   # number). Rows covered elsewhere: 1/2 (Inv-15), 3/5 (Inv-6), 4/7 (Inv-7),
   # 6/13 (Inv-5), 9 (Inv-11), 11 (Inv-14), 12 (Inv-6/16), 15 (§8.2/Inv-1..3),
   # 21/24 (§8.4/§8.7/Inv-4), 31 (see note below), 33/34 (§8.6/Inv-12/13),
   # 36 (Inv-3), 40 (Inv-9).
-  # ===========================================================================
 
   describe "failure-mode table (remaining rows)" do
     test "row 8: notification before handshake is dropped, logged, connection stays usable" do
@@ -384,7 +382,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionFailureModesTest do
     # Paired-only harness this suite was asked to drive.
   end
 
-  # ===========================================================================
   # S5: `-32700` parse-error emission for the transport's own decode-failure
   # channel. `Transport.Paired` (used everywhere else in this suite) passes
   # pre-decoded Elixir terms through unchanged and can never produce this
@@ -393,7 +390,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionFailureModesTest do
   # module's moduledoc). Simulated here at the wire-message level, matching
   # the technique row 35's stale-transport-ref test already uses to drive
   # `handle_info/2` directly.
-  # ===========================================================================
 
   describe "S5: transport decode_error -> -32700 / -32600, connection survives" do
     test "torn/non-JSON line yields -32700; a batch array yields -32600; any other scalar yields -32700" do
@@ -451,7 +447,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionFailureModesTest do
     end
   end
 
-  # ===========================================================================
   # O6: `to_wire/1` must be total. Before the fix it piped through
   # `Jason.encode!/1`, so a non-JSON-safe `params` value (a stray pid, ref, or
   # tuple -- app misuse, not a protocol violation `Connection` should ever be
@@ -459,7 +454,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionFailureModesTest do
   # Connection's own `handle_call`, killing the GenServer. A library must not
   # die on caller misuse: the encode failure is surfaced to the caller as
   # `{:error, {:encode, reason}}` and the Connection stays alive.
-  # ===========================================================================
 
   describe "O6: to_wire is total (never raises on a non-JSON-safe param)" do
     test "notify/3 with a non-encodable param returns an encode error; Connection stays alive" do

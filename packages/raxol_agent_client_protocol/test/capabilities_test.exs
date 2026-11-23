@@ -19,7 +19,7 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
   alias Raxol.AgentClientProtocol.Schema.Unstable.SessionListCapabilities
   alias Raxol.AgentClientProtocol.Schema.Unstable.SessionResumeCapabilities
 
-  # -- baseline (no-requirement) methods ----------------------------------
+  # baseline (no-requirement) methods
 
   @baseline_methods [
     "initialize",
@@ -56,7 +56,7 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
     end
   end
 
-  # -- client-side gate: terminal + fs ------------------------------------
+  # client-side gate: terminal + fs
 
   describe "terminal capability (client)" do
     @terminal_methods ~w(terminal/create terminal/output terminal/release
@@ -119,7 +119,7 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
     end
   end
 
-  # -- agent-side gate: load_session + nested session caps ----------------
+  # agent-side gate: load_session + nested session caps
 
   describe "agent capabilities" do
     test "session/load gates on load_session (boolean leaf)" do
@@ -143,7 +143,7 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
     end
   end
 
-  # -- delete/close/auth leaves gate on real capability fields --
+  # delete/close/auth leaves gate on real capability fields
 
   describe "logout gates on auth.logout" do
     test "the table gates logout on auth.logout" do
@@ -259,14 +259,12 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
     end
   end
 
-  # -- unknown method is not a capability denial --------------------------
+  # unknown method is not a capability denial
 
   test "unknown method is negotiated? true (decode, not the gate, -32601s it)" do
     assert MethodTable.capability_for("does/not/exist") == :unknown_method
     assert Capabilities.negotiated?(%ClientCapabilities{}, "does/not/exist")
   end
-
-  # -- snapshot immutability ----------------------------------------------
 
   describe "snapshot immutability" do
     test "negotiated? is a pure function of the passed snapshot" do
@@ -282,7 +280,7 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
     end
   end
 
-  # -- drift guard: MethodTable.cap_fields/1 vs. real struct shape ---------
+  # drift guard: MethodTable.cap_fields/1 vs. real struct shape
 
   describe "cap_fields/1 mirrors the actual struct shape (invariant-7 drift guard)" do
     test "agent" do
@@ -314,8 +312,6 @@ defmodule Raxol.AgentClientProtocol.CapabilitiesTest do
       end
     end
   end
-
-  # -- end-to-end over Transport.Paired -----------------------------------
 
   describe "Paired integration: agent terminal/create against a no-terminal client" do
     defmodule GateAgent do

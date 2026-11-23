@@ -1,6 +1,6 @@
 defmodule Raxol.AgentClientProtocol.SessionSteerTest do
   @moduledoc """
-  Track E / U6-I — the steer channel over the REAL `Session`.
+  The steer channel over the REAL `Session`.
 
   These reds drive `Session.steer/2` against a live turn-owning Session, proving
   the single-writer seam: the injected `SteerAdapter`'s compare-and-swap runs from
@@ -25,7 +25,7 @@ defmodule Raxol.AgentClientProtocol.SessionSteerTest do
   alias Raxol.AgentClientProtocol.Session.Supervisor, as: SessionSup
   alias Raxol.AgentClientProtocol.Test.FakeConnection
 
-  # -- A local CAS adapter. steer_state is a plain map. -----------------------
+  # A local CAS adapter. steer_state is a plain map.
   defmodule Adapter do
     @moduledoc false
     @behaviour Raxol.AgentClientProtocol.Session.SteerAdapter
@@ -76,8 +76,8 @@ defmodule Raxol.AgentClientProtocol.SessionSteerTest do
     end
   end
 
-  # -- A recording emitter double: captures steer_accepted invocations so the
-  #    "accept is durable, rejects are not" contract is observable. -------------
+  # A recording emitter double: captures steer_accepted invocations so the
+  # "accept is durable, rejects are not" contract is observable.
   defmodule RecordingEmitter do
     @moduledoc false
     @behaviour Raxol.AgentClientProtocol.Session.Emitter
@@ -173,9 +173,7 @@ defmodule Raxol.AgentClientProtocol.SessionSteerTest do
     reply_ref
   end
 
-  # ---------------------------------------------------------------------------
   # CAS arms over the real Session
-  # ---------------------------------------------------------------------------
 
   describe "CAS arms (real Session, single-writer mailbox)" do
     test "accept: matching expected_turn_id lands, forwards text to the runner", ctx do
@@ -235,9 +233,7 @@ defmodule Raxol.AgentClientProtocol.SessionSteerTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # Double-steer dedup + client_msg_id reuse
-  # ---------------------------------------------------------------------------
 
   describe "idempotency over the real Session" do
     test "duplicate: same client_msg_id + payload re-delivered acks-as-duplicate, no re-forward",
@@ -273,9 +269,7 @@ defmodule Raxol.AgentClientProtocol.SessionSteerTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # Journal record: an ACCEPT is durable, rejections are not
-  # ---------------------------------------------------------------------------
 
   describe "steer-accept journal record shape (emitter seam)" do
     test "accept fires steer_accepted with the ref + request; reject/duplicate do not", ctx do
@@ -316,9 +310,7 @@ defmodule Raxol.AgentClientProtocol.SessionSteerTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # The default adapter refuses (base v2 byte-identical behaviour)
-  # ---------------------------------------------------------------------------
 
   describe "default (unsupported) adapter" do
     test "a Session with no injected adapter refuses every steer honestly", ctx do
@@ -338,9 +330,7 @@ defmodule Raxol.AgentClientProtocol.SessionSteerTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # Wire round-trip: MethodTable decode → response encode/decode
-  # ---------------------------------------------------------------------------
 
   describe "wire round-trip" do
     test "Router decodes _raxol/session.steer to the raxol_steer_session callback + SteerRequest" do

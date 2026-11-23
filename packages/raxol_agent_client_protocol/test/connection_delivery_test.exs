@@ -75,10 +75,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
 
   @scramble_client Raxol.AgentClientProtocol.ConnectionDeliveryTest.Client
 
-  # ===========================================================================
   # Fixtures & helpers (local reimplementation -- connection_test.exs and
   # client_ergonomics_test.exs are owned by other units, not touched).
-  # ===========================================================================
 
   defp start_client_conn(handler, handler_arg) do
     task_sup = start_supervised!({Task.Supervisor, []})
@@ -157,10 +155,8 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
     assert_receive {:DOWN, ^mon, :process, ^task_pid, _}, 500
   end
 
-  # ===========================================================================
   # D1 -- order: the turn owner observes updates in stamped order 0..N-1
   # for ANY interleaving/delay of the per-notification dispatch tasks.
-  # ===========================================================================
 
   describe "D1 order" do
     test "direct delivery is demux-ordered even when dispatch task 0 is held open while task 1 finishes first" do
@@ -209,12 +205,10 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
     end
   end
 
-  # ===========================================================================
   # D2 -- no silent drop: delivered < turn_end count at an ok-result fails
   # the turn (never a silent partial list). The real single-sender
   # Connection cannot produce this (D1 proves the path unreachable), so a
   # fault-injected fake Connection double manufactures the gap.
-  # ===========================================================================
 
   describe "D2 no silent drop / fail-the-turn" do
     test "prompt/3 fails the turn when the turn_end count exceeds what was actually delivered" do
@@ -285,7 +279,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
     end
   end
 
-  # ===========================================================================
   # D3 -- no timer in the guarantee: grep-gate over the shipped source, not
   # a runtime scheduling test (a wall-clock delay is not something a test
   # can prove absent by racing it -- the design's own §8 D3 row pairs the
@@ -294,7 +287,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
   # `after <n> ->` timeout clause and no `Process.send_after` call --
   # the OLD implementation's `@update_settle_ms`/`after 5 ->` settle
   # window is exactly what this gate would have caught.
-  # ===========================================================================
 
   describe "D3 no wall-clock timer (grep-gate)" do
     test "client.ex's receive loops contain no `after` timeout clause or Process.send_after" do
@@ -325,12 +317,10 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
     end
   end
 
-  # ===========================================================================
   # D5 -- a hostile peer cannot wedge or steer delivery: garbled/replayed
   # `_meta` (the old, now-removed `update_seq` shape included) changes
   # NOTHING about stamped order; `_meta` reaches the handler byte-identical
   # (opaque -- never read for ordering).
-  # ===========================================================================
 
   describe "D5 hostile peer cannot steer delivery" do
     test "identical/frozen/garbled _meta on every update never affects the stamped ordinal or delivery" do
@@ -395,12 +385,10 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
     end
   end
 
-  # ===========================================================================
   # D7 -- recursive namespace: a straggler demuxed after turn N's result
   # never reaches the departed owner as a turn message; a fresh turn for
   # the same session gets a fresh token + ordinals reset to 0 (no
   # cross-turn aliasing); two sessions' concurrent turns never cross.
-  # ===========================================================================
 
   describe "D7 recursive turn namespace" do
     test "a stray update after the turn's result is never delivered as a turn message; a fresh turn gets a fresh token" do
@@ -504,7 +492,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
     end
   end
 
-  # ===========================================================================
   # D9 -- telemetry contract: every delivery decision emits
   # [:raxol, :acp, :delivery] with %{session, turn, decision, buffered,
   # ordinal}, partitioning into :emit | :buffer | :gap | :fail (:gap is
@@ -512,7 +499,6 @@ defmodule Raxol.AgentClientProtocol.ConnectionDeliveryTest do
   # such variant exists yet). This package does not start `:telemetry`;
   # `test_helper.exs` does, so `Telemetry.execute/3` emits here as it does in
   # a host that starts it.
-  # ===========================================================================
 
   @doc false
   # Named (not anonymous) so :telemetry does not log its local-handler

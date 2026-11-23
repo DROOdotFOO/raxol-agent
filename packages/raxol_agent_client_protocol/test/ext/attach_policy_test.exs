@@ -203,14 +203,14 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicyTest do
     Runner.authorize(policy, ctx, [task_supervisor: sup] ++ opts)
   end
 
-  # -- The one allow path -----------------------------------------------------
+  # The one allow path
 
   test "well-formed grant with matching session_id is admitted", %{sup: sup} do
     assert {:ok, %Grant{actor: %{"id" => "a@local"}, scope: :attach, session_id: @sid}} =
              authorize(Stubs.Ok, ctx(), sup)
   end
 
-  # -- INV-AP1 exhaustive deny table (T-1..T-6, P-BUS4) ------------------------
+  # INV-AP1 exhaustive deny table (T-1..T-6, P-BUS4)
 
   test "grant with mismatched session_id denies (T-6)", %{sup: sup} do
     assert {:denied, :grant_session_mismatch} =
@@ -280,7 +280,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicyTest do
              Runner.authorize(Stubs.Ok, ctx(), task_supervisor: :no_such_supervisor_xyz)
   end
 
-  # -- LocalNode default policy (T-7, T-24; INV-AP3, AP18) --------------------
+  # LocalNode default policy (T-7, T-24; INV-AP3, AP18)
 
   test "LocalNode admits :process and :stdio transports", %{sup: sup} do
     assert {:ok, %Grant{via: :local_node}} =
@@ -351,7 +351,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicyTest do
     assert AttachPolicy.default_policy() == LocalNode
   end
 
-  # -- Anti-oracle: one wire frame for every deny reason (T-19, INV-AP10) -----
+  # Anti-oracle: one wire frame for every deny reason (T-19, INV-AP10)
 
   test "every distinct deny reason collapses to one reasonless wire frame", %{sup: sup} do
     reasons =

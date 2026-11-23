@@ -166,8 +166,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Reassembly do
     end
   end
 
-  # -- Internal -----------------------------------------------------------
-
   # tseq == next_expected: release it, then walk forward releasing every
   # already-buffered contiguous successor.
   @spec release_cascade(t(), frame()) :: {[frame()], t()}

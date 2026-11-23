@@ -24,8 +24,6 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
   alias Raxol.AgentClientProtocol.Schema.UnstructuredCommandInput
   alias Raxol.AgentClientProtocol.Schema.UsageUpdate
 
-  # -- Upstream fixtures, adapted -------------------------------------------
-
   describe "SessionUpdate plan (upstream fixture)" do
     test "to_json tags the payload with the sessionUpdate discriminator" do
       plan = Plan.new([PlanEntry.new("Do thing", :high, :pending)])
@@ -56,7 +54,7 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
     end
   end
 
-  # -- Discriminator round trip, every variant ------------------------------
+  # Discriminator round trip, every variant
 
   defp chunk_fixture, do: ContentChunk.new(ContentBlock.text(TextContent.new("hi there")))
 
@@ -142,7 +140,7 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
     assert decoded == update
   end
 
-  # -- "sessionUpdate" non-leakage into payload _meta -----------------------
+  # "sessionUpdate" non-leakage into payload _meta
 
   describe "\"sessionUpdate\" discriminator does not leak into the payload's _meta" do
     test "current_mode_update" do
@@ -157,8 +155,6 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
       assert plan._meta == %{}
     end
   end
-
-  # -- Totality --------------------------------------------------------------
 
   describe "from_json/1 is total" do
     test "unrecognized sessionUpdate value returns a descriptive error, never raises" do
@@ -180,8 +176,6 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
                SessionUpdate.from_json(%{"sessionUpdate" => "agent_message_chunk"})
     end
   end
-
-  # -- ContentChunk ------------------------------------------------------------
 
   describe "ContentChunk" do
     test "to_json/from_json round trip" do
@@ -238,7 +232,7 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
     end
   end
 
-  # -- UsageUpdate (oracle's 11th SessionUpdate variant) ------------------------
+  # UsageUpdate (oracle's 11th SessionUpdate variant)
 
   describe "UsageUpdate" do
     test "to_json/from_json round trip with cost" do
@@ -300,8 +294,6 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
     end
   end
 
-  # -- CurrentModeUpdate --------------------------------------------------------
-
   describe "CurrentModeUpdate" do
     test "to_json/from_json round trip" do
       cmu = CurrentModeUpdate.new("code")
@@ -318,7 +310,7 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdateTest do
     end
   end
 
-  # -- AvailableCommandsUpdate / AvailableCommand / AvailableCommandInput ------
+  # AvailableCommandsUpdate / AvailableCommand / AvailableCommandInput
 
   describe "AvailableCommandsUpdate" do
     test "to_json/from_json round trip with a nested command" do

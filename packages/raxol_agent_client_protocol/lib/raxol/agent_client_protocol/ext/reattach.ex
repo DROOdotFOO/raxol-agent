@@ -1,85 +1,51 @@
 defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   @moduledoc """
-  The register-before-`h` attach seam — the correctness core of the reattach
+  The register-before-`h` attach seam: the correctness core of the reattach
   extension.
 
-  ## The seam (both wire entrances converge here)
+  ## The seam
 
   `session/load` + rider and `_raxol/session.load` both parse the same
-  `_meta["raxol.io"]` rider and call `attach/1`. The algorithm, per attach:
+  `_meta["raxol.io"]` rider and call `attach/1`:
 
-    1. **Authorize through the ONE funnel.** `attach/1` calls the
-       injected `:authorize` fun — whose default is
-       `Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner.authorize/2`, the SOLE
-       fail-closed funnel. There is NO second `FailClosed`/try-catch
-       wrapper. Any `{:denied, _}` — or any
-       non-`{:ok, %Grant{}}` — DENIES: `attach/1` returns the deny envelope
-       (`-32000 "attach denied"`, NO `data`) and NOTHING is registered, no
-       history is read. The request error IS the denial — no
-       separate `_raxol/session.closed` frame.
-    2. On grant, start a fresh subscriber process (this module's GenServer),
-       transfer the load-request reply obligation to it via
-       `Connection.delegate_reply/3`, then run the attach
-       algorithm INSIDE that process:
-         a. **REGISTER FIRST** — `Journal.subscribe` (routed to
-            `Writer.subscribe`); live records queue to the subscriber from now
-            on.
-         b. **snapshot `h` SECOND** — `journal.high_watermark`, decision-time,
-            read from the STORE (never a cached counter). The gate is armed
-            (`h` bound) BEFORE any `{:reattach_live, ...}` is processed
-            (gate-arm invariant): steps a–e run with no intervening
-            live receive.
-         c. reject `from_offset > h + 1` (`-32602`, minting a gap is illegal);
-            else emit `history(max(from,1)..h)` as wire frames, under the
-            stock projection (see Taint below).
-         d. optional `_raxol/session.caught_up{h+1}` (offset-aware only).
-         e. reply the `LoadSessionResponse` (`_meta.raxol.io.highWatermark = h`)
-            — replay-before-respond (history frames and the reply leave the SAME
-            process, so the response serializes after the last history frame).
-         f. steady state — the PERMANENT, MONOTONE live gate: `offset <= h` ⇒
-            drop (already in history), forever; `offset > h` ⇒ forward.
+    1. **Authorize through one funnel.** The injected `:authorize` fun (default
+       `Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner.authorize/2`, the sole
+       fail-closed funnel). Anything but `{:ok, %Grant{}}` denies with
+       `-32000 "attach denied"` (no `data`); nothing is registered and no history
+       is read. An injected funnel's grant is re-checked against the Grant
+       contract.
+    2. On grant, start a fresh subscriber process, delegate the load reply to it
+       via `Connection.delegate_reply/3`, and inside it, with no live receive
+       between steps:
+         a. **register first** -- `Journal.subscribe`; live records queue from now;
+         b. **snapshot `h` second** -- `journal.high_watermark` from the store;
+         c. reject `from_offset > h + 1` (`-32602`), else emit
+            `history(max(from, 1)..h)`;
+         d. optionally `_raxol/session.caught_up{h+1}` (offset-aware only);
+         e. reply `LoadSessionResponse` with `_meta.raxol.io.highWatermark = h`,
+            after the last history frame;
+         f. steady state: `offset <= h` drops, `offset > h` forwards, forever.
 
-  ## Taint — annotate, NEVER filter
+  ## Taint: annotate, never filter
 
-  Every delivered frame carries the record's taint (in `_meta["raxol.io"]` on
-  `session/update` frames, first-class `taint` on `_raxol/session.record`). NO
-  code path here drops/withholds/reroutes a record by taint — a taint filter
-  anywhere breaks `history ++ live == durable stream`. The only
-  projection is by KIND (a stock, non-offset-aware attacher receives only
-  `session_update` frames), applied identically to history and live, and it
-  is orthogonal to taint. `grant.lens` is threaded opaquely and never
-  interpreted (reserved).
+  Every frame carries its record's taint (`_meta["raxol.io"]` on
+  `session/update`, `taint` on `_raxol/session.record`). Nothing drops a record by
+  taint, so `history ++ live == durable stream`. The only projection is by kind (a
+  stock attacher sees only `session_update`), applied identically to history and
+  live. `grant.lens` is passed through uninterpreted.
 
-  ## Mid-attach expiry — force-close at `exp`
+  ## Expiry
 
-  When `grant.expires_at != nil`, the subscriber arms a timer that at
-  `expires_at` emits `_raxol/session.closed{reason: "revoked"}` and detaches —
-  bounding how long a held live tail may read. A reconnect just before `exp`
-  re-authorizes fresh: each attach is its own subscriber process with its own timer
-  targeting only itself, so the timer-vs-reconnect race is closed by process
-  identity (the old subscriber's timer never touches the new one).
+  With `grant.expires_at` set, the subscriber force-closes at that time with
+  `_raxol/session.closed{reason: "revoked"}`. Each attach is its own process with
+  its own timer, so a reconnect just before expiry is unaffected.
 
-  ## Implementation notes
+  ## Caller obligations
 
-    * **The authorization funnel is injectable.** `attach/1` takes the funnel
-      as `:authorize`; its default is `Ext.AttachPolicy.Runner.authorize/2` —
-      the SOLE fail-closed funnel. Any non-`{:ok, %Grant{}}` result (incl.
-      every `{:denied, _}`) denies, and a grant returned by an injected funnel
-      is re-checked against the Grant contract.
-    * **The attach subscriber is a dedicated process, not the turn `Session`.**
-      Realizing the read path as its own small process keeps the attach
-      algorithm (register-first, decision-time `h`, permanent monotone gate)
-      provable in isolation and leaves the turn state machine untouched.
-    * **`ctx.transport` is passed in, not read from `Connection`.** The
-      Connection exposes no `transport/1` accessor; the reattach handler MUST
-      source `transport` from Connection-side knowledge (never the peer) and
-      pass it as a field. With no transport, the default `LocalNode` policy
-      denies.
-    * **Keyring is validated per-attach, not at boot.** The `Token` policy's
-      Ed25519 keyring is a pure per-`verify/4` parameter (no process state, no
-      boot check), so a malformed/empty keyring surfaces as a per-attach deny,
-      not a startup failure — an endpoint that requires a configured keyring
-      should validate it at its OWN boot (this seam never holds the keyring).
+    * `ctx.transport` must come from Connection-side knowledge, never the peer;
+      with none, the default `LocalNode` policy denies.
+    * The `Token` policy's keyring is a per-`verify/4` parameter, so a bad
+      keyring is a per-attach deny. Validate it at your own boot.
   """
 
   use GenServer
@@ -106,9 +72,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   # version-independent max (~49.7 days). The expiry timer clamps to it.
   @timer_max_ms 4_294_967_295
 
-  # ===========================================================================
   # Rider parsing — one parser, both entrances.
-  # ===========================================================================
 
   @typedoc "The parsed `_meta[\"raxol.io\"]` attach rider."
   @type rider :: %{
@@ -142,9 +106,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   defp parse_history_policy("none"), do: :none
   defp parse_history_policy(_), do: :from_offset
 
-  # ===========================================================================
   # The attach seam.
-  # ===========================================================================
 
   @typedoc """
   Attach inputs. `:journal` is `{module, handle}` (the durable store, per-session
@@ -369,9 +331,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     :ok
   end
 
-  # ===========================================================================
   # Subscriber — the "fresh Session in attach mode" (attach algorithm + gate).
-  # ===========================================================================
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -420,8 +380,6 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
   def handle_call(:run, _from, state) do
     run_attach(state)
   end
-
-  # -- The attach algorithm ---------------------------------------------------
 
   defp run_attach(state) do
     {mod, j} = state.journal
@@ -556,7 +514,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     :ok
   end
 
-  # -- (f) The live gate: PERMANENT and MONOTONE -----------------------------
+  # (f) The live gate: PERMANENT and MONOTONE
 
   @impl true
   def handle_info(
@@ -644,8 +602,6 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
 
   def handle_info(_other, state), do: {:noreply, state}
 
-  # -- Expiry timer arming ----------------------------------------------------
-
   defp maybe_arm_expiry(state) do
     case grant_field(state.grant, :expires_at) do
       exp when is_integer(exp) ->
@@ -663,7 +619,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Reattach do
     end
   end
 
-  # -- Record → wire frame mapping + stock projection -------------------------
+  # Record → wire frame mapping + stock projection
   #
   # taint NEVER gates delivery: the only branch is by KIND (projection), applied
   # identically to history and live, orthogonal to taint (annotate-never-filter).

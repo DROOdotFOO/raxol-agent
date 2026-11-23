@@ -41,7 +41,7 @@ defmodule Raxol.AgentClientProtocol.Schema.PlanTest do
       refute Map.has_key?(PlanEntry.to_json(entry), "_meta")
     end
 
-    # --- Total decode: never raises ---
+    # Total decode: never raises
 
     test "from_json/1 is total: missing required field never raises" do
       assert {:error, {:missing_field, "content"}} =
@@ -131,9 +131,9 @@ defmodule Raxol.AgentClientProtocol.Schema.PlanTest do
       assert decoded._meta == %{"key" => "value"}
     end
 
-    # --- Total decode + lenient leniency per the schema oracle
+    # Total decode + lenient leniency per the schema oracle
     #     (x-deserialize-default-on-error + x-deserialize-skip-invalid-items
-    #     on Plan.entries) ---
+    #     on Plan.entries)
 
     test "from_json/1 is total: never raises, even on non-map input" do
       assert {:ok, %Plan{entries: []}} = Plan.from_json(nil)

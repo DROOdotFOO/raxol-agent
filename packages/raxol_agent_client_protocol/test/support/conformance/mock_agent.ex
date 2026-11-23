@@ -65,8 +65,6 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
 
   alias Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification
 
-  # -- Agent callbacks --------------------------------------------------------
-
   @impl true
   def initialize(_req, _ctx), do: {:ok, InitializeResponse.new(1)}
 
@@ -106,17 +104,12 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
     end
   end
 
-  # -- session/new validation --------------------------------------------------
   #
-  # `Schema.AgentTypes.NewSessionRequest.from_json/1` now type-checks `cwd`
-  # (`AgentTypes.fetch/3` with `&is_binary/1`, G6 finding-14 STRICT ruling):
-  # a non-string or `nil` `cwd` is rejected at `Router.decode/4` with
-  # `-32602` before this handler is ever invoked. This `valid_cwd?/1` guard
-  # is now redundant belt-and-suspenders (a handler-level defense in depth,
-  # not the sole gate it used to be while the schema layer was
-  # presence-only) -- kept because a handler that trusts its params struct
-  # should still be defensive about the empty-string edge the oracle schema
-  # doesn't itself reject at the wire-type level.
+  # `Schema.AgentTypes.NewSessionRequest.from_json/1` type-checks `cwd`
+  # (`AgentTypes.fetch/3` with `&is_binary/1`): a non-string or `nil` `cwd` is
+  # rejected at `Router.decode/4` with `-32602` before this handler is ever
+  # invoked. This `valid_cwd?/1` guard is defense in depth for the empty-string
+  # edge the oracle schema does not reject at the wire-type level.
 
   defp valid_cwd?(cwd), do: is_binary(cwd) and cwd != ""
 
@@ -138,7 +131,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
     end
   end
 
-  # -- turn runner (Session.start_link's `:turn_runner`, arity 2) -------------
+  # turn runner (Session.start_link's `:turn_runner`, arity 2)
 
   defp turn_runner(conn, session_pid, req) do
     session_id = req.session_id
@@ -281,8 +274,6 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
     {:stop, :end_turn}
   end
 
-  # -- update emission ----------------------------------------------------
-
   defp emit_chunk(session_pid, session_id, text) do
     block = ContentBlock.from_string(text)
     notif = SessionNotification.new(session_id, {:agent_message_chunk, ContentChunk.new(block)})
@@ -311,8 +302,6 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.MockAgent do
     notif = SessionNotification.new(session_id, {:tool_call_update, update})
     Session.post_update(session_pid, notif)
   end
-
-  # -- helpers ------------------------------------------------------------
 
   defp extract_text(prompt) do
     prompt

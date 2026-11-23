@@ -126,7 +126,7 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
     end
   end
 
-  # -- decode/4 clause builders -------------------------------------------------
+  # decode/4 clause builders
 
   defp decode_clause(side, %{kind: :request, params: nil} = row) do
     quote do
@@ -187,7 +187,7 @@ defmodule Raxol.AgentClientProtocol.Router.Codegen do
     end
   end
 
-  # -- dispatch/4 clause builders ------------------------------------------------
+  # dispatch/4 clause builders
 
   # `params: nil` rows drop the callback to arity 1 (ctx only).
   defp dispatch_clause(side, %{params: nil, kind: :request} = row) do

@@ -58,7 +58,6 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandboxVectorsTest do
     end
   end
 
-  # -- MUST-REJECT vectors -----------------------------------------------------
   #
   # Vector generation itself (the `for`/`Jason.decode!` below) runs at
   # compile time, directly in the module body -- it cannot call this
@@ -106,8 +105,6 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandboxVectorsTest do
       assert @reject_skipped_count > 0
     end
   end
-
-  # -- MUST-ACCEPT vectors ------------------------------------------------------
 
   describe "MUST-ACCEPT vectors (path_accept_vectors.json)" do
     all_accept_vectors =
