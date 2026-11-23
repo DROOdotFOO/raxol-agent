@@ -125,10 +125,7 @@ jobs:
         working-directory: packages/${{ matrix.package }}
         run: mix compile --warnings-as-errors
 
-      # The packages listed here are credo-clean; the rest carry findings that
-      # predate this gate and join the list as they are cleared.
       - name: Credo
-        if: contains(fromJSON('["raxol_agent_client_protocol", "raxol_broker", "raxol_cli", "raxol_console", "raxol_web3"]'), matrix.package)
         working-directory: packages/${{ matrix.package }}
         run: mix credo
 
