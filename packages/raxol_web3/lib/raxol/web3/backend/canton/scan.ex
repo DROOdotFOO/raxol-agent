@@ -42,8 +42,8 @@ defmodule Raxol.Web3.Backend.Canton.Scan do
     holdings_state: {:post, "/holdings/state"}
   }
 
-  # The refill is a guess, the capacity is derived. See "Rate limits" in
-  # `Raxol.Web3.Backend.Canton`.
+  # The refill is a guess, the capacity is derived. See "Rate limits and chain
+  # reference" in `Raxol.Web3.Backend.Canton`.
   @rate_limit [capacity: 4, refill_per_second: 0.2]
 
   @content_type {"content-type", "application/json"}

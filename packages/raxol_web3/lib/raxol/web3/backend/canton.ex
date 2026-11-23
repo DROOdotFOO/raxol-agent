@@ -2,198 +2,64 @@ defmodule Raxol.Web3.Backend.Canton do
   @moduledoc """
   The Canton backend, against the Splice Scan v0 surface plus ccscan's MCP tools.
 
-  This is the chain that three of `Raxol.Web3.Backend`'s shapes exist for, so
-  each one is exercised here rather than asserted: there are no addresses, only
-  party ids; there are no blocks, only rounds; and pagination is a POST carrying
-  an after-cursor, which is a fourth scheme beside Blockscout's keyset, a
-  `start`/`limit` ceiling and a signature cursor.
+  No addresses (party ids), no blocks (rounds), pagination by POST after-cursor.
+  Every read except `raw_request/2` is keyless.
 
-  ## What answers without a credential
+  `:scan_url` carries the path prefix: `api.cantonnodes.com` serves the surface
+  under `/v0`, a self-hosted Splice Scan under `/api/scan/v0`. Pointing at an
+  operator's own Scan instance is a URL change. ccscan's design is not ported;
+  only its public MCP tool surface is used, through `raw_request/2`.
 
-  Measured 2026-09-14, every read this backend declares except `raw_request/2`
-  answers keyless:
-
-    * `GET /v0/round-of-latest-data` answers 200 with no credential, carrying
-      `{"round": 113141, "effectiveAt": "2026-09-14T10:39:37Z"}`.
-    * `GET /v0/dso` answers 200 with no credential, 72,339 bytes, carrying
-      `dso_party_id`, the voting threshold, the latest mining round and every
-      super-validator's declared synchronizer migration id.
-    * `POST /v0/holdings/summary` and `POST /v0/holdings/state` both answer 200
-      with no credential for a real party id, which means the **party-scoped**
-      reads are keyless too and not only the two required callbacks.
-    * `GET /v0/updates/{update_id}` answers 200 with no credential.
-
-  The ccscan account is needed only for the passthrough.
-
-  Two path guesses from the Splice specification were wrong on the same host,
-  which is why the table below is probe-derived rather than ported:
-  `/v0/total-amulet-balance?asOfEndOfRound=N` is a 404, and `/v0/acs/{party}` is
-  a 404. `POST /v0/holdings/summary` rejects `party_ids` and requires
-  `owner_party_ids`, which a specification reader would not guess either.
-
-  ## Two hosts, one surface, one prefix that moves
-
-  `api.cantonnodes.com` serves the Splice Scan v0 surface under `/v0`. A
-  configured Splice Scan instance serves the same surface under `/api/scan/v0`:
-  measured 2026-09-14, `scan.sv-1.global.canton.network.digitalasset.com` answers
-  403 `RBAC: access denied` for `/api/scan/v0/dso`, which is an authorization
-  refusal rather than a 404, so the prefix is right and that particular host is
-  not open from this network. The prefix therefore travels inside `:scan_url`
-  rather than being hardcoded, and pointing this backend at an operator's own
-  Scan instance is a URL change and no code change.
-
-  Splice Scan is Apache-2.0 and publishes an OpenAPI specification, which is the
-  licence that permits reuse. ccscan is closed and governed by its terms of
-  service, so its **design is not ported**: what is used from it is its public
-  MCP tool surface, through `raw_request/2`, and nothing else.
-
-  ## No addresses: a party id
+  ## Parties
 
   `account_info/2` and `token_balances/3` take `{:party, "name::fingerprint"}`.
-  A party id is a name, two colons and a fingerprint, and it is
-  `Raxol.Web3.Serialize`'s `party` tag that carries it across the served
-  surface: `"party:Alice::1220abcd"` parses back to `{:party, "Alice::1220abcd"}`
-  because that parse splits on the FIRST colon only.
+  On the served surface `"party:Alice::1220abcd"` parses back to
+  `{:party, "Alice::1220abcd"}` (the parse splits on the first colon only).
 
-  The `::` never needs URL escaping here, because every party-scoped read this
-  backend uses is a POST whose party travels in the body. The one keyless GET
-  that takes a party in its path, `/v0/ans-entries/by-party/{party}`, takes it
-  unescaped without complaint and answered a structured 404 echoing the party
-  back for every party probed on 2026-09-14, so the Canton Name Service
-  directory is empty on this host and `resolve_name/2` is not declared: a read
-  whose only observed answer is a refusal is not a read.
+  The account map omits `:kind` (Canton has no account-kind taxonomy);
+  `contract?` and `verified?` are always `false`; `name` is the party id's
+  self-asserted name component. `resolve_name/2` is not declared: the Canton
+  Name Service directory is empty on the public host.
 
-  `:kind` is **omitted** from the account map rather than set. Canton has no
-  account-kind taxonomy that changes how a balance must be read: every party is
-  a party, and the distinctions that exist (a super-validator, a validator, an
-  end user) are roles in governance rather than in custody. An absent key means
-  the question does not apply here, which is a different fact from `nil`.
+  ## Rounds
 
-  `contract?` and `verified?` are both `false` by construction: a party holds no
-  code and there is no source-verification notion to report. `name` is the party
-  id's own name component, which is self-asserted by whoever allocated the
-  party and is not unique, exactly as an explorer's address label is.
+  `block_height/1` returns `unit: :round`. `height` is the round whose data the
+  source has complete, a lower bound on chain progress. `finalized_height` equals
+  it by construction (BFT, no fork choice), so confirmation depth is 0. `indexer`
+  reports `finished?: true` and `lag_seconds`. `get_block/2` is not declared.
 
-  ## No blocks: a round, and what the two heights mean
+  ## Pagination
 
-  `block_height/1` returns `unit: :round`, and neither number is a height in the
-  EVM sense. `GET /v0/round-of-latest-data` names the round whose data the
-  source has complete, so:
+  `token_balances/3` walks `POST /v0/holdings/state` with an integer `after`. A
+  non-null `next_page_token` beside an empty page means keep going. The cursor
+  pins `migration_id` and `record_time`; an `after` outside the snapshot range is
+  a 400, which a caller sees when the daily snapshot rolls over: restart the walk.
 
-    * `height` is that round. It is a **lower bound on chain progress** rather
-      than a tip: the open mining rounds run ahead of it, and this keyless
-      surface publishes no tip round.
-    * `finalized_height` is the **same number, deliberately and not by
-      omission**. Canton commits through BFT consensus with no fork choice, so a
-      round whose data is complete cannot be reorganized. The pair is equal by
-      construction, a consumer's confirmation depth is 0, and 0 is the true
-      answer on this chain rather than an absence to be reported as `nil`.
+  ## Amounts
 
-  `indexer` reports `finished?: true`, which is the endpoint's own claim and not
-  ours (it is named for the round whose data is complete), plus `lag_seconds`
-  from the age of the `effectiveAt` the same response carries. `:indexed_ratio`
-  and `:lag_blocks` are omitted: no ratio is published, and there are no blocks
-  to lag by.
+  Canton Coin has 10 decimals; amounts are integers in the smallest unit.
+  `account_info/2` reports the gross holding (`total_coin_holdings`), not net of
+  the accrued holding fee. A party with no summary row reports `balance: nil`,
+  never `0`.
 
-  `get_block/2` is **not declared**, so `Raxol.Web3.Router.coverage/2` reports
-  its absence for this chain. None of the Splice Scan paths returns a block,
-  because there is none to return.
+  `list_transactions/3` is not declared: no source lists by party.
+  `get_transaction/2` reads `GET /v0/updates/{update_id}` and returns the update
+  id, record time and root exercised choice as `method`; a Daml update has no
+  single sender, recipient, value or fee.
 
-  ## A POST with an after-cursor
+  ## ccscan credential
 
-  `POST /v0/holdings/state` is the fourth pagination scheme in this package.
-  Measured 2026-09-14 and every part of it measured rather than read:
+  Pass a free ccscan account key as `:ccscan_key`. Without it, or when ccscan
+  answers `account_required`, `raw_request/2` fails `{:upstream_refused, :auth}`.
+  The key is composed into a header per call and never logged, cached or
+  persisted; `raw_request/2` is never cached.
 
-    * the request carries `after`, an integer offset into the ACS snapshot,
-      beside `migration_id`, `record_time`, `owner_party_ids` and `page_size`;
-    * the response carries `next_page_token`, an integer or `null`;
-    * `after: 8926540676` returned `next_page_token: 8926540890`, so the walk
-      advances, while the plausible `page_token` name is silently ignored;
-    * an `after` outside the snapshot range is a 400 carrying the range, which
-      is what a caller sees when the daily snapshot rolls over mid-walk: restart
-      the walk;
-    * **a non-null `next_page_token` beside an EMPTY `created_events` means keep
-      going, not done.** The scan pages through the snapshot and a page can
-      filter to nothing. So `next` is minted from the token's presence and never
-      from whether the page had items.
+  ## Rate limits and chain reference
 
-  The cursor carries `migration_id` and `record_time` alongside `after`, because
-  an offset into one snapshot is meaningless in another, and pinning them is
-  what makes a held cursor keep walking the snapshot it was minted against.
-
-  ## Amounts, and the fee this backend does not net out
-
-  Canton Coin carries exactly 10 decimal places in every figure of every
-  response probed, so an amount is reported in the smallest unit as an integer,
-  the way wei and lamports are.
-
-  `account_info/2` reports `total_coin_holdings`, the gross holding. Measured
-  2026-09-14, a party's gross total equalled its single Amulet contract's
-  `initialAmount` to the digit, so the gross figure and the sum of a
-  `token_balances/3` page agree, which is the property that matters when both
-  are read together. The upstream publishes an accrued holding fee separately
-  (`accumulated_holding_fees_total`, 0.0122197152 against a 1,844,175 holding),
-  and neither field here nets it out; a caller needing the spendable figure
-  wants `total_available_coin`, which this contract has nowhere to put.
-
-  A party with no summary row reports `balance: nil` rather than `0`. The two
-  are indistinguishable in the response, and ADR-0039's rule is that no gate may
-  read a non-answer as zero.
-
-  ## `list_transactions/3` is not declared, and that is a measurement
-
-  No probed source lists transactions by party. `POST /v0/transactions`
-  answers 200 keyless and is chain-wide, taking only `page_end_event_id`,
-  `sort_order` and `page_size`; `POST /v0/updates` is chain-wide too; and
-  ccscan's `get_transactions` takes only a `limit`. `get_transaction/2` is
-  answerable, from `GET /v0/updates/{update_id}`, and its normalization is thin
-  on purpose: a Daml update has no single sender, recipient, value or fee, since
-  those live inside per-template choice arguments, and extracting them would be
-  a Daml interpreter rather than a normalization. What travels is the update id,
-  the record time, and the root exercised choice as `method`.
-
-  ## The ccscan account requirement
-
-  ccscan's `tools/list` is open and stateless: 13 tools, plain
-  `application/json`, no session at all. Every `tools/call` answers **HTTP 200**
-  with `result.isError: true` and `content[0].text` holding
-  `{"error": "account_required", ...}`. That recognised body shape maps onto
-  `{:upstream_refused, :auth}`, and the upstream's own sentence does not travel:
-  the actionable part is here, in this moduledoc, and in the origin id the error
-  path names. **What an operator must do: create a free ccscan account and pass
-  its key as `:ccscan_key`.** Nothing else in this backend needs it.
-
-  A handle with no `:ccscan_key` fails `raw_request/2` with the same
-  `{:upstream_refused, :auth}` without spending a request, so the answer is the
-  named one whether the credential is missing or rejected. It is never the
-  reason a required callback fails, because those go to the keyless host.
-
-  The key is held in transit only: it is composed into a request header per call
-  and appears in no log line, no telemetry measurement, no cache key and no
-  durable store. `raw_request/2` is not cached at all, since a passthrough's
-  cache key would have to be composed from caller-supplied arguments.
-
-  ## Chain reference
-
-  There is no registered CAIP-2 namespace for Canton, so `canton:global` is
-  **ours rather than registered**, naming the Global Synchronizer.
-  `canton:mainnet` is accepted as an alias and normalized to it, so a caller
-  that reached for the EVM habit still routes.
-
-  ## Rate limits
-
-  Neither upstream publishes a figure. `api.cantonnodes.com` answered 429 after
-  roughly three requests spaced a few seconds apart on 2026-09-14, and answered
-  every request spaced twelve seconds apart, so the refill rate in `rate_limit/0` is **a
-  guess anchored on that observed threshold** rather than a published number.
-  ccscan's limits are **unverified**, because the endpoint that would document
-  them is itself account-gated, so it gets the same conservative seed.
-
-  The capacity is not a guess: it is the cold cost of the most expensive single
-  read here. `token_balances/3` with nothing cached is four requests, the DSO
-  body, the ACS snapshot, the asset catalog and the page itself, so a capacity
-  below four would make one logical read fail on its own budget. Three of those
-  four are `:catalog`-cached for an hour, so the steady-state cost is one.
+  `canton:global` (not a registered CAIP-2 namespace) names the Global
+  Synchronizer; `canton:mainnet` is an alias. Neither upstream publishes limits:
+  the refill rate is a guess from an observed ~3-request 429 threshold, and the
+  capacity is the four-request cold cost of `token_balances/3`.
   """
 
   @behaviour Raxol.Web3.Backend
@@ -338,7 +204,8 @@ defmodule Raxol.Web3.Backend.Canton do
   @doc """
   The token-bucket seed both upstreams get unless a handle overrides it.
 
-  Data, so the derivation in "Rate limits" is checkable rather than asserted.
+  Data, so the derivation in "Rate limits and chain reference" is checkable
+  rather than asserted.
   """
   @spec rate_limit() :: keyword()
   def rate_limit, do: Scan.rate_limit()

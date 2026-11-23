@@ -48,9 +48,7 @@ defmodule Raxol.Web3.FX.Sleuth do
   decoded past its cap: `assets` past the page's `limit` (300 when none is
   given), `topPools` past 32, `corridors` past 64, their asset lists past 400
   in total, and `sleuth_fx_rates_usd` past 64 rates keyed by a three- or
-  four-letter code.
-  A body is bounded in bytes, not in entries: 262 KB of `{}` was 87,000 assets.
-  A list entry that is not a JSON object is skipped, a number included: `1.5`
+  four-letter code. A list entry that is not a JSON object is skipped, a number included: `1.5`
   decodes to a `%Decimal{}` struct, which `%{}` would match. A 200 body that
   is not the documented envelope is `{:decode_failed, :sleuth}` and is never
   cached. Rounding `deviationBps` runs in a pinned `Decimal` context, so no

@@ -2,91 +2,53 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   @moduledoc """
   The partial source: a backend whose upstream is a raw JSON-RPC node.
 
-  ADR-0039 decision 4. A node has no index over accounts, so it cannot be asked
-  what an address has done or what it holds, and before that amendment there was
-  no contract this source could satisfy. What it can answer it answers well:
-  `eth_call` and `eth_getLogs` are two reads a challenge-gated explorer cannot
-  serve at all, so on part of the surface this fallback is stronger than the
-  primary it stands behind.
+  ADR-0039 decision 4. A node has no index over accounts, so it cannot list what
+  an address did or holds, but it serves `eth_call` and `eth_getLogs`, which a
+  challenge-gated explorer cannot.
 
-  ## What is declared, and what is absent
+  ## Declared callbacks
 
-  Required: `chain_info/1` and `block_height/1`. Declared:
-  `get_transaction/2`, `account_info/2`, `get_block/2`, `get_logs/3`,
-  `read_contract/2` and `raw_request/2`.
-
-  Absent, and absent is the answer rather than an error shape:
+  Required: `chain_info/1` and `block_height/1`. Declared: `get_transaction/2`,
+  `account_info/2`, `get_block/2`, `get_logs/3`, `read_contract/2` and
+  `raw_request/2`. Absent (and reported by `Raxol.Web3.Router.coverage/2`):
   `list_transactions/3`, `token_balances/2`, `list_token_transfers/3`,
-  `list_nfts/3`, `contract_metadata/2` and `resolve_name/2`. No method on
-  `Raxol.Web3.RPC`'s allowlist answers any of them. A callback here that
-  returned `{:error, {:unsupported, _}}` to satisfy the behaviour would be a
-  stub with a behaviour attached, and `Raxol.Web3.Router.coverage/2` is what
-  makes the absence legible to an operator.
+  `list_nfts/3`, `contract_metadata/2` and `resolve_name/2`.
 
-  ## What a node does not know, reported as `nil`
+  ## `nil` fields
 
   `chain_info/1` answers `total_blocks`, `total_transactions` and
-  `total_addresses` as `nil`, because those are an indexer's counters and a node
-  keeps none of them. `block_height/1` answers `indexer: nil` for the same
-  reason: there is no indexer here to be behind, and a fabricated
-  `%{finished?: true}` would claim a component exists and is healthy.
-  `average_block_time_ms` is not decoration, though: it is derived from two real
-  block timestamps 100 blocks apart.
+  `total_addresses` as `nil`, and `block_height/1` answers `indexer: nil`: those
+  are an indexer's, and a node keeps none. `average_block_time_ms` is derived
+  from two real block timestamps 100 blocks apart.
 
-  ## The identity check
+  ## Identity check
 
-  `chain_info/1` asks `eth_chainId` and compares it with the chain reference the
-  handle was built for. A URL pointed at the wrong network is otherwise
-  invisible: every callback here would answer, correctly, about a chain nobody
-  asked about. A mismatch is `{:blocked, :chain_mismatch}`, which is this
-  package's existing term for "we refused this target" rather than a new error
-  variant. It is terminal at the router, which is deliberate: failing over would
-  answer the caller from another source and leave the misconfigured handle
-  answering wrongly forever.
+  `chain_info/1` compares `eth_chainId` with the handle's chain reference. A
+  mismatch is `{:blocked, :chain_mismatch}`, terminal at the router so a
+  misconfigured URL is not papered over by failover. Other callbacks do not
+  repeat the check.
 
-  The check is `chain_info/1`'s alone, not every callback's. It is the identity
-  callback, and running it on each read would double the round trips of the
-  cheapest ones.
+  ## `contract?`
 
-  ## `contract?` is code presence, not account type
+  `account_info/2` reports code presence from `eth_getCode`. Since EIP-7702 a
+  delegated wallet carries code, so this is not "is a contract".
 
-  `account_info/2` reads `eth_getCode` and reports whether there is any. Since
-  EIP-7702 that is no longer the same question as "this is not an externally
-  owned account": a wallet that has signed a delegation carries code. A consumer
-  deciding whether it is talking to a wallet or to a contract has to ask
-  something else, and reinterpreting the field here would only move the wrong
-  answer closer to the caller. `Raxol.Web3.Backend.Blockscout` says the same
-  about the upstream field it passes through, for the same reason.
+  ## Transactions
 
-  ## A transaction that is known but unmined
+  `get_transaction/2` reads the transaction and its receipt. In the pool but
+  unmined is `:pending` with a `nil` block; an unknown hash is
+  `{:error, {:upstream_refused, :not_found}}`, which the router does not fail
+  over on. There is no timestamp, and `method` is the four-byte selector.
 
-  `get_transaction/2` reads the transaction and its receipt. A node that has the
-  transaction in its pool answers the first and `null` for the second, and that
-  is `:pending` with a `nil` block, which is the value the contract carries for
-  exactly this case. A hash the node has never seen is
-  `{:error, {:upstream_refused, :not_found}}`, because "no such transaction" is
-  an answer about the question rather than about the source, and the router must
-  not fail over on it.
+  ## Logs
 
-  There is no timestamp. A node's transaction record carries none, and the block
-  that does would be a third round trip for a field `get_block/2` already
-  answers. `method` is the four-byte selector rather than a name: a node has no
-  ABI, so `"0xa9059cbb"` is the whole of what it knows.
-
-  ## Bounded log windows
-
-  `eth_getLogs` over an unbounded range is how a public node refuses a query, so
-  a request here covers at most 2,000 blocks and a walk
-  pages forward with a cursor. The cursor carries the next `fromBlock` and the
-  head the walk was pinned to when it started, so a walk terminates rather than
-  chasing a head that keeps moving.
+  A `get_logs/3` request covers at most 2,000 blocks. The cursor carries the next
+  `fromBlock` and the head pinned at the walk's start, so a walk terminates.
 
   ## Chains
 
-  `@default_urls` is a dated table with one entry, and an entry is a claim:
-  every other chain needs an explicit `:url`. ADR-0033 gap 2 records that chain
-  4663 had no public RPC default anywhere in library code and that the only URL
-  lived in a shell script. This is where that closes.
+  `@default_urls` has one dated entry (chain 4663); every other chain needs an
+  explicit `:url`.
   """
 
   @behaviour Raxol.Web3.Backend
