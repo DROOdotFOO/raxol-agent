@@ -260,8 +260,6 @@ defmodule Raxol.Earn.SignerSidecar do
     :ok
   end
 
-  # -- Internals --
-
   defp port(opts) do
     Keyword.get(opts, :port) ||
       case System.get_env("RAXOL_ACP_SIGNER_PORT") do

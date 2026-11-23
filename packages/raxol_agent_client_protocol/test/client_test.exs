@@ -11,8 +11,6 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
   alias Raxol.AgentClientProtocol.Test.Teardown
   alias Raxol.AgentClientProtocol.Transport
 
-  # -- fixtures -----------------------------------------------------------
-
   defmodule BareClient do
     @moduledoc false
     use Client
@@ -37,7 +35,7 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
     def handle_ext_notification(_wire, _params, _ctx), do: :overridden_marker
   end
 
-  # -- callback surface: naming/arity mirrors MethodTable exactly ---------
+  # callback surface: naming/arity mirrors MethodTable exactly
 
   describe "generated callback surface" do
     test "callbacks/0 matches MethodTable.rows_for_side(:client) exactly" do
@@ -83,7 +81,7 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
     end
   end
 
-  # -- defaults: every unoverridden callback is a safe, wire-correct no-op --
+  # defaults: every unoverridden callback is a safe, wire-correct no-op
 
   describe "default implementations (BareClient, nothing overridden)" do
     test "init/1 default is the identity {:ok, handler_arg}" do
@@ -123,8 +121,6 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
     end
   end
 
-  # -- overridability -------------------------------------------------------
-
   describe "overriding generated defaults" do
     test "an overridden callback wins over the generated default" do
       assert OverridingClient.init(%{x: 1}) == {:ok, {:custom_init, %{x: 1}}}
@@ -139,7 +135,7 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
     end
   end
 
-  # -- child_spec/1 / start_link/2 shape (no Connection required) -----------
+  # child_spec/1 / start_link/2 shape (no Connection required)
 
   defmodule DummyHandler do
     @moduledoc false
@@ -187,7 +183,7 @@ defmodule Raxol.AgentClientProtocol.ClientTest do
     end
   end
 
-  # -- end-to-end smoke: initialize -> session/new -> prompt (2 updates) ----
+  # end-to-end smoke: initialize -> session/new -> prompt (2 updates)
 
   defmodule E2EAgent do
     @moduledoc false

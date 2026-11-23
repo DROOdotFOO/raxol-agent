@@ -15,9 +15,7 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
   alias Raxol.AgentClientProtocol.Session.Supervisor, as: SessionSup
   alias Raxol.AgentClientProtocol.Test.FakeConnection
 
-  # ---------------------------------------------------------------------------
   # Happy path + I2 register-before-respond
-  # ---------------------------------------------------------------------------
 
   describe "happy path" do
     test "6.1: prompt streams updates then resolves with a single PromptResponse", ctx do
@@ -60,9 +58,7 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # I3 ordering, I4 hold-open
-  # ---------------------------------------------------------------------------
 
   describe "begin_prompt when delegation fails" do
     for result <- [{:error, :cancelled}, {:error, :unknown_ref}] do
@@ -155,9 +151,7 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # I5 cancel priority, I7 exactly-one cancelled, 6.2 cancel mid-permission
-  # ---------------------------------------------------------------------------
 
   describe "I5 cancel outranks a landed root result" do
     test "cancel after root DOWN but before last subagent DOWN ⇒ stopReason cancelled", ctx do
@@ -278,9 +272,7 @@ defmodule Raxol.AgentClientProtocol.SessionTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # I6 cancel-of-idle + 6.3 cancel racing prompt dispatch + I16 commutation
-  # ---------------------------------------------------------------------------
 
   describe "I6 cancel-of-idle" do
     test "no frame emitted; only the latch moves; a later prompt runs", ctx do

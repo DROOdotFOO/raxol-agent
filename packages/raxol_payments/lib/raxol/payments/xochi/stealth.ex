@@ -70,8 +70,6 @@ defmodule Raxol.Payments.Xochi.Stealth do
           stealth_priv_key: Secret.t()
         }
 
-  # -- Public API --
-
   @doc "ERC-5564 Announcer contract address (Ethereum mainnet)."
   @spec announcer_address() :: String.t()
   def announcer_address, do: @erc5564_announcer
@@ -295,8 +293,6 @@ defmodule Raxol.Payments.Xochi.Stealth do
     end
   end
 
-  # -- Private --
-
   defp check_announcement(spending_priv, viewing_priv, ann) do
     with {:ok, ann_view_tag} <- extract_announcement_view_tag(ann),
          {:ok, ephemeral_pub} <- normalize_pubkey(ann.ephemeral_pub_key),
@@ -354,8 +350,6 @@ defmodule Raxol.Payments.Xochi.Stealth do
     <<_first_12::binary-size(12), address::binary-size(20)>> = keccak256(xy)
     "0x" <> Base.encode16(address, case: :lower)
   end
-
-  # -- Crypto wrappers --
 
   # ExSecp256k1's NIFs are specced `{:ok, binary()} | atom()`, but at runtime they
   # return `{:ok, binary}` or `{:error, atom}` (the spec is loose). A catch-all

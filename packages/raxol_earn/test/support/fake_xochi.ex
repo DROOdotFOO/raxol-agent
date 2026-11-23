@@ -13,7 +13,7 @@ defmodule Raxol.Earn.TestSupport.FakeXochi do
     the launch mesh preflight surfaced (USDC concentrated on L1, thin on Arb).
   - **Unavailable origins** (e.g. Robinhood/USDG): a quote whose `from_chain_id` is
     listed answers HTTP 503 `"Solver temporarily unavailable"`, exactly as the live
-    solver does for USDG-origin corridors (axol-io/Riddler#419). Destinations still
+    solver does for USDG-origin corridors. Destinations still
     fill -- the "into Robinhood works, out of it doesn't" asymmetry.
   - **Corridor floor** (`> 1 USDC` by default): a sub-floor amount quotes
     `amount_below_minimum`.
@@ -87,8 +87,6 @@ defmodule Raxol.Earn.TestSupport.FakeXochi do
     Agent.get(server, fn st -> Map.get(st.inventory, key, :infinity) end)
   end
 
-  # -- Request routing --
-
   defp handle(conn, server) do
     {:ok, body, conn} = Plug.Conn.read_body(conn)
     route(conn.method, conn.request_path, body, conn, server)
@@ -121,8 +119,6 @@ defmodule Raxol.Earn.TestSupport.FakeXochi do
   defp route(_method, _path, _raw, conn, _server) do
     send_json(conn, 404, %{"error" => "not_found"})
   end
-
-  # -- Solver logic --
 
   # `Agent.get_and_update` fun: returns `{response, new_state}`.
   defp quote_intent(st, body) do
@@ -220,7 +216,7 @@ defmodule Raxol.Earn.TestSupport.FakeXochi do
     end
   end
 
-  # -- Response bodies (snake_case, the canonical worker shape from_json reads) --
+  # Response bodies (snake_case, the canonical worker shape from_json reads)
 
   defp quote_body(intent_id, quote_id, request, req) do
     %{
@@ -350,8 +346,6 @@ defmodule Raxol.Earn.TestSupport.FakeXochi do
       "settlement_options" => []
     }
   end
-
-  # -- Helpers --
 
   defp ok_resp(status, body), do: %{status: status, body: body}
 

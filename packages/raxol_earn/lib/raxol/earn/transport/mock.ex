@@ -75,8 +75,6 @@ defmodule Raxol.Earn.Transport.Mock do
     c
   end
 
-  # -- Raxol.Earn.Transport callbacks --
-
   @impl Raxol.Earn.Transport
   def connect(%{config: %{table: table}}, %{owner: owner}) do
     :ets.insert(table, {:owner, owner})

@@ -48,17 +48,11 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
 
   ## Sequence allocation
 
-  `append/5` uses `INSERT ... VALUES (..., COALESCE((SELECT MAX(sequence)
-  + 1 FROM <table> WHERE thread_id = $1), 0), ...)` inside a single
-  statement. This is *racy* between concurrent writers to the same
-  `thread_id`: two writers can both read `MAX = N` and both try to
-  insert at `N + 1`, producing a `unique_violation` on the second.
-
-  The adapter catches `unique_violation` and retries up to three
-  times with a 5ms backoff. Under heavier contention the third
-  attempt fails with `{:error, :sequence_conflict}` and the caller
-  is expected to serialize through a single owning process. The
-  single-writer-per-thread contract is documented on the behaviour.
+  `append/5` allocates `MAX(sequence) + 1` in one statement, which races
+  between concurrent writers to one `thread_id`. A `unique_violation` is
+  retried up to three times with a 5ms backoff, then fails
+  `{:error, :sequence_conflict}`: serialize writes per thread through one
+  owning process (the behaviour's single-writer contract).
 
   ## Lazy expiry, retention, audit
 

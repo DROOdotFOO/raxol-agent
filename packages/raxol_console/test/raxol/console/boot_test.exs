@@ -298,7 +298,7 @@ defmodule Raxol.Console.BootTest do
 
     # The same boot path in `:app` mode: the reply is a TEA app's rendered frame
     # rather than an LLM turn, and the persona reaches the app through its own
-    # `init/1` instead of being applied for free. See GitHub #763.
+    # `init/1` instead of being applied for free.
     test "app mode boots a per-chat TEA app and replies with its rendered frame" do
       pid = self()
 

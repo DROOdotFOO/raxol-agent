@@ -15,8 +15,6 @@ defmodule Raxol.Payments.PolicyGatePropertyTest do
 
   alias Raxol.Payments.{PolicyGate, SpendingPolicy}
 
-  # Generators -----------------------------------------------------------
-
   defp host_segment do
     string(:alphanumeric, min_length: 1, max_length: 16)
   end
@@ -44,8 +42,6 @@ defmodule Raxol.Payments.PolicyGatePropertyTest do
       approved_domains: approved_list
     }
   end
-
-  # Properties -----------------------------------------------------------
 
   property "domain check fires before confirmation check" do
     check all(

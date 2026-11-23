@@ -58,8 +58,6 @@ defmodule Raxol.Earn.JobApi.HTTP do
     %{adapter: __MODULE__, config: config}
   end
 
-  # -- Behaviour callbacks --
-
   @impl Raxol.Earn.JobApi
   def browse_agents(%{config: cfg}, keyword, params) do
     query = build_browse_query(keyword, params, cfg.chain_ids)
@@ -123,8 +121,6 @@ defmodule Raxol.Earn.JobApi.HTTP do
       err -> err
     end
   end
-
-  # -- Internal --
 
   defp authed_request(cfg, method, url, body, retried? \\ false) do
     case Auth.token(cfg.auth) do

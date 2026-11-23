@@ -155,8 +155,6 @@ defmodule Raxol.Earn.Xochi.FixtureParityTest do
     end
   end
 
-  # -- Helpers --
-
   defp start_fake do
     {:ok, server} = FakeXochi.start_link()
     server

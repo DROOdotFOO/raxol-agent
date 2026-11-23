@@ -62,8 +62,6 @@ defmodule Raxol.Earn.Xochi.CapacityRefresher do
     {:reply, do_refresh(state), state}
   end
 
-  # -- Internal --
-
   defp do_refresh(state) do
     capacity = state.derive_fn.()
 

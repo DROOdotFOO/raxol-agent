@@ -1,6 +1,6 @@
 defmodule Raxol.AgentClientProtocol.Ext.ReattachEdgeCasesTest do
   @moduledoc """
-  Reattach/journal edge cases found in review: slow replays, far-future
+  Reattach/journal edge cases: slow replays, far-future
   expiries, injected authorizers, partial contexts and cancelled requests.
   """
 
@@ -14,15 +14,11 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachEdgeCasesTest do
 
   import ExUnit.CaptureLog
 
-  # ===========================================================================
-  # Reattach/journal edge cases.
-  # ===========================================================================
-
-  # Finding 1 (MEDIUM): the synchronous replay runs inside `GenServer.call(sub,
+  # The synchronous replay runs inside `GenServer.call(sub,
   # :run)`; on the default 5s timeout a history slower than 5s crashes the attach
   # handler. The subscriber owns its own expiry timer, so the call must be
   # `:infinity`.
-  describe "finding 1 — large-history replay must not time out the run call" do
+  describe "large-history replay must not time out the run call" do
     @tag timeout: 20_000
     test "a replay slower than the default 5s call window does NOT crash attach" do
       {sid, j, _w} = start_writer()
@@ -42,10 +38,10 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachEdgeCasesTest do
     end
   end
 
-  # Finding 2 (LOW): `Process.send_after/3` raises above the OTP timer ceiling, so
+  # `Process.send_after/3` raises above the OTP timer ceiling, so
   # a grant with a far-future `exp` crashes the subscriber right after it replied.
   # The arm must clamp the delay.
-  describe "finding 2 — a far-future grant.expires_at does not crash the subscriber" do
+  describe "a far-future grant.expires_at does not crash the subscriber" do
     test "an exp past the timer ceiling arms without ArgumentError; the sub lives" do
       {sid, j, _w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
       now = System.os_time(:second)
@@ -67,10 +63,10 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachEdgeCasesTest do
     end
   end
 
-  # Finding 3 (LOW): the injected `:authorize` seam admitted ANY `{:ok, map}` —
+  # The injected `:authorize` seam admits ANY `{:ok, map}` —
   # including an empty map — bypassing the Grant contract. `run_authorize` must
   # re-assert it.
-  describe "finding 3 — an injected authorize returning a non-Grant is denied" do
+  describe "an injected authorize returning a non-Grant is denied" do
     test "{:ok, %{}} (empty map) denies: -32000, NO registration, NO history" do
       {sid, j, _w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
       {:ok, conn} = FakeConnection.start_link()
@@ -129,10 +125,10 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachEdgeCasesTest do
     end
   end
 
-  # Finding 5a (LOW): the unsupervised fallback links the Subscriber to the
+  # The unsupervised fallback links the Subscriber to the
   # ephemeral caller; a :normal caller exit never signals the link, leaking the
   # Subscriber past its connection. It must tie its lifetime to the conn.
-  describe "finding 5a — the fallback subscriber dies with its connection" do
+  describe "the fallback subscriber dies with its connection" do
     test "killing the connection stops an unsupervised fallback subscriber" do
       {sid, j, w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
       {:ok, conn} = FakeConnection.start_link()
@@ -161,9 +157,9 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachEdgeCasesTest do
     end
   end
 
-  # Finding 5b (LOW): a partial injected `:ctx` (missing :session_id / :surface)
-  # crashed `emit_denied` with a KeyError on the deny path.
-  describe "finding 5b — deny path tolerates a partial injected ctx" do
+  # A partial injected `:ctx` (missing :session_id / :surface)
+  # must not crash `emit_denied` with a KeyError on the deny path.
+  describe "deny path tolerates a partial injected ctx" do
     test "a denied attach with a partial ctx returns the deny envelope, no KeyError" do
       {sid, j, _w} = start_writer([{"session_update", %{"i" => 1}, "agent"}])
       {:ok, conn} = FakeConnection.start_link()

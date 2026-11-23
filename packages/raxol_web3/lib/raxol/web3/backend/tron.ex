@@ -3,110 +3,54 @@ defmodule Raxol.Web3.Backend.Tron do
   The Tron backend, over three MCP upstreams with three different session models.
 
   ADR-0033 decision 3 and ADR-0039 for the contract; `Raxol.MCP.Client` reaches
-  the stateful MCP origins. Every figure below was measured on 2026-09-14
-  unless it says otherwise, and the ones that are guesses say so.
+  the stateful MCP origins.
 
-  ## Three sources, three session models, one contract
+  | Source | Session | Concurrency |
+  | ------ | ------- | ----------- |
+  | TronGrid (`mcp.trongrid.io/mcp`) | legacy, `mcp-session-id` | `:pooled` |
+  | SQD Portal (`portal.sqd.dev/mcp`) | none | `:stateless` |
+  | TronScan (`mcp.tronscan.org/mcp`) | legacy, `mcp-session-id` | `:serialized` |
 
-  | Source | Session | Concurrency | Tools |
-  | ------ | ------- | ----------- | ----- |
-  | TronGrid (`mcp.trongrid.io/mcp`) | legacy, `mcp-session-id` | `:pooled` | 149 |
-  | SQD Portal (`portal.sqd.dev/mcp`) | none | `:stateless` | 31 |
-  | TronScan (`mcp.tronscan.org/mcp`) | legacy, `mcp-session-id` | `:serialized` | 119 |
+  TronScan must be `:serialized`: two parallel calls on one session both 500.
+  No upstream tool description reaches a served tool definition; upstream prose
+  travels only inside result payloads the normalizers take fields out of.
 
-  The concurrency policy is passed to `Raxol.MCP.Client` rather than
-  reimplemented here. TronScan is the reason the policy
-  exists: two parallel calls on one session answered 500 for both, reproducibly,
-  while sequential calls immediately after succeeded and the session survived.
+  ## Addresses
 
-  149 plus 119 is 268 third-party tool descriptions for one chain, and
-  TronGrid's `tools/list` alone was 269,860 bytes on 2026-09-14. None of that
-  text reaches a served tool definition or an annotation: upstream names appear
-  only as arguments this module chooses, and upstream prose travels only inside
-  a result payload that the normalizers take structured
-  fields out of.
+  `{:tron, value}` accepts Base58Check or hex. `Raxol.Web3.Tron.Address.canonical/1`
+  collapses them once, at the edge, so cache keys, cursor scopes and rate-limit
+  spends are Base58. Results are canonicalized on the way out too (upstreams mix
+  encodings within one response).
 
-  ## Two encodings for one account
+  ## Tokens
 
-  The reference is `{:tron, value}` and accepts Base58Check or hex for the same
-  account. `Raxol.Web3.Tron.Address.canonical/1` collapses them, and it is
-  applied ONCE, at the edge, before any request. Everything past that point holds
-  Base58, so a cache key, a cursor scope and a rate-limit spend cannot differ
-  by encoding for one account. The upstreams make the point themselves: a
-  single `getTransactionById` response carried `owner_address` in Base58 and
-  `contract_address` in hex, so normalization canonicalizes on the way out too.
+  A TRC-20 balance carries the contract as `address`. A TRC-10 balance has
+  `address: nil`, `type: "TRC-10"` and its numeric id in `token_id`. The native
+  asset is `type: "TRX"` with neither. TronGrid publishes no reliable token
+  metadata (its batch tool silently truncates), so its `decimals` is `nil`;
+  TronScan includes `tokenDecimal` and `tokenAbbr`.
 
-  ## Three token standards, and TRC-10 has no address
+  ## Heights
 
-  `Backend.token()`'s `address` is the TRC-20 contract. A TRC-10 asset is keyed
-  by a numeric id, so `address` is `nil`, `type` is `"TRC-10"` and the id lands
-  in `token_balance()`'s `token_id`, which is exactly the field a standard with
-  a non-address identifier needs. A TRC-10 and a TRC-20 balance therefore come
-  back from one `token_balances/3` page and are told apart by `type` without
-  either of them carrying a field it does not have. The native asset is neither:
-  TronScan reports it as `tokenType: "trc10"` with `tokenId: "_"`, and it is
-  normalized to `type: "TRX"` with no address and no id.
+  `block_height/1` reads each source's irreversible view: TronGrid `getBlock` +
+  `solidityGetBlock`; TronScan the head row and the highest `confirmed: true` row
+  of one `getBlocks` page; SQD Portal `portal_get_network_info`'s `head` and
+  `finalized_head` (which also fill the indexer shape).
 
-  Token metadata is absent on the TronGrid source, and that is a measurement
-  rather than an omission. `getTrc20Info` is the only batch metadata tool, its
-  `contractList` is a comma-separated string despite an array schema, and asked
-  for the 493 contracts one account held it answered with 20 records and no
-  indication that it had truncated. Enriching from it would have produced
-  metadata for 20 tokens out of 493 and silence about the rest. The TronScan
-  source answers `token_balances/3` with `tokenDecimal` and `tokenAbbr`
-  included, so a caller that needs the scale has a source that publishes it and
-  a nil rather than a fabricated 18 from one that does not.
+  ## Declared callbacks
 
-  ## The finalized split, from the irreversible view
+  SQD Portal declares no optional callback: it has no by-hash lookup and refuses
+  an account query without a time window, which `Backend.list_opts()` cannot
+  carry. TronGrid declares the reads its named tools answer; its
+  `getTransactionInfoById` fails its own output schema, so a TronGrid transaction
+  carries `nil` block and fee. TronScan answers those.
 
-  `block_height/1` never reports the head twice, and each source has its own
-  irreversible view:
+  ## Pagination
 
-    * TronGrid: `getBlock` for the head, `solidityGetBlock` for the
-      irreversible one. The 25 `solidity*` tools exist for no other reason, and
-      the two numbers were 86,236,608 and 86,236,590 when measured.
-    * TronScan: one descending `getBlocks` page. The head is the first row and
-      the irreversible height is the highest row carrying `confirmed: true`,
-      which sat 18 blocks back at 19 confirmations, matching Tron's
-      two-thirds-of-27 rule.
-    * SQD Portal: `portal_get_network_info` carries `head`, `finalized_head`
-      and the lag in blocks and seconds, so one call answers the height and the
-      indexer shape.
-
-  `getNodeInfo` carries both numbers in one call and is deliberately not used:
-  it delivers them as `"Num:N,ID:hash"` strings beside a peer list, 30,366
-  bytes on 2026-09-14, against roughly 800 bytes for each structured block.
-
-  ## What each source declares
-
-  SQD Portal declares no optional callback at all, on the same measurement
-  ADR-0039 rests on. `portal_tron_query_transactions` takes a `sighash`, which
-  is a method selector and not a transaction id, so there is no by-hash lookup;
-  and asked for an account's transactions with no window it answers 200
-  carrying `error.code "invalid_request"` and "Provide timeframe, from_block, or
-  from_timestamp/to_timestamp to define the query window". `Backend.list_opts()`
-  is `[cursor: _]`, so a caller cannot supply that window and a window this
-  module invented would be its own number. An archive answers ranges; the two
-  required callbacks are what it knows about the chain.
-
-  TronGrid declines `get_block/2`'s siblings it has no index for and declares
-  the six reads its named tools answer. `getTransactionInfoById` is not among
-  them: on 2026-09-14 it answered `isError: true` with its own output-schema
-  validation failure (`/fee_major: string found, number expected`), so a
-  TronGrid transaction carries a `nil` block and fee, and TronScan is the source
-  in the chain that answers those.
-
-  ## Pagination, and a ceiling the caller never sees
-
-  TronGrid pages by an opaque `fingerprint`; TronScan pages by `start` and
-  `limit` with a hard `start + limit <= 10000`. Both live behind
-  `Raxol.Web3.Cursor`, so neither an offset nor a fingerprint is exposed.
-  Crossing TronScan's ceiling fails rather than rewinding: the cursor is still
-  minted while the upstream reports more rows, and presenting one whose page
-  would cross the ceiling answers `{:upstream_refused, :unknown}` without
-  spending the upstream's budget on a request its own rule refuses. The
-  recorded refusal is pinned as a fixture and maps to the same error, so the
-  local check and the upstream agree.
+  TronGrid pages by an opaque `fingerprint`, TronScan by `start`/`limit` with a
+  hard `start + limit <= 10000`; both are behind `Raxol.Web3.Cursor`. A cursor
+  whose page would cross TronScan's ceiling answers
+  `{:upstream_refused, :unknown}` without spending a request.
   """
 
   @behaviour Raxol.Web3.Backend

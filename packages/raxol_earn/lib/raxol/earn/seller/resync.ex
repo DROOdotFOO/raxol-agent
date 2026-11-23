@@ -87,8 +87,6 @@ defmodule Raxol.Earn.Seller.Resync do
     end
   end
 
-  # -- Reconciliation --
-
   defp reconcile(jobs, defaults) do
     summary =
       Enum.reduce(jobs, %{adopted: 0, redelivered: 0, cleaned: 0, skipped: 0}, fn job, acc ->
@@ -173,8 +171,6 @@ defmodule Raxol.Earn.Seller.Resync do
         :ok
     end
   end
-
-  # -- Normalization --
 
   defp normalize(job, defaults) do
     with {:ok, job_id} <- field(job, ["id", "jobId", "job_id", "onChainJobId"], :no_job_id),
@@ -275,8 +271,6 @@ defmodule Raxol.Earn.Seller.Resync do
   end
 
   defp phase(other), do: {:skip, {:unknown_phase, other}}
-
-  # -- Telemetry --
 
   defp skip(job, reason, acc) do
     emit(:skipped, %{job_id: Map.get(job, "id"), reason: reason})

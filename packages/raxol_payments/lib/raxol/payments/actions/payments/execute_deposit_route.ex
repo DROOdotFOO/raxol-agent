@@ -2,17 +2,11 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
   @moduledoc """
   Fetch and verify a Tron-origin cross-chain deposit-route quote.
 
-  A non-EVM (Tron) origin has no gasless pull, so the quote returns a bare
-  `deposit_address` the payer funds directly. This action fetches the quote and
-  verifies its `deposit_attestation` recovers to the pinned signer BEFORE
-  returning the deposit instructions, failing closed otherwise -- so the agent
-  never sends TRC-20 funds to an address a compromised quote endpoint could have
-  swapped.
-
-  raxol does not send the funds (it has no Tron transaction stack): the agent's
-  own Tron wallet funds `deposit_address` before `deposit_deadline`, then polls
-  settlement with `payment_poll_xochi_status` (`pending -> completed | refunded`,
-  with the refund reason surfaced on rejection).
+  A Tron origin has no gasless pull, so the quote returns a bare
+  `deposit_address`. This verifies its `deposit_attestation` recovers to the
+  pinned signer BEFORE returning deposit instructions, failing closed otherwise.
+  raxol sends nothing: the agent's Tron wallet funds `deposit_address` before
+  `deposit_deadline`, then polls with `payment_poll_xochi_status`.
 
   ## Context
 
@@ -41,13 +35,10 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
   amount it states (its `to_amount`, and its own `min_to_amount` when it gives
   one), and a quote below the floor returns no deposit address.
 
-  The floor is a caller-side filter: it is not sent to Xochi. What the quote
-  states is bound by the `xochi-deposit-attestation:v3` signature instead --
-  depositor wallet, both legs (chain, token, amount), `to_amount`,
-  `min_to_amount`, the recipient, refund address, settlement type, deposit
-  address and deadline -- so a substituted or replayed quote is refused. Nothing
-  here bounds what is delivered after the deposit lands beyond what the venue
-  signed.
+  The floor is not sent to Xochi. The quote's terms are bound by the
+  `xochi-deposit-attestation:v3` signature, so a substituted or replayed quote is
+  refused; what is delivered after the deposit lands is bounded only by what the
+  venue signed.
 
   Errors are machine-readable: `:attestation_mismatch`, `:missing_attestation`,
   `{:unsupported_deposit_attestation_version, advertised}` (anything but v3,

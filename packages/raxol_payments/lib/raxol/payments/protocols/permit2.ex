@@ -48,7 +48,7 @@ defmodule Raxol.Payments.Protocols.Permit2 do
     ]
   }
 
-  # -- Protocol behaviour stubs (Permit2 is not a 402 protocol) --
+  # Protocol behaviour stubs (Permit2 is not a 402 protocol)
 
   @impl true
   @spec name() :: String.t()
@@ -75,8 +75,6 @@ defmodule Raxol.Payments.Protocols.Permit2 do
   def amount(%{input_amount: amt}) when is_binary(amt), do: Decimal.new(amt)
   def amount(%{input_amount: amt}) when is_integer(amt), do: Decimal.new(amt)
   def amount(_), do: Decimal.new(0)
-
-  # -- Direct API --
 
   @doc """
   Sign a Permit2 `PermitWitnessTransferFrom` from a Riddler `/quote`
@@ -150,8 +148,6 @@ defmodule Raxol.Payments.Protocols.Permit2 do
   @doc "Return the EIP-712 types map this module signs against."
   @spec types() :: map()
   def types, do: @types
-
-  # -- Internals --
 
   defp build_domain(chain_id) do
     %{

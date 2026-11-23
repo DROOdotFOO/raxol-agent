@@ -255,7 +255,7 @@ defmodule Raxol.Earn.Wallet.SCA do
     end
   end
 
-  # -- Shared implementation (called by generated functions) --
+  # Shared implementation (called by generated functions)
 
   @doc false
   @spec sign_message(binary(), module(), pos_integer(), String.t(), non_neg_integer()) ::
@@ -352,8 +352,6 @@ defmodule Raxol.Earn.Wallet.SCA do
   @spec resolve_bundler_url(String.t() | {:system, String.t()} | nil) ::
           {:ok, String.t()} | {:error, term()}
   def resolve_bundler_url(url), do: resolve_url(url, :no_bundler_url)
-
-  # -- Helpers --
 
   # viem's hashMessage: keccak256("\x19Ethereum Signed Message:\n" <> len <> data).
   # Operates on arbitrary-length data, unlike eip191_digest/1 (32-byte hash).

@@ -79,7 +79,7 @@ defmodule Raxol.Payments.Tron.Address do
 
   def from_hex(_), do: {:error, :invalid_address}
 
-  # -- Base58Check internals --
+  # Base58Check internals
 
   defp checksum_valid?(payload, checksum) do
     :crypto.hash_equals(compute_checksum(payload), checksum)
@@ -94,7 +94,7 @@ defmodule Raxol.Payments.Tron.Address do
 
   defp sha256(data), do: :crypto.hash(:sha256, data)
 
-  # -- Base58 --
+  # Base58
 
   defp base58_encode(binary) when is_binary(binary) do
     leading = leading_zeros(binary)

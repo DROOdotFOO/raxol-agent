@@ -150,8 +150,6 @@ defmodule Raxol.Earn.Onchain.Permit2Approver do
     end
   end
 
-  # -- Internal --
-
   defp approve(provider, chain_id, token, amount) do
     case ProviderAdapter.send_calls(provider, chain_id, [approve_call(token, amount)]) do
       {:ok, [hash | _]} -> {:ok, {:approved, hash}}

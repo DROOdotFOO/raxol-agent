@@ -219,8 +219,6 @@ defmodule Raxol.Payments.EIP712 do
     |> String.replace_prefix("0x", "")
   end
 
-  # -- Private --
-
   defp canonical_v(v) when v in [0, 1], do: v + 27
   defp canonical_v(v) when v in [27, 28], do: v
 

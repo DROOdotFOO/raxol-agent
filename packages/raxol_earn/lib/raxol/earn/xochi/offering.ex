@@ -114,7 +114,7 @@ defmodule Raxol.Earn.Xochi.Offering do
 
   Only `signed_intent` is required: the storefront reads the authoritative
   corridor and amount from Xochi by the bundle's `intent_id` at accept time, so
-  the buyer no longer hand-carries (and cannot misstate) `src_chain_id`,
+  the buyer does not hand-carry (and cannot misstate) `src_chain_id`,
   `dst_chain_id`, `src_token`, `dst_token`, or `amount_atomic`. Those remain as
   optional audit hints; raxol derives and enforces the real values.
 
@@ -135,7 +135,7 @@ defmodule Raxol.Earn.Xochi.Offering do
   So the narrowing costs nothing today, and a corridor_allowlist_test guard fails
   if a non-pulling origin ever becomes quotable while this stays mandatory. At
   that point make `pull_signature` required per-mode in `requirement_schema/1`
-  rather than in this shared base. See GitHub #665.
+  rather than in this shared base.
   """
   @spec requirement_schema() :: map()
   def requirement_schema do

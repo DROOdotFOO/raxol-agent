@@ -143,8 +143,6 @@ defmodule Raxol.Earn.Xochi.TransferCore do
     end
   end
 
-  # -- request validation --
-
   # Four stages, run in this order so the first failing check decides the error:
   # the request's shape, the offering's settlement mode, per-VM address format,
   # then the corridor and its liquidity.
@@ -265,7 +263,7 @@ defmodule Raxol.Earn.Xochi.TransferCore do
 
   defp hex_key?(k), do: String.match?(k, ~r/^0x[0-9a-fA-F]+$/)
 
-  # -- corridor + liquidity gating (config-driven; default inert) --
+  # corridor + liquidity gating (config-driven; default inert)
 
   defp allowed_corridor?(req) do
     if CorridorAllowlist.enabled?() do
@@ -297,7 +295,7 @@ defmodule Raxol.Earn.Xochi.TransferCore do
 
   defp within_capacity?(_chain, _token, _amount), do: true
 
-  # -- rolling aggregate capacity (inert unless the ledger is running) --
+  # rolling aggregate capacity (inert unless the ledger is running)
 
   defp reserve_capacity(req, ctx) do
     if capacity_ledger_running?() do
@@ -370,8 +368,6 @@ defmodule Raxol.Earn.Xochi.TransferCore do
   end
 
   defp positive_amount?(_), do: false
-
-  # -- delivery --
 
   defp resolve_settler do
     opts = Application.get_env(:raxol_earn, :xochi_transfer_settler, [])

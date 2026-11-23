@@ -1,5 +1,5 @@
 defmodule Raxol.Payments.Protocols.XochiDepositRouteTest do
-  # #400: a Tron-origin deposit-route quote returns a bare deposit_address; raxol
+  # A Tron-origin deposit-route quote returns a bare deposit_address; raxol
   # verifies its v3 deposit_attestation against the pinned signer AND the
   # caller's own request before surfacing it, and fails closed otherwise. raxol
   # never sends the Tron funds.

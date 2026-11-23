@@ -44,9 +44,8 @@ defmodule Raxol.Payments.Confirm do
 
   - `:device` -- IO device, default `:stdio`.
   - `:timeout_ms` -- max time to wait for an answer, default `60_000`.
-    On timeout the callback denies. Pass `:infinity` to wait forever
-    (the old behavior); only safe when you know there's a real human
-    on a real TTY.
+    On timeout the callback denies. Pass `:infinity` to wait forever;
+    only safe when you know there's a real human on a real TTY.
   """
   @spec terminal(keyword()) :: callback()
   def terminal(opts \\ []) do

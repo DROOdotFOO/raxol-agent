@@ -59,8 +59,6 @@ defmodule Raxol.Earn.JobIdResolver.Mock do
     :ok
   end
 
-  # -- Behaviour callbacks --
-
   @impl Raxol.Earn.JobIdResolver
   def resolve(%{config: %{table: table}}, _adapter, _chain_id, tx_hash) do
     [{:pending, pending}] = :ets.lookup(table, :pending)

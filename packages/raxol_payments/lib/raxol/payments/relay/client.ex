@@ -63,8 +63,6 @@ defmodule Raxol.Payments.Relay.Client do
     |> handle_response(&StatusResponse.from_json/1)
   end
 
-  # -- Private --
-
   defp build_req(config) do
     validate_base_url!(config.base_url)
 

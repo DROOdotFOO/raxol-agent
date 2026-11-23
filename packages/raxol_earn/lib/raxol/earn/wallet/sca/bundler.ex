@@ -140,7 +140,7 @@ defmodule Raxol.Earn.Wallet.SCA.Bundler do
     end
   end
 
-  # -- UserOp <-> RPC shape --
+  # UserOp <-> RPC shape
 
   @doc """
   Serialize a `UserOp` struct to the bundler RPC JSON shape (unpacked
@@ -196,8 +196,6 @@ defmodule Raxol.Earn.Wallet.SCA.Bundler do
     |> Map.put("paymasterData", hex_bytes(op.paymaster_data))
   end
 
-  # -- RPC plumbing --
-
   defp rpc(url, method, params, opts) do
     body = %{
       "jsonrpc" => "2.0",
@@ -222,8 +220,6 @@ defmodule Raxol.Earn.Wallet.SCA.Bundler do
         {:error, :transport_error}
     end
   end
-
-  # -- Hex quantity encoding --
 
   @doc "Encode a non-negative integer as a JSON-RPC quantity hex string."
   @spec encode_quantity(non_neg_integer()) :: hex()

@@ -66,8 +66,8 @@ defmodule Raxol.Earn.AccountingBootTest do
     end
 
     test "env_config emits the multiplier alongside an explicitly nil cap" do
-      # The shape every pair-guard unit test used to miss. Asserting it here
-      # pins the reason the absent-key shape is not the production one.
+      # The shape pair-guard unit tests miss: it pins why the absent-key shape
+      # is not the production one.
       System.put_env("RAXOL_REBALANCE_DEMAND_MULTIPLIER", "2")
 
       opts = boot_config()

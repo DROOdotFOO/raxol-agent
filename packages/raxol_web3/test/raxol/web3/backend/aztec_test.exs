@@ -82,7 +82,7 @@ defmodule Raxol.Web3.Backend.AztecTest do
     end
 
     test "token_balances is absent, and nothing stands in for it" do
-      # The central point of issue #1030. A private note is unobservable by
+      # A private note is unobservable by
       # construction, so an empty page would be a lie a caller cannot tell
       # apart from an account holding nothing.
       handle = handle(%{})

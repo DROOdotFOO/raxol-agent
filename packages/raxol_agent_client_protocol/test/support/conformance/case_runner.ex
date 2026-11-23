@@ -170,9 +170,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.CaseRunner do
   defp normalize_permission_mode("deny-all"), do: :deny_all
   defp normalize_permission_mode(_other), do: :approve_all
 
-  # ===========================================================================
   # Harness lifecycle
-  # ===========================================================================
 
   defp start_harness(permission_mode) do
     {agent_handle, client_handle} = Transport.Paired.create_pair()
@@ -245,9 +243,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.CaseRunner do
     dir
   end
 
-  # ===========================================================================
   # Steps
-  # ===========================================================================
 
   defp run_steps(steps, harness, opts, ctx) do
     Enum.reduce(steps, ctx, fn step, ctx -> run_step(step, harness, opts, ctx) end)
@@ -349,7 +345,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.CaseRunner do
     end
   end
 
-  # -- expect_error / save / $ref plumbing -------------------------------------
+  # expect_error / save / $ref plumbing
 
   defp apply_expect_error({:ok, _value} = ok, nil, _label), do: ok
 
@@ -449,9 +445,7 @@ defmodule Raxol.AgentClientProtocol.Test.Conformance.CaseRunner do
 
   defp resolve_ref(value, _saved), do: value
 
-  # ===========================================================================
   # Checks
-  # ===========================================================================
 
   defp run_checks(checks, harness, ctx) do
     Enum.each(checks, &run_check(&1, harness, ctx))

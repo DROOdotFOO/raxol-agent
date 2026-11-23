@@ -31,29 +31,20 @@ defmodule Raxol.Payments.Xochi.SwapAnnouncer do
   The signing wallet and the on-wire `agentWallet` come from the context
   `:wallet` (the agent's own wallet). The delegator/human wallet never appears.
 
-  The route (chains, tokens, amounts) is captured at execute and stashed in
-  `Raxol.Payments.Xochi.SwapRouteStore` keyed by the real intent id, so the later
-  terminal announce can rebuild the event from only the `intent_id` it observes.
+  The route is stashed at execute in `Raxol.Payments.Xochi.SwapRouteStore`, keyed
+  by intent id, for the terminal announce.
 
   ## Privacy: only public settlements disclose the route
 
-  Safe by default: only a `settlement_preference` of `"public"` announces the
-  full route (chains, tokens, amounts, real intent id). A `"stealth"` or
-  `"shielded"` settlement (and any unset/unknown preference) announces a
-  redacted row instead: the status and timestamp only, under a topic-salted
-  pseudo intent id, with no amounts, chains, or tokens. Announcing the exact
-  delivered amount or the real intent id of a private swap would let an observer
-  join the feed row against the on-chain stealth announcement or shielded note
-  and defeat the very unlinkability those modes exist for. The execute and
-  terminal rows share the same pseudo id so the browser still merges them into
-  one advancing row.
+  Only `settlement_preference: "public"` announces the full route. Stealth,
+  shielded, unset or unknown announce status and timestamp only, under a
+  topic-salted pseudo intent id (shared by both rows), so the feed cannot be
+  joined against the on-chain stealth announcement or shielded note.
 
   ## Trust boundary: where and under whose topic a signed row may go
 
-  The `topic_id` is a capability and the announce host is signature-free, so a
-  context that names a hostile host or a wrong topic would exfiltrate a signed
-  activity row to an attacker or into another user's feed. `config/1` therefore
-  fails closed on three axes before it will announce:
+  A hostile host or wrong topic would leak a signed row, so `config/1` fails
+  closed unless:
 
     * The announce host must be the swap's own Xochi host, `localhost`, or a
       host on the operator's allowlist (`config :raxol_payments,
@@ -61,14 +52,11 @@ defmodule Raxol.Payments.Xochi.SwapAnnouncer do
       elsewhere is rejected.
     * The `topic_id` must match the Xochi capability format
       (`[A-Za-z0-9_-]{16,64}`), so a truncated or malformed topic never ships.
-    * The topic is bound to its authorizing Mandate. When the swap surfaces the
-      authorizing mandate hash (`context.authorizing_mandate_hash`), the topic's
-      declared `mandate_hash` must equal it. Absent that, a binding-required
-      deployment (production by default, or `config :raxol_payments,
-      :require_topic_mandate_binding`) still requires the topic to declare which
-      mandate it serves. Full cryptographic ownership is a Xochi-side check
-      (the worker verifying the signature against the mandate the topic was
-      issued for) and lands with the authorization handoff.
+    * The topic's `mandate_hash` equals `context.authorizing_mandate_hash` when
+      the swap surfaces one; otherwise a binding-required deployment (production
+      by default, or `config :raxol_payments, :require_topic_mandate_binding`)
+      still requires the topic to declare one. Cryptographic ownership is
+      verified Xochi-side.
   """
 
   alias Raxol.Payments.Xochi.{AgentStream, SwapRouteStore}
@@ -196,8 +184,6 @@ defmodule Raxol.Payments.Xochi.SwapAnnouncer do
         :skip
     end
   end
-
-  # -- Private --
 
   # The topic axis: a configured, well-formed topic, bound to its mandate.
   defp validate_topic(context) do

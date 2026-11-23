@@ -165,8 +165,6 @@ defmodule Raxol.Broker.Executor.StructureTest do
     String.starts_with?(source, lib <> "/")
   end
 
-  # -- The checker ------------------------------------------------------------
-
   # Everything the rules read from one module: literal remote references
   # (`{m, f, arity}`, `:any` for an MFA pair), dynamic dispatch findings and
   # every atom literal.
@@ -289,8 +287,6 @@ defmodule Raxol.Broker.Executor.StructureTest do
   defp name({:atom, _, atom}), do: atom
   defp name(_expression), do: :var
 
-  # -- The rules --------------------------------------------------------------
-
   defp callers(facts, fun) do
     for %{module: module, refs: refs} <- facts, Enum.any?(refs, fun), uniq: true, do: module
   end
@@ -338,8 +334,6 @@ defmodule Raxol.Broker.Executor.StructureTest do
         finding <- inspects,
         do: {module, finding}
   end
-
-  # -- The app ----------------------------------------------------------------
 
   test "the walker sees remote calls (sanity)", %{facts: facts} do
     place = Enum.find(facts, &(&1.module == Place))
@@ -392,7 +386,7 @@ defmodule Raxol.Broker.Executor.StructureTest do
     assert inspect_violations(facts) == []
   end
 
-  # -- The rules catch their cases -------------------------------------------
+  # The rules catch their cases
 
   # Compile `body` into a throwaway module (in memory, never in lib) and
   # return its facts. `mix test` compiles without debug info, so the probe
@@ -509,8 +503,6 @@ defmodule Raxol.Broker.Executor.StructureTest do
       assert inspect_violations([probe(body)]) == [], body
     end
   end
-
-  # -- Best-effort source scan ------------------------------------------------
 
   @order_literal ~r/(["'}]|~[a-zA-Z].)(place|cancel|replace)_/
 

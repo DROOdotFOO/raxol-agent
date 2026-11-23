@@ -27,7 +27,7 @@ defmodule Raxol.AgentClientProtocol.Test.FakeConnection do
 
   use GenServer
 
-  # -- IC surface (called by the Session via conn_mod) ------------------------
+  # IC surface (called by the Session via conn_mod)
 
   @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref | :cancelled}
   def delegate_reply(conn, reply_ref, adopter) do
@@ -55,8 +55,6 @@ defmodule Raxol.AgentClientProtocol.Test.FakeConnection do
     GenServer.call(conn, {:record, {:cancel_request, tag}, :ok})
   end
 
-  # -- test helpers -----------------------------------------------------------
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts)
 
@@ -77,8 +75,6 @@ defmodule Raxol.AgentClientProtocol.Test.FakeConnection do
   @doc "Count of recorded interactions of a kind."
   @spec count(pid(), atom()) :: non_neg_integer()
   def count(conn, kind), do: conn |> entries(kind) |> length()
-
-  # -- GenServer --------------------------------------------------------------
 
   @impl true
   def init(opts) do

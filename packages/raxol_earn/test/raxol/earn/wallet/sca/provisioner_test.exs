@@ -155,8 +155,6 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
     end
   end
 
-  # -- Stub scaffolding --
-
   # One plug for the node RPC (getCode/getNonce/installed?) + paymaster +
   # bundler, keyed on method. Returns the wallet_opts the caller threads
   # into Provisioner (carrying the same plug as a Req for the bundler /
@@ -247,8 +245,6 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
     }
   end
 
-  # -- Assertion helpers --
-
   # getNonce calls to the EntryPoint whose uint192 key equals `key`.
   defp getnonce_calls(calls, key) do
     for {"eth_call", [%{"to" => to, "data" => data} | _]} <- calls,
@@ -276,8 +272,6 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
       0 -> Enum.reverse(acc)
     end
   end
-
-  # -- Byte helpers --
 
   defp down(s), do: String.downcase(s)
   defp hex(bin), do: "0x" <> Base.encode16(bin, case: :lower)

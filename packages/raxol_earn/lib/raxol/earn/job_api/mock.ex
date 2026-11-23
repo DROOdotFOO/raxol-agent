@@ -61,8 +61,6 @@ defmodule Raxol.Earn.JobApi.Mock do
     Enum.reverse(list)
   end
 
-  # -- Raxol.Earn.JobApi callbacks --
-
   @impl Raxol.Earn.JobApi
   def browse_agents(%{config: %{table: table}}, keyword, _params) do
     [{:agents, agents}] = :ets.lookup(table, :agents)

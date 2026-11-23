@@ -14,8 +14,6 @@ defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras do
   alias Raxol.AgentClientProtocol.Schema.SessionUpdate
 end
 
-# -- CloseSessionRequest / CloseSessionResponse ------------------------------
-
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.CloseSessionRequest do
   @moduledoc """
   Request parameters for `session/close`: closes an active session, best-
@@ -91,8 +89,6 @@ defimpl Jason.Encoder,
     val |> CloseSessionResponse.to_json() |> Jason.Encode.map(opts)
   end
 end
-
-# -- DeleteSessionRequest / DeleteSessionResponse ----------------------------
 
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.DeleteSessionRequest do
   @moduledoc """
@@ -170,8 +166,6 @@ defimpl Jason.Encoder,
   end
 end
 
-# -- LogoutResponse -----------------------------------------------------------
-
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.LogoutResponse do
   @moduledoc """
   The (empty, besides `_meta`) response to `logout`.
@@ -205,7 +199,7 @@ defimpl Jason.Encoder, for: Raxol.AgentClientProtocol.Schema.LifecycleExtras.Log
   end
 end
 
-# -- SessionNotification (session/update envelope) ---------------------------
+# SessionNotification (session/update envelope)
 
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification do
   @moduledoc """
@@ -259,7 +253,7 @@ defimpl Jason.Encoder,
   end
 end
 
-# -- CancelRequestNotification ($/cancel_request) ----------------------------
+# CancelRequestNotification ($/cancel_request)
 
 defmodule Raxol.AgentClientProtocol.Schema.LifecycleExtras.CancelRequestNotification do
   @moduledoc """

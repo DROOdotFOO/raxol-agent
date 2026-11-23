@@ -54,29 +54,26 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
       assert details.returned == @owner
     end
 
-    test "rejects the pre-#878 signature for an EOA buyer too" do
-      # The domain defect was never specific to smart accounts. It only
-      # SURFACED there, because EOA buyers resolved to erc3009 and never took
-      # the Permit2 path at all.
+    test "rejects the versioned-domain signature for an EOA buyer too" do
+      # The domain defect is not specific to smart accounts; EOA buyers on
+      # erc3009 simply never take the Permit2 path.
       served = served_pull()
 
       assert {:rejected, details} =
-               verify(served, pre_878_signature(served), @owner, rpc: chain(code: "0x"))
+               verify(served, versioned_domain_signature(served), @owner, rpc: chain(code: "0x"))
 
       assert details.signer_kind == :eoa
       refute details.returned == @owner
     end
 
-    test "rejects the pre-#878 signature that reverted InvalidContractSignature on Base" do
-      # The regression that matters. The old projection declared a `version`
-      # Permit2's domain does not carry, so the buyer signed a 4-field separator
-      # against Permit2's 3-field one. Nothing in the buyer's own suite could see
-      # it, because every check rebuilt the domain the same wrong way. Reading
-      # the separator from the contract is what makes it visible here.
+    test "rejects the versioned-domain signature that reverts InvalidContractSignature on Base" do
+      # A domain that declares a `version` Permit2's does not carry signs a
+      # 4-field separator against Permit2's 3-field one. Only reading the
+      # separator from the contract makes that visible.
       served = served_pull()
 
       assert {:rejected, details} =
-               verify(served, pre_878_signature(served), @account, rpc: chain())
+               verify(served, versioned_domain_signature(served), @account, rpc: chain())
 
       assert details.returned == <<0xFF, 0xFF, 0xFF, 0xFF>>
       assert details.separator == @permit2_separator
@@ -84,13 +81,13 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
 
     test "the two signatures genuinely differ, so the pass above is not vacuous" do
       served = served_pull()
-      refute current_signature(served) == pre_878_signature(served)
+      refute current_signature(served) == versioned_domain_signature(served)
     end
 
     test "a served domain with no verifyingContract is a rejection, not a gap" do
       # Nothing on chain claims to verify this, so no signature over it can pass.
-      # Reporting that as inconclusive is what let #772's defect class through a
-      # gate built to catch it: the run read "could not check" and funded anyway.
+      # Reporting that as inconclusive would let the run read "could not
+      # check" and fund anyway.
       served = Map.put(served_pull(), "domain", %{"name" => "Xochi", "chainId" => 8453})
 
       assert {:rejected, %{reason: :no_verifying_contract}} =
@@ -112,9 +109,8 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
     end
 
     # Every default available here would be drawn from the payload under audit,
-    # so there is no default. Omitting the pin used to fall back to one keyed on
-    # the served `primaryType` -- also chosen by the party that served it -- and
-    # a payload declaring some other primary type walked straight past it.
+    # so there is no default (a pin keyed on the served `primaryType` would be
+    # chosen by the party that served it).
     test "refuses to run at all without :expect_verifier" do
       {served, chain} = hostile_verifier()
 
@@ -324,7 +320,7 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
     test "a compact signature over the WRONG digest is still rejected" do
       served = served_pull()
 
-      "0x" <> hex = pre_878_signature(served)
+      "0x" <> hex = versioned_domain_signature(served)
       <<r::binary-size(32), s::binary-size(32), v::8>> = Base.decode16!(hex, case: :lower)
       <<0::1, s_rest::bitstring>> = s
       compact = "0x" <> Base.encode16(<<r::binary, v - 27::1, s_rest::bitstring>>, case: :lower)
@@ -333,8 +329,8 @@ defmodule Raxol.Earn.Xochi.PullPreflightTest do
       refute details.returned == @owner
     end
 
-    # `RPC.get_code/3` head-matches `"0x" <> _`, so this used to leave `verify/4`
-    # as a FunctionClauseError out of a function that documents three outcomes.
+    # `RPC.get_code/3` head-matches `"0x" <> _`; `verify/4` must still return one
+    # of its three documented outcomes, not a FunctionClauseError.
     test "a buyer address that is not an 0x address leaves by one of the three doors" do
       served = served_pull()
 

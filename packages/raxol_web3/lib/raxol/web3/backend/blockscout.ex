@@ -2,70 +2,39 @@ defmodule Raxol.Web3.Backend.Blockscout do
   @moduledoc """
   The EVM backend, against a Blockscout instance's `/api/v2/*` surface.
 
-  ADR-0038 decision 7. Every path below returned 200 on 2026-09-13 and the
-  shapes are pinned by recorded responses in `test/fixtures/blockscout`, because
-  the vendor publishes no spec for this surface: `/api-docs` is a 404 on every
-  instance probed, so the mapping is probe-derived and has to be re-probed on
-  upgrade rather than read.
+  ADR-0038 decision 7. The vendor publishes no spec for this surface, so the
+  mapping is probe-derived, pinned by recorded responses in
+  `test/fixtures/blockscout`, and must be re-probed on upgrade. It consumes the
+  public REST API; the server is not forked (its licence forbids derivatives).
 
-  Consuming the REST API rather than forking the server is the whole point.
-  ADR-0033 records that the Blockscout stack was relicensed in April and May
-  2026 under revocable terms that forbid distributing derivative works, so a
-  public fork is unavailable; calling a public HTTP API carries no licence
-  obligation at all.
+  ## Read-only and one-source heights
 
-  ## Two structural points
+  `raw_request/2` is not implemented: a REST backend has no method parameter to
+  abuse, so declining it keeps the backend read-only by construction.
 
-  `raw_request/2` is **not implemented**, so this backend's read allowlist is
-  empty. ADR-0033 §3 introduced that allowlist because an unbounded passthrough
-  to a JSON-RPC backend reaches `eth_sendRawTransaction`. A REST backend has no
-  method parameter to abuse, so declining the callback keeps §4's "read-only by
-  construction" claim structural rather than policed.
-
-  `block_height/1` never mixes sources. With an RPC URL configured, both
-  numbers come from the node (`eth_blockNumber` and
-  `eth_getBlockByNumber("finalized")`); without one, the height comes from REST
-  and `finalized_height` is `nil`. The obvious third option, a REST height
-  composed with an RPC finality, is the one that is wrong: they are different
-  systems, the REST one is an indexer view and is cacheable, and an indexer
-  that is behind yields `finalized_height` above `height`, which is the one
-  invariant the shape exists to express. A consumer using the pair for
-  confirmation depth would read a negative depth. The lag that composition
-  would have hidden is reported instead, from `/api/v2/main-page/indexing-status`.
+  `block_height/1` never mixes sources. With an RPC URL configured both numbers
+  come from the node (`eth_blockNumber`, `eth_getBlockByNumber("finalized")`);
+  without one the height comes from REST and `finalized_height` is `nil`. A REST
+  height with RPC finality could put `finalized_height` above `height`. Indexer
+  lag is reported from `/api/v2/main-page/indexing-status`.
 
   ## Chains
 
-  Final hosts only, because §7 refuses redirects: `optimism.blockscout.com`
-  answers 301 to `explorer.optimism.io`, so the table carries the destination
-  or Optimism simply fails.
+  Final hosts only, since redirects are refused (`optimism.blockscout.com` 301s
+  to `explorer.optimism.io`, so the table carries the latter). Chain 4663 is
+  marked `challenge_gated`: its API answers 403 `cf-mitigated: challenge`, so
+  the breaker trips and the router fails over to raw RPC until the rule lifts.
 
-  Chain 4663 is present and marked `challenge_gated`. Its API paths answered
-  403 with `cf-mitigated: challenge` on 2026-09-13 while `/` returned 200 and
-  the chain registry still listed the instance, so this is a dated WAF state
-  rather than a structural fact. Carrying it as health means the circuit
-  breaker trips, the router fails over to raw RPC, and coverage returns on its
-  own if the rule lifts. Excluding it from the table would have needed a code
-  change to get back.
+  ## `contract?`
 
-  ## `contract?` is code presence, not account type
-
-  `account_info/2` passes the upstream's `is_contract` through unchanged, and
-  that field means "this address has code", which since EIP-7702 is no longer
-  the same question as "this is not an externally owned account". The recorded
-  fixture makes the point: `vitalik.eth` comes back `is_contract: true`,
-  because the address carries a delegation designator. A consumer deciding
-  whether it is talking to a wallet or a contract has to ask something else,
-  and reinterpreting the field here would only move the wrong answer closer to
-  the caller.
+  `account_info/2` passes `is_contract` through: code presence, which since
+  EIP-7702 includes delegated wallets (the `vitalik.eth` fixture is
+  `is_contract: true`).
 
   ## Token balances
 
-  `token_balances/2` reads `/api/v2/addresses/{hash}/tokens`, **not**
-  `/token-balances`. The latter is unpaginated and scales with holdings:
-  measured on 2026-09-13 it returned 3,289,596 bytes carrying 8,009 items for
-  one well-known wallet, against 26,160 bytes for a 50-item page from `/tokens`.
-  No fixed byte ceiling bounds an unpaginated list, so the answer is a
-  different endpoint rather than a bigger ceiling.
+  `token_balances/2` reads the paginated `/api/v2/addresses/{hash}/tokens`, not
+  `/token-balances`, which is unpaginated and ran to 3 MB for one wallet.
   """
 
   @behaviour Raxol.Web3.Backend

@@ -192,7 +192,7 @@ defmodule Raxol.Earn.Xochi.OfferingTest do
              )
     end
 
-    test "the ERC-5564 stealth fields are optional and typed (#368)" do
+    test "the ERC-5564 stealth fields are optional and typed" do
       schema = Offering.deliverable_schema()
       props = schema["properties"]
       required = MapSet.new(schema["required"])

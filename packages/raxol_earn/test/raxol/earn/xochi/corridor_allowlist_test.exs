@@ -132,7 +132,7 @@ defmodule Raxol.Earn.Xochi.CorridorAllowlistTest do
   # That narrowing costs nothing while no non-pulling origin is quotable at all,
   # which is what this pins. If it fails, a corridor was added whose origin
   # cannot pull: make `pull_signature` required per-mode in
-  # `requirement_schema/1` instead of in the shared base. See GitHub #665.
+  # `requirement_schema/1` instead of in the shared base.
   describe "pull-signature precondition" do
     # The property is "the origin can sign a gasless pull", i.e. it is an EVM leg
     # signing ERC-3009 or Permit2. `Raxol.Payments.Assets` is the registry of EVM
@@ -151,7 +151,7 @@ defmodule Raxol.Earn.Xochi.CorridorAllowlistTest do
                  "funds a deposit address and so has no pull to sign, while " <>
                  "Offering.requirement_schema/0 demands a pull_signature from every " <>
                  "bundle. Either register the chain, or make pull_signature required " <>
-                 "per-mode in requirement_schema/1. See GitHub #665."
+                 "per-mode in requirement_schema/1."
 
         refute RelaySchemas.tron_chain?(from),
                "Tron is quotable as a corridor origin (#{src}->#{dst}), but it funds by " <>

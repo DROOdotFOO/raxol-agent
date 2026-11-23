@@ -9,22 +9,10 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   `Raxol.AgentClientProtocol.Session.post_update/2` /
   `Session.request_permission/2` (the Session-owned turn primitives).
 
-  ## Why this isn't built on `Connection.Ctx`
-
-  `Raxol.AgentClientProtocol.Connection.Ctx` is the per-DISPATCH
-  struct handed to the request/notification handler callback that answers
-  `session/prompt` itself (it carries `conn`, `reply_ref`, `rx_seq`, etc.).
-  It does **not** reach the turn task the handler spawns — `turn_runner` is
-  injected at `Session` start with a fixed `(session_pid, req) -> ...`
-  arity-2 shape (`Session.start_link/1`'s `:turn_runner`), and a
-  subagent's task closure only ever receives what its parent closed over.
-  There is deliberately **one** ctx concept in this package
-  (`Connection.Ctx`); this module does not introduce a second,
-  competing one. Instead every function below takes the plain pid a turn
-  task actually has in hand — the `Connection` pid (closed over from the
-  original dispatch's `ctx.conn` when the app builds its `turn_runner` fun)
-  for the outbound protocol requests, or the `Session` pid (the task's own
-  `session` argument) for the two Session-owned primitives.
+  Every function takes the plain pid a turn task has in hand: the `Connection`
+  pid (closed over from the dispatch's `ctx.conn`) for protocol requests, or the
+  `Session` pid for the Session-owned primitives. `Connection.Ctx` does not
+  reach turn tasks, and this module does not introduce a second ctx.
 
   ## What's here
 
@@ -93,9 +81,7 @@ defmodule Raxol.AgentClientProtocol.Ctx do
   @default_timeout 30_000
   @wait_for_exit_timeout :timer.minutes(30)
 
-  # ===========================================================================
   # fs/read_text_file, fs/write_text_file
-  # ===========================================================================
 
   @doc """
   `fs/read_text_file` — read a text file on the client side. `opts`:
@@ -132,9 +118,7 @@ defmodule Raxol.AgentClientProtocol.Ctx do
     Connection.request(conn, "fs/write_text_file", req, timeout(opts))
   end
 
-  # ===========================================================================
   # session/request_permission
-  # ===========================================================================
 
   @doc """
   Ask the client for permission to perform `tool_call` (`session/request_permission`),
@@ -160,9 +144,7 @@ defmodule Raxol.AgentClientProtocol.Ctx do
     Session.request_permission(session, req)
   end
 
-  # ===========================================================================
   # session/update (post_update pass-through)
-  # ===========================================================================
 
   @doc """
   Emit a `session/update` for the live turn — a verbatim pass-through to
@@ -178,9 +160,7 @@ defmodule Raxol.AgentClientProtocol.Ctx do
           :ok | {:error, :turn_over} | {:error, :empty_chunk}
   def post_update(session, notification), do: Session.post_update(session, notification)
 
-  # ===========================================================================
   # terminal/*
-  # ===========================================================================
 
   @doc """
   `terminal/create` — create a terminal and execute `command`. `opts`:
@@ -238,8 +218,6 @@ defmodule Raxol.AgentClientProtocol.Ctx do
     req = ReleaseTerminalRequest.new(session_id, terminal_id)
     Connection.request(conn, "terminal/release", req, timeout(opts))
   end
-
-  # -- internals ----------------------------------------------------------------
 
   defp timeout(opts, default \\ @default_timeout), do: Keyword.get(opts, :timeout, default)
 

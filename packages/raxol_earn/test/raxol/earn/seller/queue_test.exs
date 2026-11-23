@@ -36,8 +36,6 @@ defmodule Raxol.Earn.Seller.QueueTest do
     {:ok, adapter: adapter}
   end
 
-  # -- helpers --
-
   defp terminate_sessions do
     for {_, pid, _, _} <- DynamicSupervisor.which_children(JobSession.Supervisor), is_pid(pid) do
       DynamicSupervisor.terminate_child(JobSession.Supervisor, pid)
@@ -111,8 +109,6 @@ defmodule Raxol.Earn.Seller.QueueTest do
         end
     end
   end
-
-  # -- tests --
 
   describe ":job_offered dispatch" do
     setup do

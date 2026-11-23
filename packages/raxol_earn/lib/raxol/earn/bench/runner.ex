@@ -17,16 +17,11 @@ defmodule Raxol.Earn.Bench.Runner do
       InMemory.publish(:approval_received)  # Queue mirrors :completed
                                             # (terminal; session stops)
 
-  Unlike v1, the Queue auto-delivers on `:payment_received` -- there is
-  no out-of-band `deliver/1` step.
-
   ## On-chain writes
 
-  The Queue must be able to write hook calls on-chain. The bench seeds a
-  `Raxol.Earn.ProviderAdapter.Mock` into `:seller_provider_adapter`: the
-  Mock stands in for the bundler/RPC so a bench run never touches a real
-  chain. This is the sanctioned use of a fake -- the bench is a local
-  validation harness, not a live gate.
+  The bench seeds `Raxol.Earn.ProviderAdapter.Mock` into
+  `:seller_provider_adapter`, so a run never touches a real chain. The bench is
+  a local harness, not a live gate.
 
   ## Outcomes
 
@@ -62,9 +57,6 @@ defmodule Raxol.Earn.Bench.Runner do
   The runner configures the seller Queue's on-chain plumbing
   (`:seller_provider_adapter`, `:seller_chain_id`,
   `:seller_acp_core_address`, `:seller_address`) itself on every run.
-
-  This separation keeps the Runner a pure driver and lets tests mix
-  in different offerings.
   """
 
   alias Raxol.Earn.{Chain, JobSession, ProviderAdapter}
@@ -198,8 +190,6 @@ defmodule Raxol.Earn.Bench.Runner do
     }
   end
 
-  # -- Seller configuration --
-
   # Seed the seller Queue's on-chain plumbing. A fresh Mock adapter per run
   # keeps recorded calls from accumulating across runs; the chain id must
   # match the one the runner watches for JobSession lookups.
@@ -218,8 +208,6 @@ defmodule Raxol.Earn.Bench.Runner do
 
     :ok
   end
-
-  # -- Per-job driver --
 
   defp run_one(ctx) do
     started_at = System.monotonic_time(:millisecond)
@@ -271,8 +259,6 @@ defmodule Raxol.Earn.Bench.Runner do
     })
   end
 
-  # -- Status polling --
-
   defp wait_status(job_id, target, timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
     do_wait_status(job_id, target, deadline)
@@ -307,8 +293,6 @@ defmodule Raxol.Earn.Bench.Runner do
         end
     end
   end
-
-  # -- Helpers --
 
   defp default_request(idx), do: %{"payload" => %{"i" => idx}}
 

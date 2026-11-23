@@ -51,9 +51,9 @@ defmodule Raxol.AgentClientProtocol.Schema.ContentTest do
       assert Annotations.to_json(Annotations.new()) == %{}
     end
 
-    # --- Total decode + full leniency (every Annotations field is optional
+    # Total decode + full leniency (every Annotations field is optional
     #     with x-deserialize-default-on-error / -skip-invalid-items in the
-    #     schema oracle) ---
+    #     schema oracle)
 
     test "from_json/1 never fails for a map input, regardless of field shapes" do
       assert {:ok, %Annotations{}} = Annotations.from_json(%{})
@@ -267,7 +267,7 @@ defmodule Raxol.AgentClientProtocol.Schema.ContentTest do
       assert ContentBlock.from_string("hi") == {:text, TextContent.new("hi")}
     end
 
-    # --- Total decode: an unrecognized/missing type has no default variant ---
+    # Total decode: an unrecognized/missing type has no default variant
 
     test "from_json/1 is total: unrecognized type never raises" do
       assert {:error, {:unknown_content_block_type, "video"}} =

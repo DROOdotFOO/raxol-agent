@@ -24,8 +24,6 @@ defmodule Raxol.Payments.Wallets.Op do
 
   @default_chain_id 8453
 
-  # -- Public API --
-
   @spec address(GenServer.server()) :: String.t()
   def address(server) do
     GenServer.call(server, :address)
@@ -62,8 +60,6 @@ defmodule Raxol.Payments.Wallets.Op do
   # crash report print its bytes; neither sees it, nor the call that crashed.
   @impl GenServer
   def format_status(status), do: Secret.redact_status(status, [:privkey], failure: true)
-
-  # -- BaseManager callbacks --
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
@@ -135,8 +131,6 @@ defmodule Raxol.Payments.Wallets.Op do
         {:reply, {:error, reason}, state}
     end
   end
-
-  # -- Private --
 
   defp ensure_loaded(%{privkey: %Secret{}} = state), do: {:ok, state}
 

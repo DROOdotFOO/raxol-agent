@@ -24,8 +24,7 @@ defmodule Raxol.Broker.Executor.Port.MCP do
   (`spec |> Map.new() |> Map.to_list()`), decides liveness on that
   normalized list and hands that same list (less `:sandbox` and
   `:registry`) to `Raxol.MCP.Client.start_link/1`. In `:dry_run` a live spec
-  is refused before any connection; `:armed` is refused until arming exists
-  (#1179).
+  is refused before any connection; `:armed` is refused until arming exists.
   """
 
   @behaviour Raxol.Broker.Executor.Port

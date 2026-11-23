@@ -1,5 +1,5 @@
 defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRouteTest do
-  # #400: the deposit-route action fetches a Tron-origin quote and verifies its
+  # The deposit-route action fetches a Tron-origin quote and verifies its
   # deposit_attestation before returning the deposit instructions. raxol never
   # sends the funds; the agent's own Tron wallet funds the verified address.
   use ExUnit.Case, async: true

@@ -98,7 +98,7 @@ defmodule Raxol.Earn.Seller.IntegrationTest do
   test "backend events drive a job from offer to completion via hook calls", %{adapter: adapter} do
     jid = job_id()
 
-    # 1. Buyer offers -> provider sets the budget on-chain -> :budget_set.
+    # Buyer offers -> provider sets the budget on-chain -> :budget_set.
     BackendInMem.publish(%{
       type: :job_offered,
       job_id: jid,
@@ -109,11 +109,11 @@ defmodule Raxol.Earn.Seller.IntegrationTest do
 
     :ok = wait_status(jid, :budget_set)
 
-    # 2. Buyer funds -> provider delivers (submit) -> :submitted.
+    # Buyer funds -> provider delivers (submit) -> :submitted.
     BackendInMem.publish(%{type: :payment_received, job_id: jid, payload: %{auth: "blob"}})
     :ok = wait_status(jid, :submitted)
 
-    # 3. External evaluator approves -> :completed (terminal; session stops).
+    # External evaluator approves -> :completed (terminal; session stops).
     BackendInMem.publish(%{type: :approval_received, job_id: jid, payload: %{ok: true}})
     :ok = wait_status(jid, :gone)
 

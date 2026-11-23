@@ -95,7 +95,7 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCallTest do
                Diff.from_json(json)
     end
 
-    # --- Fixed defect: oldText is omitted, never emitted as an explicit null ---
+    # oldText is omitted, never emitted as an explicit null
 
     test "to_json/1 omits oldText for a new-file diff instead of emitting null" do
       diff = Diff.new("/new.txt", "content")
@@ -193,8 +193,8 @@ defmodule Raxol.AgentClientProtocol.Schema.ToolCallTest do
       assert ToolCallUpdateFields.to_json(ToolCallUpdateFields.new()) == %{}
     end
 
-    # --- Total decode + full leniency (every field is optional with
-    #     default-on-error / skip-invalid-items per the schema oracle) ---
+    # Total decode + full leniency (every field is optional with
+    #     default-on-error / skip-invalid-items per the schema oracle)
 
     test "from_json/1 never fails for a map input, regardless of field shapes" do
       assert {:ok, %ToolCallUpdateFields{}} = ToolCallUpdateFields.from_json(%{})

@@ -17,8 +17,6 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
   @type state :: Raxol.AgentClientProtocol.Connection.t()
   @type result :: {:noreply, state()} | {:stop, :normal, state()}
 
-  # -- Classification ---------------------------------------------------------
-
   @spec message(state(), term(), non_neg_integer()) :: result()
   def message(state, frame, _rx_seq) when is_list(frame), do: invalid_request(state, nil)
 
@@ -89,8 +87,6 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   defp invalid_request(state, id),
     do: Link.emit(state, Wire.response(id, {:error, Error.invalid_request()}))
-
-  # -- Requests ---------------------------------------------------------------
 
   defp request(state, %Request{} = req, rx_seq) do
     case admit(state, req) do
@@ -209,7 +205,7 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
     end
   end
 
-  # -- Task results and crashes -----------------------------------------------
+  # Task results and crashes
 
   @spec task_result(state(), reference(), term()) :: result()
   def task_result(state, ref, result) do
@@ -394,8 +390,6 @@ defmodule Raxol.AgentClientProtocol.Connection.Inbound do
 
   defp internal_error(state, id),
     do: Link.emit(state, Wire.response(id, {:error, Error.internal_error()}))
-
-  # -- Delegated replies ------------------------------------------------------
 
   @spec delegate(state(), reference(), pid()) ::
           {:ok, state()} | {:error, :unknown_ref | :cancelled}

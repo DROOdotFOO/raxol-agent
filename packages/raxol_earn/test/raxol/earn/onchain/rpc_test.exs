@@ -3,8 +3,6 @@ defmodule Raxol.Earn.Onchain.RPCTest do
 
   alias Raxol.Earn.Onchain.RPC
 
-  # -- Helpers --
-
   defp stub(handler) when is_function(handler, 1) do
     plug = fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
@@ -28,8 +26,6 @@ defmodule Raxol.Earn.Onchain.RPCTest do
   defp err_response(req, code, message) do
     %{"jsonrpc" => "2.0", "id" => req["id"], "error" => %{"code" => code, "message" => message}}
   end
-
-  # -- encode_quantity / decode_quantity --
 
   describe "encode_quantity/1" do
     test "encodes 0 as 0x0" do
@@ -63,7 +59,7 @@ defmodule Raxol.Earn.Onchain.RPCTest do
     end
   end
 
-  # -- Method tests through stubbed transport --
+  # Method tests through stubbed transport
 
   describe "eth_chain_id/1" do
     test "decodes the chain id integer" do

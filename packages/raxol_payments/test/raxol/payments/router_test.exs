@@ -129,7 +129,7 @@ defmodule Raxol.Payments.RouterTest do
     end
   end
 
-  describe "attestation-aware routing (verified, fail closed) (#337)" do
+  describe "attestation-aware routing (verified, fail closed)" do
     # A caller-fabricated attestation: the verified shape, but no raw proof to
     # verify (no type_code / signature). It must buy nothing.
     @self_asserted %{type: :non_membership, valid: true}
@@ -149,7 +149,7 @@ defmodule Raxol.Payments.RouterTest do
     end
 
     test "a self-asserted attestation (no signature) buys no trust -- fail closed" do
-      # The core #337 vulnerability: valid: true with no proof behind it.
+      # The core vulnerability: valid: true with no proof behind it.
       assert Router.select(attestations: [@self_asserted]) == :x402
       assert Router.trust_score_for(attestations: [@self_asserted]) == 0
       assert Router.settlement_for(attestations: [@self_asserted]) == :public
@@ -211,7 +211,7 @@ defmodule Raxol.Payments.RouterTest do
       assert Router.settlement_for(trust_score: 999) == :shielded
     end
 
-    test "verified attestations satisfy a high tier's requirement (no downgrade) (#337)" do
+    test "verified attestations satisfy a high tier's requirement (no downgrade)" do
       # Sovereign (score 75+) requires compliance + non_membership; both verified
       # and present, so the tier stands -> shielded.
       settlement =
@@ -223,14 +223,14 @@ defmodule Raxol.Payments.RouterTest do
       assert settlement == :shielded
     end
 
-    test "verified attestations that miss a tier's required types force a downgrade (#337)" do
+    test "verified attestations that miss a tier's required types force a downgrade" do
       # Score 80 is sovereign, but the only verified proof is risk_score, so the
       # compliance/non_membership requirement is unmet -> downgrade to stealth.
       settlement = Router.settlement_for(trust_score: 80, attestations: [signed(:risk_score)])
       assert settlement == :stealth
     end
 
-    test "unverified attestations are dropped, not credited, so they do not downgrade (#337)" do
+    test "unverified attestations are dropped, not credited, so they do not downgrade" do
       # Self-asserted proofs verify to nothing, so an explicit high score resolves
       # by score alone -- as if no attestations were supplied.
       settlement =

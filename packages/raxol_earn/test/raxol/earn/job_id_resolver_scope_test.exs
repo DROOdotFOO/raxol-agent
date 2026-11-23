@@ -123,8 +123,6 @@ defmodule Raxol.Earn.JobIdResolverScopeTest do
     end
   end
 
-  # -- Fixtures --
-
   defp scoped_resolver do
     %{adapter: Receipt, config: %{emitter: @core, client: @buyer}}
   end

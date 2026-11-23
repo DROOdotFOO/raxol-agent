@@ -37,7 +37,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
   alias Raxol.AgentClientProtocol.Ext.Journal.Mem
   alias Raxol.AgentClientProtocol.Ext.Journal.Writer
 
-  # -- J1: replay closure over the wire ---------------------------------------
+  # J1: replay closure over the wire
 
   describe "J1 — replay closure (P-JS5) over the ACP wire" do
     test "history ++ live == the durable substream, no gap, no dup, incl. turn kinds" do
@@ -115,7 +115,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
     end
   end
 
-  # -- J2: register-before-h, decision-time h, permanent monotone gate --------
+  # J2: register-before-h, decision-time h, permanent monotone gate
 
   describe "J2 — register-before-h + decision-time h + gate armed before live" do
     test "permanent monotone gate: offset <= h dropped forever, offset > h forwarded once" do
@@ -201,7 +201,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
     end
   end
 
-  # -- J4: writerless attach = history-only, NO error -------------------------
+  # J4: writerless attach = history-only, NO error
 
   describe "J4 — writerless attach" do
     test "no live Writer ⇒ history-only, replies normally, NO error, no live frames" do
@@ -246,7 +246,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
     end
   end
 
-  # -- J5: taint annotated, never dropped -------------------------------------
+  # J5: taint annotated, never dropped
 
   test "J5 — every delivered frame carries the record taint; counts == record counts" do
     taints = ~w(user agent external system)
@@ -268,25 +268,22 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
              Enum.frequencies(Enum.map(recs, & &1.taint))
   end
 
-  # -- J6: Lagged heals from last_offset + 1 ----------------------------------
+  # J6: Lagged heals from last_offset + 1
   #
-  # De-green-washed (GW-1): J6 no longer hand-delivers `{:reattach_lagged, …}`
-  # (a message `lib/` never produced). It drives REAL lag through a Writer with a
+  # J6 drives REAL lag through a Writer with a
   # tiny `:journal_subscriber_credit` (area B's producer) so the runtime emits
   # the Lagged, then asserts the client heals from `last_offset + 1` losslessly.
   # The subscriber's consumer-clause reaction (emit terminal Lagged on its OWN
   # forward_hi, then stop) is its own separately-named unit test below.
 
-  # -- Credit replenishment: a HEALTHY forwarding subscriber never false-lags --
+  # Credit replenishment: a HEALTHY forwarding subscriber never false-lags
   #
-  # The moat red (finding 1): the Writer decrements a per-subscriber publish
-  # credit (default 1024) on every live send. Before the fix, the reattach
-  # Subscriber NEVER replenished it, so a perfectly healthy subscriber that
-  # promptly forwards every frame self-destructed (false lag) after 1024 sends.
-  # The fix has the Subscriber call `Writer.credit/3` after each forward, so
-  # credit tracks 'unforwarded backlog', not 'total-ever-sent'.
+  # The Writer decrements a per-subscriber publish credit (default 1024) on every
+  # live send; the Subscriber calls `Writer.credit/3` after each forward, so
+  # credit tracks 'unforwarded backlog', not 'total-ever-sent'. Without that a
+  # healthy subscriber false-lags after 1024 sends.
 
-  describe "credit replenishment — a healthy subscriber never false-lags (finding 1)" do
+  describe "credit replenishment — a healthy subscriber never false-lags" do
     test "forwards >1024 live frames, replenishing credit each, stays attached, NO lagged" do
       # Default per-subscriber credit is 1024; publish MORE than that (2000).
       {sid, j, w} = start_writer([{"session_update", %{"i" => 0}, "agent"}])
@@ -299,9 +296,7 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
       n = 2000
       batch = 200
 
-      # Append in drained batches. The finding-1 bug was that credit tracked
-      # TOTAL-ever-sent, so > 1024 lifetime sends false-lagged a subscriber
-      # that had forwarded everything. We prove that here by sending 2000
+      # Append in drained batches: send 2000
       # (>> 1024) lifetime frames while keeping the UNFORWARDED backlog per
       # batch (200) well under the 1024 credit -- genuine backlog > credit is
       # real backpressure, tested separately. Draining (sub) then flushing the
@@ -336,10 +331,10 @@ defmodule Raxol.AgentClientProtocol.Ext.ReattachTest do
 
   describe "J6 — Lagged disconnect and lossless heal (REAL runtime lag)" do
     test "Lagged carries the subscriber's own last-forwarded offset; +1 heals dup-free" do
-      # REPAIRED (finding 1): a healthy Subscriber now replenishes credit per
-      # forwarded frame, so a tiny credit no longer false-lags it (that WAS the
-      # bug). Real backpressure is a subscriber that does NOT drain — here a raw
-      # non-draining probe subscribed straight to the single publisher. Its credit
+      # A healthy Subscriber replenishes credit per forwarded frame, so a tiny
+      # credit does not false-lag it. Real backpressure is a subscriber that
+      # does NOT drain — here a raw non-draining probe subscribed straight to
+      # the single publisher. Its credit
       # is never returned, so the exhausting publish makes the Writer PRODUCE
       # {:reattach_lagged, sid, last_offset} carrying the highest offset it actually
       # sent this subscriber (= the subscriber's last-received offset),

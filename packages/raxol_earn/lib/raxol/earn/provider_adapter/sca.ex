@@ -145,8 +145,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
     end
   end
 
-  # -- Behaviour callbacks --
-
   @impl Raxol.Earn.ProviderAdapter
   def get_address(%{config: %{wallet: wallet}}), do: wallet.address()
 
@@ -199,8 +197,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
       RPC.request(client, "eth_getLogs", [build_log_filter(filter)])
     end
   end
-
-  # -- Write dispatch --
 
   defp dispatch_calls(_cfg, _chain_id, []), do: {:ok, []}
   defp dispatch_calls(cfg, chain_id, [call]), do: send_one(cfg, chain_id, call)
@@ -274,8 +270,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
       {:error, _} = err -> err
     end
   end
-
-  # -- Internals --
 
   defp validate_chain(cfg, chain_id) do
     if chain_id == cfg.wallet.chain_id() and Map.has_key?(cfg.chains, chain_id) do

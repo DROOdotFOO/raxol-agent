@@ -45,9 +45,7 @@ defmodule Raxol.Web3.MCPCallTest do
 
   describe "the request this module makes" do
     test "one POST, with no handshake and no session header" do
-      # The whole reason this module exists rather than a session client: a
-      # stateless server needs no initialize, and issue #1028 records that as
-      # why the Solana primary was unblocked while Tron was not.
+      # A stateless server needs no initialize, so this module sends none.
       assert {:ok, _payload} =
                call(200, framed(envelope(text_result(%{"number" => 1}))), %{"network" => "solana"})
 

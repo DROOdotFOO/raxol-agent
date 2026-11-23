@@ -119,8 +119,6 @@ defmodule Raxol.AgentClientProtocol.Test.ReattachCase do
     {conn, ref, sub, res}
   end
 
-  # -- observation helpers ----------------------------------------------------
-
   # A mailbox barrier that tolerates a subscriber that already stopped (terminal
   # paths — resource_not_found, fromOffset reject, expiry — reply synchronously
   # during attach's :run call, then {:stop, :normal, ...}).
@@ -216,8 +214,8 @@ defmodule Raxol.AgentClientProtocol.Test.SlowRecordConn do
   @moduledoc false
   # A conn_mod double that delegates to FakeConnection but sleeps ONCE, on the
   # first `_raxol/session.record` history frame, long enough to push the
-  # synchronous replay past the default 5s `GenServer.call` window — the
-  # finding-1 repro (replay must run under `:infinity`, not the default timeout).
+  # synchronous replay past the default 5s `GenServer.call` window (replay
+  # must run under `:infinity`, not the default timeout).
   alias Raxol.AgentClientProtocol.Test.FakeConnection
 
   @sleep_ms 5_300

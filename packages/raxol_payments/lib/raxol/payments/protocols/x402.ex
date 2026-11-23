@@ -275,8 +275,6 @@ defmodule Raxol.Payments.Protocols.X402 do
     Raxol.Payments.Assets.to_human(challenge.price, decimals)
   end
 
-  # -- Private --
-
   # Parse the challenge price strictly as non-negative atomic units. Only an
   # integer or an all-digit string is a valid atomic amount; a float or a
   # decimal string is rejected (fail closed) so the signed `value` is always the

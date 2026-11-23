@@ -109,8 +109,6 @@ defmodule Raxol.AgentClientProtocol.RpcTest do
     assert {:error, :invalid_jsonrpc_version} = Message.decode(json_str)
   end
 
-  # -- Defect-fix regression coverage ---------------------------------------
-
   describe "id type preservation matrix" do
     test "integer id round-trips as integer through Request" do
       {:ok, decoded} = Request.from_json(%{"id" => 7, "method" => "m"})

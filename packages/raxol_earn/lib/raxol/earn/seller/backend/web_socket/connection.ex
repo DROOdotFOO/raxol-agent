@@ -84,8 +84,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
     reconnect_attempts: 0
   ]
 
-  # -- Public API --
-
   @spec start_link(opts()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -102,8 +100,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
   """
   @spec close(GenServer.server()) :: :ok
   def close(server), do: GenServer.cast(server, :close)
-
-  # -- GenServer callbacks --
 
   @impl true
   def init(opts) do
@@ -170,8 +166,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
     {:noreply, state}
   end
 
-  # -- Connect path --
-
   defp attempt_connect(state) do
     case do_connect(state) do
       {:ok, state} ->
@@ -194,8 +188,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
       {:ok, %{state | conn: conn, request_ref: ref}}
     end
   end
-
-  # -- Mint stream responses --
 
   defp handle_response({:status, ref, status}, %{request_ref: ref} = state) do
     %{state | conn: Mint.HTTP.put_private(state.conn, :status, status)}
@@ -251,8 +243,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
     http ++ data
   end
 
-  # -- WebSocket frames --
-
   defp handle_frame({:text, payload}, state), do: handle_message(Protocol.decode(payload), state)
 
   defp handle_frame({:close, code, reason}, state) do
@@ -297,7 +287,7 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
     state
   end
 
-  # -- Send + reconnect helpers --
+  # Send + reconnect helpers
 
   defp send_frame(%{ws: nil} = state, _payload), do: state
 
@@ -337,8 +327,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Connection do
   end
 
   defp notify(state, payload), do: send(state.parent, {:acp_ws, payload})
-
-  # -- URL parsing --
 
   defp parse_url(url) do
     uri = URI.parse(url)

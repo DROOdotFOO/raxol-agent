@@ -50,8 +50,6 @@ defmodule Raxol.Payments.Xochi.SwapRouteStore do
   # so expired routes never linger long past their window.
   @prune_interval_ms 60_000
 
-  # -- Public API --
-
   @doc """
   Remember a swap's announce `event` under `intent_id` for a later terminal
   announce. Best-effort and non-blocking: starts the owner on first use, casts
@@ -124,8 +122,6 @@ defmodule Raxol.Payments.Xochi.SwapRouteStore do
     end
   end
 
-  # -- BaseManager callbacks --
-
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(_opts) do
     table = :ets.new(@table, [:named_table, :private, :set])
@@ -166,7 +162,7 @@ defmodule Raxol.Payments.Xochi.SwapRouteStore do
 
   def handle_manager_info(_msg, state), do: {:noreply, state}
 
-  # -- Private (owner process only) --
+  # Private (owner process only)
 
   defp schedule_prune,
     do: Process.send_after(self(), :prune, @prune_interval_ms)

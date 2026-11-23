@@ -19,7 +19,6 @@ defmodule Raxol.AgentClientProtocol.Transport.OrderingContractTest do
 
   alias Raxol.AgentClientProtocol.Transport.Paired
 
-  # -- Shared oracle --------------------------------------------------------
   #
   # The same "collect N `{:message, ...}` deliveries, in the order they land
   # in this process's mailbox" check is applied to both the real transport

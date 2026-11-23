@@ -72,8 +72,6 @@ defmodule Raxol.Earn.Seller.Backend do
   @doc "Return the count of currently registered subscribers."
   @callback subscriber_count() :: non_neg_integer()
 
-  # -- Delegating helpers --
-
   @doc "Subscribe `pid` to events from the given backend module."
   @spec subscribe(module(), pid()) :: :ok
   def subscribe(backend, pid) when is_atom(backend) and is_pid(pid) do

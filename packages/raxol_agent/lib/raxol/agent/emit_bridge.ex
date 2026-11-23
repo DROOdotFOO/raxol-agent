@@ -3,39 +3,30 @@ defmodule Raxol.Agent.EmitBridge do
   Bridges the package-neutral `Raxol.Core.Runtime.EmitBus` to the agent
   contract, and is the id authority for durable events.
 
-  The Dispatcher (in `raxol`, which cannot depend on `raxol_agent`) publishes
-  neutral event maps. This bridge subscribes to `EmitBus` for one
-  `session_id`, appends durable events to the session's `Raxol.Agent.Journal`,
-  maps each map onto a `Raxol.Agent.Contract.Event` and re-emits it through
-  `Raxol.Agent.SessionStreamer`, the channel `Raxol.Agent.StreamPump.pump/3`
-  output uses too.
+  It subscribes to `EmitBus` for one `session_id`, appends durable events to
+  the session's `Raxol.Agent.Journal`, maps each onto a
+  `Raxol.Agent.Contract.Event` and re-emits it through
+  `Raxol.Agent.SessionStreamer`.
 
   ## Ids
 
-  `Event.id` is the journal offset. A durable event (`turn_started`,
-  `item_completed`, `turn_completed`, `error`) is appended first and stamped
-  with the offset `append/2` returns, then emitted, so replay reproduces the
-  live ids. An ephemeral `item_delta` is never journaled and carries the last
-  durable offset, or `0` before the first append.
+  `Event.id` is the journal offset: a durable event is appended, stamped with
+  the offset, then emitted, so replay reproduces live ids. An ephemeral
+  `item_delta` carries the last durable offset (`0` before the first). The
+  journal (or `:journal`) opens on the first durable event, under
+  `RAXOL_SESSIONS_DIR` or `~/.raxol/sessions`.
 
-  The journal opens on the first durable event (or comes from `:journal`),
-  under `RAXOL_SESSIONS_DIR` or `~/.raxol/sessions`, and closes in
-  `terminate/2`.
-
-  When an append fails (journal unopenable, full disk), the event is dropped
-  from the live tail and `last_offset` does not advance: the Writer reuses an
-  offset it did not commit, so a fabricated id would collide. The bridge
-  emits an ephemeral `:error` event with payload
-  `%{reason: :journal_append_failed | :journal_open_failed, original_type: t,
-  detail: ...}` and logs at `:error`. A dead Writer's handle is dropped and
-  the next durable event reopens the journal.
+  A failed append drops the event from the live tail without advancing
+  `last_offset` (an uncommitted offset is reused), emits an ephemeral `:error`
+  with `%{reason: :journal_append_failed | :journal_open_failed,
+  original_type: t, detail: ...}` and logs. A dead Writer's handle is dropped
+  and the next durable event reopens the journal.
 
   ## A required journal
 
   With `journal_required: true` the bridge opens the journal in `init`,
-  private and with `require_lock: true` (see `Raxol.Agent.Journal.FileStore`),
-  and refuses to start without it, so a session tree whose first child is the
-  bridge never runs unjournaled. Stop reasons:
+  private and `require_lock: true` (`Raxol.Agent.Journal.FileStore`), and
+  refuses to start without it. Stop reasons:
 
     * `{:journal_locked, os_pid}`, or `{:journal_locked, :lock_unavailable}`
       when no lock could be taken
@@ -44,15 +35,11 @@ defmodule Raxol.Agent.EmitBridge do
     * `{:journal_damaged, session_id}` - its records do not replay
     * `{:journal_open_failed, reason}` - anything else `FileStore.open/2` refused
 
-  Every start journals `agent_started` (payload `prior_offset`, `0` for a new
-  journal), then a `turn_canceled` (`reason: "agent_restarted"`) for each
-  `turn_started` an earlier run left open, so a checkpoint is not refused as
-  mid-turn. These are journal-only; `agent_started` is a `family: :loop`
-  record and never a journal tip. `prior_offset/1` returns the offset found.
-
-  Such a bridge traps exits: a supervised stop flushes the journal and
-  releases its lock. If its Writer exits, the bridge stops too and its
-  supervisor reopens the journal.
+  Every start journals `agent_started` (`prior_offset`, `0` when new; a
+  `family: :loop` record, never a tip) and a `turn_canceled`
+  (`reason: "agent_restarted"`) for each turn an earlier run left open.
+  `prior_offset/1` returns the offset found. The bridge traps exits so a
+  supervised stop flushes and unlocks; if its Writer exits, it stops too.
 
   ## Mapping
 
@@ -68,14 +55,11 @@ defmodule Raxol.Agent.EmitBridge do
   | `:item_started`       | (tier as sent) | `:item_started`       |
   | `:woken`              | (tier as sent) | `:woken`              |
 
-  Anything else becomes an `:item_completed` with its tier. `family`,
-  `turn_id` and `ts` carry through.
+  Anything else becomes an `:item_completed`; `family`, `turn_id`, `ts` carry.
 
-  `scope`, `provenance` and `actor` are stamped on both the live event and
-  the journal record. `actor` comes from the bridge's write-generation
-  context. `provenance` is met with the optional `:provenance` context: a
-  tainted generation taints every event, and a module's `:tainted` is never
-  cleared. The journal record omits envelope fields at their defaults.
+  `scope`, `provenance` and `actor` are stamped on the live event and the
+  journal record (defaults omitted). `provenance` is met with the optional
+  `:provenance` context; `:tainted` is never cleared.
   """
 
   use Raxol.Core.Behaviours.BaseManager

@@ -97,8 +97,6 @@ defmodule Raxol.AgentClientProtocol.Test.InvariantSentinel do
     :ok
   end
 
-  # -- Internals --------------------------------------------------------------
-
   @spec verify_serialised!(map()) :: :ok
   defp verify_serialised!(context) do
     if Map.get(context, :async) do

@@ -283,7 +283,7 @@ defmodule Raxol.Console.RuntimeConfigTest do
   # empty and enforcing by default would deny every Console running today --
   # which makes silence the permissive answer, so Boot makes silence loud.
   describe "pairing" do
-    # Reverses #884. Silence is the one posture reachable by writing nothing,
+    # Silence is the one posture reachable by writing nothing,
     # so it denies; `declared?: false` is what earns the boot warning that says
     # why every route is being refused.
     test "unset enforces with nothing seeded, and is undeclared" do

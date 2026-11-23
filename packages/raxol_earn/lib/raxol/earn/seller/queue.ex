@@ -63,8 +63,6 @@ defmodule Raxol.Earn.Seller.Queue do
   alias Raxol.Earn.JobSession.Provider
   alias Raxol.Earn.Offering.Registry, as: OfferingRegistry
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -83,8 +81,6 @@ defmodule Raxol.Earn.Seller.Queue do
   @doc "Inspect the Queue's currently resolved defaults from Application config."
   @spec defaults() :: map()
   def defaults, do: read_defaults()
-
-  # -- GenServer callbacks --
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(_opts), do: {:ok, %{jobs: %{}}}
@@ -116,7 +112,6 @@ defmodule Raxol.Earn.Seller.Queue do
     }
   end
 
-  # -- Event handlers --
   #
   # Each clause requires the keys it needs in the head, so a malformed backend
   # event drops with telemetry instead of crashing the Queue. Handler and
@@ -213,8 +208,6 @@ defmodule Raxol.Earn.Seller.Queue do
     drop(nil, Map.get(event, :job_id), %{}, :malformed, state)
   end
 
-  # -- job_offered --
-
   defp offer(%{job_id: job_id} = event, name, state, defaults) do
     request = Map.get(event, :request, %{})
 
@@ -305,8 +298,6 @@ defmodule Raxol.Earn.Seller.Queue do
       {:ok, request, AssetToken.usdc(spec.price_usdc || 0, defaults.chain_id)}
     end
   end
-
-  # -- Helpers --
 
   defp with_job(type, job_id, state, fun) do
     case Map.fetch(state.jobs, job_id) do

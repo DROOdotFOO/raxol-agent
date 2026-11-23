@@ -36,8 +36,6 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
     %{table: table}
   end
 
-  # -- Helpers --
-
   # A fresh, uniquely-named NonceServer per test so counter state never leaks.
   defp start_nonce_server(opts) do
     name = Module.concat(__MODULE__, "NS#{System.unique_integer([:positive])}")
@@ -110,8 +108,6 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
     [{:get_tx_count_calls, n}] = :ets.lookup(table, :get_tx_count_calls)
     n
   end
-
-  # -- Tests --
 
   test "a seeded server serves a whole batch without touching the chain", %{table: table} do
     ns = start_nonce_server(initial_nonce: 5)

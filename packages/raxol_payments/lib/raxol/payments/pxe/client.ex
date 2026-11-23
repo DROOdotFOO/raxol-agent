@@ -139,8 +139,6 @@ defmodule Raxol.Payments.Pxe.Client do
     |> handle_health_response()
   end
 
-  # -- Private --
-
   defp rpc_call(req, method, params) do
     Req.post(req,
       url: "/",

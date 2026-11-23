@@ -104,7 +104,7 @@ defmodule Raxol.AgentClientProtocol.Schema.ExtTest do
       assert Jason.encode!(%ExtResponse{data: nil}) == "null"
     end
 
-    # --- Regression test for the upstream defect ---
+    # Regression test for the upstream defect
     #
     # Upstream `ACP.Client`/`ACP.Agent`'s `__using__`-injected default
     # `ext_method/1` constructed `%ACP.ExtResponse{value: nil}`, but the

@@ -15,11 +15,9 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
   alias Raxol.AgentClientProtocol.Schema.AgentTypes.PromptResponse
   alias Raxol.AgentClientProtocol.Schema.ClientTypes.ReadTextFileRequest
 
-  # ===========================================================================
   # §8. Sequence diagrams (six cited in the assignment; §8.7 is folded into
   # the "delegated reply" section below since it's a cancellation variant of
   # §8.3, not a distinct new mechanism).
-  # ===========================================================================
 
   describe "§8 sequence diagrams" do
     test "§8.1 happy outbound (sync wrapper)" do
@@ -210,9 +208,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
     end
   end
 
-  # ===========================================================================
   # §10. Invariants Inv-1..Inv-21
-  # ===========================================================================
 
   describe "invariants" do
     test "Inv-1: exactly one answer per accepted outbound submission; zero after cancel_request" do
@@ -475,7 +471,7 @@ defmodule Raxol.AgentClientProtocol.ConnectionTest do
       assert f4["error"]["code"] == Raxol.AgentClientProtocol.Error.invalid_request_code()
     end
 
-    # GW-3 (ties to S1): the f4 case above is `%{"id" => 77}` -- neither
+    # The f4 case above is `%{"id" => 77}` -- neither
     # method nor result/error, so it exercises the benign catch-all arm of
     # `handle_message` (`true -> respond_malformed`), NOT `classify_response`'s
     # decode-failure arm. A frame that DOES classify as a response (has

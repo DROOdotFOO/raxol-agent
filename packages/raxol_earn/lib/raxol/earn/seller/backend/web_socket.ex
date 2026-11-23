@@ -61,8 +61,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket do
             ready?: false,
             opts: []
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -84,8 +82,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket do
   @doc "Return the readiness flag (handshake complete?)."
   @spec ready?() :: boolean()
   def ready?, do: GenServer.call(__MODULE__, :ready?)
-
-  # -- GenServer callbacks --
 
   @impl GenServer
   def init(opts) do
@@ -206,8 +202,6 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
-
-  # -- Event translation --
 
   # `onNewTask` carries the buyer's request. We surface it as
   # `:job_offered` for the Queue. Offering name comes from the

@@ -3,81 +3,45 @@ defmodule Raxol.Web3.Router do
   Resolves a chain reference and a callback to a backend, in health order, with
   failover.
 
-  ADR-0033 decision 3's last paragraph. No single indexer is load-bearing: each
-  chain has a primary and at least one fallback, and the router is what makes
-  that true at call time rather than in a table.
+  ADR-0033 decision 3: each chain has a primary and at least one fallback.
 
-  ## It consumes the health gate, it does not re-implement it
+  ## Health
 
-  ADR-0033 requires per-backend health to be gated by
-  `Raxol.MCP.CircuitBreaker`, unconditionally, so that no build of this package
-  retries a hard-down primary on every call. That gate lives in
-  `Raxol.Web3.HTTP`, which refuses a request to an open origin before a socket
-  is opened and records every outcome against it. This module reads the same
-  verdict through `Backend.health_key/1` to order candidates, and never writes
-  it: a router that recorded failures too would count one bad response twice
-  and open a breaker at half the configured threshold.
+  Health is gated by `Raxol.MCP.CircuitBreaker` inside `Raxol.Web3.HTTP`. This
+  module reads the verdict through `Backend.health_key/1` to order candidates and
+  never records outcomes itself (that would double-count failures). An open
+  breaker demotes a backend to last rather than removing it.
 
-  An open breaker demotes a backend to last, it does not remove it. If every
-  candidate is open, the alternative to trying one is answering nothing, and a
-  stale breaker is a worse reason to fail than a live upstream.
+  ## Per callback
 
-  ## Per callback, not per backend
+  A backend is a candidate only if it declares and exports the callback
+  (`Backend.supports?/2`). `coverage/2` reports which callbacks currently have a
+  healthy source.
 
-  A backend is a candidate for a call only if it declares and exports that
-  callback (`Backend.supports?/2`), so the fallback chain for `get_logs` can be
-  shorter than the one for `chain_info` on the same chain. `coverage/2` reports
-  what is answerable right now, which is the question an operator actually has
-  when an upstream starts serving challenge pages: not "is the router up" but
-  "which of the fourteen callbacks still have a healthy source".
+  ## Failover vs final
 
-  ## Which errors fail over, and which are final
+  Errors about the SOURCE fail over: an open breaker, transport failure,
+  timeout, DNS failure, rate limit, an unhealthy status, an undecodable body, a
+  too-large response, and:
 
-  This is the router's real content, and getting it backwards is how a router
-  turns one upstream's bad minute into a wrong answer.
+    * `{:upstream_refused, :auth}` / `{:upstream_refused, :rate_limit}` -- a
+      credential this deployment lacks is a fact about the source (a withdrawn
+      key prefix can answer healthy 404s, so health alone will not move on).
+    * `{:unsupported_chain, _}` -- this source does not serve the chain; decided
+      on a read because some upstreams resolve their network set at runtime.
+    * `{:source_unavailable, _}` -- an endpoint the source must serve is gone.
 
-  Failing over is right when the error describes the SOURCE: an open breaker, a
-  transport failure, a timeout, a DNS failure, a rate-limit refusal (a
-  different origin has a different budget), a status that says the upstream is
-  unwell, a body that would not decode, a response too large to accept (another
-  source may answer the same question smaller), and two refusals that arrive
-  inside a 200 rather than as a status:
+  Errors about the QUESTION are final, since another source would give the same
+  answer: `{:upstream_refused, :not_found}`, `{:upstream_refused, :unknown}`,
+  `{:unsupported_account_ref, _}`, `{:unsupported, _}`,
+  `{:blocked, :invalid_url}` and `{:invalid_cursor, _}`.
 
-    * `{:upstream_refused, :auth}` and `{:upstream_refused, :rate_limit}`. A
-      credential this deployment does not hold is a fact about the source, and
-      ADR-0033's coverage matrix is built on failing from a key-gated explorer
-      to a keyless path. This one cannot be reached through health instead: an
-      upstream that answers 404 for every path under a withdrawn key prefix
-      records a breaker SUCCESS, because a definitive answer about a missing
-      thing is a healthy upstream, so only the classification can move it on.
-    * `{:unsupported_chain, _}`, which means "this source does not serve this
-      chain" rather than "this source cannot answer this question". A sibling
-      that does serve it is the clearest failover case there is. It is decided
-      on a read rather than in a constructor because one upstream's network set
-      is resolved at runtime (its own documentation disagrees with itself about
-      coverage), so a handle can declare a chain and then learn otherwise.
-    * `{:source_unavailable, _}`, which means the source went away under us:
-      an endpoint it is supposed to serve unconditionally is not there. It is
-      distinct from `:auth` because no credential fixes it, and distinct from
-      a status because the upstream answered a perfectly healthy 404.
+  ## Paging walks are pinned
 
-  Failing over is wrong when the error describes the QUESTION, because asking
-  the same question of another source gets the same answer and hides the first:
-  `{:upstream_refused, :not_found}`, `{:upstream_refused, :unknown}` (a refusal
-  we could not classify is not evidence that another source would do better),
-  `{:unsupported_account_ref, _}`, `{:unsupported, _}`, `{:blocked,
-  :invalid_url}` and, load-bearingly, `{:invalid_cursor, _}`.
-
-  ## A paging walk is pinned to the backend that started it
-
-  A cursor carries the origin that minted it (`Raxol.Web3.Cursor`), so it
-  cannot be replayed against another backend. That makes `{:invalid_cursor, _}`
-  terminal here rather than a reason to try the next candidate, and the
-  alternative is the bug this rule exists to prevent: failing over mid-walk
-  would hand the second backend no usable cursor, it would answer with its
-  FIRST page, and the caller would receive page one labelled as page two. A
-  caller whose walk is interrupted gets an error and can restart the walk,
-  which is recoverable; silently rewinding a paginated read is not.
+  A cursor carries the origin that minted it (`Raxol.Web3.Cursor`), so
+  `{:invalid_cursor, _}` is terminal: failing over mid-walk would return the
+  second backend's first page labelled as page two. An interrupted walk gets an
+  error and restarts.
   """
 
   require Logger

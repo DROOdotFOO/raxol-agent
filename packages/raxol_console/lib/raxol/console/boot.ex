@@ -105,8 +105,8 @@ defmodule Raxol.Console.Boot do
   # deployment never connected stays denied even when open.
   # `RuntimeConfig.build/2` always resolves a posture map, so a nil is a struct
   # someone built by hand rather than a fourth posture. It reads as unset, which
-  # now means DENY -- seeding allow-all here would reintroduce the fail-open the
-  # unset default was changed to close, through the one door that skips build/2.
+  # means DENY -- seeding allow-all here would fail open through the one door
+  # that skips build/2.
   defp pairing_opts(%{pairing: nil}, _adapters),
     do: [allow_platforms: [], allowed_users: [], platform_users: []]
 
@@ -171,9 +171,8 @@ defmodule Raxol.Console.Boot do
 
   # An unconfigured Console denies every route. That is the safe direction, but
   # it is not the obvious one from the outside -- messages simply go unanswered --
-  # so name it at boot with the two ways out. The telemetry event carries the
-  # same posture the old open-by-default one did, so a deployment watching for it
-  # still learns that pairing was never configured.
+  # so name it at boot with the two ways out. The telemetry event tells a
+  # deployment watching for it that pairing was never configured.
   defp announce_undeclared_deny(platforms, base) do
     :telemetry.execute(
       [:raxol_console, :pairing, :undeclared],
@@ -202,8 +201,8 @@ defmodule Raxol.Console.Boot do
   end
 
   # An operator who wrote `pairing: :open` has already made this call and is not
-  # nagged. The undeclared branch no longer reaches here from `RuntimeConfig`,
-  # but a hand-built `%{mode: :open, declared?: false}` still warns.
+  # nagged. `RuntimeConfig` never sends the undeclared branch here, but a
+  # hand-built `%{mode: :open, declared?: false}` still warns.
   defp announce_open(%{declared?: true}, _platforms, _base), do: :ok
 
   defp announce_open(_pairing, platforms, base) do
@@ -282,8 +281,6 @@ defmodule Raxol.Console.Boot do
 
   def connect_channels(_), do: {:ok, %{}}
 
-  # -- MCP servers ------------------------------------------------------------
-
   # Load the bundled MCP servers into the MCP DynamicSupervisor the root tree
   # already started (named `mcp_name`), so every client runs under the runtime's
   # supervision, not the transient boot caller's. An empty server set is a no-op.
@@ -309,8 +306,6 @@ defmodule Raxol.Console.Boot do
     end
   end
 
-  # -- skills -----------------------------------------------------------------
-
   # A skills store is activated only when the deployment points at a real
   # `skills/` directory (the materialized package). Its name is derived from the
   # runtime base, so the store, scheduler, and chat handler all agree on it.
@@ -333,8 +328,6 @@ defmodule Raxol.Console.Boot do
 
   defp skills_report({store, _dir}),
     do: %{store: store, count: length(Raxol.Agent.Skills.Store.list(server: store))}
-
-  # -- gateway ----------------------------------------------------------------
 
   # Start the gateway subtree as the LAST child of the running tree, only when at
   # least one channel is connected; a headless (scheduler-only) runtime skips it.
@@ -436,8 +429,6 @@ defmodule Raxol.Console.Boot do
   catch
     :exit, _ -> :ok
   end
-
-  # -- job reconciliation -----------------------------------------------------
 
   @doc """
   Converge the scheduler's jobs to `desired`.

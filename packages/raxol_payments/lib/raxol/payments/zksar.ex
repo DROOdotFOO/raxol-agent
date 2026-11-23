@@ -247,8 +247,6 @@ defmodule Raxol.Payments.Zksar do
 
   def from_json(_), do: {:error, :malformed}
 
-  # -- Private --
-
   defp check_structure(%{subject: s, issuer: i, signature: sig})
        when is_binary(s) and byte_size(s) > 0 and
               is_binary(i) and byte_size(i) > 0 and

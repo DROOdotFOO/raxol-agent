@@ -183,8 +183,8 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
     end
 
     test "an empty --solver falls back to ORDER_SOLVER instead of suppressing it" do
-      # `--solver ""` is truthy in Elixir, so an empty flag used to win the `||`
-      # and leave the run unpinned while ORDER_SOLVER sat there set.
+      # `--solver ""` is truthy in Elixir, so an empty flag must not win the `||`
+      # and leave the run unpinned while ORDER_SOLVER is set.
       put_solver_env("not-an-address")
 
       %Mix.Error{message: message} =

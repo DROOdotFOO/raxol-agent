@@ -89,8 +89,6 @@ defmodule Raxol.Earn.JobSession do
     description: nil
   ]
 
-  # -- Public API --
-
   @doc """
   Start a JobSession registered under `Registry`.
 
@@ -221,8 +219,6 @@ defmodule Raxol.Earn.JobSession do
     GenServer.call(resolve(server), {:apply_event, status, payload})
   end
 
-  # -- Read API --
-
   @doc "Current status."
   @spec status(GenServer.server() | job_key()) :: Status.t()
   def status(server), do: GenServer.call(resolve(server), :status)
@@ -243,8 +239,6 @@ defmodule Raxol.Earn.JobSession do
   @spec get_state(GenServer.server() | job_key()) :: t()
   def get_state(server), do: GenServer.call(resolve(server), :get_state)
 
-  # -- Internal --
-
   defp transition(server, action, payload) do
     GenServer.call(resolve(server), {:transition, action, payload})
   end
@@ -256,8 +250,6 @@ defmodule Raxol.Earn.JobSession do
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
-
-  # -- GenServer callbacks --
 
   @impl GenServer
   def init(opts) do
@@ -328,8 +320,6 @@ defmodule Raxol.Earn.JobSession do
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
     {:noreply, %{state | subscribers: MapSet.delete(state.subscribers, pid)}}
   end
-
-  # -- Helpers --
 
   defp check_role(role, status, action) do
     # :expire bypasses role gating (timer or supervisor invokes it)

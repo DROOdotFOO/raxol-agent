@@ -76,7 +76,7 @@ defmodule Raxol.Payments.Protocols.XochiSettledTest do
     end)
   end
 
-  test "transfer/4 polls with the read_token execute returned (xochi#563)" do
+  test "transfer/4 polls with the read_token execute returned" do
     token = "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"
     stub_transfer(%{"read_token" => token})
 

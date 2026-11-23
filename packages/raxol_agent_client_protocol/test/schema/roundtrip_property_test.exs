@@ -38,8 +38,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
 
   alias Raxol.AgentClientProtocol.Schema.ClientTypes.{ClientCapabilities, FileSystemCapability}
 
-  # -- Shared generators -------------------------------------------------------
-
   defp unicode_string_gen(max_length) do
     string(:utf8, max_length: max_length)
   end
@@ -66,8 +64,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
       &Map.new/1
     )
   end
-
-  # -- ContentBlock --------------------------------------------------------
 
   defp role_gen, do: member_of([:assistant, :user])
 
@@ -195,8 +191,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- ToolCall --------------------------------------------------------------
-
   defp tool_kind_gen do
     member_of([
       :read,
@@ -281,8 +275,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- Plan --------------------------------------------------------------------
-
   defp plan_priority_gen, do: member_of([:high, :medium, :low])
   defp plan_status_gen, do: member_of([:pending, :in_progress, :completed])
 
@@ -313,7 +305,7 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- ClientCapabilities / AgentCapabilities trees ---------------------------
+  # ClientCapabilities / AgentCapabilities trees
 
   defp file_system_capability_gen do
     gen all(write_text_file <- boolean(), read_text_file <- boolean()) do
@@ -396,7 +388,7 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- Rpc Request/Response/Notification, id-type matrix ----------------------
+  # Rpc Request/Response/Notification, id-type matrix
 
   defp request_id_gen do
     one_of([constant(nil), integer(), string(:alphanumeric, min_length: 1, max_length: 12)])
@@ -494,7 +486,7 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- _meta / unknown-key pass-through (WireFields-based nesting) -----------
+  # _meta / unknown-key pass-through (WireFields-based nesting)
 
   describe "TextContent _meta pass-through" do
     property "unknown top-level wire keys fold into _meta and re-emit nested under \"_meta\"" do

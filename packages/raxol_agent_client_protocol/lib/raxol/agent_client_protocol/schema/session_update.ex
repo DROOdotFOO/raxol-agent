@@ -131,8 +131,6 @@ defmodule Raxol.AgentClientProtocol.Schema.SessionUpdate do
   end
 end
 
-# -- ContentChunk --------------------------------------------------------------
-
 defmodule Raxol.AgentClientProtocol.Schema.ContentChunk do
   @moduledoc """
   A single streamed content block, used as the payload for the
@@ -191,8 +189,6 @@ defimpl Jason.Encoder, for: Raxol.AgentClientProtocol.Schema.ContentChunk do
   end
 end
 
-# -- CurrentModeUpdate ----------------------------------------------------------
-
 defmodule Raxol.AgentClientProtocol.Schema.CurrentModeUpdate do
   @moduledoc """
   Payload for the `SessionUpdate` `current_mode_update` variant: the
@@ -240,7 +236,7 @@ defimpl Jason.Encoder, for: Raxol.AgentClientProtocol.Schema.CurrentModeUpdate d
   end
 end
 
-# -- AvailableCommandsUpdate / AvailableCommand / AvailableCommandInput --------
+# AvailableCommandsUpdate / AvailableCommand / AvailableCommandInput
 
 defmodule Raxol.AgentClientProtocol.Schema.AvailableCommandsUpdate do
   @moduledoc """
@@ -434,8 +430,6 @@ defimpl Jason.Encoder, for: Raxol.AgentClientProtocol.Schema.UnstructuredCommand
     |> Jason.Encoder.encode(opts)
   end
 end
-
-# -- UsageUpdate / Cost ---------------------------------------------------------
 
 defmodule Raxol.AgentClientProtocol.Schema.UsageUpdate do
   @moduledoc """

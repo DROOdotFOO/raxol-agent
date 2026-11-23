@@ -1,103 +1,51 @@
 defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   @moduledoc """
-  Newline-delimited JSON (NDJSON) over a stdio pipe — either our OWN
-  process's real stdin/stdout (`:self` mode, when this BEAM process IS the
-  ACP agent/client speaking on its own stdio), or a spawned peer command's
-  stdio (`:spawn` mode, when we launch and speak to a subprocess).
+  Newline-delimited JSON (NDJSON) over a stdio pipe: this BEAM's own
+  stdin/stdout (`:self` mode) or a spawned peer's (`:spawn` mode).
 
-  One `GenServer` owns BOTH directions of the pipe:
+  One `GenServer` owns both directions:
 
-    * **Read** — raw bytes arrive from the OS pipe as `Port` `:data`
-      messages (`:spawn` mode) or as lines read from the `user` device
-      (`:self` mode) and are fed through
-      `Raxol.AgentClientProtocol.Transport.Framer` (byte-splitting only:
-      buffers partial data, yields complete NDJSON lines, tolerates
-      CRLF, caps a frame's size). A complete line nested deeper than the
-      depth limit is refused without being parsed; any other line is then
-      `Jason.decode/1`'d *tolerantly*: a line that isn't valid JSON, that
-      decodes to something other than a JSON object, that is nested too
-      deeply, or that the framer itself rejected as oversized, is delivered
-      to the owner as
-      `{:acp_transport, ref, {:decode_error, reason, raw_line}}` rather
-      than crashing the transport or dropping the frame silently. A
-      well-formed object is delivered as
-      `{:acp_transport, ref, {:message, map}}`. Lines are processed (and
-      therefore delivered) strictly in arrival order. Blank lines are
-      skipped by the framer without generating a decode error — a
-      trailing newline at EOF is common and not itself malformed input.
-
-    * **Write** — `send_message/2` `Jason.encode!/1`s the message, appends
-      `"\n"`, and writes through THIS GenServer's own mailbox
-      (`GenServer.call/2`). This is deliberate single-writer discipline:
-      every caller's write is serialized through one process, so two
-      concurrent `send_message/2` calls can never interleave their bytes
-      on the wire and corrupt a frame — NDJSON has no length prefix, so a
-      torn write (line A's bytes and line B's bytes interleaved before
-      either `"\n"` lands) is unrecoverable, unlike a length-framed
-      protocol. Never write to the underlying port through any path other
-      than this module.
+    * **Read** -- bytes go through `Raxol.AgentClientProtocol.Transport.Framer`
+      (buffers partial data, yields complete lines, tolerates CRLF, caps frame
+      size). A well-formed JSON object is delivered as
+      `{:acp_transport, ref, {:message, map}}`; invalid JSON, a non-object, an
+      over-deep or oversized line is delivered as
+      `{:acp_transport, ref, {:decode_error, reason, raw_line}}`. Delivery is
+      strictly in arrival order. Blank lines are skipped.
+    * **Write** -- `send_message/2` encodes, appends `"\n"` and writes through
+      this GenServer, so concurrent callers can never interleave bytes within a
+      frame (NDJSON has no length prefix). Never write to the port any other way.
 
   ## Limits
 
-    * `:max_frame_bytes` (default 16 MiB): a frame longer than this is
-      refused as `{:decode_error, {:frame_too_large, size}, ""}` and the
-      framer resyncs at the next newline. Raise it if prompts carry large
-      base64 resources; lower it for a peer you do not trust. In `:spawn`
-      mode this also bounds the memory an unterminated line can take. In
-      `:self` mode it does not: the `user` device hands this module whole
-      lines only, so a line is held by the device until its newline (or
-      end of input) arrives, and only then measured.
-    * `:max_json_depth` (default 256): a frame whose arrays and objects
-      nest deeper than this is refused as
-      `{:decode_error, {:too_deep, max_json_depth}, raw_line}` before it is
-      decoded. The check scans the line once and skips string contents.
+    * `:max_frame_bytes` (default 16 MiB) -- a longer frame is refused as
+      `{:decode_error, {:frame_too_large, size}, ""}` and the framer resyncs at
+      the next newline. In `:spawn` mode this also bounds an unterminated line's
+      memory; in `:self` mode the `user` device holds a line until its newline.
+    * `:max_json_depth` (default 256) -- deeper nesting is refused as
+      `{:decode_error, {:too_deep, max_json_depth}, raw_line}` before decoding.
 
   ## stdout is protocol-pure
 
-  In `:self` mode, this process's real stdout carries the wire protocol.
-  Nothing else may ever write to it — an errant `IO.puts/1`, a stray
-  `Logger` line landing on the `:user` group leader, or any other
-  application output would land mid-frame on a peer that is line-buffered
-  reading JSON. This module logs unexpected messages via `Logger.debug/1`,
-  which is safe **only if** the host application's Logger is configured to
-  a device other than `:user`/stdout (e.g.
-  `config :logger, :default_handler, config: [type: :standard_error]`, or
-  an equivalent `:standard_error` console backend). Configuring that is the
-  host application's responsibility, not this module's — get it wrong and
-  every log line is a corrupted ACP frame on the wire.
+  In `:self` mode nothing else may write to stdout: a stray `IO.puts/1` or a
+  Logger line on `:user` corrupts a frame. The host must route its Logger to
+  stderr, e.g. `config :logger, :default_handler, config: [type: :standard_error]`.
 
   ## Modes
 
-    * `start_self/1` — read and write the `user` device, which is the
-      BEAM's own stdin and stdout. A `{:fd, 0, 1}` port is not used: under
-      `-noshell` the `user` device already reads fd 0, so a second reader
-      loses whatever arrived before it opened (a client's `initialize`).
-      Only meaningful when this process's real stdio is dedicated to the
-      ACP wire protocol and nothing else writes to stdout. Boot forms that
-      satisfy this, with stdio piped by the peer: a compiled release; `mix
-      run` of an already compiled project (compile first in a separate
-      step: Mix prints compile output on stdout); an `elixir` script that
-      sends `Mix.install/2`'s output to stderr and blocks until its
-      connection ends, as the package README's quickstart agent does. In
-      every form the default log handler must write to stderr (see
-      "stdout is protocol-pure"). Not for an interactive `iex` session. Both
-      devices are switched to `encoding: :latin1`, which moves bytes
-      unchanged: the wire is UTF-8 whatever the locale, and a byte that is
-      not UTF-8 reaches the JSON decoder as it was sent. A `unicode` device
-      would transcode by the locale's rules, and falls back to latin1 for
-      good at the first invalid byte it reads.
-    * `start_spawn/3` — launch a peer executable via
-      `Port.open({:spawn_executable, ...}, ...)` and speak to *its*
-      stdin/stdout. The peer's exit is delivered to the owner as
-      `{:closed, {:exit_status, code}}`.
+    * `start_self/1` -- read and write the `user` device (not a `{:fd, 0, 1}`
+      port, which would lose input `user` already read under `-noshell`). Valid
+      boots with piped stdio: a compiled release; `mix run` of an already
+      compiled project; an `elixir` script that sends `Mix.install/2` output to
+      stderr. Not for interactive `iex`. Both devices are set to
+      `encoding: :latin1` so bytes pass unchanged whatever the locale.
+    * `start_spawn/3` -- launch a peer via `Port.open({:spawn_executable, ...})`.
+      Its exit reaches the owner as `{:closed, {:exit_status, code}}`.
 
   ## Ownership
 
-  Mirrors `Raxol.AgentClientProtocol.Transport.Paired`: a freshly created
-  handle has no owner (`nil`) — inbound messages are held until
-  `set_owner/2` adopts it and then delivered in arrival order, so a
-  supervisor can create the transport before the `Connection` process
-  that will own it exists.
+  As with `Raxol.AgentClientProtocol.Transport.Paired`, a new handle has no owner;
+  inbound messages are held until `set_owner/2`, then delivered in order.
   """
 
   use GenServer
@@ -126,8 +74,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
            closed: boolean(),
            pending: [term()]
          }
-
-  # -- Construction --------------------------------------------------------
 
   @doc """
   Serve the BEAM's own stdin/stdout as the transport. See the moduledoc's
@@ -264,8 +210,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   catch
     :exit, _reason -> :ok
   end
-
-  # -- GenServer callbacks --------------------------------------------------
 
   @impl GenServer
   @spec init(
@@ -564,8 +508,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
     {:noreply, state}
   end
-
-  # -- Framing ---------------------------------------------------------------
 
   @spec push(server_state(), binary()) :: server_state()
   defp push(state, data) do

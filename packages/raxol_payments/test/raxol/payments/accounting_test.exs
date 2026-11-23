@@ -146,7 +146,7 @@ defmodule Raxol.Payments.AccountingTest do
     end
 
     test "a blank value is unset, matching how the RPC vars read" do
-      # `String.to_integer("")` used to crash the boot here, naming nothing.
+      # `String.to_integer("")` would crash the boot here, naming nothing.
       System.put_env("RAXOL_REBALANCE_INTERVAL_MS", "")
 
       {opts, _} = Accounting.env_config()
@@ -185,7 +185,7 @@ defmodule Raxol.Payments.AccountingTest do
     end
 
     test "a blank value is unset, not the atom :\"\"" do
-      # `String.to_atom("")` used to yield `:""`, which falls through
+      # `String.to_atom("")` would yield `:""`, which falls through
       # `RebalanceMonitor.build_price_fn/1`'s catch-all to a price fn returning
       # nil -- silently dropping USD pricing from the whole sweep.
       System.put_env("RAXOL_PRICE_SOURCE", "")

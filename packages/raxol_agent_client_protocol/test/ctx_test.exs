@@ -66,9 +66,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
   alias Raxol.AgentClientProtocol.Test.ScriptedPeer
   alias Raxol.AgentClientProtocol.Transport.Paired
 
-  # ---------------------------------------------------------------------------
   # Fixtures & helpers
-  # ---------------------------------------------------------------------------
 
   setup do
     start_supervised!(SessionSup.registry_child_spec())
@@ -165,9 +163,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # fs/read_text_file, fs/write_text_file
-  # ---------------------------------------------------------------------------
 
   describe "read_text_file/3,4" do
     test "sends fs/read_text_file and decodes the response", ctx do
@@ -223,9 +219,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # terminal/*
-  # ---------------------------------------------------------------------------
 
   describe "create_terminal/3,4" do
     test "sends terminal/create with merged opts and decodes the response", ctx do
@@ -296,9 +290,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # request_permission/3,4 (Session-owned, fail-closed)
-  # ---------------------------------------------------------------------------
 
   describe "request_permission/3,4" do
     @tag expect_invariant: @invariants_by_construction
@@ -366,9 +358,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # post_update/2 — streaming guards (session.ex)
-  # ---------------------------------------------------------------------------
 
   describe "post_update/2" do
     @tag expect_invariant: @invariants_by_construction

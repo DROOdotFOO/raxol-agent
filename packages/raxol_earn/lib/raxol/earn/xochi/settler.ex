@@ -3,13 +3,8 @@ defmodule Raxol.Earn.Xochi.Settler do
   Storefront relay: turns `Raxol.Earn.Xochi.SolverAgent`'s `:settle_fn`
   callback into a `Raxol.Payments.Protocols.Xochi.execute_signed/2` call.
 
-  raxol is a pure storefront. The buyer quoted and signed the Xochi intent
-  against Xochi itself; the settler relays that pre-signed bundle WITHOUT
-  re-signing and polls it to settlement. raxol never signs the transfer and
-  never touches the transferred funds -- Riddler verifies the buyer's signature
-  against its own persisted quote, so the amount and route cannot be forged.
-
-  ## Usage
+  It relays the buyer's pre-signed bundle WITHOUT re-signing and polls it to
+  settlement; raxol never signs the transfer or touches the funds.
 
       settle_fn =
         Raxol.Earn.Xochi.Settler.build(
@@ -17,32 +12,18 @@ defmodule Raxol.Earn.Xochi.Settler do
           poll_timeout_ms: 120_000
         )
 
-      Raxol.Earn.Xochi.SolverAgent.start_link(
-        agent: my_agent,
-        provider: my_provider,
-        wallet_address: "0xfeed...",
-        ...,
-        settle_fn: settle_fn
-      )
+      Raxol.Earn.Xochi.SolverAgent.start_link(..., settle_fn: settle_fn)
 
   ## Input shape (from SolverAgent)
 
       %{
         requirement: %{
-          "src_chain_id" => 8453,
-          "dst_chain_id" => 10,
-          "amount_atomic" => "1000000",
-          "signed_intent" => %{
-            "intent_id"      => "xi_...",
-            "quote_id"       => "xq_...",
-            "signature"      => "0x...",
-            "nonce"          => 7,
-            "pull_signature" => "0x..."    # optional
-          }
+          "src_chain_id" => 8453, "dst_chain_id" => 10, "amount_atomic" => "1000000",
+          "signed_intent" => %{"intent_id" => "xi_...", "quote_id" => "xq_...",
+            "signature" => "0x...", "nonce" => 7, "pull_signature" => "0x..."}
         },
-        # threaded by SolverAgent (either is accepted):
-        signed_intent: %{...},             # the bundle, extracted from the requirement
-        transfer_amount_atomic: 1_000_000  # for the deliverable amount
+        signed_intent: %{...},             # threaded by SolverAgent
+        transfer_amount_atomic: 1_000_000
       }
 
   ## Output shape
@@ -50,51 +31,35 @@ defmodule Raxol.Earn.Xochi.Settler do
   On settle success:
 
       {:ok, %{
-        intent_id:          "abc",
-        settlement_tx_hash: "0x...",
-        receiving_tx_hash:  "0x...",   # nil for an instant single-tx fill
-        amount_atomic:      "1000000",
-        status:             "completed",
-        # Present only for a stealth settlement (nil otherwise):
-        settlement_type:    "stealth", # the privacy tier that settled
-        stealth_address:    "0x...",   # ERC-5564 announcement fields the buyer
-        ephemeral_pub_key:  "0x...",   # or evaluator verifies the delivery with
-        view_tag:           42
+        intent_id: "abc", settlement_tx_hash: "0x...",
+        receiving_tx_hash: "0x...",   # nil for an instant single-tx fill
+        amount_atomic: "1000000", status: "completed",
+        # stealth settlement only (nil otherwise), ERC-5564 announcement:
+        settlement_type: "stealth", stealth_address: "0x...",
+        ephemeral_pub_key: "0x...", view_tag: 42
       }}
 
-  On error: `{:error, reason}`. SolverAgent marks the session `:failed` and does
-  NOT submit a deliverable on-chain. A completed intent whose status carries no
-  settlement tx hash is `{:error, {:settlement_tx_hash_unavailable, intent_id}}`:
-  the deliverable schema requires that hash, and the settler never invents one.
+  On error `{:error, reason}`, and SolverAgent submits no deliverable. A completed
+  status with no tx hash is `{:error, {:settlement_tx_hash_unavailable, intent_id}}`.
 
   ## Read token
 
-  For a stealth/shielded intent the Xochi worker withholds tx hashes from an
-  anonymous caller. The relay presents the execute-time read token while polling
-  but never returns, logs, or stores it in a replayable settlement record. With
-  a checkpoint store, the token is wrapped in a separate private record keyed by
-  API origin, exact signed-bundle fingerprint, and intent id. Failed, expired,
-  refunded, and completed terminal results are committed before token deletion.
-  Tokens expire after one hour and terminal summaries after 24 hours.
+  For a stealth/shielded intent the worker withholds tx hashes from anonymous
+  callers. The relay presents the execute-time read token while polling but
+  never returns, logs, or stores it in a replayable record; with a checkpoint
+  store it lives in a separate private record keyed by API origin, bundle
+  fingerprint and intent id, expiring after one hour.
 
   ## Crash recovery
 
-  With a `:checkpoint` store (a `Raxol.Payments.Checkpoint` `{module, handle}`)
-  the settler atomically records the exact signed bundle before relaying it. A
-  settle re-run for the same bundle resumes polling instead of relaying again;
-  another writer cannot adopt or delete that state. Once submission starts,
-  resets, malformed responses, and 5xx responses remain in doubt. A 404 at or
-  after the signed deadline resolves that state as never dispatched. Invalid
-  configuration and connection setup failures proven to happen before send
-  delete the dispatch state.
-
-  A relay refusal because another writer holds or completed the intent is a
-  definite failure for this writer. It is never converted to a deliverable by
-  polling the other writer's intent or presenting that writer's token.
-
-  At a terminal status the result (public deliverable fields or the error, never
-  the token) is committed before the token is deleted. A re-run within the
-  bounded retention window returns that result without polling.
+  With a `:checkpoint` store (`Raxol.Payments.Checkpoint` `{module, handle}`) the
+  exact bundle is recorded before relaying, and a re-run resumes polling rather
+  than relaying again. After submission starts, resets, malformed and 5xx
+  responses stay in doubt; a 404 at or after the signed deadline resolves it as
+  never dispatched; failures proven pre-send delete the state. Another writer's
+  claim on the intent is a definite failure, never adopted. A terminal result
+  (never the token) is committed before the token is deleted and returned to
+  re-runs for 24 hours.
   """
 
   alias Raxol.Payments.Checkpoint
@@ -136,8 +101,6 @@ defmodule Raxol.Earn.Xochi.Settler do
       )
     end
   end
-
-  # -- Internal --
 
   defp do_settle(args, xochi_config, store, clock, poll_opts) do
     with {:ok, bundle} <- extract_signed_intent(args),
@@ -454,8 +417,8 @@ defmodule Raxol.Earn.Xochi.Settler do
   # so `TransferOffering.present/1` drops them and a public deliverable is
   # byte-identical.
   #
-  # A completed status without `tx_hash` is refused, never filled in. Since
-  # xochi#563 the worker omits a stealth/shielded intent's legs unless the
+  # A completed status without `tx_hash` is refused, never filled in. The
+  # worker omits a stealth/shielded intent's legs unless the
   # caller presents the read token (or owner JWT); the relay presents the token
   # it got from execute, so this fires only when the worker withheld anyway
   # (token absent or rejected) or served none. The Riddler SPEC (§3.4) lets a

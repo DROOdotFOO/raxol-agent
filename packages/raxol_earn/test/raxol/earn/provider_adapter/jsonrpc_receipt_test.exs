@@ -35,8 +35,6 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcReceiptTest do
     %{table: table}
   end
 
-  # -- Helpers --
-
   defp start_nonce_server do
     name = Module.concat(__MODULE__, "NS#{System.unique_integer([:positive])}")
     start_supervised!({NonceServer, [name: name, initial_nonce: 5]})
@@ -99,8 +97,6 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcReceiptTest do
   end
 
   defp result(id, value), do: %{"jsonrpc" => "2.0", "id" => id, "result" => value}
-
-  # -- Tests --
 
   test "a successful tx (status 0x1) is reported as a successful write" do
     adapter = adapter(start_nonce_server())

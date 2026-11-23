@@ -217,8 +217,6 @@ defmodule Raxol.Earn.Test.Scenario do
   @spec cfg(t()) :: map()
   def cfg(%__MODULE__{cfg: cfg}), do: cfg
 
-  # -- Internal --
-
   defp place_order(s, from, to, src, dst, amount) do
     requirement = build_requirement(from, to, src, dst, amount, s.bundle)
     {chain_id, job_id, provider} = start_provider(s.wallet)

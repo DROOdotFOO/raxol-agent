@@ -21,14 +21,11 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
   alias Raxol.AgentClientProtocol.Session.Supervisor, as: SessionSup
   alias Raxol.AgentClientProtocol.Test.FakeConnection
 
-  # ---------------------------------------------------------------------------
   # Root-result error passthrough
-  # ---------------------------------------------------------------------------
 
   describe "root result carrying a protocol error" do
-    # The Session used to fold EVERY unrecognized root result into a bare
-    # internal_error, so a runner that had already diagnosed the failure had
-    # its diagnosis discarded and the peer saw -32603 with no data --
+    # Folding every unrecognized root result into a bare internal_error would
+    # discard a runner's diagnosis and show the peer -32603 with no data --
     # indistinguishable from a crash.
     test "a runner's own Error survives with its data intact", ctx do
       conn = new_conn()
@@ -55,9 +52,7 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # I8 fail-closed permission matrix
-  # ---------------------------------------------------------------------------
 
   describe "I8 fail-closed permission" do
     test "only a decoded selected outcome yields allow; every other row denies", ctx do
@@ -96,9 +91,7 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # I11 registry pruning, I12 busy isolation, I13 backstop, I14 no atoms
-  # ---------------------------------------------------------------------------
 
   describe "I11 no stale registry entries" do
     test "a dead session's key is pruned by the Registry monitor", ctx do
@@ -171,10 +164,8 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # Per-connection session cap (durable-sessions robustness): a peer cannot open
   # unbounded Sessions on one connection. The Nth+1 is refused CLEANLY.
-  # ---------------------------------------------------------------------------
 
   describe "per-connection session cap" do
     test "the (cap+1)th session is refused with {:error, :max_children}", ctx do
@@ -198,12 +189,10 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # Idle reaping of the durable Writer (durable-sessions robustness): a
   # long-lived node must not accrue a never-stopped Writer per session forever.
   # After the idle timeout the Session idle-STOPS its Writer; the journal is the
   # durable state and survives, so a fresh reattach respawns + replays (the moat).
-  # ---------------------------------------------------------------------------
 
   describe "idle Writer reaping (journal survives)" do
     test "an idle session stops its Writer after the timeout; the journal is intact", ctx do
@@ -278,9 +267,7 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # I17 $/cancel_request on the prompt id
-  # ---------------------------------------------------------------------------
 
   describe "I17 / S7 $/cancel_request on the prompt id" do
     test "the drain STILL calls reply/3 for the cancelled id (releases pending_in, S7)", ctx do
@@ -322,9 +309,7 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # mode_state seam (§2.3) + set_mode
-  # ---------------------------------------------------------------------------
 
   describe "set_mode (§2.3)" do
     test "validates against mode_state; legal mid-turn", ctx do
@@ -358,9 +343,7 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # 6.4 disconnect mid-turn, 6.5 two sessions interleaving, I15 independence
-  # ---------------------------------------------------------------------------
 
   describe "6.4 disconnect mid-turn (fail-closed)" do
     test "connection_closed on a parked ask denies the tool call", ctx do
@@ -413,9 +396,7 @@ defmodule Raxol.AgentClientProtocol.SessionIsolationTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # S2 / §2.7 cross-connection turn latch (Writer is the arbiter)
-  # ---------------------------------------------------------------------------
 
   describe "S2 cross-connection turn latch (reattach §2.7)" do
     # With N connections attached to ONE session_id, N Session processes exist

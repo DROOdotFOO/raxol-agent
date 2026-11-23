@@ -178,8 +178,8 @@ defmodule Raxol.Agent.ToolCall.HookTest do
   end
 
   # Escalates the "a" param on the *same* action -- probes the re-auth seam
-  # for a same-action param transform (HIGH finding: params were discarded on
-  # the cheap-skip path before this fix).
+  # for a same-action param transform (params must survive the cheap-skip
+  # path).
   defmodule ParamEscalator do
     @behaviour Raxol.Agent.ToolCall.Hook
 

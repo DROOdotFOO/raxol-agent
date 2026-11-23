@@ -9,10 +9,8 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
       end
 
   An invariant event is one that can only fire if this library is wrong (see
-  `Raxol.Agent.Telemetry`). Before this module existed, such an event was
-  emitted, logged, and ignored -- which is how a turn that delivered zero
-  content shipped while the library was warning about it on stderr. A guard
-  that nothing asserts on is not a guard.
+  `Raxol.Agent.Telemetry`). This module fails the test when one fires, so the
+  warning cannot be emitted, logged and ignored.
 
   ## Declaring an invariant on purpose
 

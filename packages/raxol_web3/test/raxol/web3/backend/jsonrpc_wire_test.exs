@@ -355,10 +355,8 @@ defmodule Raxol.Web3.Backend.JSONRPCWireTest do
 
   describe "chain 4663 routes" do
     test "a breakered explorer orders behind the node, and the node answers" do
-      # Issue #1026's third acceptance item, and the point of this backend.
-      # Before ADR-0039 this router had one candidate and no fallback: the only
-      # explorer for this chain answered 403 with cf-mitigated: challenge on
-      # 2026-09-13, and a raw node could not be expressed as a backend at all.
+      # The only explorer for this chain can answer 403 with
+      # cf-mitigated: challenge; the node must still serve the read.
       {:ok, blockscout} = Blockscout.new("eip155:4663", cache: false)
 
       node =

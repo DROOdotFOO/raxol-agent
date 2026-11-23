@@ -124,8 +124,6 @@ defmodule Raxol.Earn.Console.Spec do
     }
   end
 
-  # -- field validators ------------------------------------------------------
-
   defp get(req, key), do: Map.get(req, key) || Map.get(req, String.to_existing_atom(key))
 
   defp str(req, key, min, max, mode) do

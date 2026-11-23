@@ -24,8 +24,6 @@ defmodule Raxol.Earn.Seller.Backend.InMemory do
 
   use Raxol.Core.Behaviours.BaseManager
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -52,8 +50,6 @@ defmodule Raxol.Earn.Seller.Backend.InMemory do
     GenServer.call(__MODULE__, :reset)
   end
 
-  # -- Behaviour callbacks --
-
   @impl Raxol.Earn.Seller.Backend
   def subscribe(pid) when is_pid(pid) do
     GenServer.call(__MODULE__, {:subscribe, pid})
@@ -68,8 +64,6 @@ defmodule Raxol.Earn.Seller.Backend.InMemory do
   def subscriber_count do
     GenServer.call(__MODULE__, :subscriber_count)
   end
-
-  # -- BaseManager callbacks --
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(_opts) do
@@ -113,8 +107,6 @@ defmodule Raxol.Earn.Seller.Backend.InMemory do
       _ -> {:noreply, state}
     end
   end
-
-  # -- Helpers --
 
   defp put_subscriber(state, pid) do
     case Map.fetch(state.subscribers, pid) do

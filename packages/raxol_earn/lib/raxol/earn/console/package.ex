@@ -74,8 +74,6 @@ defmodule Raxol.Earn.Console.Package do
 
   def parse(other), do: {:error, {:invalid_package, :root, {:not_a_map, other}}}
 
-  # -- files -----------------------------------------------------------------
-
   defp fetch(files, key) do
     case Map.get(files, key) do
       v when is_binary(v) and v != "" -> {:ok, v}
@@ -102,8 +100,6 @@ defmodule Raxol.Earn.Console.Package do
   end
 
   defp runtime(%{}), do: {:ok, nil}
-
-  # -- tasks -----------------------------------------------------------------
 
   defp tasks(files) do
     case Map.get(files, "tasks.json") do
@@ -148,8 +144,6 @@ defmodule Raxol.Earn.Console.Package do
 
   defp parse_task(other), do: {:error, {:invalid_package, :task, {:missing_fields, other}}}
 
-  # -- skills ----------------------------------------------------------------
-
   defp skills(files) do
     files
     |> Enum.reduce_while({:ok, []}, fn {key, body}, {:ok, acc} ->
@@ -164,8 +158,6 @@ defmodule Raxol.Earn.Console.Package do
       err -> err
     end
   end
-
-  # -- helpers ---------------------------------------------------------------
 
   defp decode_json(bin, field) do
     case Jason.decode(bin) do

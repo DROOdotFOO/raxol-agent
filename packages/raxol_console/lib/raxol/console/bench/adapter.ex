@@ -61,8 +61,6 @@ defmodule Raxol.Console.Bench.Adapter do
     end
   end
 
-  # -- stages ----------------------------------------------------------------
-
   defp load(pkg_dir) do
     case Package.load(pkg_dir) do
       {:ok, pkg} -> {:ok, pkg}
@@ -129,8 +127,6 @@ defmodule Raxol.Console.Bench.Adapter do
     end
   end
 
-  # -- turn -------------------------------------------------------------------
-
   # Run one fresh, history-free fire under a timeout. `Fire.run/2` returns
   # `{:ok, content}` or `{:error, reason}`; a crash or timeout is its own typed
   # failure so a runaway turn cannot hang the bench (and thus the job session).
@@ -144,8 +140,6 @@ defmodule Raxol.Console.Bench.Adapter do
       nil -> {:error, {:bench_timeout, check}}
     end
   end
-
-  # -- transcript -------------------------------------------------------------
 
   defp boot_section(report) do
     jobs = report.jobs
@@ -162,8 +156,6 @@ defmodule Raxol.Console.Bench.Adapter do
     do: binary_part(bin, byte_size(bin) - @cap, @cap)
 
   defp cap(bin), do: bin
-
-  # -- teardown ---------------------------------------------------------------
 
   defp stop(sup) do
     Supervisor.stop(sup)

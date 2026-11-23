@@ -189,8 +189,6 @@ defmodule Raxol.AgentClientProtocol.Session do
     GenServer.call(session, {:steer, request})
   end
 
-  # -- Callbacks --------------------------------------------------------------
-
   @impl true
   def init(opts) do
     state = %__MODULE__{
@@ -383,8 +381,6 @@ defmodule Raxol.AgentClientProtocol.Session do
   # Stale timers, late results and unknown messages.
   def handle_info(_other, state), do: {:noreply, state}
 
-  # -- Turn lifecycle ---------------------------------------------------------
-
   # With several connections attached to one session_id there is one Session
   # per connection; the journal Writer's turn latch arbitrates between them.
   defp start_turn(state, req, reply_ref, rx_seq) do
@@ -516,8 +512,6 @@ defmodule Raxol.AgentClientProtocol.Session do
       idle_timeout: Map.get(config, :idle_timeout, @default_idle_timeout)
     }
   end
-
-  # -- Idle reaping -----------------------------------------------------------
 
   # Every arm bumps the epoch, so a timer from an earlier idle window is inert.
   @spec arm_idle(t()) :: t()

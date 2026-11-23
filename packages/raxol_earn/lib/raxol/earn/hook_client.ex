@@ -39,8 +39,6 @@ defmodule Raxol.Earn.HookClient do
   @type bytes32 :: binary()
   @type tx_hash :: String.t()
 
-  # -- Action functions --
-
   @doc """
   Submit `setBudget(jobId, amount, data)` to the ACP Core contract on
   `chain_id`. `acp_core_address` is the deployed ACP Core address;
@@ -192,8 +190,6 @@ defmodule Raxol.Earn.HookClient do
       ]
     )
   end
-
-  # -- Internals --
 
   defp submit_single(adapter, chain_id, to, signature, args) do
     data = Raxol.Earn.ABI.encode_call(signature, args)

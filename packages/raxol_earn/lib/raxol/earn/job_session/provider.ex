@@ -295,8 +295,6 @@ defmodule Raxol.Earn.JobSession.Provider do
     :ok
   end
 
-  # -- Internals --
-
   defp finalize_evaluation(p, deliverable, :completed, info) do
     with {:ok, tx} <-
            HookClient.complete(
@@ -326,8 +324,6 @@ defmodule Raxol.Earn.JobSession.Provider do
       {:ok, %{status: :rejected, tx_hash: tx, info: info}}
     end
   end
-
-  # -- Checkpoint plumbing --
 
   # Fail closed on fund-adjacent writes: with `require_checkpoint: true` and no
   # injected store, refuse before invoking the handler or touching the chain.
