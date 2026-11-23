@@ -2,14 +2,10 @@ defmodule Raxol.Console.Inbound do
   @moduledoc """
   The authorized entry point for inbound chat events.
 
-  A Console has no feed loop of its own. Adapters translate (`normalize_event/1`)
-  and `Raxol.Gateway.SessionRouter` routes, but something has to pump one into
-  the other, and that something belongs to the deployment: which transport it
-  polls, how it handles backpressure, and where it logs are all its business.
-
-  What is NOT its business is deciding who may open a session. `route/3` is that
-  decision plus the routing, in one call, so a deployment's feed cannot wire up
-  the second half and forget the first:
+  A Console has no feed loop of its own; the deployment pumps adapter output
+  (`normalize_event/1`) into `Raxol.Gateway.SessionRouter`. `route/3` makes the
+  authorization decision and the routing in one call, so a feed cannot wire the
+  second half and forget the first:
 
       Raxol.Telegram.UpdatePoller.start_link(
         conn: conn,
@@ -20,68 +16,38 @@ defmodule Raxol.Console.Inbound do
         end
       )
 
-  `MyConsole` is the same `:name` the runtime booted under, which is what the
-  Pairing server and the router are named after.
+  `MyConsole` is the `:name` the runtime booted under.
 
-  ## Why this exists
-
-  `Raxol.Gateway.Pairing.authorize/2` was documented across five adapters as
-  something the feed loop calls before routing. It was never enforced anywhere,
-  and Console -- having no feed loop -- never got the call site. The server ran,
-  denied nothing, and every inbound event got a session. See GitHub #884.
-
-  ## This is not the only enforcement point
-
-  A gate that only works when you remember to call it is the bug above with a
-  new name, so `Raxol.Console.Boot` also hands the router an `:authorize`
-  function over the same Pairing server. A deployment that calls
-  `Raxol.Gateway.SessionRouter.route/3` directly gets the same decision.
-
-  What this adds is the answer without a round trip: a denial here never touches
-  the router, and it carries the console's own telemetry and log line. Skipping
-  it costs an extra `GenServer.call` per denied event and loses that signal --
-  it does not cost the check.
+  `Raxol.Console.Boot` also gives the router an `:authorize` function over the
+  same Pairing server, so calling `SessionRouter.route/3` directly gets the same
+  decision; this module adds a denial without a router round trip, plus telemetry.
 
   ## Authorization posture
 
-  `route/3` always consults `Pairing`. An open Console is open because its
-  Pairing server was seeded to allow the connected platforms, not because
-  anything skipped a check -- so there is one code path in both postures, and
-  `:sys.get_state` on the Pairing server shows the truth. The seeds are start
-  options, so the posture survives a Pairing restart; runtime DM pairings do
-  not. See `Raxol.Console.RuntimeConfig.build/2` for configuring it.
+  `route/3` always consults `Pairing`. An open Console is a Pairing server seeded
+  to allow the connected platforms, so there is one code path in both postures.
+  Seeds are start options and survive a Pairing restart; runtime DM pairings do
+  not. A `Pairing` that cannot answer denies. See
+  `Raxol.Console.RuntimeConfig.build/2`.
 
-  A `Pairing` that cannot answer -- crashed, or inside its own restart window --
-  denies. The alternative is a feed loop taking an uncaught exit from the
-  authorization call, which would drop or replay whatever batch it was pumping.
+  ## Admitting someone not on the allowlist
 
-  ## Admitting someone who is not on the allowlist
-
-  There is no `/pair` chat command, and there cannot be one at this layer: a
-  denial is decided before a session exists, so an unpaired sender has no way to
-  ask for a code through the chat itself. Pairing a newcomer means calling
-  `Raxol.Gateway.Pairing.request_code/2` and `confirm/2` out of band -- a remote
-  shell on the node, or whatever admin surface the deployment already has:
+  There is no `/pair` chat command (a denial happens before a session exists).
+  Pair out of band:
 
       pairing = Raxol.Console.Inbound.pairing_name(MyConsole)
       {:ok, code} = Raxol.Gateway.Pairing.request_code(pairing, "12345")
       # deliver `code` to that user however you already reach them
       {:ok, "12345"} = Raxol.Gateway.Pairing.confirm(pairing, code)
 
-  A deployment that wants a self-service lane builds it in its own feed loop with
-  `authorized?/2`: answer a denied sender with a code instead of dropping them,
-  and never hand the event to `route/3`. That stays the deployment's decision
-  because "what an unauthorized stranger is told" is a policy question, and the
-  safe default -- silence -- is the one that does not confirm the bot exists.
+  A self-service lane belongs in the deployment's feed loop, using
+  `authorized?/2`; the default for a denied sender is silence.
 
   ## Telemetry
 
     * `[:raxol_console, :inbound, :denied]` -- metadata `%{console, key, platform,
-      user_id}`. The signal that someone was turned away; a denial is otherwise
-      invisible, since `route/3` returns to a feed loop that is free to discard
-      it. Telemetry rather than a log line, because the volume is set by whoever
-      is sending the denied traffic: a handler here can sample or aggregate, an
-      unconditional `Logger.info` per event cannot. The matching log is `debug`.
+      user_id}`. Telemetry rather than a per-event log (the matching log is
+      `debug`), since denied traffic volume is set by the sender.
   """
 
   require Logger

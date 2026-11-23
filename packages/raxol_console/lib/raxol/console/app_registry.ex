@@ -33,8 +33,7 @@ defmodule Raxol.Console.AppRegistry do
   config error belongs at boot.
 
   See `Raxol.Console.RuntimeConfig.handler_spec/2` for what a resolved module is
-  then booted into, and GitHub #763 for why the package format does not carry a
-  TEA app of its own.
+  then booted into.
   """
 
   # The minimum a `Raxol.Core.Runtime.Application` must export to be driven by
@@ -80,8 +79,6 @@ defmodule Raxol.Console.AppRegistry do
   end
 
   def fetch(name), do: {:error, {:unknown_app_template, name}}
-
-  # -- private ---------------------------------------------------------------
 
   defp normalize(entries) when is_map(entries) or is_list(entries),
     do: entries |> Enum.flat_map(&entry/1) |> Map.new()
