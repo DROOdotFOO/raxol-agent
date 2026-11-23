@@ -15,26 +15,14 @@ defmodule Raxol.Agent.Stream do
       |> Raxol.Agent.Stream.text_deltas()
       |> Enum.each(&IO.write/1)
 
-      # Collect final result
       {:ok, result} =
-        Raxol.Agent.Stream.run("What is 2+2?", opts)
+        Raxol.Agent.Stream.react("Count lines in mix.exs", opts)
         |> Raxol.Agent.Stream.collect()
-
-      # ReAct loop with tools
-      Raxol.Agent.Stream.react("Count lines in mix.exs", opts)
-      |> Stream.each(fn
-        {:tool_use, %{name: name}} -> IO.puts("Calling \#{name}...")
-        {:text_delta, text} -> IO.write(text)
-        _ -> :ok
-      end)
-      |> Stream.run()
 
   ## Event Types
 
   - `{:text_delta, text}` -- streaming text chunk from LLM
-  - `{:reasoning, text}` -- streaming chain-of-thought / thinking chunk
-    (Anthropic thinking blocks, OpenAI reasoning); distinct from the
-    answer text so the contract can seal it as its own reasoning block
+  - `{:reasoning, text}` -- streaming thinking chunk, distinct from answer text
   - `{:tool_use, %{name, arguments, id}}` -- LLM requesting a tool call
   - `{:tool_result, %{name, result, id}}` -- result from executing a tool;
     `id` is the `:tool_use` id it answers
@@ -55,20 +43,11 @@ defmodule Raxol.Agent.Stream do
     the environment via `Raxol.Agent.Backend.Resolver` (op-ref ->
     provider-env -> `AI_API_KEY`). An optional `:provider` pins a specific
     one. When nothing resolves, `:backend` is used.
-
-  With neither an executor nor a `:backend`, the stream is the single event
-  `{:error, :no_backend}`. An executor no backend can serve yields
-  `{:error, {:backend_unavailable, reason}}`. Neither falls back to a mock.
-  An `:executor` or `:backend` of the wrong shape yields
-  `{:error, {:invalid_executor, _}}` or `{:error, {:invalid_backend, _}}`.
   - `:backend_opts` -- keyword list passed to backend (api_key, model, etc.);
     merged over the executor's resolved opts
   - `:model` -- per-request model override (wins over `:executor`/`:backend_opts`)
-  - `:system_prompt` -- system message (binary) prepended to the conversation.
-    Applies to every entry form -- string prompts, pre-built `:messages`, and
-    message-list prompts -- unless the list already carries an explicit
-    system message (which then wins; never duplicated). The caller passes
-    the text itself: this layer reads no file per turn.
+  - `:system_prompt` -- system message (binary) prepended to every entry form,
+    unless the messages already carry one (which wins; never duplicated)
   - `:messages` -- pre-built message list (overrides prompt)
   - `:stream` -- whether to use streaming backend (default: `true`)
 
@@ -77,6 +56,12 @@ defmodule Raxol.Agent.Stream do
   - `:actions` -- list of Action modules available as tools
   - `:context` -- map handed to every tool call (default: `%{}`)
   - `:max_iterations` -- loop guard (default: 10)
+
+  With neither an executor nor a `:backend`, the stream is the single event
+  `{:error, :no_backend}`; an executor no backend can serve yields
+  `{:error, {:backend_unavailable, reason}}`. Neither falls back to a mock. A
+  wrong-shaped `:executor` or `:backend` yields `{:error, {:invalid_executor, _}}`
+  or `{:error, {:invalid_backend, _}}`.
   """
 
   alias Raxol.Agent.Action.ToolConverter

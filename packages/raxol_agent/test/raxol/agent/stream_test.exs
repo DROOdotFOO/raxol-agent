@@ -224,11 +224,9 @@ defmodule Raxol.Agent.StreamTest do
 
   # `run/2` has no tool-execution loop (that's `react/2`); a streamed done
   # can still carry `tool_calls` (`Backend.HTTP` accumulates them via
-  # `finalize_tool_calls/1` regardless of which path is used). Before this
-  # fix, `normalize_backend_stream/1`'s `{:done, response}` clause rebuilt
-  # the done event from `content`/`usage` only and discarded
-  # `response.tool_calls` outright -- a model's claimed tool call vanished
-  # with no receipt while the turn still reported a clean done.
+  # `finalize_tool_calls/1` regardless of which path is used). Rebuilding the
+  # done event from `content`/`usage` only would make a model's claimed tool
+  # call vanish with no receipt while the turn still reported a clean done.
   describe "run/2 tool_calls on a streamed done (no react loop to execute them)" do
     test "a streamed done carrying tool_calls seals a :tool_unexecuted marker, never a silent drop" do
       tool_calls = [tool_call("c1", "read_file", %{"path" => "mix.exs"})]

@@ -2,68 +2,35 @@ defmodule Raxol.Agent.SpawnedPort do
   @moduledoc """
   Lifecycle helpers shared by every port that spawns an OS process.
 
-  Every spawner asks the same two questions, and this module holds the
-  answers once.
+  ## stdin is `/dev/null`
 
-  ## Why stdin is `/dev/null`
+  Every spawner passes input over argv and never calls `Port.command/2`, so a
+  child that reads stdin must see EOF at once. No Unix port option gives that: a
+  bidirectional port hands the child a pipe that never closes, and `:in` makes
+  the child inherit the BEAM's fd 0 (under a TUI, the user's terminal).
 
-  Every spawner here passes its input over argv: a shell command goes to
-  `sh -c`, and `op` takes its reference as an argument. None of them ever
-  calls `Port.command/2`, so
-  a child that reads stdin must see EOF at once.
+  So on Unix `spawn_spec/2` wraps an executable in
+  `sh -c 'exec "$@" </dev/null'`, and `null_stdin_command/1` prefixes an `sh -c`
+  script with `exec </dev/null`; neither passes `:in`. On Windows, an input-only
+  port already gets `NUL`, so `:in` is the whole fix.
 
-  No port option gives it that on Unix. Opened for both directions, the port
-  hands the child a pipe that carries nothing and never closes, so anything
-  that drains stdin blocks until the caller's deadline. Opened with `:in`,
-  erts skips the stdin `dup2` entirely (`erl_child_setup.c`) and the child
-  inherits the BEAM's own fd 0 -- under a TUI, the user's terminal. The
-  child then races the TUI for keystrokes
-  and can rewrite its termios. erts does start the child in a new
-  session, so `/dev/tty` is unreachable; fd 0 is the whole problem.
+  The wrapper shell is made transparent: the executable is expanded to an
+  absolute path, `SHELLOPTS`, `BASHOPTS`, `PS4`, `BASH_ENV` and `ENV` are removed
+  from its environment, and anything `sh` prints before the `exec` precedes a
+  marker line, so `target_output/2` returns only the target's output.
 
-  So on Unix the redirect is done by a shell: `spawn_spec/2` wraps an
-  executable in `sh -c 'exec "$@" </dev/null'`, and `null_stdin_command/1`
-  prefixes an `sh -c` script with `exec </dev/null`. Neither passes `:in`:
-  with the redirect in place the pipe is moot, and leaving it open means a
-  spawner that loses the redirect hangs its stdin test on every host instead
-  of only under a terminal. Windows is the exception: there erts opens `NUL`
-  as the child's stdin for an input-only port (`win32/sys.c`), so `:in` is
-  the whole fix and no shell is involved.
+  A command that prompts reads EOF and takes its non-interactive path (`ssh`,
+  `git`, `curl` may fall through to another credential source); the sandbox
+  (`Raxol.Agent.Policy.Grants.shell_allow/2`, the jail flag, the allow/denylist)
+  decides whether a command runs at all. A child that must receive stdin needs
+  `Raxol.System.PortCommand`, since a spawned port cannot half-close.
 
-  The wrapper shell is not transparent, which is what the rest of
-  `spawn_spec/2` handles. The executable is expanded to an absolute path, so
-  `exec` never parses it as an option or looks it up on PATH. The variables
-  that make `sh` print or run code on its own (`SHELLOPTS`, `BASHOPTS`, `PS4`,
-  `BASH_ENV`, `ENV`) are removed from its environment. And anything `sh`
-  writes before the `exec` -- bash-as-sh warns on an uninstalled `LC_ALL`, for
-  one -- precedes a marker line, so `target_output/2` can return only what the
-  target itself wrote.
+  ## Closing
 
-  Note what EOF on stdin changes besides the hang. A command that prompts for
-  input reads EOF and continues down its non-interactive path, which for tools
-  like `ssh`, `git` and `curl` can mean falling through to another credential
-  source rather than failing. That is the correct behaviour for a shell tool,
-  and the sandbox (`Raxol.Agent.Policy.Grants.shell_allow/2`, the jail flag,
-  the allow/denylist) is what decides whether a command runs at all.
-
-  The opposite case -- a child that must actually RECEIVE stdin -- is not
-  solvable this way at all, because a spawned port cannot half-close. See
-  `Raxol.System.PortCommand`, which feeds stdin from a temp file for exactly
-  that reason.
-
-  ## Why closing needs a guard and a drain
-
-  On a timeout the caller SIGKILLs the process group first, so by the time the
-  port is closed it has usually already died on its own -- and `Port.close/1`
-  raises on a port that is already gone. `Port.info/1` narrows that window but
-  cannot close it, since the port can die between the check and the close, so
-  the rescue is what makes it correct rather than merely unlikely.
-
-  A port that died on its own has already queued its `{port, {:exit_status,
-  _}}` to the owner, and closing does not retract a message that was already
-  sent. Left there it never matches again -- every collect loop matches on its
-  own `^port` -- so it accumulates in a long-lived session process that runs
-  many commands. `close/1` therefore drains that message after closing.
+  On timeout the caller SIGKILLs the process group first, so `Port.close/1` may
+  hit an already-dead port and raise; `close/1` rescues that. It then drains the
+  port's queued `{port, {:exit_status, _}}`, which would otherwise accumulate in
+  a long-lived session process.
   """
 
   @exec_marker "<<raxol:exec>>"

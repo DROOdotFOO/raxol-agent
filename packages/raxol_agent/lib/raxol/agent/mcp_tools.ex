@@ -9,89 +9,51 @@ defmodule Raxol.Agent.McpTools do
     * `agent_status {id}`, `agent_stop {id}`
     * resource `raxol://agent/<id>/journal` - the agent's journal
 
-  `agent_spawn`, `agent_ask` and `agent_stop` are annotated `sensitive`. The
-  annotation is advisory: a server with an authorizer that allows them, as
-  `raxol mcp` has, asks no one before running them.
+  `agent_spawn`, `agent_ask` and `agent_stop` are annotated `sensitive`, which is
+  advisory: the node's authorizer (`config :raxol, :mcp_authorizer`) decides.
 
   ## Registration
 
-  This process registers the tools with `Raxol.MCP.Registry` and owns them,
-  so they leave the registry with it. Whether it registers is decided once
-  per BEAM, when `Raxol.Agent.McpTools` first starts, and a restart repeats
-  that decision. It registers if the registry is running then and
-  `config :raxol_agent, :mcp_tools` allows it:
+  This process registers and owns the tools in `Raxol.MCP.Registry`, deciding
+  once per BEAM at its first start (in `config/*.exs`; `put_env` later changes
+  nothing), from `config :raxol_agent, :mcp_tools`:
 
-    * unset - only on a node whose startup mode is `:mcp` (`raxol mcp`,
-      `mix mcp.server`), as `Raxol.Application.health_status/0` reports it,
-      and never when this process is started under `Raxol.Supervisor`
-    * `true` - wherever the registry is running when this process starts
-    * `false`, or any other value - never
+    * unset - only on a node in `:mcp` startup mode (`raxol mcp`,
+      `mix mcp.server`), never under `Raxol.Supervisor`
+    * `true` - wherever the registry is running
+    * anything else - never
 
-  A `raxol` that starts `Raxol.Agent.Supervisor` itself (2.7 and earlier, in
-  `:full`) does so before the registry, so nothing registers there. This
-  boolean is not the `mcp_tools:` option of
-  `Raxol.Agent.Supervisor.start_link/1`, which carries this process's start
-  options (the registry and server names).
+  This is not the `mcp_tools:` option of `Raxol.Agent.Supervisor.start_link/1`,
+  which carries this process's start options.
 
-  The setting is read at that first start, so it belongs in `config/*.exs`:
-  `Application.put_env/3` after `:raxol_agent` has started changes nothing.
-  The tools answer to the authorizer the node gives `Raxol.MCP.Server`
-  (`config :raxol, :mcp_authorizer`), as every tool there does.
+  ## Spawnable apps and ownership
 
-  ## Spawnable apps
+  `config :raxol_agent, :mcp_spawnable_apps` lists the modules `agent_spawn` may
+  start (default `[Raxol.Agent.Reference.Counter]`), compared as strings, never
+  atomized.
 
-  `config :raxol_agent, :mcp_spawnable_apps` lists the modules `agent_spawn`
-  may start (default `[Raxol.Agent.Reference.Counter]`). The `app` argument is
-  compared with their names as strings and never turned into an atom.
+  The tools act only on agents this server started; ownership is the `:owner` of
+  the session tree (`Raxol.Agent.Session.Supervisor.owner/1`) and survives
+  restarts. Other agents are refused unless their id is in
+  `config :raxol_agent, :mcp_exposed_agents` (binary ids, never spawnable). Team
+  members are refused by `agent_status` and `agent_stop`. `start_owned/4` starts
+  an agent for another owner (as `raxol acp --agent` does), which the tools then
+  refuse.
 
-  ## Ownership
-
-  The tools and the journal resource act only on agents this server started.
-  A running agent carries that fact itself, as the `:owner` of its session
-  tree (`Raxol.Agent.Session.Supervisor.owner/1`), so it survives a restart of
-  this process and of the agent. An agent started some other way is refused,
-  unless its id is in `config :raxol_agent, :mcp_exposed_agents` (a list of
-  binary ids); such an id cannot be spawned. A team member is refused by
-  `agent_status` and `agent_stop`.
-
-  `start_owned/4` starts an agent under the same rules for another owner,
-  as `raxol acp --agent` does. That agent is not this server's: the tools
-  and the journal resource refuse it, and it shares only the id namespace
-  and, for the same project root, the journal directory.
-
-  An agent stopped through `agent_stop` leaves `agent_list` and, if this
-  server started it, its id can be spawned again. Its journal stays readable
-  until this process restarts: stopped agents are remembered in an ETS table
-  it owns. While another owner runs an agent under a stopped id, that id is
-  refused like any agent this server did not start: the journal directory
-  then holds the other owner's records.
-
-  Spawned ids share the node's agent registry with every other agent: a
-  client can take any id nothing is registered under at that moment.
+  A stopped agent leaves `agent_list`; its id can be spawned again, and its
+  journal stays readable until this process restarts. Spawned ids share the
+  node's agent registry: any unregistered id can be taken.
 
   ## Journals
 
-  An agent is started with `journal_required: true` (see
-  `Raxol.Agent.EmitBridge`): it does not start unless its journal is opened,
-  private and locked. Journals live under
-  `<sessions dir>/<first 8 hex of sha256(root)>/<id>` and record the project
-  root and the app in `meta.json`; a journal recorded for another root or app
-  is not continued. Spawning a stopped id continues its journal while the
-  model starts from `init/1`.
-
-  The root is the BEAM's working directory unless
-  `config :raxol_agent, :mcp_project_root` names it (a path, or
-  `{module, function, args}` returning `{:ok, path}`). Where one working
-  directory serves several projects, they share journals: an `id` spawned in
-  one continues the journal another wrote. `agent_spawn` and `agent_status`
-  name the root in use.
-
-  An exposed agent's journal is read from the default sessions directory
-  under its session id, which is where it is unless that agent was started
-  with another `:base_dir`.
-
-  `agent_spawn` is refused on Windows, where the journal has no cross-process
-  writer lock.
+  Agents start with `journal_required: true` (`Raxol.Agent.EmitBridge`).
+  Journals live under `<sessions dir>/<first 8 hex of sha256(root)>/<id>` with
+  the root and app in `meta.json`; a journal for another root or app is not
+  continued. Respawning a stopped id continues its journal from a fresh `init/1`.
+  The root is the working directory unless `config :raxol_agent,
+  :mcp_project_root` names it (a path or `{m, f, a}` returning `{:ok, path}`).
+  Exposed agents' journals are read from the default sessions directory.
+  `agent_spawn` is refused on Windows (no cross-process journal lock).
   """
 
   use GenServer

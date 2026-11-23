@@ -2,17 +2,14 @@ defmodule Raxol.Agent.Comm do
   @moduledoc """
   Agent communication primitives.
 
-  Agents discover each other via `Raxol.Agent.Registry` and communicate
-  through their Session GenServers. Messages arrive in the target agent's
-  `update/2` as `{:agent_message, from_id, payload}` — `from_id` is the
-  sender's agent id when the sender identified itself (the `:from` option
-  to `send/3`), `nil` otherwise. The framework never guesses a sender.
+  Agents discover each other via `Raxol.Agent.Registry`. Messages arrive in the
+  target's `update/2` as `{:agent_message, from_id, payload}`; `from_id` is the
+  `:from` option given to `send/3`, else `nil` (never guessed).
 
   ## Request-reply
 
-  `call/3` delivers `{:call, caller_pid, ref, message}` as the payload of
-  an `:agent_message`. The receiving agent answers with `reply/3`;
-  without a reply the caller times out:
+  `call/3` delivers `{:call, caller_pid, ref, message}` as the payload; the
+  receiver answers with `reply/3`, or the caller times out:
 
       def update({:agent_message, _from, {:call, caller, ref, question}}, model) do
         Raxol.Agent.Comm.reply(caller, ref, answer(question, model))
@@ -21,75 +18,44 @@ defmodule Raxol.Agent.Comm do
 
   ## Agent turn contract
 
-  `call(agent, {:acp_prompt, text, approver}, timeout)` asks the agent for
-  one turn, answered `{:ok, text, usage}` (so the call returns
-  `{:ok, {:ok, text, usage}}`). `approver` is an arity-3 `:tool_authorizer`
-  (see `Raxol.Agent.ToolPolicy`) that the turn's tool calls must pass. The
-  timeout is required, as a timeout cancels the turn: `call/2` refuses a
-  prompt with `{:error, :timeout_required}` without sending it (other
-  messages keep the 5 s default). Pass `:infinity` for a turn with no limit.
+  `call(agent, {:acp_prompt, text, approver}, timeout)` asks for one turn,
+  answered `{:ok, text, usage}` (so the call returns `{:ok, {:ok, text, usage}}`).
+  `approver` is an arity-3 `:tool_authorizer` (`Raxol.Agent.ToolPolicy`). The
+  timeout is required (`{:error, :timeout_required}` otherwise) because a
+  timeout cancels the turn; `:infinity` means no limit.
 
-  The session proxies the turn: the agent's `update/2` sees
-  `{:call, session_pid, turn_ref, {:acp_prompt, text, approver}}` and
-  answers it inline with `reply/3`, or with `run_turn/3` for work that
-  blocks. `turn_ref` is the session's own ref for the turn, not the
-  caller's, so a process that knows only the caller's ref can cancel the
-  turn but not answer it, run its work or message its process. A
-  `{:acp_cancel, ref}` (via `send/3`, or `call/3` for an `:ok` that returns
-  once the turn's process is dead) stops that process and answers the prompt
-  `{:error, :cancelled}`. Pass `ref: ref` to `call/4` to know the prompt's
-  ref; it must be a fresh `make_ref/0`, used for one call only. A prompt is
-  also cancelled when its caller goes down, or when `call/4` times out (the
-  `{:error, :cancelled}` answer may then arrive in the caller's mailbox as a
-  stray reply). A prompt sent with `send/3` as
-  `{:call, pid, ref, {:acp_prompt, text, approver}}` is a turn of the same
-  kind, answered to `pid`, and a `{:call, pid, call_ref, {:acp_cancel, ref}}`
-  sent that way is a cancel answered to `pid`. A prompt envelope whose `pid`
-  is not a pid or whose `ref` is not a reference cannot be answered: the
-  session drops it, logging that it did but not the prompt.
+  The agent's `update/2` sees `{:call, session_pid, turn_ref, {:acp_prompt, ...}}`
+  and answers inline with `reply/3` or via `run_turn/3` for blocking work.
+  `turn_ref` is the session's ref, so a holder of only the caller's ref can
+  cancel but not answer. `{:acp_cancel, ref}` (by `send/3`, or `call/3` for an
+  `:ok` once the turn process is dead) stops the turn and answers
+  `{:error, :cancelled}`; so does the caller going down or `call/4` timing out.
+  `ref: ref` on `call/4` must be a fresh `make_ref/0`. The same envelopes sent
+  raw with `send/3` work identically; an envelope with a non-pid or non-ref is
+  dropped and logged (without the prompt).
 
-  Whenever a turn ends without its reply (cancelled, or its `run_turn/3`
-  process crashed or was killed), `update/2` then receives
-  `{:acp_cancel, turn_ref}`, so an agent drops what it tracks for the turn
-  in one place. An inline `reply/3` ends the turn even while its
-  `run_turn/3` process runs: that process is stopped first, and `update/2`
-  receives `{:acp_cancel, turn_ref}` too. The session does not check a
-  reply's shape: whatever the agent passes to `reply/3`, or `run_turn/3`'s
-  function returns, reaches the caller as is.
+  When a turn ends without its reply (cancelled or its `run_turn/3` process
+  died), or an inline `reply/3` preempts a running `run_turn/3`, `update/2`
+  receives `{:acp_cancel, turn_ref}`. Reply shapes are not checked. This
+  `{:acp_cancel, ref}` is unrelated to the bare `:acp_cancel` atom of the ACP
+  stack (see `Raxol.Agent.Session`).
 
-  The turn contract's `{:acp_cancel, ref}` is unrelated to the bare
-  `:acp_cancel` atom of the ACP stack, which
-  `Raxol.AgentClientProtocol.Session` sends to the process running a
-  `Raxol.Agent.ClientProtocol.Turn` turn; see `Raxol.Agent.Session`.
+  Consult `approver` and run gated actions in the `run_turn/3` process, never in
+  `update/2`: inline work blocks the agent and a cancel cannot stop it. Send
+  state changes back as `{:command_result, msg}` (see
+  `Raxol.Agent.Reference.Counter`); a cancel does not roll back one already sent.
 
-  An agent consults `approver`, and runs the actions it gates, in the
-  `run_turn/3` process, never inline in `update/2`: an inline ask would
-  block the whole agent until it is answered, and a cancel stops only the
-  `run_turn/3` process, so inline work is neither stopped nor undone. A turn
-  process that changes agent state sends the change to the agent process
-  (`self()` in `update/2`) as `{:command_result, msg}`, which `update/2`
-  receives; `Raxol.Agent.Reference.Counter` shows the pattern. A cancel does
-  not roll back such a change: one already sent when the cancel arrives is
-  still applied, though the prompt is answered `{:error, :cancelled}`.
+  Other prompt answers:
 
-  Besides `{:ok, text, usage}`, a prompt can be answered:
-
-    * `{:error, :invalid_prompt}` - `text` is not a binary or `approver` is
-      not an arity-3 function
-    * `{:error, :duplicate_ref}` - `ref` already names an in-flight turn of
-      that agent
-    * `{:error, :no_dispatcher}` - the agent is not running (its lifecycle
-      is starting or restarting)
-    * `{:error, :turn_failed}` - the `run_turn/3` process crashed or was
-      killed from outside
-    * `{:error, :agent_down}` - the agent's lifecycle went down while the
-      turn was in flight (a standalone session; under
-      `Raxol.Agent.Session.Supervisor` the session restarts with it and the
-      call itself returns `{:error, :agent_down}`)
+    * `{:error, :invalid_prompt}` - `text` not a binary or `approver` not arity 3
+    * `{:error, :duplicate_ref}` - `ref` already names an in-flight turn
+    * `{:error, :no_dispatcher}` - the agent is starting or restarting
+    * `{:error, :turn_failed}` - the `run_turn/3` process crashed or was killed
+    * `{:error, :agent_down}` - the agent's lifecycle went down mid-turn
     * `{:error, :cancelled}` - the turn was cancelled
 
-  A cancel sent with `call/3` answers `:ok`, or `{:error, :not_found}` when
-  no in-flight turn has that ref.
+  A cancel sent with `call/3` answers `:ok`, or `{:error, :not_found}` when no
+  in-flight turn has that ref.
   """
 
   alias Raxol.Agent.Session

@@ -10,73 +10,44 @@ defmodule Raxol.Agent.McpHeaders do
       "${op://Employee/Intel/token}"
       "op://Employee/Intel/token" # bare 1Password reference
 
-  References resolve at connect time, `op://` through the same
-  `Raxol.Agent.Backend.Credentials.read_ref/2` path the provider credential
-  store uses, so no plaintext key has to sit on disk. A literal is accepted,
-  because refusing it would only push operators to a worse workaround (a
-  wrapper script, a shell history entry), and warned about once per server.
+  References resolve at connect time, `op://` through
+  `Raxol.Agent.Backend.Credentials.read_ref/2`. A literal is accepted and warned
+  about once per server.
 
-  ## Why provenance gates resolution
+  ## Provenance
 
-  `<dir>/.mcp.json` is repository content: a file a clone can carry. Admitting
-  remote specs and resolving references from the same file would turn a cloned
-  repository into an instruction to read a named environment variable, or a
-  named 1Password item, and POST it to a host the repository chose.
-  `Credentials.read_ref/2` hands anything starting with `op://` to `op read`
-  verbatim, so the item path would be attacker-chosen, and the `op://` form is
-  the worse one: it raises an interactive approval for an attacker-named item
-  and ships whatever the user approves.
-
-  The outbound target rules do not help here. The destination is a legitimate
-  public address, and those rules exist to stop us reaching inward, not
-  outward. So:
+  A workspace `.mcp.json` is repository content. Resolving its references would
+  let a cloned repository read a named env var or 1Password item and POST it to a
+  host it chose. So:
 
     * a `:user` spec (`~/.raxol/mcp.json`, or an explicit operator flag)
-      resolves references normally -- that is the path an operator who
-      configures a hosted server actually uses;
+      resolves references normally;
     * a `:workspace` spec may carry a `url`, but its header values must be
-      literals, or references the operator allowlisted outside the workspace.
-      Anything else is refused with `{:workspace_header_reference, name}`, the
-      server is skipped rather than started, and the refusal is logged once.
+      literals or allowlisted references. Anything else is refused with
+      `{:workspace_header_reference, name}`; the server is skipped and the
+      refusal logged once.
 
-  Nothing in this package reads `.mcp.json`; a spec is `:workspace` when the
-  host that parsed one tags it so. The rule is for the single-tenant
-  workspace, which is merely careless rather than hostile. Reference
-  resolution is what changes that calculus, so the rule arrives with the
-  capability rather than after it.
+  Nothing in this package reads `.mcp.json`; the host that parses one tags the
+  spec `:workspace`.
 
-  ## The allowlist lives outside the workspace
+  ## Allowlist
 
-  `$RAXOL_MCP_HEADER_ALLOWLIST`, or `~/.raxol/mcp_headers.json`. It is
-  deliberately NOT a workspace file and not a project setting: a control that
-  repository content can edit is not a control. Same home and same shape of
-  ownership as `~/.raxol/providers.json`, which is where this package already
-  keeps operator-owned credential configuration.
+  `$RAXOL_MCP_HEADER_ALLOWLIST`, or `~/.raxol/mcp_headers.json`, never a
+  workspace file:
 
       {"Authorization": ["${env:INTEL_TOKEN}", "op://Employee/Intel/token"]}
 
-  A key is a header name, matched case-insensitively as HTTP requires. Its
-  value lists the references that header may resolve. Both halves are checked,
-  because a header name alone is not a control: the repository picks the
-  header name too, so allowing `Authorization` to resolve anything would
-  allowlist the attack. The reference is the part that has to be
-  pre-approved. A missing or malformed file is an empty allowlist, so the
-  default is that no workspace reference resolves.
+  Header names match case-insensitively; both name and reference must match
+  (the repository picks the header name too). A missing or malformed file is an
+  empty allowlist. `Raxol.Agent.OperatorFile` vets the path: with no home
+  directory there is no allowlist, and a file not owned by this account, or
+  group- or other-writable, is refused and logged.
 
-  `Raxol.Agent.OperatorFile` resolves and vets the path, so the same two
-  rules apply here as to every other control in this package: a process with
-  no home directory has NO allowlist (never a `/tmp/.raxol` fallback, which
-  any local user could create first and thereby grant themselves the
-  references), and a file that is not owned by this account, or is group- or
-  other-writable, is refused and logged rather than obeyed.
+  ## No leaks
 
-  ## Resolved values do not leak
-
-  A resolved value is returned to the caller and goes nowhere else: not a log
-  line, not a telemetry measurement, not a cache key, not an error term, not a
-  durable store. Error terms here carry the header NAME and a classified atom
-  reason only. `op` failure text is reduced to `{:op_read_failed, exit_code}`
-  for the same reason: upstream text is not ours to log.
+  A resolved value is returned to the caller only: never logged, measured,
+  cached, put in an error term or persisted. Errors carry the header name and an
+  atom reason; `op` failures are `{:op_read_failed, exit_code}`.
   """
 
   require Logger
