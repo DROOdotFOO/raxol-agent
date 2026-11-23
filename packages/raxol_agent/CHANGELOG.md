@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Requires, when present, `phoenix ~> 1.8 and >= 1.8.17` for CVE-2026-128361
+  and CVE-2026-129344, `phoenix_live_view ~> 1.2 and >= 1.2.15` for
+  CVE-2026-126334, and `plug ~> 1.20 and >= 1.20.4` for CVE-2026-120287. All
+  three arrive through `raxol` and `raxol_mcp`; the optional entries only bound
+  the version a consumer resolves.
+
 - **Breaking: no silent `Backend.Mock` fallback.** `Raxol.Agent.Stream.run/2`
   and `react/2` with neither an `:executor` nor a `:backend` (including an
   `auto_provider: true` that resolves nothing) now yield `{:error,

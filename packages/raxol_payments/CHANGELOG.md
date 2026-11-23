@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Requires, when present, `plug ~> 1.20 and >= 1.20.4` (was `~> 1.19 and >=
+  1.19.3`) for CVE-2026-120287 (multipart framing not charged to `:length`).
+
 - **Breaking: deposit-route attestations are verified as
   `xochi-deposit-attestation:v3`; v1 is refused.** Riddler has issued only v3
   since Riddler#862/#870, so the v1 verifier (seven lines, origin leg only)
