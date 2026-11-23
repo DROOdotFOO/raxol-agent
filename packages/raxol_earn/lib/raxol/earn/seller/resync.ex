@@ -251,20 +251,26 @@ defmodule Raxol.Earn.Seller.Resync do
   # loudly until a dry-run confirms the encoding; string phases are unambiguous.
   defp phase(n) when is_integer(n), do: {:skip, {:ambiguous_numeric_phase, n}}
 
+  @string_phases %{
+    "open" => :open,
+    "request" => :open,
+    "budget_set" => :budget_set,
+    "negotiation" => :budget_set,
+    "funded" => :funded,
+    "transaction" => :funded,
+    "submitted" => :submitted,
+    "evaluation" => :submitted,
+    "completed" => :completed,
+    "rejected" => :rejected,
+    "expired" => :expired
+  }
+
   defp phase(s) when is_binary(s) do
-    case s |> Macro.underscore() |> String.downcase() do
-      "open" -> {:ok, :open}
-      "request" -> {:ok, :open}
-      "budget_set" -> {:ok, :budget_set}
-      "negotiation" -> {:ok, :budget_set}
-      "funded" -> {:ok, :funded}
-      "transaction" -> {:ok, :funded}
-      "submitted" -> {:ok, :submitted}
-      "evaluation" -> {:ok, :submitted}
-      "completed" -> {:ok, :completed}
-      "rejected" -> {:ok, :rejected}
-      "expired" -> {:ok, :expired}
-      other -> {:skip, {:unknown_phase, other}}
+    normalized = s |> Macro.underscore() |> String.downcase()
+
+    case Map.fetch(@string_phases, normalized) do
+      {:ok, phase} -> {:ok, phase}
+      :error -> {:skip, {:unknown_phase, normalized}}
     end
   end
 

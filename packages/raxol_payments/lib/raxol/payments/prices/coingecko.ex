@@ -54,13 +54,13 @@ defmodule Raxol.Payments.Prices.CoinGecko do
 
     prices = fetch(opts, Keyword.get(opts, :raise_on_fetch_error, false))
 
-    fn symbol ->
-      case Map.get(prices, symbol) do
-        {price, updated_at} -> if fresh?(updated_at, max_age_s), do: price
-        nil -> nil
-      end
-    end
+    fn symbol -> fresh_price(Map.get(prices, symbol), max_age_s) end
   end
+
+  defp fresh_price({price, updated_at}, max_age_s),
+    do: if(fresh?(updated_at, max_age_s), do: price)
+
+  defp fresh_price(nil, _max_age_s), do: nil
 
   defp fresh?(updated_at, max_age_s) do
     age = System.system_time(:second) - updated_at

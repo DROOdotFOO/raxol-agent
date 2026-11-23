@@ -129,13 +129,15 @@ defmodule Raxol.Agent.Backend.Lumo do
             }
           end,
           &stream_next/1,
-          fn %{task_pid: pid} ->
-            if Process.alive?(pid), do: Process.exit(pid, :normal)
-          end
+          &stop_task/1
         )
 
       {:ok, stream}
     end
+  end
+
+  defp stop_task(%{task_pid: pid}) do
+    if Process.alive?(pid), do: Process.exit(pid, :normal)
   end
 
   @spec stream_next(map()) :: {[term()], map()} | {:halt, map()}

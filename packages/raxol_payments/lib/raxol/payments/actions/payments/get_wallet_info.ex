@@ -1,4 +1,9 @@
 defmodule Raxol.Payments.Actions.Payments.GetWalletInfo do
+  @moduledoc """
+  Agent Action that reports the address and chain ID of the context's
+  `:wallet`, or `{:error, :missing_wallet}` when none is set.
+  """
+
   @compile {:no_warn_undefined, Raxol.Agent.Action}
 
   use Raxol.Agent.Action,

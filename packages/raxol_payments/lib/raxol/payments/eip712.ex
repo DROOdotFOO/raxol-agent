@@ -340,15 +340,16 @@ defmodule Raxol.Payments.EIP712 do
       fields = Map.get(types, type_name, [])
 
       Enum.reduce(fields, seen, fn {_name, type}, acc ->
-        base = base_type(type)
-
-        if Map.has_key?(types, base) do
-          collect_referenced_types(base, types, acc)
-        else
-          acc
-        end
+        collect_struct_type(base_type(type), types, acc)
       end)
     end
+  end
+
+  # Only struct types recurse; a primitive base type adds nothing.
+  defp collect_struct_type(base, types, seen) do
+    if Map.has_key?(types, base),
+      do: collect_referenced_types(base, types, seen),
+      else: seen
   end
 
   defp base_type(type) when is_binary(type) do
@@ -414,16 +415,10 @@ defmodule Raxol.Payments.EIP712 do
   defp encode_value(type, value, types)
        when is_binary(type) and is_list(value) do
     case array_element_type(type) do
-      {:ok, element_type} ->
-        cond do
-          Map.has_key?(types, element_type) ->
-            encode_struct_array(element_type, value, types)
+      {:ok, element_type} when is_map_key(types, element_type) ->
+        encode_struct_array(element_type, value, types)
 
-          true ->
-            encode_value(type, value)
-        end
-
-      :error ->
+      _primitive_array_or_not_an_array ->
         encode_value(type, value)
     end
   end

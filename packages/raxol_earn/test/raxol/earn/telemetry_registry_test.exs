@@ -73,7 +73,7 @@ defmodule Raxol.Earn.TelemetryRegistryTest do
   # both the emit site (`..., :queue, suffix]`) and a doc reference to a concrete
   # member. Derived from the registry rather than restated, so it cannot drift.
   defp family_pattern(family) do
-    body = family |> Enum.map(&":#{&1}") |> Enum.join("\\s*,\\s*")
+    body = Enum.map_join(family, "\\s*,\\s*", &":#{&1}")
     Regex.compile!("\\[" <> body <> "\\s*[,\\]]")
   end
 

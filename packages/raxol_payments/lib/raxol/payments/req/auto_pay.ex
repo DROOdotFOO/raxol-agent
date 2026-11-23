@@ -265,17 +265,17 @@ defmodule Raxol.Payments.Req.AutoPay do
     Enum.find_value(protocols, {:error, :no_matching_protocol}, fn proto_atom ->
       mod = Protocol.resolve(proto_atom)
 
-      if mod.detect?(402, headers) do
-        case mod.parse_challenge(headers) do
-          {:ok, challenge} ->
-            {:ok, mod, challenge}
-
-          {:error, reason} ->
-            log_unparsed_challenge(proto_atom, reason)
-            nil
-        end
-      end
+      if mod.detect?(402, headers),
+        do: parsed_challenge(mod, proto_atom, mod.parse_challenge(headers))
     end)
+  end
+
+  # nil moves the search on to the next protocol.
+  defp parsed_challenge(mod, _proto_atom, {:ok, challenge}), do: {:ok, mod, challenge}
+
+  defp parsed_challenge(_mod, proto_atom, {:error, reason}) do
+    log_unparsed_challenge(proto_atom, reason)
+    nil
   end
 
   # The challenge is server data, so only the reason's tag is logged.

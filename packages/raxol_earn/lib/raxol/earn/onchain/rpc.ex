@@ -185,9 +185,7 @@ defmodule Raxol.Earn.Onchain.RPC do
       reward_percentiles
     ]
 
-    with {:ok, body} <- call(client, "eth_feeHistory", params) do
-      {:ok, body}
-    end
+    call(client, "eth_feeHistory", params)
   end
 
   @doc """

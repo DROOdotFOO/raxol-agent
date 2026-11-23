@@ -352,9 +352,10 @@ defmodule Raxol.Earn.Xochi.PullPreflight do
   defp domain_separator(client, verifying_contract) do
     call = %{to: verifying_contract, data: selector()}
 
-    with {:ok, hex} <- RPC.eth_call(client, call) do
-      interpret_separator(hex)
-    else
+    case RPC.eth_call(client, call) do
+      {:ok, hex} ->
+        interpret_separator(hex)
+
       {:error, reason} ->
         {:inconclusive, {:domain_separator_unavailable, verifying_contract, reason}}
     end

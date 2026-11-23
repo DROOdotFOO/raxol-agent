@@ -275,14 +275,15 @@ defmodule Raxol.Payments.RebalanceAdvisor do
              note: nil
            }}
 
-        left = Decimal.sub(surplus, take)
-
-        leftover =
-          if Decimal.compare(left, 0) == :gt, do: leftover ++ [{schain, left}], else: leftover
-
+        leftover = keep_surplus(leftover, schain, Decimal.sub(surplus, take))
         {fills ++ [fill], leftover, Decimal.sub(need, take)}
       end
     end)
+  end
+
+  # A drawn-down surplus stays available to the next deficit only if any is left.
+  defp keep_surplus(leftover, schain, left) do
+    if Decimal.compare(left, 0) == :gt, do: leftover ++ [{schain, left}], else: leftover
   end
 
   defp underfunded(symbol, chain, remaining) do

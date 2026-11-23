@@ -230,9 +230,8 @@ defmodule Raxol.Earn.Bench.Runner do
            :ok <- wait_status(job_id, :budget_set, ctx.timeout_ms),
            :ok <- send_payment(job_id),
            :ok <- wait_status(job_id, :submitted, ctx.timeout_ms),
-           :ok <- send_approval(job_id),
-           :ok <- wait_status(job_id, :gone, ctx.timeout_ms) do
-        :ok
+           :ok <- send_approval(job_id) do
+        wait_status(job_id, :gone, ctx.timeout_ms)
       end
 
     elapsed = System.monotonic_time(:millisecond) - started_at

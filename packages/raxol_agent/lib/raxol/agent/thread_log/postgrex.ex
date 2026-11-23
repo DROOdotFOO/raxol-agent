@@ -95,83 +95,47 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
     metadata_bin = :erlang.term_to_binary(metadata)
     kind_str = Atom.to_string(kind)
 
-    do_append(
-      conn,
-      table,
-      thread_id,
-      kind,
-      kind_str,
-      payload,
-      payload_bin,
-      metadata_bin,
-      recorded_at,
-      0
-    )
+    row = %{
+      thread_id: thread_id,
+      kind: kind,
+      kind_str: kind_str,
+      payload: payload,
+      payload_bin: payload_bin,
+      metadata_bin: metadata_bin,
+      recorded_at: recorded_at
+    }
+
+    do_append(conn, table, row, 0)
   end
 
-  defp do_append(
-         _conn,
-         _table,
-         thread_id,
-         _kind_atom,
-         _kind_str,
-         _payload,
-         _payload_bin,
-         _metadata_bin,
-         _recorded_at,
-         attempt
-       )
-       when attempt >= @retry_attempts do
-    {:error, {:sequence_conflict, thread_id}}
+  defp do_append(_conn, _table, row, attempt) when attempt >= @retry_attempts do
+    {:error, {:sequence_conflict, row.thread_id}}
   end
 
-  defp do_append(
-         conn,
-         table,
-         thread_id,
-         kind_atom,
-         kind_str,
-         payload,
-         payload_bin,
-         metadata_bin,
-         recorded_at,
-         attempt
-       ) do
+  defp do_append(conn, table, row, attempt) do
     case Postgrex.query(conn, insert_sql(table), [
-           thread_id,
-           kind_str,
-           payload_bin,
-           metadata_bin,
-           recorded_at
+           row.thread_id,
+           row.kind_str,
+           row.payload_bin,
+           row.metadata_bin,
+           row.recorded_at
          ]) do
       {:ok, %{rows: [[sequence]]}} ->
         event =
           ThreadEvent.new(
-            thread_id: thread_id,
+            thread_id: row.thread_id,
             sequence: sequence,
-            kind: kind_atom,
-            payload: payload,
-            metadata: :erlang.binary_to_term(metadata_bin),
-            recorded_at: recorded_at
+            kind: row.kind,
+            payload: row.payload,
+            metadata: :erlang.binary_to_term(row.metadata_bin),
+            recorded_at: row.recorded_at
           )
 
         {:ok, event}
 
       {:error, %{postgres: %{code: :unique_violation}}} ->
         Process.sleep(@retry_backoff_ms * (attempt + 1))
-
-        do_append(
-          conn,
-          table,
-          thread_id,
-          kind_atom,
-          kind_str,
-          payload,
-          payload_bin,
-          metadata_bin,
-          recorded_at,
-          attempt + 1
-        )
+        do_append(conn, table, row, attempt + 1)
 
       {:error, reason} ->
         {:error, reason}

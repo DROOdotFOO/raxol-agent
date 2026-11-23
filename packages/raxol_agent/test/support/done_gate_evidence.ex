@@ -314,18 +314,16 @@ defmodule Raxol.Agent.Test.DoneGateEvidence.Injector do
       Enum.reduce_while(
         refs,
         {:ok, Build.ev(9_999, :turn_completed, %{final: true, refs: refs}, turn_id: turn_id)},
-        fn ref, acc ->
-          case Build.resolve(journal, ref) do
-            nil ->
-              {:halt, {:error, {:missing_ref, ref}}}
-
-            ev ->
-              if Oracle.evidence_class?(ev),
-                do: {:cont, acc},
-                else: {:halt, {:error, {:not_evidence, ref}}}
-          end
-        end
+        fn ref, acc -> check_ref(Build.resolve(journal, ref), ref, acc) end
       )
+    end
+
+    defp check_ref(nil, ref, _acc), do: {:halt, {:error, {:missing_ref, ref}}}
+
+    defp check_ref(ev, ref, acc) do
+      if Oracle.evidence_class?(ev),
+        do: {:cont, acc},
+        else: {:halt, {:error, {:not_evidence, ref}}}
     end
   end
 
@@ -344,25 +342,23 @@ defmodule Raxol.Agent.Test.DoneGateEvidence.Injector do
       Enum.reduce_while(
         refs,
         {:ok, Build.ev(9_999, :turn_completed, %{final: true, refs: refs}, turn_id: turn_id)},
-        fn ref, acc ->
-          case Build.resolve(journal, ref) do
-            nil ->
-              {:halt, {:error, {:missing_ref, ref}}}
-
-            ev ->
-              cond do
-                not lenient_evidence?(ev) ->
-                  {:halt, {:error, {:not_evidence, ref}}}
-
-                last_mut != nil and ev.id <= last_mut ->
-                  {:halt, {:error, {:stale_evidence, ref}}}
-
-                true ->
-                  {:cont, acc}
-              end
-          end
-        end
+        fn ref, acc -> check_ref(Build.resolve(journal, ref), ref, acc, last_mut) end
       )
+    end
+
+    defp check_ref(nil, ref, _acc, _last_mut), do: {:halt, {:error, {:missing_ref, ref}}}
+
+    defp check_ref(ev, ref, acc, last_mut) do
+      cond do
+        not lenient_evidence?(ev) ->
+          {:halt, {:error, {:not_evidence, ref}}}
+
+        last_mut != nil and ev.id <= last_mut ->
+          {:halt, {:error, {:stale_evidence, ref}}}
+
+        true ->
+          {:cont, acc}
+      end
     end
 
     # The bug: a `:message` self-report is treated as evidence.
@@ -388,25 +384,23 @@ defmodule Raxol.Agent.Test.DoneGateEvidence.Injector do
       Enum.reduce_while(
         refs,
         {:ok, Build.ev(9_999, :turn_completed, %{final: true, refs: refs}, turn_id: turn_id)},
-        fn ref, acc ->
-          case Build.resolve(journal, ref) do
-            nil ->
-              {:halt, {:error, {:missing_ref, ref}}}
-
-            ev ->
-              cond do
-                not Oracle.evidence_class?(ev) ->
-                  {:halt, {:error, {:not_evidence, ref}}}
-
-                last_mut != nil and ev.id <= last_mut ->
-                  {:halt, {:error, {:stale_evidence, ref}}}
-
-                true ->
-                  {:cont, acc}
-              end
-          end
-        end
+        fn ref, acc -> check_ref(Build.resolve(journal, ref), ref, acc, last_mut) end
       )
+    end
+
+    defp check_ref(nil, ref, _acc, _last_mut), do: {:halt, {:error, {:missing_ref, ref}}}
+
+    defp check_ref(ev, ref, acc, last_mut) do
+      cond do
+        not Oracle.evidence_class?(ev) ->
+          {:halt, {:error, {:not_evidence, ref}}}
+
+        last_mut != nil and ev.id <= last_mut ->
+          {:halt, {:error, {:stale_evidence, ref}}}
+
+        true ->
+          {:cont, acc}
+      end
     end
   end
 end

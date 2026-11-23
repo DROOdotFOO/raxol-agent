@@ -1,4 +1,10 @@
 defmodule Raxol.Payments.Actions.Payments.ListHistory do
+  @moduledoc """
+  Agent Action that lists the agent's most recent ledger entries (20 by
+  default) with amount, currency, time, domain, protocol and transaction hash.
+  With no `:ledger` in the context it returns an empty list.
+  """
+
   @compile {:no_warn_undefined, Raxol.Agent.Action}
 
   use Raxol.Agent.Action,

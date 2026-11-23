@@ -70,13 +70,14 @@ defmodule Raxol.Agent.ToolPolicy do
   def all(authorizers) when is_list(authorizers) do
     fn module, params, context ->
       Enum.reduce_while(authorizers, :ok, fn auth, :ok ->
-        case auth.(module, params, context) do
-          :ok -> {:cont, :ok}
-          {:deny, _reason} = denied -> {:halt, denied}
-        end
+        halt_on_deny(auth.(module, params, context))
       end)
     end
   end
+
+  # Any other answer raises, as the `case` this replaced did.
+  defp halt_on_deny(:ok), do: {:cont, :ok}
+  defp halt_on_deny({:deny, _reason} = denied), do: {:halt, denied}
 
   defp action_name(%Raxol.Agent.Action.Dynamic{name: name}), do: name
   defp action_name(module), do: module.__action_meta__().name

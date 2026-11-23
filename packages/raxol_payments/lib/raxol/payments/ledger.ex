@@ -551,9 +551,8 @@ defmodule Raxol.Payments.Ledger do
     with :ok <- check_policy(policy, [:session_max, :session_window_ms, :lifetime_max]),
          :ok <- check_request(amount, policy),
          entries = get_entries(table, agent_id),
-         :ok <- check_session(entries, amount, policy),
-         :ok <- check_lifetime(entries, amount, policy) do
-      :ok
+         :ok <- check_session(entries, amount, policy) do
+      check_lifetime(entries, amount, policy)
     end
   end
 
