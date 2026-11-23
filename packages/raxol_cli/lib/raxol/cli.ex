@@ -50,10 +50,7 @@ defmodule Raxol.CLI do
     1
   end
 
-  # -- playground -------------------------------------------------------------
-
-  # Start the interactive component-catalog TUI. Needs a real terminal; over a
-  # pipe it exits with a clear message rather than a crash.
+  # The component-catalog TUI. Over a pipe it exits with a message, not a crash.
   defp run_playground do
     cond do
       !interactive?() ->
@@ -78,29 +75,16 @@ defmodule Raxol.CLI do
     Raxol.CLI.Update.auto_prompt(prompt?: interactive?(false))
   end
 
-  # Is there a terminal for a full-screen TUI to draw on?
-  #
-  # Two different questions, because the packaged binary and a source run do not
-  # present stdio the same way.
-  #
-  # Under Burrito the answer CANNOT come from the group leader. Its launcher
-  # spawns the BEAM with stdout on a pipe so it can notice a downstream consumer
-  # going away (`app cmd | head -5`), which makes `:io.getopts()` report a
-  # non-terminal on every run, tty or not. Asking it there vetoes
-  # `raxol playground` unconditionally -- the packaged binary could never
-  # open it. Stdin is left inherited, so that is where the real answer
-  # lives, and it is the honest one: termbox2 opens /dev/tty directly
-  # (`tb_init/0` is `tb_init_file("/dev/tty")`), so the TUI never draws through
-  # the piped stdout anyway.
-  #
-  # Everywhere else keep reading the group leader. It is what `with_io/1` swaps,
-  # which is what lets the veto be tested without a tty deciding the outcome.
+  # Whether a full-screen TUI has a terminal to draw on. Burrito's launcher
+  # puts stdout on a pipe, so under it `:io.getopts()` reports no terminal
+  # on every run; there the inherited stdin answers (termbox2 opens
+  # /dev/tty itself). Elsewhere the group leader answers, which is what
+  # `with_io/1` swaps in tests.
   defp interactive?, do: interactive?(burrito?())
 
   @doc false
-  # Split on the packaging so a test can pin the branch: the Burrito arm's
-  # answer comes from the real stdin of the OS process, which a unit test
-  # cannot pose either way.
+  # Public so a test can pin each branch.
+  @spec interactive?(boolean()) :: boolean()
   def interactive?(true), do: tty_stdin?()
   def interactive?(false), do: terminal_group_leader?()
 
@@ -122,8 +106,6 @@ defmodule Raxol.CLI do
   rescue
     _ -> false
   end
-
-  # -- help -------------------------------------------------------------------
 
   defp help do
     IO.puts(banner())
@@ -151,16 +133,9 @@ defmodule Raxol.CLI do
 
   defp banner, do: "raxol #{version()} -- TUI toolkit and agent runtime"
 
-  # The commit this binary was built from, resolved at COMPILE time and baked
-  # in. A packaged binary otherwise reports only its release version, which
-  # changes far less often than its contents: a months-old build and a build
-  # from five minutes ago both say "0.2.6", and the only way to tell them apart
-  # is to diff their behaviour. (That is not hypothetical — a stale
-  # `burrito_out` binary was found serving a pre-fix ACP handshake while
-  # claiming the current version.)
-  #
-  # `@external_resource` on `.git/HEAD` recompiles this module when the commit
-  # moves, so the stamp cannot go stale on its own.
+  # The commit this binary was built from, baked in at compile time so two
+  # builds of the same release version can be told apart. `@external_resource`
+  # on `.git/HEAD` recompiles this module when the commit moves.
   @git_head Path.join([__DIR__, "..", "..", "..", "..", ".git", "HEAD"])
   if File.exists?(@git_head), do: @external_resource(@git_head)
 
@@ -179,10 +154,8 @@ defmodule Raxol.CLI do
     end
   end
 
-  # A build with no git available (a Hex install, a source tarball) reports the
-  # bare version rather than inventing a provenance it does not have. Selected
-  # at compile time: `@build_sha` is a constant, so a runtime guard on it would
-  # leave one clause provably dead.
+  # Without git (a Hex install, a source tarball) the version is bare. Chosen
+  # at compile time: a runtime guard on the constant would leave a dead clause.
   if is_binary(@build_sha) do
     defp stamped(vsn), do: vsn <> "+" <> @build_sha
   else
@@ -190,5 +163,6 @@ defmodule Raxol.CLI do
   end
 
   @doc false
+  @spec commands() :: [String.t()]
   def commands, do: @commands
 end
