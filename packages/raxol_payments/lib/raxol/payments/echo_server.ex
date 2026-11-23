@@ -136,9 +136,8 @@ defmodule Raxol.Payments.EchoServer do
        when is_binary(sig) and is_map(msg) and is_binary(net) do
     with :ok <- check_network(net, opts),
          :ok <- check_signature(sig),
-         :ok <- check_recipient(msg, opts),
-         :ok <- check_amount(msg, opts) do
-      :ok
+         :ok <- check_recipient(msg, opts) do
+      check_amount(msg, opts)
     end
   end
 

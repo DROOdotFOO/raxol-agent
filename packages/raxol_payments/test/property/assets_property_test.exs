@@ -81,10 +81,9 @@ defmodule Raxol.Payments.AssetsPropertyTest do
           |> String.replace_prefix("0x", "")
           |> String.graphemes()
           |> Enum.zip(case_flips)
-          |> Enum.map(fn {ch, flip} ->
+          |> Enum.map_join(fn {ch, flip} ->
             if flip, do: String.upcase(ch), else: ch
           end)
-          |> Enum.join()
           |> then(&("0x" <> &1))
 
         assert Assets.decimals(8453, addr) == 6
@@ -97,10 +96,9 @@ defmodule Raxol.Payments.AssetsPropertyTest do
           "USDC"
           |> String.graphemes()
           |> Enum.zip(flips)
-          |> Enum.map(fn {ch, flip} ->
+          |> Enum.map_join(fn {ch, flip} ->
             if flip, do: String.downcase(ch), else: ch
           end)
-          |> Enum.join()
 
         assert Assets.decimals(ticker) == 6
       end

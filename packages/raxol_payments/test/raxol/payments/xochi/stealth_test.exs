@@ -83,7 +83,7 @@ defmodule Raxol.Payments.Xochi.StealthTest do
         caller: "0x" <> String.duplicate("a", 40),
         ephemeral_pub_key: settlement.ephemeral_pub_key,
         metadata: Stealth.create_metadata(settlement.view_tag),
-        block_number: 12345,
+        block_number: 12_345,
         tx_hash: "0x" <> String.duplicate("d", 64),
         log_index: 0
       }

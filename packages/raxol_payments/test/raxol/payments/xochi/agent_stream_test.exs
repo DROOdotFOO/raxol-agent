@@ -24,7 +24,7 @@ defmodule Raxol.Payments.Xochi.AgentStreamTest do
     %{
       intent_id: "intent-abc",
       from_chain_id: 8453,
-      to_chain_id: 42161,
+      to_chain_id: 42_161,
       from_token: "0xUSDC",
       to_token: "0xUSDC",
       from_amount: "100000000",
@@ -126,7 +126,7 @@ defmodule Raxol.Payments.Xochi.AgentStreamTest do
       assert body["event"] == %{
                "intentId" => "intent-abc",
                "fromChainId" => 8453,
-               "toChainId" => 42161,
+               "toChainId" => 42_161,
                "fromToken" => "0xUSDC",
                "toToken" => "0xUSDC",
                "fromAmount" => "100000000",

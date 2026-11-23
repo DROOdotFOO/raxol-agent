@@ -1,4 +1,10 @@
 defmodule Raxol.Payments.Actions.Payments.GetQuote do
+  @moduledoc """
+  Agent Action that probes a URL with one unpaid request and reports whether
+  it answers 402, and if so the price, currency, network and payment protocol
+  (x402 or MPP) its challenge asks for. It pays nothing.
+  """
+
   @compile {:no_warn_undefined, Raxol.Agent.Action}
 
   use Raxol.Agent.Action,
@@ -51,11 +57,7 @@ defmodule Raxol.Payments.Actions.Payments.GetQuote do
 
   defp probe_url(url, method) do
     if Code.ensure_loaded?(Req) do
-      req_method =
-        case Map.fetch(@allowed_methods, String.downcase(method)) do
-          {:ok, atom} -> atom
-          :error -> :get
-        end
+      req_method = Map.get(@allowed_methods, String.downcase(method), :get)
 
       case apply(Req, req_method, url: url) do
         {:ok, %{status: 402} = response} ->
@@ -82,12 +84,11 @@ defmodule Raxol.Payments.Actions.Payments.GetQuote do
     Enum.find_value(protocols, {:error, :unknown_402_protocol}, fn proto_atom ->
       mod = Raxol.Payments.Protocol.resolve(proto_atom)
 
-      if mod.detect?(402, headers) do
-        case mod.parse_challenge(headers) do
-          {:ok, challenge} -> {:ok, {mod, challenge}}
-          _ -> nil
-        end
-      end
+      if mod.detect?(402, headers), do: parsed(mod, mod.parse_challenge(headers))
     end)
   end
+
+  # nil moves the search on to the next protocol.
+  defp parsed(mod, {:ok, challenge}), do: {:ok, {mod, challenge}}
+  defp parsed(_mod, _unparsed), do: nil
 end

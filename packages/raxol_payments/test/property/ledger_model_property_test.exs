@@ -42,15 +42,11 @@ defmodule Raxol.Payments.LedgerModelPropertyTest do
   defp empty_model, do: %{frozen?: false, history: %{}}
 
   defp model_step({:spend, agent_id, amount}, model) do
-    cond do
-      model.frozen? ->
-        {{:over_limit, :frozen}, model}
-
-      true ->
-        new_history =
-          Map.update(model.history, agent_id, [amount], &[amount | &1])
-
-        {:ok, %{model | history: new_history}}
+    if model.frozen? do
+      {{:over_limit, :frozen}, model}
+    else
+      new_history = Map.update(model.history, agent_id, [amount], &[amount | &1])
+      {:ok, %{model | history: new_history}}
     end
   end
 
