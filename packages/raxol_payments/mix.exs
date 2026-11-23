@@ -63,9 +63,10 @@ defmodule RaxolPayments.MixProject do
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       # Optional: only needed when running EchoServer (`mix raxol_payments.echo`).
       # Floors: plug CVE-2026-54892 (quadratic parameter decoding), fixed in
-      # 1.19.3 on the 1.19 line; plug_cowboy CVE-2026-32688 (HTTP/2 atom
+      # 1.19.3, and CVE-2026-120287 (multipart framing not charged to
+      # :length), fixed in 1.20.4; plug_cowboy CVE-2026-32688 (HTTP/2 atom
       # exhaustion), fixed in 2.8.1.
-      {:plug, "~> 1.19 and >= 1.19.3", optional: true},
+      {:plug, "~> 1.20 and >= 1.20.4", optional: true},
       {:plug_cowboy, "~> 2.8 and >= 2.8.1", optional: true}
     ] ++ web3_dep()
   end

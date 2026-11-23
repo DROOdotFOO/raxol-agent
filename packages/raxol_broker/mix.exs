@@ -44,8 +44,9 @@ defmodule RaxolBroker.MixProject do
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       # `Raxol.Broker.MCP.Fake` is built on raxol_mcp's reference server,
-      # which compiles only with plug (optional upstream).
-      {:plug, "~> 1.16"},
+      # which compiles only with plug (optional upstream). Floor: CVE-2026-120287
+      # (multipart framing not charged to :length), fixed in 1.20.4.
+      {:plug, "~> 1.20 and >= 1.20.4"},
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

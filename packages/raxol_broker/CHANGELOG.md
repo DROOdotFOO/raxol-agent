@@ -2,6 +2,7 @@
 
 ## 0.1.0 - Unreleased
 
+- Requires `plug ~> 1.20 and >= 1.20.4` (was `~> 1.16`) for CVE-2026-120287 (multipart framing not charged to `:length`).
 - Requires `raxol_agent ~> 3.2` (was `~> 3.0`) for `Raxol.Agent.Secret`.
 - `Raxol.Broker.Executor` keeps the session spec (bearer header, stdio env) and the account number out of `:sys.get_status` and crash reports, and collapses a port or review failure reason to its tags plus an atom, HTTP status or module before logging or storing it.
 - `Raxol.Broker.MCP.Client` collapses a start or connect failure the same way before logging it, keeping it as the cooldown's answer or replying with it (a start error can carry the bearer header); the documented `{:http, status}`, `{:transport, kind}` and `{:timeout, phase}` shapes are unchanged, and a `{tag, status, body}` reason keeps `{tag, status}` (collapsing twice changes nothing). Its `format_status/1` collapses `:reason`, reduces `:message` to its tag and empties `:log`. `Raxol.Broker.Journal` logs a stray message by its leading atom only. `KeyProvider.Keychain` answers `{:error, {:keychain_unavailable, :port_closed}}` when `security` exits before taking its command, instead of crashing with the hex key in the report. The reason and message reducers live in `Raxol.Broker.Redact`.

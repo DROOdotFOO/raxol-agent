@@ -49,6 +49,15 @@ defmodule RaxolAgent.MixProject do
       {:yaml_elixir, "~> 2.12"},
       # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
       {:req, "~> 0.6 and >= 0.6.1", optional: true},
+      # Floors for deps that only raxol and raxol_mcp pull in, optional so they
+      # bound the version without adding a dependency: phoenix CVE-2026-128361
+      # (presence key crash) and CVE-2026-129344 (V1 serializer broadcast
+      # crash), fixed in 1.8.17; phoenix_live_view CVE-2026-126334 (join
+      # without "url" skips on_mount), fixed in 1.2.14; plug CVE-2026-120287
+      # (multipart framing not charged to :length), fixed in 1.20.4.
+      {:phoenix, "~> 1.8 and >= 1.8.17", optional: true},
+      {:phoenix_live_view, "~> 1.2 and >= 1.2.15", optional: true},
+      {:plug, "~> 1.20 and >= 1.20.4", optional: true},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
