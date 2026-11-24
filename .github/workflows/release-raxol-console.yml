@@ -154,7 +154,9 @@ jobs:
           set -euo pipefail
           name="$(node -p 'require("./packages/raxol_console/npm/package.json").name')"
           version="$(node -p 'require("./packages/raxol_console/npm/package.json").version')"
-          tarball="dist/raxol-console-$version.tgz"
+          # The leading ./ matters: npm reads a bare `dist/x.tgz` as GitHub
+          # shorthand (github.com/dist/x.tgz), not a local file.
+          tarball="./dist/raxol-console-$version.tgz"
           [[ -f "$tarball" ]] || { echo "::error::$tarball was not packed"; exit 1; }
 
           if npm view "$name@$version" version >/dev/null 2>&1; then
