@@ -135,6 +135,34 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     assert {:error, {:already_added, "dip_buy-F"}} = Strategy.Supervisor.add(spec, ctx.opts)
   end
 
+  test "concurrent adds for one id keep the journal and runner on the winning spec", ctx do
+    tasks =
+      for budget <- ["5", "10", "15", "20"] do
+        {:ok, spec} =
+          Strategy.spec("dip_buy", %{"symbol" => "AAPL", "usd" => budget}, "shared")
+
+        Task.async(fn ->
+          receive do: (:add -> {budget, Strategy.Supervisor.add(spec, ctx.opts)})
+        end)
+      end
+
+    Enum.each(tasks, &send(&1.pid, :add))
+    {winners, refusals} = Enum.split_with(Task.await_many(tasks), &match?({_, :ok}, &1))
+    assert [{budget, :ok}] = winners
+    assert Enum.all?(refusals, &match?({_, {:error, {:already_added, "shared"}}}, &1))
+    assert {:ok, strategies} = Strategy.Supervisor.list(ctx.opts)
+
+    assert %{status: :running, params: %{"usd" => ^budget}} =
+             Enum.find(strategies, &(&1.id == "shared"))
+
+    adds =
+      for %{"type" => "strategy", "strategy_id" => "shared", "action" => "add"} = record <-
+            Broker.records(ctx.path),
+          do: record
+
+    assert [%{"spec" => %{"params" => %{"usd" => ^budget}}}] = adds
+  end
+
   test "stop terminates a runner blocked in the executor", ctx do
     test = self()
 

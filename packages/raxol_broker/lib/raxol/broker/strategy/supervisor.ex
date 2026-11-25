@@ -68,12 +68,14 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   def add(%{"id" => id} = spec, opts \\ []) do
     journal = Keyword.get(opts, :journal, Journal)
 
-    with {:ok, _module, _model} <- Strategy.start(spec),
-         {:ok, specs} <- Journal.strategies(journal),
-         :ok <- not_added(specs, id),
-         :ok <- Journal.put_strategy(spec, journal) do
-      start_runner(supervisor(opts), spec)
-    end
+    update(journal, fn ->
+      with {:ok, _module, _model} <- Strategy.start(spec),
+           {:ok, specs} <- Journal.strategies(journal),
+           :ok <- not_added(specs, id),
+           :ok <- Journal.put_strategy(spec, journal) do
+        start_runner(supervisor(opts), spec)
+      end
+    end)
   end
 
   @doc """
@@ -84,10 +86,12 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   @spec stop(String.t(), keyword()) :: :ok | {:error, term()}
   def stop(id, opts \\ []) when is_binary(id) do
     journal = Keyword.get(opts, :journal, Journal)
+    update(journal, fn -> stop_added(journal, supervisor(opts), id) end)
+  end
 
+  defp stop_added(journal, sup, id) do
     with {:ok, specs} <- Journal.strategies(journal),
          true <- Enum.any?(specs, &(&1["id"] == id)) || {:error, {:not_added, id}} do
-      sup = supervisor(opts)
       for {pid, %{id: ^id}} <- running(sup), do: terminate(sup, pid)
       Journal.drop_strategy(id, journal)
     end
@@ -126,8 +130,12 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   """
   @spec restore(keyword()) :: :ok | {:error, term()}
   def restore(opts \\ []) do
-    with {:ok, specs} <- Journal.strategies(Keyword.get(opts, :journal, Journal)) do
-      sup = supervisor(opts)
+    journal = Keyword.get(opts, :journal, Journal)
+    update(journal, fn -> restore_added(journal, supervisor(opts)) end)
+  end
+
+  defp restore_added(journal, sup) do
+    with {:ok, specs} <- Journal.strategies(journal) do
       up = MapSet.new(running(sup), fn {_pid, info} -> info.id end)
 
       for spec <- specs, not MapSet.member?(up, spec["id"]), do: restore_runner(sup, spec)
@@ -166,6 +174,15 @@ defmodule Raxol.Broker.Strategy.Supervisor do
   def registry(sup), do: :"#{sup}.Registry"
 
   defp runners(sup), do: :"#{sup}.Runners"
+
+  # Keep the journal check, mutation and runner transition together on this
+  # node. The lock also works for offline tasks with no strategy supervisor.
+  defp update(journal, fun) do
+    case :global.trans({{__MODULE__, journal}, self()}, fun, [node()]) do
+      :aborted -> {:error, :strategy_update_aborted}
+      result -> result
+    end
+  end
 
   defp terminate(sup, pid) do
     _ = DynamicSupervisor.terminate_child(runners(sup), pid)

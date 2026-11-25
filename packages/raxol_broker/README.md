@@ -141,9 +141,11 @@ intent it emitted and never saw answered, with the same intent id, so the
 executor's idempotency check and the `ref_id` derived from that id keep it
 to one order.
 
-Adding and stopping are journaled, so the broker starts every added
-strategy when it starts. The task acts on the broker running in its own VM
-(`iex -S mix`) when there is one, and otherwise opens the journal itself;
+Adding and stopping are journaled. With `:strategies` configured, the broker
+restores every added strategy when it starts. Stopping terminates the runner,
+and any intent already handed to the executor may still complete. The task
+acts on the broker running in its own VM (`iex -S mix`) when there is one
+and otherwise opens the journal itself;
 the journal's writer lock refuses it while the broker runs in another
 process.
 
