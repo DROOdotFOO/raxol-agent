@@ -114,6 +114,23 @@ defmodule Raxol.Broker.FeedTest do
     assert quote_calls(ctx.fake) > 10
   end
 
+  test "poll failures log the error tag without response details", ctx do
+    client =
+      spawn_link(fn ->
+        receive do
+          {:"$gen_call", from, {:call, "get_equity_quotes", _args, _timeout}} ->
+            GenServer.reply(from, {:error, {:transport, %{token: "feed-secret"}}})
+        end
+      end)
+
+    feed = feed!(ctx, bucket!(ctx), client: client)
+    :ok = Feed.subscribe(feed, ["F"])
+
+    log = ExUnit.CaptureLog.capture_log(fn -> poll!(feed) end)
+    assert log =~ "quotes failed: {:transport, :error}"
+    refute log =~ "feed-secret"
+  end
+
   test "quotes/1 reads Robinhood's quote fields and skips malformed entries" do
     body = %{
       "quotes" => [

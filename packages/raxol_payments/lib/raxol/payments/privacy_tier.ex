@@ -8,15 +8,9 @@ defmodule Raxol.Payments.PrivacyTier do
 
   ## This module does not price anything
 
-  It used to carry a `fee_bps` per tier, which said that privacy determined
-  what a transfer cost. The shipped model prices on TRUST TIER and asset class
-  instead -- see `Raxol.Payments.FeeSchedule`, which mirrors the solver's own
-  published schedule and is pinned to it. The two were never reconciled, so the
-  numbers here drifted into fiction: they named tiers no solver has, and
-  included a `0 bps` tier that the never-discounted solver floor makes
-  impossible. raxol.io rendered that table until 2026-08-30.
-
-  Privacy is a settlement MODE, chosen per payment. It is orthogonal to price.
+  Pricing is by TRUST TIER and asset class -- see `Raxol.Payments.FeeSchedule`,
+  which mirrors the solver's published schedule and is pinned to it. Privacy is
+  a settlement MODE, chosen per payment, orthogonal to price.
 
   ## Attestations are pre-verified
 
@@ -148,8 +142,6 @@ defmodule Raxol.Payments.PrivacyTier do
   def attestation_requirements(tier) when is_map_key(@tier_attestation_requirements, tier) do
     @tier_attestation_requirements[tier]
   end
-
-  # -- Private --
 
   # Consumes PRE-VERIFIED attestations (Zksar.verify output; Router verifies
   # before calling here). The `valid: true` filter is a guard, not the trust

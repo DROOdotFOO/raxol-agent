@@ -25,10 +25,10 @@ defmodule Raxol.Console.Bench.Adapter do
         prompt: "Introduce yourself in one sentence and state your purpose.",
         timeout_ms: 120_000
 
-  `:agent_opts` is the executor every turn runs under; an unconfigured
-  environment falls back to the agent's own backend resolution (Mock without
-  credentials), which boots but makes the prompt check non-meaningful, so a real
-  `bench_validated` deployment configures a real backend.
+  `:agent_opts` is the executor every turn runs under. Without it the agent
+  resolves a provider from the environment; with no credentials the prompt
+  check fails with `{:error, :no_backend}`, so a `bench_validated` deployment
+  configures a real backend.
 
   Evidence shape matches the behaviour:
   `%{checks: [{:boot | :prompt | :task_dry_run, :ok}], transcript: binary()}`.
@@ -60,8 +60,6 @@ defmodule Raxol.Console.Bench.Adapter do
       end
     end
   end
-
-  # -- stages ----------------------------------------------------------------
 
   defp load(pkg_dir) do
     case Package.load(pkg_dir) do
@@ -129,8 +127,6 @@ defmodule Raxol.Console.Bench.Adapter do
     end
   end
 
-  # -- turn -------------------------------------------------------------------
-
   # Run one fresh, history-free fire under a timeout. `Fire.run/2` returns
   # `{:ok, content}` or `{:error, reason}`; a crash or timeout is its own typed
   # failure so a runaway turn cannot hang the bench (and thus the job session).
@@ -144,8 +140,6 @@ defmodule Raxol.Console.Bench.Adapter do
       nil -> {:error, {:bench_timeout, check}}
     end
   end
-
-  # -- transcript -------------------------------------------------------------
 
   defp boot_section(report) do
     jobs = report.jobs
@@ -162,8 +156,6 @@ defmodule Raxol.Console.Bench.Adapter do
     do: binary_part(bin, byte_size(bin) - @cap, @cap)
 
   defp cap(bin), do: bin
-
-  # -- teardown ---------------------------------------------------------------
 
   defp stop(sup) do
     Supervisor.stop(sup)

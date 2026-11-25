@@ -2,8 +2,7 @@
 
 The `raxol` command: the Raxol toolkit and agent servers in your terminal.
 Ships as a self-contained binary (Burrito) wrapped in the `@raxol/cli` npm
-package (`npm/`), so `npm i -g @raxol/cli` puts `raxol` on your PATH. See docs/adr/0031 for the
-packaging approach.
+package (`npm/`), so `npm i -g @raxol/cli` puts `raxol` on your PATH.
 
 ## Commands
 

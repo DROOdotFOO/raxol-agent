@@ -4,6 +4,7 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
 
   alias Mix.Tasks.RaxolEarn.Order
   alias Raxol.Earn.ProviderAdapter.Mock
+  alias Raxol.Earn.TestSupport.TestSidecar
 
   @spender "0xE9B020941015e428876f60C1979B3fc2A38a2f53"
   @allowance_sig "allowance(address,address)"
@@ -182,8 +183,8 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
     end
 
     test "an empty --solver falls back to ORDER_SOLVER instead of suppressing it" do
-      # `--solver ""` is truthy in Elixir, so an empty flag used to win the `||`
-      # and leave the run unpinned while ORDER_SOLVER sat there set.
+      # `--solver ""` is truthy in Elixir, so an empty flag must not win the `||`
+      # and leave the run unpinned while ORDER_SOLVER is set.
       put_solver_env("not-an-address")
 
       %Mix.Error{message: message} =
@@ -387,5 +388,169 @@ defmodule Mix.Tasks.RaxolEarn.OrderTest do
 
       assert :ok = Order.preflight_pull(cfg, %{pull_authorization: nil}, %{}, [])
     end
+  end
+
+  describe "the 7702 wallet's signing provider" do
+    alias Mix.Tasks.RaxolEarn.Order.Signer
+
+    setup do
+      saved =
+        Map.new(~w(RAXOL_ACP_SIDECAR_URL RAXOL_ACP_SIGNER_PRIVATE_KEY), &{&1, System.get_env(&1)})
+
+      on_exit(fn -> Enum.each(saved, fn {k, v} -> restore_env(k, v) end) end)
+      System.put_env("RAXOL_ACP_SIGNER_PRIVATE_KEY", TestSidecar.signer_private_key())
+    end
+
+    test "targets the sidecar that reports the 7702 account" do
+      url = serve_health(Signer.Sma7702Wallet.address())
+
+      assert %{adapter: Raxol.Earn.ProviderAdapter.Privy, config: config} =
+               Signer.signing_provider()
+
+      assert config.sidecar_url == url
+      assert config.address == Signer.Sma7702Wallet.address()
+      assert Order.privy_provider().config.sidecar_url == url
+    end
+
+    test "refuses to sign through a sidecar holding another wallet" do
+      serve_health("0x" <> String.duplicate("ab", 20))
+
+      %Mix.Error{message: message} = assert_raise(Mix.Error, &Signer.signing_provider/0)
+      assert message =~ "WRONG wallet"
+    end
+  end
+
+  describe "writes through the Privy sidecar" do
+    alias Mix.Tasks.RaxolEarn.Order.Signer
+    alias Raxol.Earn.ProviderAdapter.Privy
+
+    @call %{to: "0x" <> String.duplicate("11", 20), data: "0x", value: 0}
+    @wallet "0x" <> String.duplicate("cd", 20)
+    @foreign_wallet "0x" <> String.duplicate("ab", 20)
+
+    setup do
+      saved =
+        Map.new(~w(RAXOL_ACP_SIDECAR_URL RAXOL_ACP_SIGNER_PRIVATE_KEY), &{&1, System.get_env(&1)})
+
+      on_exit(fn -> Enum.each(saved, fn {k, v} -> restore_env(k, v) end) end)
+      System.put_env("RAXOL_ACP_SIGNER_PRIVATE_KEY", TestSidecar.signer_private_key())
+    end
+
+    test "broadcast once the sidecar reports the adapter's wallet" do
+      url = serve_health(@wallet)
+
+      provider =
+        Privy.new(
+          sidecar_url: url,
+          address: @wallet,
+          chains: %{8453 => url},
+          auth_key: TestSidecar.key()
+        )
+
+      assert {:ok, ["0xfeed"]} = Signer.send_calls(provider, 8453, [@call])
+      assert_receive {:sidecar, "/send-calls", _}, 1_000
+    end
+
+    test "are refused before reaching a sidecar holding another wallet" do
+      url = serve_health(@foreign_wallet)
+
+      provider =
+        Privy.new(
+          sidecar_url: url,
+          address: @wallet,
+          chains: %{8453 => url},
+          auth_key: TestSidecar.key()
+        )
+
+      job = %{
+        provider: @wallet,
+        evaluator: @wallet,
+        expired_at: 0,
+        hook_address: @wallet,
+        description: "x"
+      }
+
+      assert {:error, {:sidecar_unhealthy, ^url, {:sidecar_wrong_wallet, @foreign_wallet, _}}} =
+               Signer.send_calls(provider, 8453, [@call])
+
+      assert {:error, {:sidecar_unhealthy, ^url, {:sidecar_wrong_wallet, @foreign_wallet, _}}} =
+               Signer.create_job(provider, 8453, @wallet, job)
+
+      refute_received {:sidecar, "/send-calls", _}
+    end
+
+    test "a refused fund names the live job and how to resume it" do
+      alias Mix.Tasks.RaxolEarn.Order.Errors
+
+      reason = {:sidecar_wrong_wallet, @foreign_wallet, @wallet}
+      message = Errors.write_blocked({:fund, 74_101}, "http://127.0.0.1:4048", reason)
+
+      assert message =~ "job 74101 is on chain but was NOT funded"
+      assert message =~ "--job-id 74101 --fund"
+      assert message =~ "http://127.0.0.1:4048"
+      refute message =~ "Nothing was signed"
+
+      assert Errors.write_blocked(:create_job, "http://127.0.0.1:4048", :health_timeout) =~
+               "Nothing from this run is on chain"
+
+      unauthenticated =
+        Errors.write_blocked({:fund, 9}, "http://127.0.0.1:4048", :sidecar_unauthenticated)
+
+      assert unauthenticated =~ "could not prove it holds the authorization key"
+      assert unauthenticated =~ "could not prove it is this run's signer"
+
+      stale =
+        Errors.write_blocked(:create_job, "http://127.0.0.1:4048", {:sidecar_refused, "stale"})
+
+      assert stale =~ "more than 30s off"
+      assert stale =~ "unverified"
+    end
+
+    test "other backends sign locally and pass through unchecked" do
+      provider = Mock.new(address: @wallet)
+      assert Signer.verify_sidecar!(provider) == provider
+    end
+  end
+
+  describe "--signer sca" do
+    alias Mix.Tasks.RaxolEarn.Order.Signer
+
+    setup do
+      saved = Map.new(~w(ORDER_BUNDLER_URL ORDER_PAYMASTER_POLICY), &{&1, System.get_env(&1)})
+      on_exit(fn -> Enum.each(saved, fn {k, v} -> restore_env(k, v) end) end)
+
+      System.put_env("ORDER_BUNDLER_URL", "https://bundler.test/v2/sekret-bundler-key")
+      System.put_env("ORDER_PAYMASTER_POLICY", "policy-1")
+    end
+
+    test "keeps the bundler URL wrapped in the adapter config" do
+      {provider, _buyer, _wallet} = Signer.build("sca", 8453, "https://rpc.test")
+
+      wallet_opts = provider.config.wallet_opts
+      assert %Raxol.Agent.Secret{} = wallet_opts[:bundler_url]
+      assert %Raxol.Agent.Secret{} = wallet_opts[:paymaster_url]
+      refute inspect(provider, limit: :infinity) =~ "sekret-bundler-key"
+    end
+  end
+
+  describe "a sidecar that stops answering" do
+    alias Mix.Tasks.RaxolEarn.Order.Errors
+
+    test "is reported as stopped, not as failing to start" do
+      message = Errors.sidecar({:sidecar_unhealthy, :health_timeout})
+
+      assert message =~ "stopped answering /health"
+      refute message =~ "did not start"
+    end
+  end
+
+  defp serve_health(address) do
+    url =
+      address
+      |> TestSidecar.start(%{"/send-calls" => {200, %{txHashes: ["0xfeed"]}}})
+      |> TestSidecar.listen()
+
+    System.put_env("RAXOL_ACP_SIDECAR_URL", url)
+    url
   end
 end

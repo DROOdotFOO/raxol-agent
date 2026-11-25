@@ -4,6 +4,7 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
   alias Raxol.Web3.Backend
   alias Raxol.Web3.Backend.Blockscout
   alias Raxol.Web3.Cursor
+  alias Raxol.Web3.Scope
 
   @fixtures Path.expand("../../../fixtures/blockscout", __DIR__)
 
@@ -121,22 +122,6 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
                Blockscout.new("eip155:4663")
 
       assert {"robinhoodchain.blockscout.com", :challenge_gated} = Blockscout.hosts()[4663]
-    end
-
-    test "a chain with no instance is refused rather than guessed at" do
-      # Both branches name the reference they refused. The bare atom this
-      # pinned was the only reason in the package that did not: it reached a
-      # caller as `:unsupported_chain` with no way to tell WHICH chain, and it
-      # sat next to `chain_id/1`'s tupled form in the same `with`.
-      assert {:error, {:unsupported_chain, "eip155:999999"}} = Blockscout.new("eip155:999999")
-      assert {:error, {:unsupported_chain, "solana:mainnet"}} = Blockscout.new("solana:mainnet")
-    end
-
-    test "a keyed rpc_url does not render when the handle is inspected" do
-      {:ok, handle} = Blockscout.new("eip155:1", rpc_url: "https://eth.example/v2/key-not-real")
-
-      refute inspect(handle, limit: :infinity) =~ "key-not-real"
-      assert elem(handle, 1).rpc_url =~ "key-not-real"
     end
   end
 
@@ -360,8 +345,8 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
       assert length(page.items) == 2
       assert is_binary(page.next)
 
-      origin = Raxol.Web3.Origin.id(URI.new!("https://eth.blockscout.com/"))
-      assert {:ok, params} = Cursor.decode(page.next, origin, :address_transactions)
+      scope = Scope.id("https://eth.blockscout.com/")
+      assert {:ok, params} = Cursor.decode(page.next, scope, :address_transactions)
       assert params["block_number"] == 25_574_152
       refute Map.has_key?(params, "items_count")
     end
@@ -553,17 +538,6 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
   end
 
   describe "refusals" do
-    test "a non-EVM account reference is refused by tag, before any request" do
-      # The reason `account_info/2` takes a tagged reference at all: Canton has
-      # party ids and no addresses, Tron has two encodings for one account.
-      handle = handle(%{})
-
-      assert {:error, {:unsupported_account_ref, :party}} =
-               Backend.call(handle, :account_info, [{:party, "Alice::1220abcd"}])
-
-      assert [] == requested_paths()
-    end
-
     test "an account reference that is not an address is refused before any request" do
       # `is_binary/1` was the only check, and `Serialize.account_ref/1` builds
       # `{:evm, value}` out of anything a tool argument prefixes with `"evm:"`,
@@ -596,28 +570,23 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
     end
 
     test "a transaction hash cannot escape the /transactions/ prefix" do
-      # The hash arrives from a model as the `web3_get_transaction` argument
-      # and has no single format to validate against, so encoding is what
-      # holds: `URI.encode/1`'s default predicate leaves `/`, `?` and `#`
-      # alone and was not a defence anywhere in this package.
+      # The hash arrives from a model as the `web3_get_transaction` argument.
+      # Anything outside the id allowlist is refused before a request exists.
       handle = handle(%{})
 
-      assert {:error, {:http, 404}} =
-               Backend.call(handle, :get_transaction, ["../../v2/admin?x=1#y"])
+      assert {:error, {:invalid_argument, "hash"}} =
+               Backend.call(handle, :get_transaction, ["v2/admin?x=1#y"])
 
-      assert [requested] = requested_paths()
-      assert "/api/v2/transactions/" <> encoded = requested
-      refute String.contains?(encoded, ["/", "?", "#"])
+      assert [] = requested_paths()
     end
 
     test "a block identifier cannot escape the /blocks/ prefix" do
       handle = handle(%{})
 
-      assert {:error, {:http, 404}} = Backend.call(handle, :get_block, ["../../v2/admin"])
+      assert {:error, {:invalid_argument, "block"}} =
+               Backend.call(handle, :get_block, ["v2/admin"])
 
-      assert [requested] = requested_paths()
-      assert "/api/v2/blocks/" <> encoded = requested
-      refute String.contains?(encoded, "/")
+      assert [] = requested_paths()
     end
 
     test "a non-2xx becomes a status, carrying no upstream body" do

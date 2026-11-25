@@ -170,6 +170,44 @@ defmodule Raxol.Payments.EIP712 do
   end
 
   @doc """
+  Whether `value` is an EVM address in clean form: `0x` (or `0X`) and exactly
+  40 hex digits, with no surrounding whitespace. A mixed-case body must carry a
+  valid EIP-55 checksum; an all-lowercase or all-uppercase body carries none.
+
+  `checksum: false` checks the shape only. Use it for addresses another party
+  serves, which are compared case-insensitively, and keep the checksum for
+  values an operator types (pins, allowlists), where it catches a typo.
+  """
+  @spec address?(term(), keyword()) :: boolean()
+  def address?(value, opts \\ [])
+
+  def address?(<<prefix::binary-size(2), hex::binary-size(40)>>, opts)
+      when prefix in ["0x", "0X"] do
+    Regex.match?(~r/\A[0-9a-fA-F]{40}\z/, hex) and
+      (Keyword.get(opts, :checksum, true) == false or checksum_ok?(hex))
+  end
+
+  def address?(_value, _opts), do: false
+
+  defp checksum_ok?(hex) do
+    lower = String.downcase(hex)
+
+    if hex == lower or hex == String.upcase(hex),
+      do: true,
+      else: hex == to_checksum_case(lower)
+  end
+
+  # EIP-55: uppercase each letter whose nibble in keccak256(lowercase hex) is >= 8.
+  defp to_checksum_case(lower) do
+    nibbles = for <<n::4 <- ExKeccak.hash_256(lower)>>, do: n
+
+    lower
+    |> String.graphemes()
+    |> Enum.zip(nibbles)
+    |> Enum.map_join(fn {char, n} -> if n >= 8, do: String.upcase(char), else: char end)
+  end
+
+  @doc """
   Canonicalize an EVM address for comparison: trim, downcase, and strip a
   leading `0x`. Returns the lowercase hex body (no `0x`).
   """
@@ -180,8 +218,6 @@ defmodule Raxol.Payments.EIP712 do
     |> String.downcase()
     |> String.replace_prefix("0x", "")
   end
-
-  # -- Private --
 
   defp canonical_v(v) when v in [0, 1], do: v + 27
   defp canonical_v(v) when v in [27, 28], do: v
@@ -302,15 +338,16 @@ defmodule Raxol.Payments.EIP712 do
       fields = Map.get(types, type_name, [])
 
       Enum.reduce(fields, seen, fn {_name, type}, acc ->
-        base = base_type(type)
-
-        if Map.has_key?(types, base) do
-          collect_referenced_types(base, types, acc)
-        else
-          acc
-        end
+        collect_struct_type(base_type(type), types, acc)
       end)
     end
+  end
+
+  # Only struct types recurse; a primitive base type adds nothing.
+  defp collect_struct_type(base, types, seen) do
+    if Map.has_key?(types, base),
+      do: collect_referenced_types(base, types, seen),
+      else: seen
   end
 
   defp base_type(type) when is_binary(type) do
@@ -376,16 +413,10 @@ defmodule Raxol.Payments.EIP712 do
   defp encode_value(type, value, types)
        when is_binary(type) and is_list(value) do
     case array_element_type(type) do
-      {:ok, element_type} ->
-        cond do
-          Map.has_key?(types, element_type) ->
-            encode_struct_array(element_type, value, types)
+      {:ok, element_type} when is_map_key(types, element_type) ->
+        encode_struct_array(element_type, value, types)
 
-          true ->
-            encode_value(type, value)
-        end
-
-      :error ->
+      _primitive_array_or_not_an_array ->
         encode_value(type, value)
     end
   end

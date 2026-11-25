@@ -1,18 +1,6 @@
-# Red-first regression for drew-preview disposition N2 (New Hire, HIGH):
-# `Client.start_link/2` / `Client.child_spec/1` (and their `Agent` mirrors)
-# return/register the `ConnectionSupervisor`, not the `Connection` pid --
-# but every request-driving function (`Connection.request/4`,
-# `Client.prompt/3`, `subscribe/3`, ...) needs the `Connection` pid. Before
-# this fix, the ONLY place that pid could be resolved from was a PRIVATE
-# `connection_of/1` helper hand-rolled inside
-# `test/integration/end_to_end_test.exs` -- the README's own documented
-# quickstart could not actually drive a turn using only its own public API.
-#
-# This test proves the fix by driving one full `initialize` -> `session/new`
-# -> `session/prompt` turn using ONLY public API: `Agent.connection/1`,
-# `Client.connection/1`, `Connection.request/4`, `Client.prompt/3` -- the
-# exact shape the rewritten README quickstart now uses. No private helper is
-# reimplemented or imported anywhere in this file.
+# Drives a full turn using only public API (`Agent.connection/1`,
+# `Client.connection/1`, `Connection.request/4`, `Client.prompt/3`), the
+# shape the README quickstart uses.
 defmodule Raxol.AgentClientProtocol.Client.ConnectionAccessorTest do
   use ExUnit.Case, async: true
 
@@ -39,8 +27,8 @@ defmodule Raxol.AgentClientProtocol.Client.ConnectionAccessorTest do
 
     alias Raxol.AgentClientProtocol.Connection
     alias Raxol.AgentClientProtocol.Schema.ContentChunk
-    alias Raxol.AgentClientProtocol.Schema.TextContent
     alias Raxol.AgentClientProtocol.Schema.LifecycleExtras.SessionNotification
+    alias Raxol.AgentClientProtocol.Schema.TextContent
 
     alias Raxol.AgentClientProtocol.Schema.AgentTypes.{
       InitializeResponse,

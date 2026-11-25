@@ -69,8 +69,6 @@ defmodule Raxol.Earn.ABI do
   @spec encode_args([{String.t(), term()}]) :: binary()
   def encode_args(args) when is_list(args), do: do_encode_args(args)
 
-  # -- Internal --
-
   # Solidity ABI head/tail encoding:
   #   head_size = sum of static slot sizes (32 each, including 32-byte
   #     offset placeholders for dynamic types)
@@ -101,7 +99,7 @@ defmodule Raxol.Earn.ABI do
   defp dynamic?("string"), do: true
   defp dynamic?(_), do: false
 
-  # -- Static encoders (always 32 bytes) --
+  # Static encoders (always 32 bytes)
 
   defp encode_static("uint256", value), do: encode_uint256(value)
 
@@ -156,7 +154,7 @@ defmodule Raxol.Earn.ABI do
     end
   end
 
-  # -- Dynamic encoders (length-prefixed, padded to word boundary) --
+  # Dynamic encoders (length-prefixed, padded to word boundary)
 
   defp encode_dynamic("bytes", value) when is_binary(value) do
     encode_dynamic_payload(value)
@@ -171,8 +169,6 @@ defmodule Raxol.Earn.ABI do
     padded = pad_right(payload, ceil_word(byte_size(payload)))
     <<length_word::binary, padded::binary>>
   end
-
-  # -- Helpers --
 
   defp ceil_word(0), do: 0
 

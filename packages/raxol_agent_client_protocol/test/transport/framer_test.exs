@@ -287,8 +287,6 @@ defmodule Raxol.AgentClientProtocol.Transport.FramerTest do
     end
   end
 
-  # -- Helpers ------------------------------------------------------------
-
   defp json_line_generator do
     gen all(term <- json_term_generator()) do
       Jason.encode!(term)

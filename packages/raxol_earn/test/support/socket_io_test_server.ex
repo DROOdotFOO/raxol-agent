@@ -39,8 +39,6 @@ defmodule Raxol.Earn.TestSupport.SocketIOTestServer do
 
   defstruct port: nil, listener_ref: nil, handlers: MapSet.new()
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def start_link(opts \\ []) do
     # Synchronously kill any previous instance so the cowboy listener
@@ -130,8 +128,6 @@ defmodule Raxol.Earn.TestSupport.SocketIOTestServer do
       pingTimeout: @ping_timeout_ms
     }
   end
-
-  # -- GenServer callbacks --
 
   @impl true
   def init(opts) do

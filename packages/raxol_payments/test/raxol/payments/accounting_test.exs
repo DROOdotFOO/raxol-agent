@@ -74,7 +74,10 @@ defmodule Raxol.Payments.AccountingTest do
       {opts, enabled?} = Accounting.env_config()
 
       assert enabled?
-      assert opts[:rpc_urls] == %{}
+
+      assert Map.new(opts[:rpc_urls], fn {id, url} -> {id, Raxol.Agent.Secret.reveal(url)} end) ==
+               %{}
+
       assert opts[:solver_address] == nil
       assert opts[:rebalance_interval_ms] == 300_000
       assert opts[:price_source] == :coingecko
@@ -89,11 +92,12 @@ defmodule Raxol.Payments.AccountingTest do
 
       {opts, _} = Accounting.env_config()
 
-      assert opts[:rpc_urls] == %{
-               1 => "https://eth.example",
-               8453 => "https://base.example",
-               4663 => "https://rh.example"
-             }
+      assert Map.new(opts[:rpc_urls], fn {id, url} -> {id, Raxol.Agent.Secret.reveal(url)} end) ==
+               %{
+                 1 => "https://eth.example",
+                 8453 => "https://base.example",
+                 4663 => "https://rh.example"
+               }
     end
 
     test "reads solver address, interval, price source, and the enabled flag" do
@@ -142,7 +146,7 @@ defmodule Raxol.Payments.AccountingTest do
     end
 
     test "a blank value is unset, matching how the RPC vars read" do
-      # `String.to_integer("")` used to crash the boot here, naming nothing.
+      # `String.to_integer("")` would crash the boot here, naming nothing.
       System.put_env("RAXOL_REBALANCE_INTERVAL_MS", "")
 
       {opts, _} = Accounting.env_config()
@@ -181,7 +185,7 @@ defmodule Raxol.Payments.AccountingTest do
     end
 
     test "a blank value is unset, not the atom :\"\"" do
-      # `String.to_atom("")` used to yield `:""`, which falls through
+      # `String.to_atom("")` would yield `:""`, which falls through
       # `RebalanceMonitor.build_price_fn/1`'s catch-all to a price fn returning
       # nil -- silently dropping USD pricing from the whole sweep.
       System.put_env("RAXOL_PRICE_SOURCE", "")
@@ -257,8 +261,12 @@ defmodule Raxol.Payments.AccountingTest do
 
       {opts, true} = Accounting.env_config()
 
-      assert opts[:fx][:rpc_urls] == %{8453 => "https://base.example"}
-      assert Raxol.Payments.Secret.reveal(opts[:fx][:sleuth_api_key]) == "k-123"
+      assert Map.new(opts[:fx][:rpc_urls], fn {id, url} ->
+               {id, Raxol.Agent.Secret.reveal(url)}
+             end) ==
+               %{8453 => "https://base.example"}
+
+      assert Raxol.Agent.Secret.reveal(opts[:fx][:sleuth_api_key]) == "k-123"
       refute inspect(opts) =~ "k-123"
     end
   end

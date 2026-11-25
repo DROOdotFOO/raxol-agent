@@ -2,78 +2,37 @@ defmodule Raxol.Web3.Cache do
   @moduledoc """
   The response cache: four functions, lazy expiry, one owned bounded table.
 
-  ADR-0033 decision 6. Four functions (`get`, `put`, `delete`, `flush`), TTL in
-  milliseconds, `0` meaning no expiry, expiry checked lazily on read.
-
-  Three deliberate properties, each with a reason:
-
-    * **No `config` argument and no behaviour.** The table has exactly one owner
-      (`Raxol.Web3.Tables`, ADR-0038 decision 5), so there is nothing to
-      configure and a per-call config would be a parameter that can only be
-      passed wrongly. A second storage medium, if one is ever needed, arrives
-      as a behaviour at that point rather than as an abstraction waiting for it.
-    * **Monotonic time, not wall clock.** Against `DateTime.utc_now/0`, a clock
-      stepping backwards, which happens on a VM resumed from a snapshot,
-      extends every outstanding TTL by the size of the step. Monotonic
-      milliseconds cannot do that.
-    * **A bounded table.** This table's owner is the application, so its
-      lifetime is the node's, and nothing clears it on its own. What bounds
-      it is below.
+  ADR-0033 decision 6. `get`, `put`, `delete`, `flush`; TTL in milliseconds, `0`
+  meaning no expiry, expiry checked lazily on read. The table is owned by
+  `Raxol.Web3.Tables` and lives as long as the node. Expiry uses monotonic time,
+  so a wall-clock step cannot extend TTLs.
 
   ## Keys never come from a URL
 
-  `Raxol.Web3.HTTP` composes a key as `{origin_id, fragment}`, where the
-  fragment is supplied by the backend from its own endpoint name and the
-  parameters that endpoint declares. The request URI is never an input. That is
-  ADR-0033 §7's rule about cache keys made structural rather than reviewed: an
-  API key travels as a query parameter on one of the upstreams this package
-  targets, so a key derived from a URI is a credential written into a table
-  that something will eventually dump.
+  `Raxol.Web3.HTTP` keys an entry `{origin_id, fragment}`. A backend's fragment
+  is `{scope, endpoint_key}` (`Raxol.Web3.Backend.Cache.opts/5`): the scope is
+  `Raxol.Web3.Scope.of/2` of base URL and headers, the endpoint key is built from
+  the endpoint name and its declared parameters. The request URI is never an
+  input, because some upstreams carry the API key in the query string.
 
-  ## What bounds the table
+  ## Bounds
 
-  Lazy expiry on its own bounds nothing: an entry that expires and is never
-  read again is never looked at, so nothing deletes it. Two explicit ceilings
-  do the bounding, and neither needs a timer or a process.
+    * `config :raxol_web3, :cache_max_entries` (default `512`). A `put/3` past the
+      cap reclaims expired rows, then evicts live rows (soonest expiry first,
+      `:no_expiry` last) down to seven eighths of the cap.
+    * `config :raxol_web3, :cache_max_value_bytes` (default `262_144`). A larger
+      value is not stored; `put/3` still returns `:ok` and the next `get/1`
+      misses.
 
-    * `config :raxol_web3, :cache_max_entries` (default `512`) caps the row
-      count. A `put/3` that would grow the table past the cap first reclaims
-      every expired row, then evicts live rows until the table is back under a
-      low-water mark of seven eighths of the cap. Freeing an eighth at a time
-      rather than one row at a time is what keeps this cheap: the pass walks
-      keys and expiries with a single `:ets.select/2` and never copies a
-      value, and a full table pays for one such pass per 64 inserts at the
-      default.
-    * `config :raxol_web3, :cache_max_value_bytes` (default `262_144`, 256
-      KiB) declines to store a value larger than that. `put/3` still answers
-      `:ok` and the next `get/1` is a miss. This is the ceiling that makes the
-      first one mean something: `Raxol.MCP.BoundedExchange` reads a body up to
-      its `:max_bytes` (2 MiB by default), so an entry cap alone bounds this
-      table at 512 × 2 MiB, which is a bound and not a useful one. With both,
-      it is 128 MiB. 256 KiB sits above what these read endpoints actually
-      return — a transaction, a page of logs, a token-balance list are
-      single-digit kilobytes — so what it excludes is the rare extreme, which
-      is also the entry least worth holding 2 MiB of a long-lived node's
-      memory for.
+  Together that bounds the table at 128 MiB by default. Both checks run before
+  the insert, so the table may briefly hold cap + 1 rows.
 
-  Eviction is by soonest expiry, with `:no_expiry` rows going last. That is
-  deterministic and therefore assertable: a test fills past the cap and names
-  the key that must be gone. An LRU would need a write on every read, which
-  costs more than it saves on a table whose rows all carry an expiry anyway.
+  ## What to cache
 
-  Both ceilings are checked before an insert rather than after, so the table
-  can hold cap + 1 rows for the length of one `put/3`, and two callers racing
-  at the cap can each sweep and leave it under the low-water mark. Neither
-  matters: the point is a ceiling, not an exact size.
-
-  ## What is worth caching, and what is not
-
-  A finalized transaction is immutable and can be cached for a long time. Chain
-  statistics are seconds. A **height is not cached at all**, and that is the
-  one rule here that is about correctness rather than freshness: a cached
-  height read alongside a live one is exactly what breaks the monotonicity
-  `Raxol.Web3.Backend`'s height shape exists to express. `Raxol.Web3.TTL`
-  carries the per-endpoint values.
+  A finalized transaction can be cached long; chain statistics for seconds. A
+  **height is never cached**: a cached height beside a live one breaks the
+  monotonicity `Raxol.Web3.Backend`'s height shape expresses. `Raxol.Web3.TTL`
+  holds the per-endpoint values.
   """
 
   alias Raxol.Web3.Tables

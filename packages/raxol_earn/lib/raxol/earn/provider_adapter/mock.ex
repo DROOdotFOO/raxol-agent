@@ -93,8 +93,6 @@ defmodule Raxol.Earn.ProviderAdapter.Mock do
     Enum.reverse(list)
   end
 
-  # -- Behaviour callbacks --
-
   @impl Raxol.Earn.ProviderAdapter
   def send_calls(%{config: %{table: table}}, chain_id, calls) do
     case :ets.lookup(table, :send_calls_error) do
@@ -154,8 +152,6 @@ defmodule Raxol.Earn.ProviderAdapter.Mock do
     [{:supported_chain_ids, ids}] = :ets.lookup(table, :supported_chain_ids)
     ids
   end
-
-  # -- Internal --
 
   defp record(table, key, entry) do
     [{^key, list}] = :ets.lookup(table, key)

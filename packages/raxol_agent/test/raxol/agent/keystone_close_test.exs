@@ -1,7 +1,6 @@
 defmodule Raxol.Agent.KeystoneCloseTest do
   @moduledoc """
-  U1.5 — close the keystone. Proves "replay-as-truth" is real and the dual-id
-  landmine is dead:
+  Replay is the truth for a live agent session:
 
     1. a durable event's live-tail id == its journal offset == its replayed id,
     2. the durable trace survives a writer death (close/reopen), ids intact,
@@ -429,8 +428,6 @@ defmodule Raxol.Agent.KeystoneCloseTest do
       assert event.session_id == session_id
     end
   end
-
-  # --- helpers ---------------------------------------------------------------
 
   defp collect_until_turn_completed(session_id, acc \\ []) do
     receive do

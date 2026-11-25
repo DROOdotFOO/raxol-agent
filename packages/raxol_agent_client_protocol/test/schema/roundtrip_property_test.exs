@@ -1,31 +1,6 @@
-# New coverage (W8): StreamData round-trip properties for the ACP schema
-# layer, complementing the byte-fixed fixtures ported into
-# `test/schema/serialization_test.exs` from the MIT
-# `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
-# Upstream has no dedicated property-test file; the generators and
-# properties below are new, written against this port's actual structs.
-#
-# Coverage: `ContentBlock` (every variant, unicode text), `ToolCall`, `Plan`,
-# `ClientCapabilities`/`AgentCapabilities` trees, and `Rpc.Request`/
-# `Response`/`Notification` across the `RequestId` type matrix (int/string/
-# null), plus the reverse "unknown wire keys survive `_meta` pass-through"
-# property in both directions this package actually implements (nested
-# under `"_meta"` for `WireFields`-based structs; flat merge for the
-# JSON-RPC envelope layer in `rpc.ex`).
-#
-# NOT covered: the `session/update` notification's `sessionUpdate`-tagged
-# union (`ACP.SessionUpdate` upstream). That type is not yet ported anywhere
-# in this package -- see the header comment on
-# `lib/raxol/agent_client_protocol/schema/agent_types.ex` ("intentionally
-# NOT ported here... belongs to whichever coder ports client_types.ex") and
-# confirm no `SessionUpdate` module exists under `lib/`. Nothing to write a
-# property against yet.
-#
-# `AgentTypes.*` capability structs (PromptCapabilities/McpCapabilities/
-# SessionCapabilities/AgentCapabilities) now generate non-empty `_meta` too:
-# the `AgentTypes.put_meta/2` flattening bug that used to make this
-# unsound (documented, now fixed, in `serialization_test.exs`'s "meta field
-# uses _meta key" test) no longer applies.
+# StreamData round-trip properties for the schema layer: content blocks,
+# tool calls, plans, capability trees, and JSON-RPC envelopes across the
+# request-id matrix, plus unknown-key `_meta` pass-through.
 defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
@@ -63,8 +38,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
 
   alias Raxol.AgentClientProtocol.Schema.ClientTypes.{ClientCapabilities, FileSystemCapability}
 
-  # -- Shared generators -------------------------------------------------------
-
   defp unicode_string_gen(max_length) do
     string(:utf8, max_length: max_length)
   end
@@ -91,8 +64,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
       &Map.new/1
     )
   end
-
-  # -- ContentBlock --------------------------------------------------------
 
   defp role_gen, do: member_of([:assistant, :user])
 
@@ -220,8 +191,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- ToolCall --------------------------------------------------------------
-
   defp tool_kind_gen do
     member_of([
       :read,
@@ -306,8 +275,6 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- Plan --------------------------------------------------------------------
-
   defp plan_priority_gen, do: member_of([:high, :medium, :low])
   defp plan_status_gen, do: member_of([:pending, :in_progress, :completed])
 
@@ -338,7 +305,7 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- ClientCapabilities / AgentCapabilities trees ---------------------------
+  # ClientCapabilities / AgentCapabilities trees
 
   defp file_system_capability_gen do
     gen all(write_text_file <- boolean(), read_text_file <- boolean()) do
@@ -421,7 +388,7 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- Rpc Request/Response/Notification, id-type matrix ----------------------
+  # Rpc Request/Response/Notification, id-type matrix
 
   defp request_id_gen do
     one_of([constant(nil), integer(), string(:alphanumeric, min_length: 1, max_length: 12)])
@@ -519,7 +486,7 @@ defmodule Raxol.AgentClientProtocol.Schema.RoundtripPropertyTest do
     end
   end
 
-  # -- _meta / unknown-key pass-through (WireFields-based nesting) -----------
+  # _meta / unknown-key pass-through (WireFields-based nesting)
 
   describe "TextContent _meta pass-through" do
     property "unknown top-level wire keys fold into _meta and re-emit nested under \"_meta\"" do

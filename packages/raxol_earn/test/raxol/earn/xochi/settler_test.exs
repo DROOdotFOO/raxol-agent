@@ -232,7 +232,7 @@ defmodule Raxol.Earn.Xochi.SettlerTest do
       )
     end
 
-    test "a stealth settlement surfaces the ERC-5564 announcement fields (#368)" do
+    test "a stealth settlement surfaces the ERC-5564 announcement fields" do
       # The buyer signed a stealth intent (keys + ephemeral recipient inside the
       # signature) and its bundle carries a shielded-claim aztec_proof. The
       # settler relays the opaque bundle verbatim, and the deliverable surfaces
@@ -266,7 +266,7 @@ defmodule Raxol.Earn.Xochi.SettlerTest do
       assert relayed["aztec_proof"] == "0x" <> String.duplicate("de", 40)
     end
 
-    test "a different-recipient intent is relayed and settled, not gated (#368)" do
+    test "a different-recipient intent is relayed and settled, not gated" do
       # The recipient the buyer signed lives inside the opaque bundle; the
       # requirement's `destination` is only an audit hint. The settle path must
       # relay and settle it unchanged -- there is no same-owner or public-only
@@ -291,7 +291,7 @@ defmodule Raxol.Earn.Xochi.SettlerTest do
       refute Map.has_key?(relayed, "destination")
     end
 
-    # xochi#563: the worker withholds a non-public intent's legs on status unless
+    # The worker withholds a non-public intent's legs on status unless
     # the caller presents the read token execute returned. This sim does the
     # same: `exec_token` is what execute returns (nil = older worker / lost), and
     # the stealth status carries hashes only for the matching header.

@@ -121,8 +121,6 @@ defmodule Raxol.Agent.Conversation.Store.ETS do
     {:ok, for({id} <- :ets.tab2list(convs), do: id)}
   end
 
-  # --- Walk helpers ---------------------------------------------------------
-
   defp walk(items, conversation_id, after_seq, before) do
     Stream.unfold({conversation_id, after_seq}, fn key ->
       next_in_conversation(items, conversation_id, before, key)

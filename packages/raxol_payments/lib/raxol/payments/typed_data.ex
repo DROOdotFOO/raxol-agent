@@ -65,18 +65,20 @@ defmodule Raxol.Payments.TypedData do
   """
   @spec check_domain(term(), expected_domain()) :: :ok | {:error, {:domain, atom()}}
   def check_domain(served, expected) when is_map(served) and is_map(expected) do
-    if Enum.sort(Map.keys(served)) == Enum.sort(Map.keys(expected)) do
-      Enum.find_value(expected, :ok, fn {key, value} ->
-        if domain_value_match?(key, served[key], value),
-          do: false,
-          else: {:error, {:domain, domain_key(key)}}
-      end)
-    else
-      {:error, {:domain, :fields}}
-    end
+    if Enum.sort(Map.keys(served)) == Enum.sort(Map.keys(expected)),
+      do: first_domain_mismatch(served, expected),
+      else: {:error, {:domain, :fields}}
   end
 
   def check_domain(_served, _expected), do: {:error, {:domain, :fields}}
+
+  defp first_domain_mismatch(served, expected) do
+    Enum.find_value(expected, :ok, fn {key, value} ->
+      if domain_value_match?(key, served[key], value),
+        do: false,
+        else: {:error, {:domain, domain_key(key)}}
+    end)
+  end
 
   @doc """
   The domain map `Raxol.Payments.EIP712` hashes, built from `expected` (already

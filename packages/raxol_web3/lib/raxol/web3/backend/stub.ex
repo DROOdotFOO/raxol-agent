@@ -104,8 +104,6 @@ defmodule Raxol.Web3.Backend.Stub do
   @impl Backend
   def health_key(%__MODULE__{health_key: key}), do: key
 
-  # -- required ----------------------------------------------------------------
-
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
     answer(state, :chain_info, %{
@@ -171,8 +169,6 @@ defmodule Raxol.Web3.Backend.Stub do
       next: nil
     })
   end
-
-  # -- optional ----------------------------------------------------------------
 
   @impl Backend
   def get_block(%__MODULE__{} = state, number) do

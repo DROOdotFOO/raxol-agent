@@ -1,109 +1,58 @@
 defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   @moduledoc """
-  Newline-delimited JSON (NDJSON) over a stdio pipe — either our OWN
-  process's real stdin/stdout (`:self` mode, when this BEAM process IS the
-  ACP agent/client speaking on its own stdio), or a spawned peer command's
-  stdio (`:spawn` mode, when we launch and speak to a subprocess).
+  Newline-delimited JSON (NDJSON) over a stdio pipe: this BEAM's own
+  stdin/stdout (`:self` mode) or a spawned peer's (`:spawn` mode).
 
-  One `GenServer` owns BOTH directions of the pipe:
+  One `GenServer` owns both directions:
 
-    * **Read** — raw bytes arrive from the OS pipe as `Port` `:data`
-      messages (`:spawn` mode) or as lines read from the `user` device
-      (`:self` mode) and are fed through
-      `Raxol.AgentClientProtocol.Transport.Framer` (byte-splitting only:
-      buffers partial data, yields complete NDJSON lines, tolerates
-      CRLF, caps a frame's size). A complete line nested deeper than the
-      depth limit is refused without being parsed; any other line is then
-      `Jason.decode/1`'d *tolerantly*: a line that isn't valid JSON, that
-      decodes to something other than a JSON object, that is nested too
-      deeply, or that the framer itself rejected as oversized, is delivered
-      to the owner as
-      `{:acp_transport, ref, {:decode_error, reason, raw_line}}` rather
-      than crashing the transport or dropping the frame silently. A
-      well-formed object is delivered as
-      `{:acp_transport, ref, {:message, map}}`. Lines are processed (and
-      therefore delivered) strictly in arrival order. Blank lines are
-      skipped by the framer without generating a decode error — a
-      trailing newline at EOF is common and not itself malformed input.
-
-    * **Write** — `send_message/2` `Jason.encode!/1`s the message, appends
-      `"\n"`, and writes through THIS GenServer's own mailbox
-      (`GenServer.call/2`). This is deliberate single-writer discipline:
-      every caller's write is serialized through one process, so two
-      concurrent `send_message/2` calls can never interleave their bytes
-      on the wire and corrupt a frame — NDJSON has no length prefix, so a
-      torn write (line A's bytes and line B's bytes interleaved before
-      either `"\n"` lands) is unrecoverable, unlike a length-framed
-      protocol. Never write to the underlying port through any path other
-      than this module.
+    * **Read** -- bytes go through `Raxol.AgentClientProtocol.Transport.Framer`
+      (buffers partial data, yields complete lines, tolerates CRLF, caps frame
+      size). A well-formed JSON object is delivered as
+      `{:acp_transport, ref, {:message, map}}`; invalid JSON, a non-object, an
+      over-deep or oversized line is delivered as
+      `{:acp_transport, ref, {:decode_error, reason, raw_line}}`. Delivery is
+      strictly in arrival order. Blank lines are skipped.
+    * **Write** -- `send_message/2` encodes, appends `"\n"` and writes through
+      this GenServer, so concurrent callers can never interleave bytes within a
+      frame (NDJSON has no length prefix). Never write to the port any other way.
 
   ## Limits
 
-    * `:max_frame_bytes` (default 16 MiB): a frame longer than this is
-      refused as `{:decode_error, {:frame_too_large, size}, ""}` and the
-      framer resyncs at the next newline. Raise it if prompts carry large
-      base64 resources; lower it for a peer you do not trust. In `:spawn`
-      mode this also bounds the memory an unterminated line can take. In
-      `:self` mode it does not: the `user` device hands this module whole
-      lines only, so a line is held by the device until its newline (or
-      end of input) arrives, and only then measured.
-    * `:max_json_depth` (default 256): a frame whose arrays and objects
-      nest deeper than this is refused as
-      `{:decode_error, {:too_deep, max_json_depth}, raw_line}` before it is
-      decoded. The check scans the line once and skips string contents.
+    * `:max_frame_bytes` (default 16 MiB) -- a longer frame is refused as
+      `{:decode_error, {:frame_too_large, size}, ""}` and the framer resyncs at
+      the next newline. In `:spawn` mode this also bounds an unterminated line's
+      memory; in `:self` mode the `user` device holds a line until its newline.
+    * `:max_json_depth` (default 256) -- deeper nesting is refused as
+      `{:decode_error, {:too_deep, max_json_depth}, raw_line}` before decoding.
 
   ## stdout is protocol-pure
 
-  In `:self` mode, this process's real stdout carries the wire protocol.
-  Nothing else may ever write to it — an errant `IO.puts/1`, a stray
-  `Logger` line landing on the `:user` group leader, or any other
-  application output would land mid-frame on a peer that is line-buffered
-  reading JSON. This module logs unexpected messages via `Logger.debug/1`,
-  which is safe **only if** the host application's Logger is configured to
-  a device other than `:user`/stdout (e.g.
-  `config :logger, :default_handler, config: [type: :standard_error]`, or
-  an equivalent `:standard_error` console backend). Configuring that is the
-  host application's responsibility, not this module's — get it wrong and
-  every log line is a corrupted ACP frame on the wire.
+  In `:self` mode nothing else may write to stdout: a stray `IO.puts/1` or a
+  Logger line on `:user` corrupts a frame. The host must route its Logger to
+  stderr, e.g. `config :logger, :default_handler, config: [type: :standard_error]`.
 
   ## Modes
 
-    * `start_self/1` — read and write the `user` device, which is the
-      BEAM's own stdin and stdout. A `{:fd, 0, 1}` port is not used: under
-      `-noshell` the `user` device already reads fd 0, so a second reader
-      loses whatever arrived before it opened (a client's `initialize`).
-      Only meaningful when this process's real stdio is dedicated to the
-      ACP wire protocol and nothing else writes to stdout. Boot forms that
-      satisfy this, with stdio piped by the peer: a compiled release; `mix
-      run` of an already compiled project (compile first in a separate
-      step: Mix prints compile output on stdout); an `elixir` script that
-      sends `Mix.install/2`'s output to stderr and blocks until its
-      connection ends, as the package README's quickstart agent does. In
-      every form the default log handler must write to stderr (see
-      "stdout is protocol-pure"). Not for an interactive `iex` session. Both
-      devices are switched to `encoding: :latin1`, which moves bytes
-      unchanged: the wire is UTF-8 whatever the locale, and a byte that is
-      not UTF-8 reaches the JSON decoder as it was sent. A `unicode` device
-      would transcode by the locale's rules, and falls back to latin1 for
-      good at the first invalid byte it reads.
-    * `start_spawn/3` — launch a peer executable via
-      `Port.open({:spawn_executable, ...}, ...)` and speak to *its*
-      stdin/stdout. The peer's exit is delivered to the owner as
-      `{:closed, {:exit_status, code}}`.
+    * `start_self/1` -- read and write the `user` device (not a `{:fd, 0, 1}`
+      port, which would lose input `user` already read under `-noshell`). Valid
+      boots with piped stdio: a compiled release; `mix run` of an already
+      compiled project; an `elixir` script that sends `Mix.install/2` output to
+      stderr. Not for interactive `iex`. Both devices are set to
+      `encoding: :latin1` so bytes pass unchanged whatever the locale.
+    * `start_spawn/3` -- launch a peer via `Port.open({:spawn_executable, ...})`.
+      Its exit reaches the owner as `{:closed, {:exit_status, code}}`.
 
   ## Ownership
 
-  Mirrors `Raxol.AgentClientProtocol.Transport.Paired`: a freshly created
-  handle has no owner (`nil`) — inbound messages are held until
-  `set_owner/2` adopts it and then delivered in arrival order, so a
-  supervisor can create the transport before the `Connection` process
-  that will own it exists.
+  As with `Raxol.AgentClientProtocol.Transport.Paired`, a new handle has no owner;
+  inbound messages are held until `set_owner/2`, then delivered in order.
   """
 
   use GenServer
   require Logger
 
   alias Raxol.AgentClientProtocol.Transport.Framer
+  alias Raxol.Core.ChildEnv, as: CoreEnv
 
   @behaviour Raxol.AgentClientProtocol.Transport
 
@@ -125,8 +74,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
            closed: boolean(),
            pending: [term()]
          }
-
-  # -- Construction --------------------------------------------------------
 
   @doc """
   Serve the BEAM's own stdin/stdout as the transport. See the moduledoc's
@@ -160,15 +107,60 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     * `:owner` — pid to receive inbound messages; defaults to `nil`.
     * `:cd` — working directory for the child process.
     * `:env` — list of `{name, value}` environment overrides, passed
-      straight to `Port.open/2`'s `:env` option.
+      to `Port.open/2`'s `:env` option ahead of the scrub below. A name is a
+      string or charlist; a value is a string, a charlist, or `false` to
+      unset. Anything else (`nil`, an integer) raises `ArgumentError`.
+    * `:scrub_env` — `false` to skip the credential scrub; default `true`.
+      Any other value raises `ArgumentError`, so a missing setting passed
+      through as `nil` cannot turn the scrub off.
+    * `:unset_env` — more variable names (strings) to unset in the child.
+    * `:pass` — names (strings, exact case) the scrub lets through to this
+      child after all. The only allowlist this transport honours; see below.
     * `:max_frame_bytes`, `:max_json_depth` — see "Limits".
 
-  The child inherits the node's WHOLE environment plus `:env`: this package
-  does not scrub anything. An agent is third-party code, so a caller on a
-  node that holds secrets in its environment (API keys, signing keys,
-  bearer tokens) must unset them itself, e.g. with
-  `env: [{~c"MY_API_KEY", false}]` (`Port.open/2` unsets a variable whose
-  value is `false`).
+  The child inherits the node's environment plus `:env`, minus what
+  `Raxol.Core.ChildEnv` denies, the scrub raxol's directive shells and MCP
+  stdio servers get:
+
+    * every variable whose name looks like a credential (case-insensitive):
+      a `_`-separated segment such as `KEY`, `KEYS`, `APIKEY`, `TOKEN`,
+      `SECRET`, `PASSWORD`, `PASS`, `PAT`, `PASSPHRASE`, `MNEMONIC`,
+      `SEED_PHRASE`, `DSN` or `CREDENTIALS` anywhere in the name; a non-leading
+      `PWD` segment; `WEBHOOK` anywhere; `OP_SESSION_*` and the Bitwarden
+      and LastPass sessions; wallet seeds (`WALLET_SEED`, ...); a database,
+      broker or mail URL (`DATABASE_URL`, `REDIS_URL`, `SMTP_URL`, ...);
+      `PGPASSWORD`; `RPC` anywhere but in `GRPC`;
+    * raxol_core's named set (`SECRET_KEY_BASE`, `RELEASE_COOKIE`,
+      `SSH_AUTH_SOCK`, raxol's own keys) and the operator's
+      `config :raxol_core, Raxol.Core.ChildEnv, extra_secrets:`, set or not;
+
+  minus this call's `:pass`.
+
+  **Core's `pass:` list is not honoured here.** The operator's
+  `config :raxol_core, Raxol.Core.ChildEnv, pass:` lets names through to
+  directive shells and MCP servers the operator runs; a spawned ACP agent is
+  third-party code, so every name on that list is unset in it too (set or
+  not, credential-shaped or not), unless this call's `:pass` names it.
+
+  Precedence, highest first: a name given in `:env` is set as given; a name
+  in `:unset_env` is unset; a name in `:pass` is inherited; otherwise the
+  scrub decides. See `Raxol.Core.ChildEnv` for what no pattern catches.
+
+  An agent is third-party code. To hand it one of those credentials (an
+  agent that reads its own provider key, say), name it in `:env`, or pass
+  `scrub_env: false` to inherit everything (`:unset_env` is then ignored). A
+  process running as the same user can still read the node's own launch
+  environment (`/proc/<pid>/environ`); the scrub only stops inheritance.
+
+  The environment is built in the calling process, before the transport
+  starts, so these raise from this call and no agent is spawned:
+
+    * `ArgumentError` for a malformed `Raxol.Core.ChildEnv` config (an
+      unknown or repeated key, a name that is not a string) or a malformed
+      `:env`, `:scrub_env`, `:unset_env` or `:pass`;
+    * `RuntimeError` when `Raxol.Core.ChildEnv` cannot be loaded: a release
+      that leaves raxol_core out (see the README's "Releases" note). The
+      scrub fails closed; `scrub_env: false` does not need raxol_core.
 
   Returns `{:error, :executable_not_found}` if `cmd` cannot be resolved.
   """
@@ -181,8 +173,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
       path ->
         owner = Keyword.get(opts, :owner)
-        spawn_opts = Keyword.take(opts, [:cd, :env])
-        init_arg = {:spawn, path, args, spawn_opts, owner, limits(opts)}
+        init_arg = {:spawn, path, args, build_spawn_opts(opts), owner, limits(opts)}
         {:ok, pid} = GenServer.start_link(__MODULE__, init_arg)
         {:ok, %__MODULE__{pid: pid}}
     end
@@ -220,8 +211,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     :exit, _reason -> :ok
   end
 
-  # -- GenServer callbacks --------------------------------------------------
-
   @impl GenServer
   @spec init(
           {:self, {IO.device(), IO.device()}, pid() | nil, keyword()}
@@ -236,7 +225,7 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
   end
 
   def init({:spawn, path, args, spawn_opts, owner, limits}) do
-    port_opts = [:binary, :exit_status, args: args] ++ build_spawn_opts(spawn_opts)
+    port_opts = [:binary, :exit_status, args: args] ++ spawn_opts
     port = Port.open({:spawn_executable, String.to_charlist(path)}, port_opts)
     {:ok, %{new_state(:spawn, owner, limits) | port: port}}
   end
@@ -297,13 +286,143 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
     end
   end
 
+  # Built in the caller (see `start_spawn/3`): a malformed config or option,
+  # or a missing raxol_core, raises there instead of crashing the transport.
   @spec build_spawn_opts(keyword()) :: keyword()
   defp build_spawn_opts(opts) do
-    Enum.flat_map(opts, fn
-      {:cd, cd} -> [cd: cd]
-      {:env, env} -> [env: env]
-      _other -> []
+    env = opts |> Keyword.get(:env, []) |> validate_env!()
+
+    env =
+      case Keyword.get(opts, :scrub_env, true) do
+        true ->
+          unset = names!(opts, :unset_env)
+          scrubbed_env(env, unset, names!(opts, :pass))
+
+        false ->
+          env
+
+        other ->
+          raise ArgumentError, ":scrub_env must be true or false, got: #{inspect(other)}"
+      end
+
+    Keyword.take(opts, [:cd]) ++ [env: env]
+  end
+
+  @spec names!(keyword(), :unset_env | :pass) :: [String.t()]
+  defp names!(opts, key) do
+    case Keyword.get(opts, key, []) do
+      names when is_list(names) ->
+        Enum.map(names, fn
+          name when is_binary(name) ->
+            name
+
+          name ->
+            raise ArgumentError,
+                  "#{inspect(key)} must be a list of strings, got an entry of shape #{type(name)}"
+        end)
+
+      other ->
+        raise ArgumentError, "#{inspect(key)} must be a list of strings, got: #{type(other)}"
+    end
+  end
+
+  # The same `{name, value}` shapes on both paths, as charlists for
+  # `Port.open/2`, which would crash the transport on a `nil` or an integer.
+  @spec validate_env!(term()) :: [{charlist(), charlist() | false}]
+  defp validate_env!(env) when is_list(env) do
+    Enum.each(env, fn
+      {name, value}
+      when (is_binary(name) or is_list(name)) and
+             (is_binary(value) or is_list(value) or value == false) ->
+        :ok
+
+      entry ->
+        raise ArgumentError,
+              ":env entries must be {name, value | false} with string or charlist " <>
+                "names and values, got an entry of shape #{entry_shape(entry)}"
     end)
+
+    Enum.map(env, fn {name, value} -> {to_charlist(name), charlist_or_false(value)} end)
+  end
+
+  defp validate_env!(env),
+    do: raise(ArgumentError, ":env must be a list, got: #{entry_shape(env)}")
+
+  @spec charlist_or_false(String.t() | charlist() | false) :: charlist() | false
+  defp charlist_or_false(false), do: false
+  defp charlist_or_false(value), do: to_charlist(value)
+
+  # The type of a rejected entry, never its contents, which may be a key.
+  @spec entry_shape(term()) :: String.t()
+  defp entry_shape({name, value}), do: "{#{type(name)}, #{type(value)}}"
+  defp entry_shape(term), do: type(term)
+
+  @spec type(term()) :: String.t()
+  defp type(term) when is_binary(term), do: "string"
+  defp type(term) when is_list(term), do: "list"
+  defp type(term) when is_atom(term), do: inspect(term)
+  defp type(term) when is_integer(term), do: "integer"
+  defp type(term) when is_tuple(term), do: "tuple"
+  defp type(_term), do: "other"
+
+  @doc """
+  Whether a spawned agent is denied `name`: `Raxol.Core.ChildEnv` denies it
+  (its pattern or named set) or it is on Core's `pass:` list (which this
+  transport does not honour), and it is not in `opts[:pass]`. A spawn's
+  `:env` and `:unset_env` are not consulted. Raises like `start_spawn/3` on a malformed config or a missing
+  raxol_core.
+  """
+  @spec secret?(String.t(), keyword()) :: boolean()
+  def secret?(name, opts \\ []) when is_binary(name) and is_list(opts) do
+    core!()
+    denied?(name, core_pass_upcase(), names!(opts, :pass))
+  end
+
+  # Core's `pass:` is exact-case; it is matched case-insensitively here, so
+  # no case variant of a passed name reaches an agent whatever Core does with
+  # it (raxol_core 2.9.0 let `ssh_auth_sock` through after
+  # `pass: ["SSH_AUTH_SOCK"]`).
+  @spec denied?(String.t(), [String.t()], [String.t()]) :: boolean()
+  defp denied?(name, core_pass_upcase, pass) do
+    name not in pass and
+      (String.upcase(name) in core_pass_upcase or CoreEnv.secret?(name))
+  end
+
+  @spec core_pass_upcase() :: [String.t()]
+  defp core_pass_upcase, do: Enum.map(CoreEnv.pass(), &String.upcase/1)
+
+  # The caller's `env`, then, unset (`false`): `unset` and every name a child
+  # is denied, set or not for Core's named set and `pass:` list, otherwise if
+  # the node has it; minus `pass`, and minus whatever `env` names.
+  @spec scrubbed_env(list(), [String.t()], [String.t()]) :: [{charlist(), charlist() | false}]
+  defp scrubbed_env(env, unset, pass) do
+    core!()
+    core_pass = CoreEnv.pass()
+    core_pass_upcase = Enum.map(core_pass, &String.upcase/1)
+    given = MapSet.new(env, fn {name, _value} -> to_string(name) end)
+    present = System.get_env() |> Map.keys() |> Enum.filter(&denied?(&1, core_pass_upcase, pass))
+    named = Enum.reject(CoreEnv.secrets() ++ core_pass, &(&1 in pass))
+
+    removed =
+      for name <- Enum.uniq(unset ++ named ++ present),
+          name not in given,
+          do: {String.to_charlist(name), false}
+
+    env ++ removed
+  end
+
+  # Fail closed: without raxol_core's code (a release that leaves it out),
+  # there is no scrub to apply, and spawning unscrubbed is not an option.
+  @spec core!() :: :ok
+  defp core! do
+    if Code.ensure_loaded?(CoreEnv) do
+      :ok
+    else
+      raise "Raxol.Core.ChildEnv is not available, so a spawned agent's environment " <>
+              "cannot be scrubbed. A release must ship raxol_core: add " <>
+              "`applications: [raxol_core: :load]` to it (see the " <>
+              "raxol_agent_client_protocol README), or pass scrub_env: false."
+    end
   end
 
   @impl GenServer
@@ -389,8 +508,6 @@ defmodule Raxol.AgentClientProtocol.Transport.Stdio do
 
     {:noreply, state}
   end
-
-  # -- Framing ---------------------------------------------------------------
 
   @spec push(server_state(), binary()) :: server_state()
   defp push(state, data) do

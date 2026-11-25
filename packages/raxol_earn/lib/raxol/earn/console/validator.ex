@@ -77,13 +77,7 @@ defmodule Raxol.Earn.Console.Validator do
         {:error, {:duplicate_task_names, names -- Enum.uniq(names)}}
 
       true ->
-        Enum.find_value(tasks, :ok, fn t ->
-          cond do
-            not Cron.valid?(t["cron"]) -> {:error, {:invalid_cron, t["name"], t["cron"]}}
-            String.trim(t["prompt"] || "") == "" -> {:error, {:empty_prompt, t["name"]}}
-            true -> nil
-          end
-        end)
+        Enum.find_value(tasks, :ok, &task_error/1)
     end
   end
 
@@ -109,6 +103,15 @@ defmodule Raxol.Earn.Console.Validator do
     else
       {:error, :missing} -> {:error, :missing}
       _ -> {:error, :undecodable}
+    end
+  end
+
+  # nil when the task is valid, so `Enum.find_value/3` moves on.
+  defp task_error(t) do
+    cond do
+      not Cron.valid?(t["cron"]) -> {:error, {:invalid_cron, t["name"], t["cron"]}}
+      String.trim(t["prompt"] || "") == "" -> {:error, {:empty_prompt, t["name"]}}
+      true -> nil
     end
   end
 

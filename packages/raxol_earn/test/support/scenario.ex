@@ -217,8 +217,6 @@ defmodule Raxol.Earn.Test.Scenario do
   @spec cfg(t()) :: map()
   def cfg(%__MODULE__{cfg: cfg}), do: cfg
 
-  # -- Internal --
-
   defp place_order(s, from, to, src, dst, amount) do
     requirement = build_requirement(from, to, src, dst, amount, s.bundle)
     {chain_id, job_id, provider} = start_provider(s.wallet)
@@ -304,14 +302,12 @@ defmodule Raxol.Earn.Test.Scenario do
         prior = Application.get_env(:raxol_earn, key)
         Application.put_env(:raxol_earn, key, value)
 
-        fn ->
-          case prior do
-            nil -> Application.delete_env(:raxol_earn, key)
-            _ -> Application.put_env(:raxol_earn, key, prior)
-          end
-        end
+        fn -> restore_earn_env(key, prior) end
     end
   end
+
+  defp restore_earn_env(key, nil), do: Application.delete_env(:raxol_earn, key)
+  defp restore_earn_env(key, prior), do: Application.put_env(:raxol_earn, key, prior)
 
   # Robinhood Chain (4663) carries USDG, not USDC/USDT, so a stablecoin corridor
   # touching it resolves the Robinhood leg to USDG (the cross-asset fill).

@@ -41,8 +41,6 @@ defmodule Raxol.Earn.Buyer.Planner do
     JobApi.browse_agents(api, keyword, params)
   end
 
-  # -- Internals --
-
   defp ensure_provider(%{provider: provider} = intent) when is_binary(provider), do: {:ok, intent}
 
   defp ensure_provider(intent) do

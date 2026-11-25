@@ -127,22 +127,7 @@ defmodule Raxol.Agent.McpBundle do
     |> Enum.map(&{&1, start_client(&1, start)})
     |> Enum.reduce(%{tools: [], servers: [], failed: []}, fn {spec, started}, acc ->
       name = spec_name(spec)
-
-      case resolve(started, name, deadline, interval, spec) do
-        {:ok, server, tools} ->
-          %{
-            acc
-            | tools: acc.tools ++ tools,
-              servers: [{name, server} | acc.servers]
-          }
-
-        {:error, reason} ->
-          Logger.warning(fn ->
-            "mcp bundle: server #{inspect(name)} skipped: #{inspect(reason)}"
-          end)
-
-          %{acc | failed: [{name, reason} | acc.failed]}
-      end
+      add_resolved(acc, name, resolve(started, name, deadline, interval, spec))
     end)
     |> then(
       &%{
@@ -151,6 +136,18 @@ defmodule Raxol.Agent.McpBundle do
           failed: Enum.reverse(&1.failed)
       }
     )
+  end
+
+  defp add_resolved(acc, name, {:ok, server, tools}) do
+    %{acc | tools: acc.tools ++ tools, servers: [{name, server} | acc.servers]}
+  end
+
+  defp add_resolved(acc, name, {:error, reason}) do
+    Logger.warning(fn ->
+      "mcp bundle: server #{inspect(name)} skipped: #{inspect(reason)}"
+    end)
+
+    %{acc | failed: [{name, reason} | acc.failed]}
   end
 
   # Never `Map.get(spec, :name, spec)`: a nameless spec would then ride into a
@@ -318,13 +315,11 @@ defmodule Raxol.Agent.McpBundle do
     end
   end
 
-  # `:closed` and a failed connect are transient too, and treating them as
-  # terminal was half a state. The client schedules its own reconnect with
-  # backoff and keeps the pid, so a boot-time DNS blip used to yield a server
-  # reported as skipped whose client then reached `:ready` and was never
-  # re-listed. Awaiting it within the SHARED deadline costs no more than one
-  # slow server already costs, and `resolve/5` stops the client for the one
-  # that never arrives.
+  # `:closed` and a failed connect are transient: the client reconnects with
+  # backoff under the same pid, so a boot-time DNS blip must not report the
+  # server as skipped while its client later reaches `:ready` unlisted. It is
+  # awaited within the shared deadline, and `resolve/5` stops a client that
+  # never arrives.
   defp transient?({:not_ready, status}) when status in [:starting, :initializing, :closed],
     do: true
 

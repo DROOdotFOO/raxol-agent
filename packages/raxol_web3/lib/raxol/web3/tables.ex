@@ -48,6 +48,9 @@ defmodule Raxol.Web3.Tables do
   @breakers {__MODULE__, :breakers}
   @origins {__MODULE__, :origins}
   @cache {__MODULE__, :cache}
+  @scope_key {__MODULE__, :scope_key}
+  # The derivation label for the scope key, distinct from every cursor MAC input.
+  @scope_label "raxol_web3.scope.v1"
 
   @cursor_key_bytes 32
 
@@ -105,6 +108,13 @@ defmodule Raxol.Web3.Tables do
   @spec cursor_key() :: binary()
   def cursor_key, do: GenServer.call(__MODULE__, :cursor_key)
 
+  @doc """
+  The key `Raxol.Web3.Scope` HMACs under: derived from the cursor key, unable
+  to sign a cursor, and read from `:persistent_term`. See `init/1`.
+  """
+  @spec scope_key() :: binary()
+  def scope_key, do: :persistent_term.get(@scope_key)
+
   @impl GenServer
   def init(_opts) do
     # Validate configuration before creating tables or publishing any
@@ -148,6 +158,16 @@ defmodule Raxol.Web3.Tables do
     # trade for an id that is not a credential and the wrong one for this.
     secrets = :ets.new(:raxol_web3_secrets, [:set, :private])
     :ets.insert(secrets, {:cursor_key, cursor_key})
+
+    # The scope key IS a persistent term, and that is a different trade from
+    # the cursor key's. It is derived from the cursor key under its own label,
+    # so it cannot sign or verify a cursor; all it can do is recompute a
+    # `Raxol.Web3.Scope`, which only matters to someone guessing a URL secret
+    # offline from a scope they were handed. Code in this VM that could read
+    # the term can already read every handle's URL, so the term protects
+    # against the same outsider the HMAC does, and it makes a scope a lock-free
+    # computation on the request path rather than a message to this process.
+    :persistent_term.put(@scope_key, :crypto.mac(:hmac, :sha256, cursor_key, @scope_label))
 
     {:ok, %{secrets: secrets}}
   end

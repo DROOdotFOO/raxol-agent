@@ -107,8 +107,6 @@ defmodule Raxol.AgentClientProtocol.Schema.Plan do
   (never fails the whole plan), and entries that individually fail to
   decode are skipped rather than aborting the list
   (`x-deserialize-skip-invalid-items`).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Schema.PlanEntry

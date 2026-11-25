@@ -7,6 +7,8 @@ defmodule Raxol.Agent.SemanticTree do
   on-demand from `Agent.Session` -- no GenServer, no caching.
   """
 
+  @type tree :: map() | nil
+
   @layout_keys ~w(style padding margin gap fg bg border position z_index size
                    direction align justify wrap on_click on_change on_toggle
                    on_submit)a
@@ -17,6 +19,7 @@ defmodule Raxol.Agent.SemanticTree do
   Options:
     - `:focused_id` - element id to mark as focused
   """
+  @spec from_view_tree(tree(), keyword()) :: tree()
   def from_view_tree(tree, opts \\ [])
   def from_view_tree(nil, _opts), do: nil
 
@@ -26,6 +29,7 @@ defmodule Raxol.Agent.SemanticTree do
   end
 
   @doc "Depth-first search by `:id`. Returns nil on miss."
+  @spec find(tree(), term()) :: map() | nil
   def find(nil, _id), do: nil
   def find(%{id: id} = node, target_id) when id == target_id, do: node
 
@@ -36,6 +40,7 @@ defmodule Raxol.Agent.SemanticTree do
   def find(_node, _id), do: nil
 
   @doc "Collect all nodes matching `:type`."
+  @spec find_by_type(tree(), atom()) :: [map()]
   def find_by_type(nil, _type), do: []
 
   def find_by_type(%{type: type} = node, target_type) do
@@ -47,6 +52,7 @@ defmodule Raxol.Agent.SemanticTree do
   def find_by_type(_node, _type), do: []
 
   @doc "Flatten all text content into a single string."
+  @spec text_content(term()) :: String.t()
   def text_content(nil), do: ""
 
   def text_content(%{type: :text, content: content}) when is_binary(content) do

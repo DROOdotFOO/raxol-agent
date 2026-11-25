@@ -143,11 +143,20 @@ defmodule Raxol.Earn.Xochi.TransferCore do
     end
   end
 
-  # -- request validation --
-
+  # Four stages, run in this order so the first failing check decides the error:
+  # the request's shape, the offering's settlement mode, per-VM address format,
+  # then the corridor and its liquidity.
   defp validate_requirement(req, mode) do
     caps = capabilities()
 
+    with :ok <- check_shape(req),
+         :ok <- check_settlement_mode(req, mode),
+         :ok <- check_addresses(caps, req) do
+      check_corridor(caps, req)
+    end
+  end
+
+  defp check_shape(req) do
     cond do
       not Schema.valid_requirement?(req) ->
         {:error, :malformed_requirement}
@@ -158,31 +167,55 @@ defmodule Raxol.Earn.Xochi.TransferCore do
       not positive_amount?(req["amount_atomic"]) ->
         {:error, :non_positive_amount}
 
-      # Settlement-mode gate (skipped for :any). Gates on the DECLARED
-      # settlement_preference + dst_chain_id, not the opaque signature, so an
-      # agent that picked the wrong offering (or an L2 destination for stealth)
-      # gets a focused rejection before escrow instead of a fill-time failure.
+      true ->
+        :ok
+    end
+  end
+
+  # Settlement-mode gate (skipped for :any). Gates on the DECLARED
+  # settlement_preference + dst_chain_id, not the opaque signature, so an
+  # agent that picked the wrong offering (or an L2 destination for stealth)
+  # gets a focused rejection before escrow instead of a fill-time failure.
+  defp check_settlement_mode(req, mode) do
+    cond do
       mode == :public and req["settlement_preference"] in ["stealth", "private"] ->
         {:error, {:wrong_offering, :expected_public, "xochi_stable_stealth"}}
 
-      mode == :stealth and req["settlement_preference"] == "public" ->
+      mode == :stealth ->
+        check_stealth(req)
+
+      true ->
+        :ok
+    end
+  end
+
+  defp check_stealth(req) do
+    cond do
+      req["settlement_preference"] == "public" ->
         {:error, {:wrong_offering, :expected_stealth, "xochi_stable_public"}}
 
       # Stealth settles to a one-time ERC-5564 address on Ethereum L1. Cross-chain
       # stealth is not live, so the destination must be chain 1 (mirrors the Xochi
       # frontend gate). This offering is therefore X->L1: a non-Ethereum origin
       # bridging to an Ethereum-L1 stealth settlement.
-      mode == :stealth and req["dst_chain_id"] != 1 ->
+      req["dst_chain_id"] != 1 ->
         {:error, {:stealth_requires_l1_destination, req["dst_chain_id"]}}
 
-      mode == :stealth and not valid_stealth_meta?(req["stealth_meta_address"]) ->
+      not valid_stealth_meta?(req["stealth_meta_address"]) ->
         {:error, :stealth_meta_address_required}
 
-      # Per-VM address format is only enforced against a live matrix, which knows
-      # each chain's VM family, and only for chains it lists. Under the EVM-only
-      # static fallback, or for a chain the matrix does not list, there is no VM
-      # to check against, so we defer to corridor gating (an unlisted chain
-      # rejects as an unsupported token, never as a misclassified address).
+      true ->
+        :ok
+    end
+  end
+
+  # Per-VM address format is only enforced against a live matrix, which knows
+  # each chain's VM family, and only for chains it lists. Under the EVM-only
+  # static fallback, or for a chain the matrix does not list, there is no VM
+  # to check against, so we defer to corridor gating (an unlisted chain
+  # rejects as an unsupported token, never as a misclassified address).
+  defp check_addresses(caps, req) do
+    cond do
       live_listed?(caps, req["src_chain_id"]) and
           not Capabilities.valid_address?(caps, req["src_chain_id"], req["src_token"]) ->
         {:error, {:invalid_address, :src_token, req["src_chain_id"], req["src_token"]}}
@@ -191,6 +224,13 @@ defmodule Raxol.Earn.Xochi.TransferCore do
           not Capabilities.valid_address?(caps, req["dst_chain_id"], req["dst_token"]) ->
         {:error, {:invalid_address, :dst_token, req["dst_chain_id"], req["dst_token"]}}
 
+      true ->
+        :ok
+    end
+  end
+
+  defp check_corridor(caps, req) do
+    cond do
       not fillable?(caps, req["src_chain_id"], req["src_token"], :origin) ->
         {:error, {:unsupported_src_token, req["src_chain_id"], req["src_token"]}}
 
@@ -223,7 +263,7 @@ defmodule Raxol.Earn.Xochi.TransferCore do
 
   defp hex_key?(k), do: String.match?(k, ~r/^0x[0-9a-fA-F]+$/)
 
-  # -- corridor + liquidity gating (config-driven; default inert) --
+  # corridor + liquidity gating (config-driven; default inert)
 
   defp allowed_corridor?(req) do
     if CorridorAllowlist.enabled?() do
@@ -255,7 +295,7 @@ defmodule Raxol.Earn.Xochi.TransferCore do
 
   defp within_capacity?(_chain, _token, _amount), do: true
 
-  # -- rolling aggregate capacity (inert unless the ledger is running) --
+  # rolling aggregate capacity (inert unless the ledger is running)
 
   defp reserve_capacity(req, ctx) do
     if capacity_ledger_running?() do
@@ -328,8 +368,6 @@ defmodule Raxol.Earn.Xochi.TransferCore do
   end
 
   defp positive_amount?(_), do: false
-
-  # -- delivery --
 
   defp resolve_settler do
     opts = Application.get_env(:raxol_earn, :xochi_transfer_settler, [])

@@ -44,10 +44,9 @@ defmodule Raxol.Console.InboundTest do
   end
 
   describe "unconfigured deployments" do
-    # This REVERSES the #884 decision that silence means allow. Silence is the
-    # only posture reachable by writing nothing, so it cannot be the one that
-    # grants an arbitrary sender this agent's turns, tools and spend. It denies,
-    # and -- as before -- it is not quiet about it.
+    # Silence is the only posture reachable by writing nothing, so it cannot be
+    # the one that grants an arbitrary sender this agent's turns, tools and
+    # spend. It denies, loudly.
     test "deny, and say so loudly" do
       handler_id = "undeclared-#{System.unique_integer([:positive])}"
 
@@ -110,8 +109,7 @@ defmodule Raxol.Console.InboundTest do
       assert :ok = Inbound.route(:inb_empty, route("newcomer"), %{text: "hi"})
     end
 
-    # The bug in #884: the Pairing server ran, nothing consulted it, and an
-    # unauthorized sender got a session anyway. A denial must reach neither the
+    # A denial must reach neither the
     # router nor the operator's blind spot, so both are asserted here.
     test "seeds a global allowlist, and a denial starts no session and is announced" do
       boot(:inb_users, pairing: [allowed_users: ["alice"]])
@@ -247,8 +245,8 @@ defmodule Raxol.Console.InboundTest do
     end
 
     # A route the adapter built from wire input, which Route.new/1 does not
-    # validate. This used to crash the Pairing server -- and Pairing is the first
-    # :rest_for_one child, so it took every live session with it.
+    # validate. Crashing the Pairing server here would take every live session
+    # with it, since Pairing is the first :rest_for_one child.
     test "a malformed user id denies and leaves the runtime standing" do
       boot(:inb_malformed, pairing: [allowed_users: ["alice"]])
       pairing = Process.whereis(Inbound.pairing_name(:inb_malformed))

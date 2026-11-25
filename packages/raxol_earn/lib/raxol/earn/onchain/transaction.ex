@@ -141,8 +141,6 @@ defmodule Raxol.Earn.Onchain.Transaction do
     Hex.encode(addr)
   end
 
-  # -- Private --
-
   # The 9 fields signed over (no signature components).
   defp unsigned_fields(tx) do
     [

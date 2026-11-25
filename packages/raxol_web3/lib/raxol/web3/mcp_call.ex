@@ -2,85 +2,42 @@ defmodule Raxol.Web3.MCPCall do
   @moduledoc """
   One stateless MCP `tools/call`, out through `Raxol.Web3.HTTP`.
 
-  A streamable-HTTP MCP server that is stateless needs no session at all: no
-  `initialize`, no `notifications/initialized`, no `mcp-session-id` header, one
-  POST per call. That is the whole module, and it is why issue #1028 records the
-  Solana primary as unblocked while the Tron one waits on a session client.
-  Measured 2026-09-14 against `portal.sqd.dev/mcp`: a bare `tools/list` POST
-  with no prior handshake answers 200, and so does a `tools/call` POST, so the
-  handshake this module omits is one the upstream does not require.
+  A stateless streamable-HTTP MCP server needs no `initialize`, no
+  `notifications/initialized` and no `mcp-session-id`: one POST per call. This
+  module knows nothing about any chain; it takes an endpoint, a tool name, an
+  argument map and `Raxol.Web3.HTTP` options.
 
-  This module knows nothing about any chain. It takes an endpoint, a tool name,
-  an argument map and `Raxol.Web3.HTTP` options. Three upstreams in this package
-  are stateless and each wanted the same twenty lines, so it is one module
-  rather than three private functions.
+  ## Return shapes
 
-  ## Three return shapes, and why an announced refusal is not an error term
+  `result.content[0].text` holds a JSON string, so there are two decodes. The
+  result is:
 
-  A `tools/call` result arrives as `result.content[0].text` holding a JSON
-  **string**, so there are two decodes: the JSON-RPC envelope, then the text
-  inside it. What comes back is the second one:
+    * `{:ok, payload}` -- the tool answered.
+    * `{:tool_error, payload}` -- the tool set `isError`; this is its structured
+      body (e.g. SQD's `error.code` `"unknown_network"` vs `"invalid_request"`).
+    * `{:error, reason}` -- transport, status, framing or envelope failure, from
+      `Raxol.Web3.Backend`'s closed taxonomy.
 
-    * `{:ok, payload}` - the tool answered.
-    * `{:tool_error, payload}` - the tool announced a failure through the
-      protocol's `isError` flag, and this is its structured body.
-    * `{:error, reason}` - a transport, status, framing or envelope failure,
-      from `Raxol.Web3.Backend`'s closed taxonomy.
+  **A caller must map `{:tool_error, payload}` onto a closed error term and drop
+  the payload**: upstream text never travels in an error tuple (ADR-0038
+  decision 6). An `isError` body that is not a JSON object is
+  `{:upstream_refused, :unknown}`.
 
-  The middle one exists because collapsing it would throw away the only
-  machine-readable reason. Measured 2026-09-14 on SQD, an unknown network
-  answers HTTP 200 with `isError: true` and `error.code == "unknown_network"`,
-  and an account-scoped query with no time window answers 200 with
-  `isError: true` and `error.code == "invalid_request"`. The first means "this
-  source does not serve that chain" and the second means "your arguments were
-  wrong": two different operator problems, and only the caller knows which of
-  its own error terms each maps onto. This is the posture `Raxol.Web3.HTTP`
-  takes with an HTTP status, one layer up: return it, decide nothing.
+  The payload is returned whole, including model-facing prose and fields the
+  upstream marks untrusted; the calling backend takes only the fields it names.
+  `result.structuredContent` is ignored.
 
-  A caller's obligation, therefore, and it is the whole reason the tag is
-  distinct: **a `{:tool_error, payload}` is mapped onto a closed error term and
-  the payload is dropped.** Nothing from it may travel inside an error tuple,
-  because ADR-0038 decision 6 keeps upstream text out of one. An announced
-  failure whose body is not a JSON object at all is `{:upstream_refused,
-  :unknown}` here rather than a decode failure, since the protocol already told
-  us what happened and only the prose is unusable.
+  ## Framing
 
-  ## What this module will not interpret
-
-  The payload carries model-facing prose beside its structured fields. Measured
-  2026-09-14, `portal_get_head` returns `answer: "Current value: 446,949,476."`
-  next to the structured `number`, and `portal_get_network_info` returns a
-  `_tool_contract.untrusted_fields` list that names `display_name` among the
-  fields a client must not trust. None of that is this module's business: the
-  payload is returned whole and the caller takes the fields it named. ADR-0033
-  §7's rule is that we serve a normalized contract and never a pass-through, and
-  the place that rule is enforced is the backend that maps the payload.
-
-  `result.structuredContent` is ignored even though SQD sends it, measured the
-  same day. Two carriers for one value means two shapes to pin and a silent
-  divergence when they disagree, and `content[0].text` is the one every server
-  in this package's survey emits.
-
-  ## Two content types, one framing module
-
-  A streamable-HTTP server may answer a POST as `application/json` or as
-  `text/event-stream` carrying one `event: message` frame. SQD answers
-  `text/event-stream`, measured 2026-09-14, so a JSON decode of the body fails
-  and the frames have to be split first; ccscan answers `application/json` with
-  no framing at all. Both work here because the body is tried as JSON first and
-  unframed only if that fails, rather than branching on a `content-type` the
-  spec does not oblige a server to set precisely.
-
-  The framing itself is `Raxol.MCP.Client.SSE.payloads/1`, not a second grammar
-  here. This module briefly carried its own copy, because that one was being
-  written in parallel and a compile dependency on an uncommitted module would
-  have broken this package's build; it landed, so the copy is gone. One SSE
-  grammar, in the package that owns the protocol.
+  The body is tried as `application/json` first, then unframed as
+  `text/event-stream` via `Raxol.MCP.Client.SSE.payloads/1`, rather than
+  trusting `content-type`.
   """
 
   alias Raxol.MCP.Client.SSE
   alias Raxol.Web3.Backend
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.RPC.ErrorClass
 
   # Defaults, merged per name rather than assigned over the caller's list. An
   # account-gated server needs an `authorization` header, and a module that
@@ -145,7 +102,7 @@ defmodule Raxol.Web3.MCPCall do
   # The third shape is the one `decode/1` cannot own, because it is not a
   # refusal at the MCP level at all: the server answered, `isError` is absent,
   # and what came back is a well-formed payload whose CONTENT says no.
-  # `Raxol.Web3.Backend.Tron.sqd_result/2` reads exactly that payload and
+  # `Raxol.Web3.Backend.SQD.refusal/2` reads exactly that payload and
   # turns `unknown_network` into `{:unsupported_chain, _}`, so caching it puts
   # the same refusal in front of every read of that class for the whole TTL,
   # which is the bug this predicate exists to remove. Returning the payload to
@@ -174,8 +131,6 @@ defmodule Raxol.Web3.MCPCall do
       else: [{name, value} | headers]
   end
 
-  # -- decoding ----------------------------------------------------------------
-
   defp decode({:ok, %{status: status, body: body}}) when status in 200..299 do
     with {:ok, envelope} <- envelope(body),
          {:ok, result} <- result(envelope) do
@@ -200,7 +155,7 @@ defmodule Raxol.Web3.MCPCall do
   end
 
   defp result(%{"result" => result}) when is_map(result), do: {:ok, result}
-  defp result(%{"error" => error}), do: {:error, {:upstream_refused, class(error)}}
+  defp result(%{"error" => error}), do: {:error, {:upstream_refused, ErrorClass.of_error(error)}}
   defp result(_other), do: {:error, {:decode_failed, :jsonrpc}}
 
   defp content(%{"content" => [%{"text" => text} | _rest]} = result) when is_binary(text) do
@@ -225,12 +180,4 @@ defmodule Raxol.Web3.MCPCall do
       {:error, _reason} -> {:error, {:decode_failed, :json}}
     end
   end
-
-  # The code is a number we can reason about; the message is upstream prose and
-  # stays where it is. The same split as `Raxol.Web3.RPC` makes, over the same
-  # codes, because MCP rides on JSON-RPC.
-  defp class(%{"code" => code}) when code in [-32_601, -32_602], do: :not_found
-  defp class(%{"code" => code}) when code in [401, -32_001], do: :auth
-  defp class(%{"code" => code}) when code in [429, -32_005], do: :rate_limit
-  defp class(_error), do: :unknown
 end

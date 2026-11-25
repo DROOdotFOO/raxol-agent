@@ -1,40 +1,7 @@
-# Wire-level torture / skew tests for the ACP transport + schema + Connection
-# stack -- NOT a port of any upstream f1729 test. Five independent stress
-# axes, each its own `describe` block:
-#
-#   1. forward-compat skew  -- unknown fields at every schema level survive
-#      decode->encode byte-faithfully via the `_meta` pass-through fold
-#      (`Raxol.AgentClientProtocol.Schema.WireFields`/`AgentTypes`); unknown
-#      wire methods answer `-32601` regardless of param shape; a
-#      never-negotiated (higher) `protocolVersion` integer is tolerated at
-#      both the schema and live-handshake layers (`Schema.Version.coerce/1`).
-#   2. oversized frames -- a ~5MB multimodal (base64 image) content block
-#      round-trips through the REAL byte-level `Transport.Stdio` (Framer +
-#      JSON codec, not the in-process `Transport.Paired` passthrough), then
-#      through `PromptRequest.from_json/1`, with no truncation.
-#   3. id-type matrix -- int/string/edge-case request ids are preserved
-#      byte-exact through `Connection` correlation, including two requests
-#      in flight AT THE SAME TIME whose ids are the integer `1` and the
-#      string `"1"` (proving no accidental `to_string`/coercion collapses
-#      them onto the same `pending_in` entry).
-#   4. three-state fields -- `Schema.MaybeUndefined` (absent / explicit null
-#      / value) round-trips for `Schema.Unstable.SessionInfoUpdate`
-#      (`session_info_update`'s `title`/`updatedAt`), plus the `_meta`
-#      three-state analog (absent / empty object / populated) on
-#      `SetSessionModeRequest`/`Response`.
-#   5. malformed input totality -- 5000 random garbage frames (well-formed
-#      maps with wrong-typed JSON-RPC fields, deeply nested junk, and
-#      non-map top-level shapes) never crash a live `Connection`; the node's
-#      atom table stays flat (Inv-7: no `String.to_atom/1` on wire input).
-#
-# Ambiguity flagged (not silently resolved): the assignment names
-# "ProviderInfo.current-style" as a three-state target; no `ProviderInfo`
-# struct exists in this package. `Schema.Unstable.SessionInfoUpdate` is the
-# only genuine `MaybeUndefined`-typed (three-state) struct in the schema
-# layer today, so it stands in as the concrete target; `set_session_mode`'s
-# request/response `_meta` fold is exercised alongside it as the closest
-# actual "current-style" three-state-shaped field this package has.
-
+# Wire torture: forward-compat skew, a ~5MB frame through `Transport.Stdio`,
+# the request-id matrix (`1` and `"1"` in flight together), three-state
+# fields, and 5000 garbage frames that must not crash a Connection or grow
+# the atom table.
 defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest.SimpleAgent do
   @moduledoc false
   use Raxol.AgentClientProtocol.Agent
@@ -116,9 +83,7 @@ defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest do
   alias Raxol.AgentClientProtocol.Transport.Paired
   alias Raxol.AgentClientProtocol.Transport.Stdio
 
-  # ===========================================================================
   # Shared fixtures
-  # ===========================================================================
 
   defp connection_child_spec(opts) do
     %{
@@ -155,10 +120,6 @@ defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest do
     assert frame["id"] == id
     frame
   end
-
-  # ===========================================================================
-  # 1. Forward-compat skew
-  # ===========================================================================
 
   describe "1. forward-compat skew" do
     test "unknown fields at the request/nested-capability levels survive decode -> encode via _meta pass-through" do
@@ -281,9 +242,7 @@ defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest do
     end
   end
 
-  # ===========================================================================
-  # 2. Oversized (~5MB multimodal) frames
-  # ===========================================================================
+  # Oversized (~5MB multimodal) frames
 
   describe "2. oversized frames" do
     test "a ~5MB base64 image content block round-trips through the real Stdio transport + framer, no truncation" do
@@ -333,10 +292,6 @@ defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest do
       assert byte_size(roundtripped_data) == byte_size(big_data)
     end
   end
-
-  # ===========================================================================
-  # 3. id-type matrix
-  # ===========================================================================
 
   describe "3. id-type matrix" do
     test "integer and string ids in flight AT THE SAME TIME correlate independently, no collision" do
@@ -406,9 +361,7 @@ defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest do
     end
   end
 
-  # ===========================================================================
-  # 4. Three-state fields (MaybeUndefined + the _meta analog)
-  # ===========================================================================
+  # Three-state fields (MaybeUndefined + the _meta analog)
 
   describe "4. three-state fields" do
     test "SessionInfoUpdate.title: absent vs explicit-null vs value round-trip independently" do
@@ -511,10 +464,6 @@ defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest do
     end
   end
 
-  # ===========================================================================
-  # 5. Malformed input totality
-  # ===========================================================================
-
   describe "5. malformed input totality" do
     test "5000 random garbage frames never crash a live Connection; atom_count stays flat" do
       %{conn: conn, peer: peer} = start_torture_conn()
@@ -564,7 +513,7 @@ defmodule Raxol.AgentClientProtocol.Torture.WireTortureTest do
     end
   end
 
-  # -- garbage generators (deterministic-ish, varied shapes, no atom creation) --
+  # garbage generators (deterministic-ish, varied shapes, no atom creation)
 
   defp garbage_scalar(i) do
     Enum.at(

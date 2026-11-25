@@ -2,9 +2,8 @@ defmodule Raxol.Earn.Transport.SSE.Parser do
   @moduledoc """
   Pure SSE wire-format parser used by `Raxol.Earn.Transport.SSE`.
 
-  Extracted into its own module so tests can hit it directly without
-  spinning up a stream. No state -- callers buffer their own partials
-  between `split_frames/1` calls.
+  Pure: `feed/3` takes and returns the stream state (`new/0`), and the
+  transport threads it between chunks.
   """
 
   @doc """
@@ -30,6 +29,80 @@ defmodule Raxol.Earn.Transport.SSE.Parser do
       list -> {Enum.drop(list, -1), List.last(list)}
     end
   end
+
+  @typedoc """
+  Stream state between chunks: the unterminated tail, and whether the parser
+  is discarding an event that outgrew the limit.
+  """
+  @type state :: %{tail: binary(), skipping?: boolean(), cr_pending?: boolean()}
+
+  @spec new() :: state()
+  def new, do: %{tail: "", skipping?: false, cr_pending?: false}
+
+  @doc """
+  Feed one chunk. Returns the entries it completes, in order, how many events
+  it dropped for exceeding `max_bytes`, and the next state. Frames without
+  data or with invalid JSON are skipped.
+
+  CR and CRLF line endings are folded to LF. A CR that ends a chunk counts as
+  a line end at once, and an LF opening the next chunk is then dropped as the
+  second half of a CRLF. An event whose unterminated
+  part grows past `max_bytes` is discarded through its boundary and the stream
+  carries on with the next one. Only the seam between the tail and the new
+  chunk is searched for a boundary, so a long tail is not rescanned per chunk.
+  """
+  @spec feed(state(), binary(), pos_integer()) :: {[map()], non_neg_integer(), state()}
+  def feed(state, chunk, max_bytes) when is_binary(chunk) do
+    text = if state.cr_pending?, do: drop_leading_lf(chunk), else: chunk
+    {entries, dropped, next} = advance(state, fold_line_endings(text), max_bytes)
+    {entries, dropped, Map.put(next, :cr_pending?, cr_pending?(chunk, state.cr_pending?))}
+  end
+
+  defp drop_leading_lf("\n" <> rest), do: rest
+  defp drop_leading_lf(chunk), do: chunk
+
+  # An empty chunk leaves a pending CR pending.
+  defp cr_pending?("", pending?), do: pending?
+  defp cr_pending?(chunk, _pending?), do: String.ends_with?(chunk, "\r")
+
+  defp advance(%{skipping?: true, tail: tail}, chunk, max_bytes) do
+    seam = tail <> chunk
+
+    case :binary.match(seam, "\n\n") do
+      {pos, 2} ->
+        advance(
+          %{tail: "", skipping?: false},
+          binary_part(seam, pos + 2, byte_size(seam) - pos - 2),
+          max_bytes
+        )
+
+      :nomatch ->
+        {[], 0, %{tail: last_byte(seam), skipping?: true}}
+    end
+  end
+
+  defp advance(%{tail: tail}, chunk, max_bytes) do
+    {entries, rest} =
+      if boundary_at_seam?(tail, chunk) do
+        {frames, rest} = split_frames(tail <> chunk)
+        {for(frame <- frames, {:ok, entry} <- [parse_frame(frame)], do: entry), rest}
+      else
+        {[], tail <> chunk}
+      end
+
+    if byte_size(rest) > max_bytes,
+      do: {entries, 1, %{tail: last_byte(rest), skipping?: true}},
+      else: {entries, 0, %{tail: rest, skipping?: false}}
+  end
+
+  defp fold_line_endings(text),
+    do: text |> String.replace("\r\n", "\n") |> String.replace("\r", "\n")
+
+  defp last_byte(""), do: ""
+  defp last_byte(bin), do: binary_part(bin, byte_size(bin) - 1, 1)
+
+  defp boundary_at_seam?(tail, chunk),
+    do: :binary.match(last_byte(tail) <> chunk, "\n\n") != :nomatch
 
   @doc """
   Parse a single SSE frame's data field into a JSON map.

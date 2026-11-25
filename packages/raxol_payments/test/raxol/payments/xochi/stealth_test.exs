@@ -1,7 +1,7 @@
 defmodule Raxol.Payments.Xochi.StealthTest do
   use ExUnit.Case, async: true
 
-  alias Raxol.Payments.Secret
+  alias Raxol.Agent.Secret
   alias Raxol.Payments.Xochi.Stealth
 
   # Generate a real keypair for testing
@@ -83,7 +83,7 @@ defmodule Raxol.Payments.Xochi.StealthTest do
         caller: "0x" <> String.duplicate("a", 40),
         ephemeral_pub_key: settlement.ephemeral_pub_key,
         metadata: Stealth.create_metadata(settlement.view_tag),
-        block_number: 12345,
+        block_number: 12_345,
         tx_hash: "0x" <> String.duplicate("d", 64),
         log_index: 0
       }
@@ -267,6 +267,27 @@ defmodule Raxol.Payments.Xochi.StealthTest do
     end
   end
 
+  describe "scan/3 key handling" do
+    test "a malformed key is refused without the key in the result" do
+      bad = :binary.copy(<<0x5A>>, 31)
+
+      announcement = %{
+        scheme_id: 1,
+        stealth_address: "0x" <> String.duplicate("0", 40),
+        ephemeral_pub_key: <<2, 1::256>>,
+        metadata: <<0>>
+      }
+
+      result = Stealth.scan(bad, bad, [announcement])
+      assert result in [{:ok, []}, {:error, :secret_operation_crashed}]
+      refute inspect(result) =~ Base.encode16(bad)
+    end
+
+    test "a non-list announcements argument is an error, not a crash" do
+      assert Stealth.scan(<<1::256>>, <<1::256>>, :nope) == {:error, :invalid_announcements}
+    end
+  end
+
   describe "derive_keys/1" do
     test "derives deterministic spending and viewing keypairs from signature" do
       sig = "0x" <> Base.encode16(:crypto.strong_rand_bytes(65), case: :lower)
@@ -276,9 +297,9 @@ defmodule Raxol.Payments.Xochi.StealthTest do
       {spending_priv, spending_pub} = keys.spending
       {viewing_priv, viewing_pub} = keys.viewing
 
-      assert byte_size(spending_priv) == 32
+      assert byte_size(Secret.reveal(spending_priv)) == 32
       assert byte_size(spending_pub) == 33
-      assert byte_size(viewing_priv) == 32
+      assert byte_size(Secret.reveal(viewing_priv)) == 32
       assert byte_size(viewing_pub) == 33
 
       # Deterministic: same sig produces same keys

@@ -2,110 +2,57 @@ defmodule Raxol.Web3.HTTP do
   @moduledoc """
   The guarded outbound client: the only way out of this package.
 
-  ADR-0038 decision 2. The pipeline is fixed and ordered, so that the expensive
-  and the dangerous steps cannot be reordered, skipped, or re-implemented by a
-  backend author:
+  ADR-0038 decision 2. The pipeline is fixed and ordered:
 
       vet (Outbound) -> cache -> circuit breaker -> token bucket -> pinned dial -> bounded read -> redact
 
   A backend that calls `Raxol.Web3.Dial` or `Raxol.Web3.Exchange` directly is a
-  defect rather than a style difference: those are stages of this pipeline, and
-  reaching them directly skips the vet, the budget and the health record. This
-  is ADR-0033 §7's "one guarded client", stated as a package invariant with one
-  enforcement site.
+  defect: it skips the vet, the budget and the health record.
 
-  ## What each stage is for
+    * **vet** refuses a non-https scheme and any target resolving into the reject
+      set.
+    * **circuit breaker**, keyed per origin, runs BEFORE the bucket so a refused
+      call does not spend a token.
+    * **token bucket** refuses with `{:rate_limited, ms}` rather than sleeping,
+      so a caller with a second source can fail over.
+    * **pinned dial** connects to a vetted address with the hostname carrying
+      identity.
+    * **bounded read** owns the size ceiling, deadline and chunk timeout.
+    * **redaction**: no upstream body, query string or caller-influenced host
+      leaves this module.
 
-    * **vet** refuses a non-https scheme and any target that resolves into the
-      reject set, and returns the addresses it checked. `https` only: the
-      `:schemes` default in `Raxol.Core.Outbound` is already `[:https]`, and
-      nothing here widens it.
-    * **the circuit breaker** keeps a hard-down or challenge-serving upstream
-      from being retried on every call. It is keyed per origin, so one bad
-      backend does not quarantine another. It runs BEFORE the bucket: a call
-      the breaker is going to refuse must not first spend a token, or an open
-      origin drains its own bucket on every refusal and the first call after
-      the breaker half-opens is answered `{:rate_limited, ms}` instead of
-      probing the upstream.
-    * **the token bucket** spends the upstream's budget, not ours, so a refusal
-      is `{:rate_limited, ms}` rather than a sleep inside the client. A caller
-      that wants to wait can; a caller with a second source should fail over
-      instead, and it cannot make that choice if we block for it.
-    * **the pinned dial** connects to a vetted address with the hostname
-      carrying identity (§7 rule 3).
-    * **the bounded read** owns the size ceiling, the deadline and the chunk
-      timeout, because nothing below bounds any of them.
-    * **redaction** is what makes the error taxonomy closed: no upstream body,
-      no query string, and no caller-influenced host leaves this module.
-
-  ## The taxonomy this module produces
+  ## Errors
 
       {:blocked, reason} | {:dns_failed, origin_id} | {:rate_limited, retry_after_ms}
       | {:breaker_open, origin_id} | {:too_large, limit}
       | {:timeout, :connect | :chunk | :deadline} | {:transport, atom()}
 
-  `{:http, status}` and `{:upstream_refused, _}` are in ADR-0038's taxonomy but
-  are not produced here, deliberately. Any status is returned as a response:
-  whether a 403 is a challenge page, a 404 an answer, or a 200 carrying
-  `{"status":"0","message":"NOTOK"}` an authentication failure is a per-backend
-  judgement, and decision 9 requires the challenge body to arrive intact so the
-  router can classify it. What this module does with a status is decide health,
-  not success.
+  Any HTTP status is returned as a response, never `{:http, status}`: whether a
+  403 is a challenge or a 200 an auth failure is each backend's judgement, and
+  the router needs a challenge body intact to classify it.
 
-  ## Health, and what counts as a failure
+  ## Health
 
-  A `403`, `408`, `429` or any `5xx` records a breaker failure: the first is the
-  challenge response decision 9 describes, the middle two are the upstream
-  telling us to back off, and the last is the upstream broken. A transport error
-  or a timeout records one too. Everything else, `404` included, records a
-  success, because a definitive answer about a missing thing is a healthy
-  upstream.
+  `403`, `408`, `429`, any `5xx`, a transport error or a timeout records a breaker
+  failure. Everything else, `404` included, records a success. `{:too_large, _}`
+  records neither: it is our refusal, not evidence about the upstream.
 
-  `{:too_large, _}` records **neither**. It is our refusal of a well-formed
-  response, not evidence about the upstream, and treating it as unhealth would
-  quarantine an origin for answering a question we should not have asked.
+  ## Time budget
 
-  ## How long one call can take
+  `request/3` returns within `:budget_ms` (30 s default). One deadline is taken
+  at entry and every stage is clamped to what is left: resolution gets
+  `min(5s, remaining)`, the dial gets the remainder as `Raxol.Web3.Dial`'s
+  `:budget_ms`, and the bounded read's `:deadline_ms` is clamped too. The only
+  overshoot is the bounded read's last chunk wait, which
+  `Raxol.MCP.BoundedExchange` bounds. This matters because `Raxol.MCP.Server`
+  runs tool callbacks with an `:infinity` call timeout.
 
-  **A guarded request returns within `:budget_ms`, 30 seconds by default.**
-  That is the whole wall-clock cost of `request/3`, and the number a caller
-  running inline in a request-handling process needs: `Raxol.MCP.Server`
-  invokes a tool callback in its own process with an `:infinity` call timeout,
-  so whatever this function takes is time every client of that server waits.
+  ## Headers
 
-  One deadline is computed at entry and every stage below is clamped to what
-  is left of it:
-
-    * resolution gets `min(5s, remaining)` through
-      `Raxol.Core.Outbound.vet/2`'s `:timeout_ms`,
-    * the dial gets the remainder as `Raxol.Web3.Dial`'s `:budget_ms`, which
-      caps each address attempt at `min(:connect_timeout_ms, remaining)` and
-      abandons the rest of the vetted list when nothing is left,
-    * the bounded read's `:deadline_ms` is clamped to the remainder too.
-
-  Without the budget these were independent: about 8 seconds per family of
-  unbounded `:inet.getaddrs/2`, then 5 seconds of SYN timeout for EVERY A and
-  AAAA answer (six is typical for the Cloudflare-fronted hosts
-  `Raxol.Web3.Dial` names), and only then a 20 second read deadline. A
-  black-holed upstream cost about 50 seconds per origin, multiplied by the
-  candidates `Raxol.Web3.Router.call/4` tries.
-
-  The one overshoot the budget does not cover is the bounded read's last
-  chunk wait, which `Raxol.MCP.BoundedExchange` documents and bounds.
-
-  ## Identifying honestly is enforced, not requested
-
-  `user-agent` is set to `raxol_web3/<version> (+https://raxol.io)` and a caller
-  cannot override it: a supplied `user-agent` header is dropped. Two reasons,
-  and the second is why this is enforcement rather than a default. Mint puts
-  `user-agent: mint/<version>` on any request that carries none
-  (`deps/mint/lib/mint/http1.ex:1265-1269`), so silence is not an option, only a
-  choice of which name. And decision 9's posture is worth nothing if one backend
-  can quietly send a browser string.
-
-  `accept-encoding: identity` is a default rather than an enforcement: the
-  bounded read does not decompress, so a gzip body would reach a backend as gzip
-  bytes. A backend that grows decompression can override it.
+  `user-agent` is always `raxol_web3/<version> (+https://raxol.io)`; a supplied
+  one is dropped (Mint would otherwise send its own). `accept-encoding: identity`
+  is a default a backend may override, since the bounded read does not
+  decompress.
   """
 
   require Logger
@@ -132,7 +79,7 @@ defmodule Raxol.Web3.HTTP do
   @default_connect_timeout_ms 5_000
 
   # The whole wall-clock cost of one guarded request, and the number the
-  # moduledoc's "How long one call can take" states. Every stage below is
+  # moduledoc's "Time budget" states. Every stage below is
   # clamped to what is left of it.
   @default_budget_ms 30_000
 
@@ -183,13 +130,14 @@ defmodule Raxol.Web3.HTTP do
     * `:rate_limit` - `[capacity:, refill_per_second:]` for this origin's bucket.
     * `:breaker` - `[failure_threshold:, recovery_ms:]`.
     * `:cache` - `[key:, ttl_ms:, cacheable:]`. `:key` is the fragment half of
-      the `{origin_id, fragment}` entry key and `:ttl_ms` its lifetime.
+      the `{origin_id, fragment}` entry key (for a backend, `{scope, key}`;
+      see `Raxol.Web3.Cache`) and `:ttl_ms` its lifetime.
       `:cacheable` is optional, a `(response -> boolean())` predicate that
       decides whether a 2xx response is a success at the PAYLOAD level; see
       `store/3`'s comment for why a status is not enough on its own.
     * `:budget_ms` - the end-to-end deadline for this call, default `30_000`.
       Resolution, the dial and the read are each clamped to what is left of
-      it; see "How long one call can take".
+      it; see "Time budget".
     * `:connect_timeout_ms`, `:deadline_ms`, `:chunk_timeout_ms`, `:max_bytes`.
       The first two are ceilings, not guarantees: the budget clamps both.
     * `:exchange` - the dial-and-read stage, as
@@ -255,8 +203,6 @@ defmodule Raxol.Web3.HTTP do
 
   defp remaining(deadline), do: max(deadline - now_ms(), 0)
 
-  # -- stage 2: the cache ------------------------------------------------------
-
   # After the vet and before the bucket, and both halves of that matter. Before
   # the vet, a cache hit would answer for a target we had not checked, so a
   # host that resolved into the reject set since the entry was written would
@@ -264,7 +210,8 @@ defmodule Raxol.Web3.HTTP do
   # else's budget for a request we are not making, which defeats the point of
   # caching a free-tier upstream at all.
   #
-  # The key is `{origin_id, fragment}`, and the fragment comes from the caller.
+  # The key is `{origin_id, fragment}`, and the fragment comes from the caller
+  # (a backend's carries its scope; see `Raxol.Web3.Cache`).
   # The request URI is never an input: an API key travels as a query parameter
   # on one of the upstreams this package targets, and ADR-0033 section 7 names
   # cache keys as one of the four places a credential leaks.
@@ -318,8 +265,6 @@ defmodule Raxol.Web3.HTTP do
     end
   end
 
-  # -- stage 1: vet ------------------------------------------------------------
-
   # A refused target names no host. `:invalid_url` covers both a malformed URL
   # and an `http://` one, which is the same answer to a caller: this is not a
   # target we will dial.
@@ -333,12 +278,8 @@ defmodule Raxol.Web3.HTTP do
   # never reaches: the vet is stage 1 and a failed vet returns here instead.
   # So a recorded failure cannot spare the NEXT caller anything, because that
   # caller's vet runs first and pays the same resolution budget whatever the
-  # breaker says. The record only becomes readable once resolution starts
-  # working again, which is the one moment the origin is known to be reachable
-  # -- so the old clause's single observable effect was to quarantine an
-  # origin for `recovery_ms` at the instant it recovered. The comment it
-  # carried ("every call paying for the same lookup") described a gate that
-  # does not sit on this path.
+  # breaker says. Recording it would only quarantine an origin for
+  # `recovery_ms` at the instant resolution recovered.
   #
   # A name that does not resolve is still a failure and still fails over:
   # `Raxol.Web3.Router` fails over on `{:dns_failed, _}` without consulting
@@ -369,8 +310,6 @@ defmodule Raxol.Web3.HTTP do
     end
   end
 
-  # -- stage 2: the token bucket -----------------------------------------------
-
   defp take_token(origin_id, opts) do
     limit = rate_limit(opts)
 
@@ -390,8 +329,6 @@ defmodule Raxol.Web3.HTTP do
     |> Keyword.put_new(:refill_per_second, @default_refill_per_second)
   end
 
-  # -- stage 3: the circuit breaker --------------------------------------------
-
   defp check_breaker(origin_id, opts) do
     case CircuitBreaker.check(Tables.breakers(), {:origin, origin_id}, breaker_opts(opts)) do
       :open ->
@@ -404,8 +341,6 @@ defmodule Raxol.Web3.HTTP do
   end
 
   defp breaker_opts(opts), do: Keyword.get(opts, :breaker, [])
-
-  # -- stages 4 and 5: the pinned dial and the bounded read --------------------
 
   defp exchange(vetted, method, deadline, opts) do
     stage = Keyword.get(opts, :exchange, &dial_and_read/3)
@@ -493,8 +428,6 @@ defmodule Raxol.Web3.HTTP do
   # than a connect timeout: the attempts that did happen may each have been
   # well inside `:connect_timeout_ms`.
   defp dial_error({:budget_exhausted, _failures}), do: {:timeout, :deadline}
-
-  # -- stage 6: health, and the closed taxonomy --------------------------------
 
   defp record_health({:ok, response}, origin_id, opts) do
     if unhealthy_status?(response.status),

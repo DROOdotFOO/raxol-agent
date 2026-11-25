@@ -107,18 +107,21 @@ defmodule Raxol.Agent.Action.ToolConverter do
           call_id: Map.get(tool_call, "id") || Map.get(tool_call, :id)
         }
 
-        case Hook.run_before(hooks, call, context) do
-          {:cont, final_call} ->
-            run_authorized_call(tool, params, final_call, tools, context, hooks)
-
-          {:halt, reason} ->
-            {:error, {:vetoed, reason}}
-
-          {:error, reason} ->
-            Logger.error(fn -> "tool-call hook contract violation: #{inspect(reason)}" end)
-            {:error, {:hook_error, reason}}
-        end
+        hooks
+        |> Hook.run_before(call, context)
+        |> after_before_hooks(tool, params, tools, context, hooks)
     end
+  end
+
+  defp after_before_hooks({:cont, final_call}, tool, params, tools, context, hooks),
+    do: run_authorized_call(tool, params, final_call, tools, context, hooks)
+
+  defp after_before_hooks({:halt, reason}, _tool, _params, _tools, _context, _hooks),
+    do: {:error, {:vetoed, reason}}
+
+  defp after_before_hooks({:error, reason}, _tool, _params, _tools, _context, _hooks) do
+    Logger.error(fn -> "tool-call hook contract violation: #{inspect(reason)}" end)
+    {:error, {:hook_error, reason}}
   end
 
   # A before_call hook may rewrite the call's `:action` and/or `:params`.
@@ -334,8 +337,6 @@ defmodule Raxol.Agent.Action.ToolConverter do
       content: Jason.encode!(result)
     }
   end
-
-  # -- Private ---------------------------------------------------------------
 
   defp find_action(name, tools) do
     case Enum.find(tools, fn tool -> tool_name(tool) == name end) do

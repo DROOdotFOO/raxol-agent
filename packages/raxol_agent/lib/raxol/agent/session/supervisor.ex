@@ -1,86 +1,54 @@
 defmodule Raxol.Agent.Session.Supervisor do
   @moduledoc """
-  One supervised OTP subtree per harness session, plus the `session_id → pid`
+  One supervised OTP subtree per harness session, plus the `session_id -> pid`
   registry.
 
   ## Tree shape
 
   `:rest_for_one`, children in dependency order:
 
-    1. `Raxol.Agent.EmitBridge` — the per-session sink. Owns the durable
-       journal handle (opened lazily on the first durable event, or in its
-       `init` with `journal_required: true`) and the EmitBus subscription.
-    2. `Raxol.Core.Runtime.Lifecycle` — the per-session TEA runtime (dispatcher
-       + model). A **supervised sibling**, not something the session spawns and
-       orphans. It emits durable events onto EmitBus, so it must start AFTER the
-       sink is subscribed (dependency order). Registered under
-       `{:lifecycle, session_id}`.
-    3. `Raxol.Agent.Session` — the thin API/forwarder. Started with
-       `start_emit_bridge: false` AND `manage_lifecycle: false`: the tree owns
-       both the sink and the runtime; the session only looks them up and
-       forwards `send_message` / `get_model` to the runtime's dispatcher.
+    1. `Raxol.Agent.EmitBridge` -- the per-session sink: owns the journal handle
+       and the EmitBus subscription.
+    2. `Raxol.Core.Runtime.Lifecycle` -- the per-session TEA runtime, registered
+       under `{:lifecycle, session_id}`. It starts after the sink is subscribed.
+       As a supervised child it is torn down with the subtree and started fresh
+       on restart, so it can neither leak nor be reattached to a dead session.
+    3. `Raxol.Agent.Session` -- the thin forwarder, started with
+       `start_emit_bridge: false` and `manage_lifecycle: false`.
 
-  Why the runtime is a supervised child (not session-spawned): if the session
-  owned an unlinked lifecycle, a `stop_session` (or any `:rest_for_one` restart,
-  which kills the non-trapping session WITHOUT running `terminate/2`) would
-  leave the runtime running forever — a leak — and a later same-`session_id`
-  start would reattach to that dead session's stale model. As a tree child the
-  runtime is torn down with the subtree and started fresh on every restart:
-  the leak and the reattach-to-dead are structurally impossible.
+  So a **bridge crash** restarts bridge, lifecycle and session in order (a fresh
+  lifecycle; the restarted bridge reopens the journal at its on-disk offset), and
+  a **session crash** restarts only the session, which re-resolves the same
+  running lifecycle (model preserved).
 
-  Why this order: the sink is the resource the runtime *depends on* (durable
-  events must have somewhere to land), so it starts first and stops last; the
-  runtime depends on it and the session depends on the runtime. Under
-  `:rest_for_one`:
+  ## Registry keys (`Raxol.Agent.Registry`)
 
-    * a **bridge crash** restarts the bridge, THEN the lifecycle, THEN the
-      session — the whole tree recovers in dependency order (a FRESH lifecycle,
-      so no durable event is ever emitted into a dead-sink gap), and the
-      restarted bridge re-registers under `{:emit_bridge, session_id}` (exactly
-      one bridge; the journal Writer is linked to the bridge that opened it
-      and exits with it, and the restarted bridge opens the journal again, in
-      its `init` when the journal is required and on the next durable append
-      otherwise, resuming from the on-disk offset);
-    * a **session crash** restarts *only* the session — the sink and the
-      lifecycle are never orphaned or duplicated, and the restarted session
-      re-resolves the SAME running lifecycle (model preserved) via the registry.
+    * `{:session_supervisor, session_id}` -> this subtree; value is the `:owner`
+      (`nil` without one)
+    * `{:session, session_id}` -> the `Raxol.Agent.Session` (supervised or
+      standalone, so `whereis/1` resolves either)
+    * `{:emit_bridge, session_id}` -> the sink
 
-  ## Registry keys (all in `Raxol.Agent.Registry`)
-
-    * `{:session_supervisor, session_id}` → this subtree supervisor; its value
-      is the `:owner` the session was started with (`nil` without one)
-    * `{:session, session_id}` → the live `Raxol.Agent.Session` process
-      (registered by the session itself, in both supervised and standalone
-      modes, so `whereis/1` resolves either)
-    * `{:emit_bridge, session_id}` → the sink (pre-existing key, unchanged)
-
-  Session ids are unique: a second `start_session/2` with the same
-  `session_id` returns `{:error, {:already_started, pid}}`.
+  A second `start_session/2` with the same `session_id` returns
+  `{:error, {:already_started, pid}}`.
 
   ## Placement
 
-  Subtrees run under the existing `Raxol.Agent.DynSup` (the agent package's
-  DynamicSupervisor, supervised by `Raxol.Agent.Supervisor`), so a session
-  tree is crash-isolated from every other session and from the caller.
-  `start_session/2` therefore requires `Raxol.Agent.Registry` and
-  `Raxol.Agent.DynSup` to be running (boot `Raxol.Agent.Supervisor`, or start
-  both directly in tests).
-
-  Note: the journal `FileStore.Writer` keeps its `:global` name (keyed by the
-  physical journal *directory*, not by session) — that registration enforces
-  the single-writer-per-dir invariant across sessions, base dirs and (on
-  shared storage) nodes, which a per-session Registry key cannot express.
+  Subtrees run under `Raxol.Agent.DynSup`, crash-isolated from each other and the
+  caller. `start_session/2` requires `Raxol.Agent.Registry` and
+  `Raxol.Agent.DynSup` (boot `Raxol.Agent.Supervisor`, or start both in tests).
+  The journal `FileStore.Writer` keeps a `:global` name keyed by journal
+  directory, enforcing one writer per directory across sessions and nodes.
   """
 
   use Supervisor
 
   alias Raxol.Agent.EmitBridge
   alias Raxol.Agent.Session
+  alias Raxol.Core.Defaults
 
   @registry Raxol.Agent.Registry
   @dynsup Raxol.Agent.DynSup
-
-  # --- public API --------------------------------------------------------------
 
   @doc """
   Start a session as one supervised subtree under `Raxol.Agent.DynSup`.
@@ -222,7 +190,7 @@ defmodule Raxol.Agent.Session.Supervisor do
 
   defp flush_barrier(_), do: :ok
 
-  defp drain_timeout, do: Raxol.Core.Defaults.shutdown_timeout_ms()
+  defp drain_timeout, do: Defaults.shutdown_timeout_ms()
 
   @doc """
   Resolve `session_id` to the live `Raxol.Agent.Session` pid, or `nil`.
@@ -237,7 +205,7 @@ defmodule Raxol.Agent.Session.Supervisor do
   """
   @spec owner(term()) :: {:ok, term()} | :error
   def owner(session_id) do
-    case Registry.lookup(@registry, {:session_supervisor, session_id}) do
+    case live(Registry.lookup(@registry, {:session_supervisor, session_id})) do
       [{_pid, owner}] -> {:ok, owner}
       [] -> :error
     end
@@ -248,9 +216,12 @@ defmodule Raxol.Agent.Session.Supervisor do
   @doc "Every running session tree, as `{session_id, owner}`."
   @spec owners() :: [{term(), term()}]
   def owners do
-    Registry.select(@registry, [
-      {{{:session_supervisor, :"$1"}, :_, :"$2"}, [], [{{:"$1", :"$2"}}]}
+    @registry
+    |> Registry.select([
+      {{{:session_supervisor, :"$1"}, :"$2", :"$3"}, [], [{{:"$2", {{:"$1", :"$3"}}}}]}
     ])
+    |> live()
+    |> Enum.map(fn {_pid, entry} -> entry end)
   rescue
     ArgumentError -> []
   end
@@ -261,15 +232,14 @@ defmodule Raxol.Agent.Session.Supervisor do
   """
   @spec list_sessions() :: [{term(), pid()}]
   def list_sessions do
-    Registry.select(@registry, [
-      {{{:session, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}
-    ])
+    @registry
+    |> Registry.select([{{{:session, :"$1"}, :"$2", :_}, [], [{{:"$2", :"$1"}}]}])
+    |> live()
+    |> Enum.map(fn {pid, session_id} -> {session_id, pid} end)
   rescue
     # Registry not running — no sessions.
     ArgumentError -> []
   end
-
-  # --- supervisor --------------------------------------------------------------
 
   @doc false
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -310,7 +280,7 @@ defmodule Raxol.Agent.Session.Supervisor do
         restart: :permanent,
         shutdown: 5_000
       },
-      Session.lifecycle_child_spec(opts),
+      Session.Companions.lifecycle_child_spec(opts),
       %{
         id: :session,
         start: {Session, :start_link, [session_opts]},
@@ -318,11 +288,9 @@ defmodule Raxol.Agent.Session.Supervisor do
       }
     ]
 
-    # Restarts are made deterministic (each via-named child waits for its dead
-    # predecessor's Registry key to clear before re-registering — see
-    # `start_bridge/2`, `Session.start_supervised_lifecycle/1`,
-    # `Session.start_link/1`), so `max_restarts` no longer has to absorb a lost
-    # cleanup race. Keep a small budget purely as a genuine crash-loop backstop.
+    # Each via-named child waits for its dead predecessor's Registry key to
+    # clear before registering, so restarts do not race cleanup; this budget
+    # only stops a crash loop.
     Supervisor.init(children,
       strategy: :rest_for_one,
       max_restarts: 5,
@@ -337,16 +305,14 @@ defmodule Raxol.Agent.Session.Supervisor do
   # race against Registry's async cleanup.
   @spec start_bridge(term(), keyword()) :: GenServer.on_start()
   def start_bridge(session_id, bridge_opts) do
-    Session.await_free({:emit_bridge, session_id})
+    Session.Registration.await_free({:emit_bridge, session_id})
     EmitBridge.start_link(bridge_opts)
   end
-
-  # --- helpers -----------------------------------------------------------------
 
   defp normalize_opts(app_module, opts) do
     session_id =
       Keyword.get(opts, :session_id) ||
-        Session.derive_session_id(Keyword.get(opts, :id, app_module))
+        Session.Registration.derive_session_id(Keyword.get(opts, :id, app_module))
 
     opts
     |> Keyword.put(:app_module, app_module)
@@ -372,13 +338,19 @@ defmodule Raxol.Agent.Session.Supervisor do
   end
 
   defp lookup(key) do
-    case Registry.lookup(@registry, key) do
+    case live(Registry.lookup(@registry, key)) do
       [{pid, _}] -> pid
       [] -> nil
     end
   rescue
     ArgumentError -> nil
   end
+
+  # The Registry drops a dead process's entries only when its partition
+  # handles the exit, a moment after the process is gone, so a read in that
+  # moment still returns them: a tree that `stop_session/1` just stopped would
+  # read as running. Every read here keeps only processes that are alive.
+  defp live(entries), do: Session.Registration.live(entries)
 
   # Prefer terminate_child (synchronous, removes the DynSup child); fall back
   # to a direct stop for a tree that was not started under DynSup.

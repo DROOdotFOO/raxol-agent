@@ -54,6 +54,7 @@ defmodule Raxol.Agent do
       Hooks intercept command execution with pre/post semantics.
       Return `[]` to disable hooks (default).
       """
+      @spec command_hooks() :: [module()]
       def command_hooks, do: []
 
       @doc """
@@ -65,6 +66,7 @@ defmodule Raxol.Agent do
       `Raxol.Agent.SandboxHook` prepended automatically to the
       `command_hooks/0` chain.
       """
+      @spec sandbox() :: [Raxol.Agent.Sandbox.t()]
       def sandbox, do: []
 
       @doc """
@@ -77,6 +79,7 @@ defmodule Raxol.Agent do
       when invoking a Strategy or `Raxol.Agent.Stream`. Defaults to `nil`
       (skills disabled).
       """
+      @spec skills_provider() :: module() | nil
       def skills_provider, do: nil
 
       @doc """
@@ -87,6 +90,7 @@ defmodule Raxol.Agent do
       Defaults to the skill actions when `skills_provider/0` is set, otherwise
       `[]`.
       """
+      @spec available_actions() :: [module()]
       def available_actions do
         if skills_provider(), do: Raxol.Agent.Actions.Skills.actions(), else: []
       end
@@ -106,12 +110,15 @@ defmodule Raxol.Agent do
                      available_actions: 0
 
       @doc false
+      @spec async((Directive.Async.sender() -> any())) :: Directive.Async.t()
       def async(fun), do: Directive.async(fun)
 
       @doc false
+      @spec shell(String.t(), keyword()) :: Directive.Shell.t()
       def shell(command, opts \\ []), do: Directive.shell(command, opts)
 
       @doc false
+      @spec send_agent(term(), term()) :: Directive.SendAgent.t()
       def send_agent(target, message), do: Directive.send_agent(target, message)
 
       @doc "Run an action synchronously. Returns `{:ok, result}` or `{:error, reason}`."
@@ -153,8 +160,6 @@ defmodule Raxol.Agent do
       end
     end
   end
-
-  # --- Module-level helpers (callable without `use Raxol.Agent`) ----------
 
   @doc """
   Return the effective hook chain for `agent_module`: prepends

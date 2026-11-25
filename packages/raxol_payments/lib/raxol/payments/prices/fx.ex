@@ -4,7 +4,7 @@ defmodule Raxol.Payments.Prices.FX do
   `price_fn` (ADR-0040 decision 6).
 
   Takes the `:fx` opts `Raxol.Payments.Accounting.env_config/0` produces when
-  `RAXOL_FX_ENABLED=true` (`sleuth_api_key:` as a `Raxol.Payments.Secret`,
+  `RAXOL_FX_ENABLED=true` (`sleuth_api_key:` as a `Raxol.Agent.Secret`,
   `rpc_urls:` for chains 1 and 8453) and returns a `price_fn` that answers
   every symbol in `Raxol.Payments.Assets.fx_pegs/0` (EURC, EURe, ZCHF) at the
   Chainlink rate for its registered peg when Sleuth's market price is within
@@ -36,11 +36,14 @@ defmodule Raxol.Payments.Prices.FX do
   if Code.ensure_loaded?(Raxol.Web3.FX) do
     require Logger
 
-    alias Raxol.Payments.{Assets, Secret}
+    alias Raxol.Agent.Secret
+    alias Raxol.Payments.Assets
 
     defp build(opts, fallback) do
-      key = opts |> Keyword.fetch!(:sleuth_api_key) |> Secret.new() |> Secret.reveal()
-      chainlink = Raxol.Web3.FX.Chainlink.new(rpc_urls: Keyword.get(opts, :rpc_urls, %{}))
+      key = opts |> Keyword.fetch!(:sleuth_api_key) |> reveal()
+      # raxol_web3 keeps the URLs out of its own Inspect; it takes them raw.
+      rpc_urls = Map.new(Keyword.get(opts, :rpc_urls, %{}), fn {id, url} -> {id, reveal(url)} end)
+      chainlink = Raxol.Web3.FX.Chainlink.new(rpc_urls: rpc_urls)
 
       # `Sleuth.new/1` names the argument it refused and never the key.
       case Raxol.Web3.FX.Sleuth.new(api_key: key) do
@@ -52,6 +55,8 @@ defmodule Raxol.Payments.Prices.FX do
           unpriced(fallback)
       end
     end
+
+    defp reveal(value), do: value |> Secret.new() |> Secret.reveal()
 
     # The snapshot is upstream data, and the decoder is bounded against a
     # malformed one; this is the backstop if it still raises. Degrade the way a

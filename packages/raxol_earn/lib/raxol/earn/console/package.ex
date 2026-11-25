@@ -74,8 +74,6 @@ defmodule Raxol.Earn.Console.Package do
 
   def parse(other), do: {:error, {:invalid_package, :root, {:not_a_map, other}}}
 
-  # -- files -----------------------------------------------------------------
-
   defp fetch(files, key) do
     case Map.get(files, key) do
       v when is_binary(v) and v != "" -> {:ok, v}
@@ -102,8 +100,6 @@ defmodule Raxol.Earn.Console.Package do
   end
 
   defp runtime(%{}), do: {:ok, nil}
-
-  # -- tasks -----------------------------------------------------------------
 
   defp tasks(files) do
     case Map.get(files, "tasks.json") do
@@ -148,8 +144,6 @@ defmodule Raxol.Earn.Console.Package do
 
   defp parse_task(other), do: {:error, {:invalid_package, :task, {:missing_fields, other}}}
 
-  # -- skills ----------------------------------------------------------------
-
   defp skills(files) do
     files
     |> Enum.reduce_while({:ok, []}, fn {key, body}, {:ok, acc} ->
@@ -164,8 +158,6 @@ defmodule Raxol.Earn.Console.Package do
       err -> err
     end
   end
-
-  # -- helpers ---------------------------------------------------------------
 
   defp decode_json(bin, field) do
     case Jason.decode(bin) do
@@ -183,15 +175,18 @@ defmodule Raxol.Earn.Console.Package do
       |> Path.wildcard(match_dot: false)
       |> Enum.filter(&regular_file?/1)
       |> Enum.reduce_while({:ok, %{}}, fn path, {:ok, acc} ->
-        case File.read(path) do
-          {:ok, bin} -> {:cont, {:ok, Map.put(acc, Path.relative_to(path, dir), bin)}}
-          {:error, posix} -> {:halt, {:error, {:invalid_package, :read, {posix, path}}}}
-        end
+        add_file(acc, dir, path, File.read(path))
       end)
     else
       {:error, {:invalid_package, :dir, {:not_a_directory, dir}}}
     end
   end
+
+  defp add_file(acc, dir, path, {:ok, bin}),
+    do: {:cont, {:ok, Map.put(acc, Path.relative_to(path, dir), bin)}}
+
+  defp add_file(_acc, _dir, path, {:error, posix}),
+    do: {:halt, {:error, {:invalid_package, :read, {posix, path}}}}
 
   # The directory is data, not pattern: unescaped, a package in `pkg [1]` read
   # as empty and one in `pk{a,b}` read its siblings' files. Windows separators

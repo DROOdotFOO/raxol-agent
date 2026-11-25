@@ -40,7 +40,7 @@ defmodule Raxol.Payments.EIP712Test do
     end
 
     test "a uint256 outside 0..2^256-1 is refused, not truncated to its low bits" do
-      # 2^256 + 1 used to sign as 1, and -1 as 2^256 - 1.
+      # Truncated, 2^256 + 1 would sign as 1, and -1 as 2^256 - 1.
       for amount <- [Integer.pow(2, 256) + 1, -1, Integer.to_string(Integer.pow(2, 256))] do
         assert {:error, {:invalid_uint256, ^amount}} =
                  EIP712.hash(@domain, @types, %{@valid_message | amount: amount})
@@ -356,7 +356,7 @@ defmodule Raxol.Payments.EIP712Test do
     #
     # viem prints digest 0x2250ca7332932abfec5b02ad59a540ed60f03b5a33bdac4f23699b72fe38ba11.
     # Dropping salt yields 0xc2cbb4e9...b2e248, which the worker rejects (the
-    # signer recovers to a different address -> HTTP 401). See GitHub #333.
+    # signer recovers to a different address -> HTTP 401).
     @xochi_types %{
       "XochiIntent" => [
         {"intentId", "string"},
@@ -452,7 +452,7 @@ defmodule Raxol.Payments.EIP712Test do
       # The whole point of the arity-3 form: the domain half comes from the
       # caller (in production, read from the verifying contract), so a domain
       # this module would have built differently is visible rather than
-      # cancelled out on both sides. See GitHub #772.
+      # cancelled out on both sides.
       three_field =
         domain_separator(%{name: "Permit2", chainId: 8453, verifyingContract: @permit2})
 
@@ -579,6 +579,41 @@ defmodule Raxol.Payments.EIP712Test do
                "abcdef0123456789"
 
       assert Raxol.Payments.EIP712.normalize_address("deadBEEF") == "deadbeef"
+    end
+  end
+
+  describe "address?/1" do
+    test "accepts only single-case 0x/0X + 40 hex with no surrounding whitespace" do
+      hex = String.duplicate("ab", 20)
+      assert EIP712.address?("0x" <> hex)
+      assert EIP712.address?("0X" <> String.upcase(hex))
+
+      for value <- [
+            hex,
+            "0x" <> hex <> "\n",
+            " 0x" <> hex,
+            "0x0x" <> hex,
+            "0x" <> hex <> "00",
+            nil,
+            1
+          ],
+          do: refute(EIP712.address?(value))
+    end
+
+    test "a mixed-case address must carry a valid EIP-55 checksum" do
+      # USDC on Base, as Circle publishes it.
+      checksummed = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      assert EIP712.address?(checksummed)
+      assert EIP712.address?(String.downcase(checksummed))
+
+      # One letter's case flipped: still hex, no longer the checksum.
+      refute EIP712.address?("0x833589FCD6eDb6E08f4c7C32D4f71b54bdA02913")
+      refute EIP712.address?("0x" <> String.duplicate("aB", 20))
+    end
+
+    test "checksum: false checks the shape only" do
+      assert EIP712.address?("0x" <> String.duplicate("aB", 20), checksum: false)
+      refute EIP712.address?("0x" <> String.duplicate("aB", 20) <> " ", checksum: false)
     end
   end
 end

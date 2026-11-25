@@ -15,7 +15,7 @@ defmodule Raxol.Payments.SecurityTest do
 
   @valid_address "0x" <> String.duplicate("ab", 20)
 
-  # -- X402 Helpers --
+  # X402 Helpers
 
   defp x402_headers(payload) do
     encoded = payload |> Jason.encode!() |> Base.encode64()
@@ -35,8 +35,6 @@ defmodule Raxol.Payments.SecurityTest do
       overrides
     )
   end
-
-  # -- MPP Helpers --
 
   defp mpp_headers(payload) do
     encoded = payload |> Jason.encode!() |> Base.encode64()
@@ -58,9 +56,7 @@ defmodule Raxol.Payments.SecurityTest do
     )
   end
 
-  # =================================================================
   # X402 parse_challenge
-  # =================================================================
 
   describe "X402 parse_challenge rejects zero price" do
     test "integer zero" do
@@ -181,9 +177,7 @@ defmodule Raxol.Payments.SecurityTest do
     end
   end
 
-  # =================================================================
   # MPP parse_challenge
-  # =================================================================
 
   describe "MPP parse_challenge rejects zero amount" do
     test "integer zero" do
@@ -263,9 +257,7 @@ defmodule Raxol.Payments.SecurityTest do
     end
   end
 
-  # =================================================================
   # Ledger zero/negative amounts
-  # =================================================================
 
   describe "Ledger try_spend with zero amount" do
     setup do
@@ -324,9 +316,7 @@ defmodule Raxol.Payments.SecurityTest do
     end
   end
 
-  # =================================================================
   # SpendingPolicy edge cases
-  # =================================================================
 
   describe "SpendingPolicy.domain_approved? with empty string domain" do
     test "empty string matches nothing in approved list" do
@@ -341,7 +331,7 @@ defmodule Raxol.Payments.SecurityTest do
       refute SpendingPolicy.domain_approved?(policy, "")
     end
 
-    test "empty string approved entry is ignored (no longer matches everything)" do
+    test "empty string approved entry is ignored (does not match everything)" do
       policy = %SpendingPolicy{
         per_request_max: Decimal.new("1"),
         session_max: Decimal.new("10"),
@@ -349,7 +339,7 @@ defmodule Raxol.Payments.SecurityTest do
         approved_domains: [""]
       }
 
-      # Fixed: empty string entries are skipped during matching
+      # Empty string entries are skipped during matching
       refute SpendingPolicy.domain_approved?(policy, "evil.com")
     end
   end

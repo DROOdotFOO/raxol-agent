@@ -1,7 +1,7 @@
 defmodule RaxolPayments.MixProject do
   use Mix.Project
 
-  @version "0.3.0"
+  @version "0.4.0"
   @source_url "https://github.com/DROOdotFOO/raxol-agent"
   @source_ref "raxol_payments-v#{@version}"
 
@@ -31,7 +31,7 @@ defmodule RaxolPayments.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger]]
+    [extra_applications: [:logger], mod: {Raxol.Payments.Application, []}]
   end
 
   defp elixirc_paths(:test), do: ["lib", "test/support"]
@@ -45,7 +45,7 @@ defmodule RaxolPayments.MixProject do
       # release ships the agent modules loaded without starting the agent
       # tree. `raxol_dep/4` drops it from the Hex form: a consumer compiles
       # this mix.exs, and the flag would leave raxol_agent out of its release.
-      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", runtime: false),
+      raxol_dep(:raxol_agent, "~> 3.2", "../raxol_agent", runtime: false),
       # Raxol.Core.Stores.Dets/Naming back Raxol.Payments.Mandate.Store
       runtime_dep(:raxol_core, "~> 2.8", "packages/raxol_core"),
       # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
@@ -63,9 +63,10 @@ defmodule RaxolPayments.MixProject do
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       # Optional: only needed when running EchoServer (`mix raxol_payments.echo`).
       # Floors: plug CVE-2026-54892 (quadratic parameter decoding), fixed in
-      # 1.19.3 on the 1.19 line; plug_cowboy CVE-2026-32688 (HTTP/2 atom
+      # 1.19.3, and CVE-2026-120287 (multipart framing not charged to
+      # :length), fixed in 1.20.4; plug_cowboy CVE-2026-32688 (HTTP/2 atom
       # exhaustion), fixed in 2.8.1.
-      {:plug, "~> 1.19 and >= 1.19.3", optional: true},
+      {:plug, "~> 1.20 and >= 1.20.4", optional: true},
       {:plug_cowboy, "~> 2.8 and >= 2.8.1", optional: true}
     ] ++ web3_dep()
   end

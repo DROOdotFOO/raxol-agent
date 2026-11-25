@@ -23,7 +23,7 @@ defmodule Raxol.Payments.Wallets.Env do
 
   @behaviour Raxol.Payments.Wallet
 
-  alias Raxol.Payments.Secret
+  alias Raxol.Agent.Secret
 
   @default_env_var "RAXOL_WALLET_KEY"
   @default_chain_id 8453
@@ -114,8 +114,6 @@ defmodule Raxol.Payments.Wallets.Env do
       Secret.with_revealed(secret, &sign_digest(&1, digest))
     end
   end
-
-  # -- Private --
 
   # Sign a 32-byte digest with the revealed key. Always called inside
   # `Secret.with_revealed/2`, so a raising signing NIF cannot carry the key into

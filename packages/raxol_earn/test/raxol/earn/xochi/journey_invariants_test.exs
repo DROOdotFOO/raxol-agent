@@ -122,8 +122,6 @@ defmodule Raxol.Earn.Xochi.JourneyInvariantsTest do
     end
   end
 
-  # -- Helpers --
-
   defp exec_context(fake, opts) do
     ledger = Keyword.get_lazy(opts, :ledger, fn -> start_supervised!({Ledger, [name: nil]}) end)
 

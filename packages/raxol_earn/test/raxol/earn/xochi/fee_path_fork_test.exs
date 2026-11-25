@@ -91,7 +91,7 @@ defmodule Raxol.Earn.Xochi.FeePathForkTest do
     assert AnvilHarness.erc20_balance(rpc, @usdc, provider.address) == 0
     assert AnvilHarness.erc20_balance(rpc, @usdc, evaluator.address) == 0
 
-    # 1. createJob(provider, evaluator, expiry, "", hook=0) -- the BUYER (client).
+    # CreateJob(provider, evaluator, expiry, "", hook=0) -- the BUYER (client).
     {:ok, create_tx} =
       HookClient.create_job(a.buyer, @chain_id, @acp_core, %{
         provider: provider.address,
@@ -107,23 +107,23 @@ defmodule Raxol.Earn.Xochi.FeePathForkTest do
     # our jobId (the contract does `++jobCounter`).
     job_id = AnvilHarness.read_uint(rpc, @acp_core, "jobCounter()(uint256)")
 
-    # 2. setBudget(jobId, fee, "") -- the PROVIDER (raxol). budget = storefront fee.
+    # SetBudget(jobId, fee, "") -- the PROVIDER (raxol). budget = storefront fee.
     {:ok, budget_tx} = HookClient.set_budget(a.provider, @chain_id, @acp_core, job_id, @fee)
     AnvilHarness.assert_tx_success!(rpc, budget_tx)
 
-    # 3. approve(core, fee) + fund(jobId, fee, "") -- the BUYER. A successful fund
+    # Approve(core, fee) + fund(jobId, fee, "") -- the BUYER. A successful fund
     #    proves budget == fee (the contract reverts BudgetMismatch otherwise).
     approve_usdc(rpc, buyer, @acp_core, @fee)
     {:ok, fund_tx} = HookClient.fund(a.buyer, @chain_id, @acp_core, job_id, @fee)
     AnvilHarness.assert_tx_success!(rpc, fund_tx)
 
-    # 4. submit(jobId, deliverable, "") -- the PROVIDER. With an evaluator set,
+    # Submit(jobId, deliverable, "") -- the PROVIDER. With an evaluator set,
     #    this is Funded -> Submitted (no auto-complete).
     deliverable = "0x" <> String.duplicate("cd", 32)
     {:ok, submit_tx} = HookClient.submit(a.provider, @chain_id, @acp_core, job_id, deliverable)
     AnvilHarness.assert_tx_success!(rpc, submit_tx)
 
-    # 5. complete(jobId, reason, "") -- the EVALUATOR. Distributes the escrow.
+    # Complete(jobId, reason, "") -- the EVALUATOR. Distributes the escrow.
     reason = "0x" <> String.duplicate("11", 32)
     {:ok, complete_tx} = HookClient.complete(a.evaluator, @chain_id, @acp_core, job_id, reason)
     AnvilHarness.assert_tx_success!(rpc, complete_tx)
@@ -150,8 +150,6 @@ defmodule Raxol.Earn.Xochi.FeePathForkTest do
     assert receipt_has_event?(rpc, complete_tx, "PaymentReleased(uint256,address,uint256)"),
            "complete receipt did not emit PaymentReleased"
   end
-
-  # -- Helpers --
 
   defp adapter_for(rpc, %{private_key: pk}) do
     JSONRPC.new(

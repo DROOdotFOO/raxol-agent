@@ -124,8 +124,6 @@ defmodule Raxol.Earn.Console.Spec do
     }
   end
 
-  # -- field validators ------------------------------------------------------
-
   defp get(req, key), do: Map.get(req, key) || Map.get(req, String.to_existing_atom(key))
 
   defp str(req, key, min, max, mode) do
@@ -163,12 +161,7 @@ defmodule Raxol.Earn.Console.Spec do
 
       list when is_list(list) and length(list) <= 5 ->
         list
-        |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
-          case task(item) do
-            {:ok, t} -> {:cont, {:ok, [t | acc]}}
-            {:error, _} = e -> {:halt, e}
-          end
-        end)
+        |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} -> add_task(acc, task(item)) end)
         |> case do
           {:ok, acc} -> {:ok, Enum.reverse(acc)}
           e -> e
@@ -178,6 +171,9 @@ defmodule Raxol.Earn.Console.Spec do
         bad(:scheduled_tasks, v)
     end
   end
+
+  defp add_task(acc, {:ok, t}), do: {:cont, {:ok, [t | acc]}}
+  defp add_task(_acc, {:error, _} = e), do: {:halt, e}
 
   defp task(%{} = item) do
     with {:ok, desc} <- str(item, "description", 1, 500, :required),

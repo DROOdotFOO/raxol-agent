@@ -228,8 +228,6 @@ defmodule Raxol.Broker.Intent do
     for key <- @order_fields, :maps.get(key, fields) != nil, do: {key, :maps.get(key, fields)}
   end
 
-  # -- Construction -----------------------------------------------------------
-
   defp build(kind, opts, fields) do
     with {:ok, provenance} <- provenance(opts),
          {:ok, strategy} <- strategy(Keyword.get(opts, :strategy)),

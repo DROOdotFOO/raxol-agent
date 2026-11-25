@@ -82,7 +82,7 @@ defmodule Raxol.Earn.Wallet.SCA.BundlerHarnessTest do
   test "deploys + executes a UserOp through the real EntryPoint", %{rpc: rpc} do
     sca = Provisioning.predict_address(@owner, 0)
 
-    # 1. Our prediction must match the real factory's computation.
+    # Our prediction must match the real factory's computation.
     {factory_addr, 0} =
       cast([
         "call",
@@ -96,13 +96,13 @@ defmodule Raxol.Earn.Wallet.SCA.BundlerHarnessTest do
 
     assert String.downcase(String.trim(factory_addr)) == sca
 
-    # 2. The account isn't deployed yet on the fork.
+    # The account isn't deployed yet on the fork.
     refute deployed?(rpc, sca)
 
-    # 3. Fund the SCA so it can prefund the EntryPoint (no paymaster here).
+    # Fund the SCA so it can prefund the EntryPoint (no paymaster here).
     cast(["rpc", "anvil_setBalance", sca, "0xDE0B6B3A7640000", "--rpc-url", rpc])
 
-    # 4. Build + sign the UserOp: deploy via initCode, execute a harmless
+    # Build + sign the UserOp: deploy via initCode, execute a harmless
     #    call to the owner EOA.
     {nonce_hex, 0} =
       cast([
@@ -134,11 +134,11 @@ defmodule Raxol.Earn.Wallet.SCA.BundlerHarnessTest do
     {:ok, signature} = Account.sign_user_op_hash(uo_hash)
     op = UserOp.put_signature(op, signature)
 
-    # 5. Submit through the real EntryPoint -- cast is the bundler.
+    # Submit through the real EntryPoint -- cast is the bundler.
     {out, 0} = submit_handle_ops(rpc, op)
     assert out =~ ~r/status\s+1/
 
-    # 6. The account is now deployed and the UserOp event reports success.
+    # The account is now deployed and the UserOp event reports success.
     assert deployed?(rpc, sca)
     assert out =~ @user_op_event_topic
   end
@@ -149,7 +149,7 @@ defmodule Raxol.Earn.Wallet.SCA.BundlerHarnessTest do
     refute deployed?(rpc, sca)
     cast(["rpc", "anvil_setBalance", sca, "0xDE0B6B3A7640000", "--rpc-url", rpc])
 
-    # 1. Owner deploys + registers session key in a single UserOp.
+    # Owner deploys + registers session key in a single UserOp.
     install_data =
       Raxol.Earn.Wallet.SCA.Provisioning.install_session_key_calldata(@session_addr, 1)
 
@@ -192,7 +192,7 @@ defmodule Raxol.Earn.Wallet.SCA.BundlerHarnessTest do
     assert out =~ @user_op_event_topic
     assert deployed?(rpc, sca)
 
-    # 2. Session-key signed UserOp -- entity 1 -- targets a harmless call.
+    # Session-key signed UserOp -- entity 1 -- targets a harmless call.
     {nonce1_hex, 0} =
       cast([
         "call",
@@ -226,8 +226,6 @@ defmodule Raxol.Earn.Wallet.SCA.BundlerHarnessTest do
     assert out2 =~ ~r/status\s+1/
     assert out2 =~ @user_op_event_topic
   end
-
-  # -- Harness plumbing --
 
   defp factory, do: ModularAccount.factory_address()
 

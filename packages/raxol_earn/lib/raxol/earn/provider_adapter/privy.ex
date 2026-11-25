@@ -32,17 +32,24 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
   sidecar independently verifies it against the Privy wallet on boot. `:chains`
   maps chain_id => RPC URL for the read callbacks.
 
+  Every sidecar call is authenticated both ways (`Raxol.Earn.SignerSidecar.Envelope`):
+  a response is accepted only if it proves the sidecar holds the authorization
+  key and signs for `:address`, so each signature and broadcast is also an
+  identity check.
+
   See `Raxol.Earn.ProviderAdapter.SCA` for the other no-local-EOA adapter.
   """
 
   @behaviour Raxol.Earn.ProviderAdapter
 
-  alias Raxol.Earn.{ABI, Onchain.Hex, Onchain.RPC}
+  alias Raxol.Agent.Secret
+  alias Raxol.Earn.{ABI, Onchain.Hex, Onchain.RPC, SignerSidecar}
 
   @type config :: %{
           sidecar_url: String.t(),
           address: String.t(),
-          chains: %{required(pos_integer()) => String.t()},
+          chains: %{required(pos_integer()) => Secret.t()},
+          auth_key: Secret.t(),
           req_options: keyword()
         }
 
@@ -51,11 +58,15 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
 
   ## Required options
 
-  - `:sidecar_url` -- base URL of the signing sidecar (localhost).
+  - `:sidecar_url` -- base URL of the signing sidecar. Must be loopback unless
+    `:allow_remote` is true or `RAXOL_ACP_SIDECAR_ALLOW_REMOTE=1`.
   - `:address` -- the managed wallet address (0x-hex).
   - `:chains` -- map of chain_id => RPC URL, for the read callbacks.
 
   ## Optional
+
+  - `:auth_key` -- the `Envelope` key. Defaults to one derived from
+    `RAXOL_ACP_SIGNER_PRIVATE_KEY`; raises `ArgumentError` if neither is set.
 
   - `:req_options` -- extra options threaded into every `Req` call to the sidecar
     (e.g. `:receive_timeout`). Defaults to a 60s receive timeout, since a
@@ -64,21 +75,25 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
   """
   @spec new(keyword()) :: Raxol.Earn.ProviderAdapter.adapter()
   def new(opts) do
-    sidecar_url = opts |> Keyword.fetch!(:sidecar_url) |> String.trim_trailing("/")
+    sidecar_url =
+      opts
+      |> Keyword.fetch!(:sidecar_url)
+      |> String.trim_trailing("/")
+      |> SignerSidecar.check_url!(opts)
+
     address = Keyword.fetch!(opts, :address)
     chains = Keyword.fetch!(opts, :chains)
 
     config = %{
       sidecar_url: sidecar_url,
       address: address,
-      chains: chains,
+      chains: Map.new(chains, fn {id, url} -> {id, Secret.new(url)} end),
+      auth_key: Secret.new(auth_key!(opts)),
       req_options: Keyword.get(opts, :req_options, receive_timeout: 60_000)
     }
 
     %{adapter: __MODULE__, config: config}
   end
-
-  # -- ProviderAdapter callbacks --
 
   @impl Raxol.Earn.ProviderAdapter
   def get_address(%{config: %{address: addr}}), do: addr
@@ -151,24 +166,40 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
     end
   end
 
-  # -- Internals --
+  defp auth_key!(opts) do
+    case Keyword.fetch(opts, :auth_key) do
+      {:ok, key} ->
+        key
+
+      :error ->
+        case SignerSidecar.env_auth_key() do
+          {:ok, key} -> key
+          :error -> raise ArgumentError, "set RAXOL_ACP_SIGNER_PRIVATE_KEY or pass :auth_key"
+        end
+    end
+  end
 
   defp post(cfg, path, body) do
-    opts =
-      [url: cfg.sidecar_url <> path, json: body] ++ cfg.req_options
-
-    case Req.post(opts) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
+    case SignerSidecar.call(
+           cfg.sidecar_url,
+           "POST",
+           path,
+           body,
+           Secret.reveal(cfg.auth_key),
+           cfg.address,
+           cfg.req_options
+         ) do
+      {:ok, 200, body} ->
         {:ok, body}
 
-      {:ok, %Req.Response{status: 409, body: %{"error" => "approval_required"} = body}} ->
+      {:ok, 409, %{"error" => "approval_required"} = body} ->
         {:error, {:approval_required, body["approvalId"], body["approvalUrl"]}}
 
-      {:ok, %Req.Response{status: status, body: body}} ->
+      {:ok, status, body} ->
         {:error, {:signer, status, signer_detail(body)}}
 
       {:error, reason} ->
-        {:error, {:signer_unreachable, reason}}
+        {:error, reason}
     end
   end
 
@@ -196,7 +227,7 @@ defmodule Raxol.Earn.ProviderAdapter.Privy do
 
   defp rpc_client(%{config: %{chains: chains}}, chain_id) do
     case Map.fetch(chains, chain_id) do
-      {:ok, url} -> {:ok, RPC.client(url: url)}
+      {:ok, url} -> {:ok, RPC.client(url: Secret.reveal(url))}
       :error -> {:error, {:unsupported_chain, chain_id}}
     end
   end

@@ -229,7 +229,7 @@ defmodule Raxol.Earn.JobSession.Client do
   @spec request_tag(t()) :: String.t()
   def request_tag(%__MODULE__{request_key: rk}), do: "raxol-earn:" <> String.slice(rk, 0, 16)
 
-  # -- buy/1 phases --
+  # buy/1 phases
 
   # The gate prices the human token amount in the policy's unit and returns
   # what it reserved; the tag (and a later release by it) carries that amount.
@@ -338,7 +338,7 @@ defmodule Raxol.Earn.JobSession.Client do
     end
   end
 
-  # -- on_budget_set/2 --
+  # on_budget_set/2
 
   defp fund_flow(c, observed_budget_raw) do
     with :ok <- ensure_checkpoint(c),
@@ -396,7 +396,7 @@ defmodule Raxol.Earn.JobSession.Client do
     end
   end
 
-  # -- on_submitted/2 --
+  # on_submitted/2
 
   defp finalize(c, deliverable, :completed, info) do
     with {:ok, tx} <-
@@ -432,8 +432,6 @@ defmodule Raxol.Earn.JobSession.Client do
     end
   end
 
-  # -- Checkpoint plumbing --
-
   defp ensure_checkpoint(%{checkpoint: nil}) do
     if Raxol.Earn.Checkpoint.required?(), do: {:error, :checkpoint_required}, else: :ok
   end
@@ -456,14 +454,10 @@ defmodule Raxol.Earn.JobSession.Client do
   defp funded?(%{"fund_tx" => tx}) when is_binary(tx), do: true
   defp funded?(_), do: false
 
-  # -- Spend gate context --
-
   defp spend_ctx(c) do
     %{policy: c.policy, ledger: c.ledger, agent_id: c.agent_id || :unknown}
     |> maybe_put(:require_policy, c.require_policy)
   end
-
-  # -- Session --
 
   defp start_session(c, job_id) do
     case Raxol.Earn.JobSession.Supervisor.start_session(
@@ -484,8 +478,6 @@ defmodule Raxol.Earn.JobSession.Client do
   catch
     :exit, _ -> :gone
   end
-
-  # -- create params --
 
   # Stored with string keys (checkpoint records round-trip as JSON) and rebuilt
   # to the atom-keyed map HookClient.create_job/4 expects.
@@ -519,8 +511,6 @@ defmodule Raxol.Earn.JobSession.Client do
       base when is_binary(base) -> base <> " [" <> tag <> "]"
     end
   end
-
-  # -- misc --
 
   defp ctx(c) do
     %{

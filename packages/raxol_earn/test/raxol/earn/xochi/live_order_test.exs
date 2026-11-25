@@ -149,8 +149,6 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
       for cell <- cells, do: run_cell(cfg, cell)
     end
 
-    # -- Cell iteration --
-
     defp cells do
       corridors = parse_corridors(System.get_env("XOCHI_ORDER_CORRIDORS", "8453>42161"))
       tokens = parse_list(System.get_env("XOCHI_ORDER_TOKENS", "USDC,USDT,USDG"))
@@ -189,7 +187,7 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
       end
     end
 
-    # -- Order one cell through the ACP job lifecycle --
+    # Order one cell through the ACP job lifecycle
 
     defp order_cell(cfg, checked, from, to, token, label) do
       # The BUYER signs the Xochi intent itself; the signed bundle rides in the
@@ -273,7 +271,7 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
       Map.new(bundle, fn {k, v} -> {to_string(k), v} end)
     end
 
-    # -- Read-only quote (fillability + solver pin) --
+    # Read-only quote (fillability + solver pin)
 
     # Returns the checked PAIR, not just the quote: the request is what the pull
     # was validated against, so `sign_intent/3` has to re-validate against that
@@ -325,8 +323,8 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
     # Signing is free and local, so the read-only gate can sign the served pull
     # and ask the verifying contract whether that signature would be accepted --
     # the question `validate_pull/3` above does not answer. `validate_pull`
-    # checks the pull's SHAPE; this checks its DIGEST, which is what four funded
-    # attempts on GitHub #772 died on while every shape check passed.
+    # checks the pull's SHAPE; this checks its DIGEST, which a well-shaped pull
+    # can still get wrong.
     #
     # Returns `{verdict, line}`. A REJECTED verdict fails the cell (see the
     # assertion in the preflight test); INCONCLUSIVE and skipped are reported and
@@ -415,7 +413,7 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
       end
     end
 
-    # -- Permit2 allowance --
+    # Permit2 allowance
 
     # Keyed on the SERVED quote's rail, not on the token: an EOA buyer pulls USDC
     # through ERC-3009 and holds no allowance, while a smart-account (ERC-1271)
@@ -470,7 +468,7 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
       end
     end
 
-    # -- Solver pin (scoped to this module, restored on exit) --
+    # Solver pin (scoped to this module, restored on exit)
 
     defp pin_live_solver do
       if System.get_env("XOCHI_ORDER_SOLVER_PIN", "true") != "false" do
@@ -480,7 +478,7 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
 
         # With XochiPull enabled the origin pull routes to the verified per-chain
         # pull contracts, not the bare solver EOA -- trust those alongside the
-        # pinned solver (Riddler #591; Raxol.Payments.Xochi.PullContracts).
+        # pinned solver (Raxol.Payments.Xochi.PullContracts).
         allowlist = Enum.uniq([solver | Raxol.Payments.Xochi.PullContracts.pull_recipients()])
         Application.put_env(:raxol_payments, :pull_solver_allowlist, allowlist)
         Application.put_env(:raxol_payments, :pull_require_solver_pin, true)
@@ -510,8 +508,6 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
 
     defp restore_acp_env(key, nil), do: Application.delete_env(:raxol_earn, key)
     defp restore_acp_env(key, value), do: Application.put_env(:raxol_earn, key, value)
-
-    # -- Helpers --
 
     defp ensure_registered do
       case OfferingRegistry.lookup(StablePublicOffering.offering_name()) do
@@ -560,7 +556,7 @@ defmodule Raxol.Earn.Xochi.LiveOrderTest do
     defp decode_key("0x" <> hex), do: Base.decode16!(hex, case: :mixed)
     defp decode_key(hex), do: Base.decode16!(hex, case: :mixed)
 
-    # -- Reporting (one terse line per cell) --
+    # Reporting (one terse line per cell)
 
     @explorers %{
       1 => "https://etherscan.io/tx/",

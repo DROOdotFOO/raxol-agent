@@ -20,7 +20,9 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
           auto_provision: true               # self-deploy + install session key on first write
         )
 
-  `wallet_opts` is passed verbatim to `send_sponsored_user_operation/2`
+  `wallet_opts` (its `:bundler_url` and `:paymaster_url` kept
+  `Raxol.Agent.Secret`-wrapped until a call) is passed to
+  `send_sponsored_user_operation/2`
   and `await_user_operation/2` -- in tests it carries
   `[req: Req.new(plug: ...), bundler_url: ..., paymaster_url: ...]`; in
   production it is usually `[]` (the wallet's compile-time bundler /
@@ -59,6 +61,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
 
   @behaviour Raxol.Earn.ProviderAdapter
 
+  alias Raxol.Agent.Secret
   alias Raxol.Earn.ABI
   alias Raxol.Earn.Onchain.Hex
   alias Raxol.Earn.Onchain.RPC
@@ -66,7 +69,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
 
   @type config :: %{
           wallet: module(),
-          chains: %{required(pos_integer()) => String.t()},
+          chains: %{required(pos_integer()) => Secret.t()},
           wallet_opts: keyword(),
           auto_provision: boolean()
         }
@@ -97,13 +100,32 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
 
     config = %{
       wallet: wallet,
-      chains: chains,
-      wallet_opts: Keyword.get(opts, :wallet_opts, []),
+      chains: Map.new(chains, fn {id, url} -> {id, Secret.new(url)} end),
+      wallet_opts: opts |> Keyword.get(:wallet_opts, []) |> protect_urls(),
       auto_provision: Keyword.get(opts, :auto_provision, true)
     }
 
     %{adapter: __MODULE__, config: config}
   end
+
+  # Bundler and paymaster URLs embed a provider key (Alchemy), and the
+  # config is printed whole by any crash that takes it as an argument.
+  @url_opts [:bundler_url, :paymaster_url]
+
+  defp protect_urls(opts),
+    do:
+      Enum.map(opts, fn
+        {k, v} when k in @url_opts and is_binary(v) -> {k, Secret.new(v)}
+        # `{:system, var}` names an env var the wallet resolves per call.
+        kv -> kv
+      end)
+
+  defp reveal_urls(opts),
+    do:
+      Enum.map(opts, fn
+        {k, %Secret{} = v} when k in @url_opts -> {k, Secret.reveal(v)}
+        kv -> kv
+      end)
 
   defp validate_wallet!(wallet) do
     Code.ensure_loaded(wallet)
@@ -122,8 +144,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
             ":chains must include the wallet's chain_id #{inspect(wallet.chain_id())}"
     end
   end
-
-  # -- Behaviour callbacks --
 
   @impl Raxol.Earn.ProviderAdapter
   def get_address(%{config: %{wallet: wallet}}), do: wallet.address()
@@ -178,8 +198,6 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
     end
   end
 
-  # -- Write dispatch --
-
   defp dispatch_calls(_cfg, _chain_id, []), do: {:ok, []}
   defp dispatch_calls(cfg, chain_id, [call]), do: send_one(cfg, chain_id, call)
   defp dispatch_calls(_cfg, _chain_id, [_, _ | _]), do: {:error, :batch_unsupported}
@@ -197,7 +215,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
              wallet.nonce_key()
            ),
          {:ok, op_hash} <- send_write_op(cfg, call, nonce),
-         {:ok, uo_receipt} <- wallet.await_user_operation(op_hash, cfg.wallet_opts),
+         {:ok, uo_receipt} <- wallet.await_user_operation(op_hash, reveal_urls(cfg.wallet_opts)),
          :ok <- check_user_op_succeeded(uo_receipt) do
       # A single call maps to one atomic UserOp; the on-chain tx hash is
       # in the bundler receipt (or the op hash if the receipt omits it).
@@ -241,19 +259,17 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
       init_code: <<>>
     }
 
-    wallet.send_sponsored_user_operation(op, cfg.wallet_opts)
+    wallet.send_sponsored_user_operation(op, reveal_urls(cfg.wallet_opts))
   end
 
   defp maybe_provision(%{auto_provision: false}, _client), do: :ok
 
   defp maybe_provision(cfg, client) do
-    case Provisioner.ensure_provisioned(cfg.wallet, client, cfg.wallet_opts) do
+    case Provisioner.ensure_provisioned(cfg.wallet, client, reveal_urls(cfg.wallet_opts)) do
       {:ok, _status} -> :ok
       {:error, _} = err -> err
     end
   end
-
-  # -- Internals --
 
   defp validate_chain(cfg, chain_id) do
     if chain_id == cfg.wallet.chain_id() and Map.has_key?(cfg.chains, chain_id) do
@@ -268,7 +284,7 @@ defmodule Raxol.Earn.ProviderAdapter.SCA do
   # app config. No private key is ever involved on this path.
   defp node_client(%{chains: chains}, chain_id) do
     case Map.fetch(chains, chain_id) do
-      {:ok, url} -> {:ok, RPC.client(url: url)}
+      {:ok, url} -> {:ok, RPC.client(url: Secret.reveal(url))}
       :error -> {:error, {:unsupported_chain, chain_id}}
     end
   end

@@ -81,8 +81,6 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     {sid, j}
   end
 
-  # -- Genesis ----------------------------------------------------------------
-
   test "genesis: the first op appends session_created at offset 1" do
     {w, _sid, j} = start_writer()
     {:ok, rec} = Writer.append(w, "session_update", %{"x" => 1}, "agent")
@@ -93,7 +91,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     assert genesis.offset == 1
   end
 
-  # -- J3: single publisher, append-then-publish ------------------------------
+  # J3: single publisher, append-then-publish
 
   test "single publisher: a subscriber receives every appended record live, in order, all durable" do
     {w, sid, j} = start_writer()
@@ -123,7 +121,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
            end)
   end
 
-  # -- J5: taint annotate, never filter ---------------------------------------
+  # J5: taint annotate, never filter
 
   test "taint is stamped into the record and NEVER filters delivery" do
     {w, sid, _j} = start_writer()
@@ -139,7 +137,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     end
   end
 
-  # -- N-JS7 dead control: publish-ahead / phantom breaks closure -------------
+  # N-JS7 dead control: publish-ahead / phantom breaks closure
 
   test "DEAD publish-phantom delivers a live offset with no durable backing (N-JS7 control)" do
     {w, sid, j} = start_writer(__dead_publish_phantom__: true)
@@ -169,7 +167,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     assert MapSet.member?(durable2, o)
   end
 
-  # -- C13: atomic latch clear on success -------------------------------------
+  # C13: atomic latch clear on success
 
   test "latch clear (C13): turn_completed clears the latch atomically in the same step" do
     {w, _sid, _j} = start_writer()
@@ -229,7 +227,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     refute Enum.any?(completed(j), &(&1.payload["outcome"] == "orphaned"))
   end
 
-  # -- §2.6: orphan repair on appender death ----------------------------------
+  # §2.6: orphan repair on appender death
 
   test "orphan repair (appender death): exactly one orphaned turn_completed, latch clears, next turn OK" do
     {w, _sid, j} = start_writer()
@@ -263,7 +261,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     assert {:ok, _} = Writer.append(w, "turn_started", %{"turnId" => 9}, "user")
   end
 
-  # -- C14: Writer-restart tip-fold orphan repair -----------------------------
+  # C14: Writer-restart tip-fold orphan repair
 
   test "Writer-restart tip-fold (C14): a dangling turn_started is orphaned exactly once on restart" do
     {sid, j} = dangling_journal(1)
@@ -315,7 +313,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     refute Enum.any?(completed(j), &(&1.payload["outcome"] == "orphaned"))
   end
 
-  # -- R-C14-lazy witnesses: fold MUST run strictly before the first op --------
+  # R-C14-lazy witnesses: fold MUST run strictly before the first op
 
   test "R-C14-lazy witness (a): fold-AFTER-op buries the strand (dead control)" do
     # Correct (fold-before): the strand is finalized before the new turn.
@@ -401,7 +399,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
              2
   end
 
-  # -- S6: credit-based lagged producer (§5) ----------------------------------
+  # S6: credit-based lagged producer (§5)
 
   test "credit exhaustion: the Writer emits a REAL {:reattach_lagged, sid, last_offset} and stops sending (S6)" do
     # A tiny credit forces real lag: one live frame fits, the next overflows.
@@ -428,11 +426,10 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
   end
 
   test "healthy subscriber that replenishes credit never false-lags (credit/3 is LIVE API, S6)" do
-    # De-green-wash: the exhaustion test above proves lag when credit runs OUT.
-    # This proves the REPLENISH half — a subscriber that drains and calls
-    # `credit/3` after each frame tracks 'unforwarded backlog', so it stays
-    # attached and receives MORE frames than its (tiny) starting credit, with
-    # NO {:reattach_lagged}. Without a live `credit/3`, this drops at credit+1.
+    # The exhaustion test above proves lag when credit runs OUT. This proves the
+    # REPLENISH half: a subscriber that drains and calls `credit/3` after each
+    # frame stays attached past its (tiny) starting credit, with NO
+    # {:reattach_lagged}. Without a live `credit/3`, this drops at credit+1.
     {w, sid, _j} = start_writer(subscriber_credit: 2)
     :ok = Writer.subscribe(w, self())
 
@@ -454,7 +451,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     assert map_size(:sys.get_state(w).subscribers) == 1
   end
 
-  # -- §2.7: a non-holder turn_completed must be REFUSED at the APPEND ---------
+  # §2.7: a non-holder turn_completed must be REFUSED at the APPEND
 
   test "non-holder turn_completed is refused at the append — no false durable boundary (§2.7)" do
     # Two connections' Sessions on ONE Writer/session_id. Connection A opens the
@@ -529,7 +526,7 @@ defmodule Raxol.AgentClientProtocol.Ext.Journal.WriterTest do
     assert :sys.get_state(w).subscribers == %{}
   end
 
-  # -- Live-bus registration facade (Journal.subscribe/2 → Writer) ------------
+  # Live-bus registration facade (Journal.subscribe/2 → Writer)
 
   test "Journal.subscribe/2 facade routes registration through the Writer registry" do
     sid = "sess-" <> hex()

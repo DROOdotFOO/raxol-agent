@@ -20,7 +20,7 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
   4. **`job.funded`** -- run `settle_fn` (default: a `Raxol.Earn.Xochi.Settler`
      relay) which relays the buyer's pre-signed intent through Xochi and, on
      success, submits the deliverable (the settlement tx hashes) on-chain.
-  5. **`job.completed`** -- provider nets `budget*0.90`. Cleanup local state.
+  5. **`job.completed`** -- mark the session completed.
 
   ## Configuration
 
@@ -40,33 +40,27 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
   One internal `session_state()` per active job. Stored in process
   state keyed by `{chain_id, job_id}`. State machine:
 
-      :awaiting_requirement -> :budget_proposed -> :awaiting_fund
-        -> :settling -> :submitted -> :completed
+      :awaiting_requirement -> :budget_proposed -> :settling
+        -> :submitted -> :completed
+
+  A session rebuilt from history after a restart enters at `:awaiting_fund`.
+  `:rejected` and `:failed` are terminal.
 
   ## Telemetry
 
   Emits `[:raxol, :earn, :xochi, :solver, :event]` on every entry it
-  acts on, with metadata `%{chain_id, job_id, event, action}`.
+  acts on, with metadata `%{key, event, payload}`.
   """
 
   use GenServer
 
   require Logger
 
-  alias Raxol.Earn.{Agent, HookClient, ProviderAdapter}
-  alias Raxol.Earn.Transport.SSE.Parser
-  alias Raxol.Earn.Xochi.{IntentDeriver, Offering}
-  alias Raxol.Payments.Assets
-
-  # On-chain AgenticCommerceV3 JobStatus for a funded job. Verified on Base
-  # mainnet (job 70759: `getJob().status == 1` once funded). The memoryless
-  # reattach path settles only at exactly this status.
-  @onchain_status_funded 1
-
-  # The smallest fee worth escrowing, in the ACP payment token's base units.
-  # `budget_for/2` truncates through `div/2`, so below this a fee that was meant
-  # to be charged has rounded away to an escrow that can never pay.
-  @default_min_fee_atomic 1
+  alias Raxol.Agent.Secret
+  alias Raxol.Earn.{Agent, HookClient}
+  alias Raxol.Earn.Xochi.IntentDeriver
+  alias Raxol.Earn.Xochi.SolverAgent.{Budget, Reattach, Requirement}
+  alias Raxol.Payments.Xochi.Client, as: XochiClient
 
   @type session_status ::
           :awaiting_requirement
@@ -123,8 +117,6 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
     sessions: %{}
   ]
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     name = Keyword.get(opts, :name)
@@ -145,27 +137,19 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
           session_state() | nil
   def session(server, key), do: GenServer.call(server, {:session, key})
 
-  # -- GenServer callbacks --
-
   @impl GenServer
   def init(opts) do
-    case validate_min_fee(configured_min_fee(opts)) do
+    case Budget.min_fee(opts) do
       {:ok, min_fee_atomic} -> start_solver(opts, min_fee_atomic)
       {:error, reason} -> {:stop, reason}
     end
-  end
-
-  defp configured_min_fee(opts) do
-    Keyword.get_lazy(opts, :min_fee_atomic, fn ->
-      Application.get_env(:raxol_earn, :solver_min_fee_atomic, @default_min_fee_atomic)
-    end)
   end
 
   defp start_solver(opts, min_fee_atomic) do
     state = %__MODULE__{
       agent: Keyword.fetch!(opts, :agent),
       provider: Keyword.fetch!(opts, :provider),
-      wallet_address: normalize_address(Keyword.fetch!(opts, :wallet_address)),
+      wallet_address: Requirement.normalize_address(Keyword.fetch!(opts, :wallet_address)),
       evaluator_address: Keyword.fetch!(opts, :evaluator_address),
       chain_id: Keyword.fetch!(opts, :chain_id),
       acp_core_address: Keyword.fetch!(opts, :acp_core_address),
@@ -173,7 +157,7 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
       min_fee_atomic: min_fee_atomic,
       settle_fn: Keyword.get(opts, :settle_fn, &default_settle/1),
       history_fn: Keyword.get(opts, :history_fn),
-      xochi_config: Keyword.get(opts, :xochi_config, %{})
+      xochi_config: XochiClient.protect_config(Keyword.get(opts, :xochi_config, %{}))
     }
 
     :ok = Agent.subscribe(state.agent)
@@ -196,7 +180,11 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
   # Ignore anything we don't recognise.
   def handle_info(_msg, state), do: {:noreply, state}
 
-  # -- Dispatch --
+  # The Xochi token and the provider's key and RPC URLs are `Secret`s, which
+  # `:sys.get_status` and an Erlang-formatted crash report print raw.
+  @impl GenServer
+  def format_status(status),
+    do: Secret.redact_status(status, [:provider, :xochi_config], failure: true)
 
   defp dispatch(%{"kind" => "system", "event" => "job.created"} = entry, _session, state) do
     handle_job_created(entry, state)
@@ -236,11 +224,9 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
 
   defp dispatch(_entry, _session, state), do: state
 
-  # -- Handlers --
-
   defp handle_job_created(entry, state) do
     key = job_key(entry)
-    job_id_uint = parse_job_id(entry["jobId"])
+    job_id_uint = Requirement.job_id_uint(entry["jobId"])
 
     # Filter: only act on jobs where we're the provider.
     if interested?(entry, state) do
@@ -264,7 +250,7 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
 
     case Map.fetch(state.sessions, key) do
       {:ok, %{status: :awaiting_requirement} = session} ->
-        case decode_requirement(entry["content"]) do
+        case Requirement.decode(entry["content"]) do
           {:ok, req} ->
             propose_budget(state, key, session, req)
 
@@ -296,13 +282,8 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
         settle(state, key, session)
 
       :none ->
-        # No settleable in-memory session. If the solver restarted between
-        # setBudget and fund (deploy/reschedule), the session is gone and the
-        # live-only SSE stream never replays the earlier entries -- so without a
-        # reattach the funded job stays stuck forever (issue #772). Rebuild from
-        # job history and settle. A session that exists but is NOT fundable
-        # (already settling/submitted/completed/failed) is a duplicate/late
-        # funded event and is left untouched.
+        # An absent session means a restart lost it: rebuild from history. A
+        # session past funding is a duplicate or late event and is left alone.
         if live_status == :absent do
           reattach_and_settle(entry, key, state)
         else
@@ -322,161 +303,19 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
     end
   end
 
-  # Rebuild the lost session from the ACP job history and settle it. The history
-  # (fetched off the Virtuals server) is authoritative: it carries the original
-  # `job.created` (confirming this solver is the provider) and the buyer's
-  # `requirement` message (carrying the signed intent bundle we relay). Before
-  # spending, it independently confirms on-chain that the job is actually funded
-  # (`confirm_funded_onchain/3`). Fails closed and stays silent on-chain if any of
-  # that can't be recovered, the job isn't ours, or it isn't funded on-chain --
-  # reattach never invents a settlement.
   defp reattach_and_settle(entry, key, state) do
     Logger.info("[xochi.solver] no live session for #{inspect(key)}; reattaching from history")
 
-    with {:ok, session} <- rebuild_session(entry, key, state),
-         :ok <- confirm_funded_onchain(state, key, session) do
-      emit(state, key, :reattached, :from_history)
-      Logger.info("[xochi.solver] reattached #{inspect(key)} from history; settling")
-      settle(put_session(state, key, session), key, session)
-    else
+    case Reattach.rebuild(entry, key, state) do
+      {:ok, session} ->
+        emit(state, key, :reattached, :from_history)
+        Logger.info("[xochi.solver] reattached #{inspect(key)} from history; settling")
+        settle(put_session(state, key, session), key, session)
+
       {:error, reason} ->
         emit(state, key, :reattach_failed, reason)
         Logger.warning("[xochi.solver] reattach aborted for #{inspect(key)}: #{inspect(reason)}")
         state
-    end
-  end
-
-  # Defense-in-depth for the memoryless reattach path: `job.funded` is the trusted
-  # SSE trigger, but reattach fires for a job this process has no record of, so
-  # before settle/3 spends real funds it reads `getJob(jobId).status` on-chain and
-  # proceeds only when it is EXACTLY `funded`. A status below funded means the
-  # event was premature; a status past funded (submitted/completed) means the job
-  # was already settled -- both fail closed. An unreadable status fails closed too.
-  # The in-memory happy path (a live :budget_proposed/:awaiting_fund session) does
-  # not run this and is unchanged.
-  defp confirm_funded_onchain(state, key, %{job_id_uint: job_id_uint}) do
-    case job_status_onchain(state, job_id_uint) do
-      {:ok, @onchain_status_funded} ->
-        :ok
-
-      {:ok, other} ->
-        Logger.warning(
-          "[xochi.solver] reattach #{inspect(key)}: on-chain status #{inspect(other)} != funded; not settling"
-        )
-
-        {:error, {:not_funded_onchain, other}}
-
-      {:error, reason} ->
-        {:error, {:job_status_unavailable, reason}}
-    end
-  end
-
-  # Read `getJob(jobId).status` off the ACP Core via the provider's eth_call seam.
-  defp job_status_onchain(state, job_id_uint) do
-    params = %{
-      address: state.acp_core_address,
-      signature: "getJob(uint256)",
-      args: [{"uint256", job_id_uint}]
-    }
-
-    with {:ok, raw} <- ProviderAdapter.read_contract(state.provider, state.chain_id, params) do
-      decode_job_status(raw)
-    end
-  end
-
-  # getJob(uint256) -> (client, status, provider, expiredAt, evaluator, hook,
-  # budget, description): a dynamic-struct return, so a leading offset word
-  # precedes the head. `status` is head field 1, i.e. word index 2 overall --
-  # skip the offset word + `client`. An integer is accepted for a canned mock read.
-  defp decode_job_status(status) when is_integer(status) and status >= 0, do: {:ok, status}
-
-  defp decode_job_status("0x" <> hex) do
-    case Base.decode16(hex, case: :mixed) do
-      {:ok, <<_::binary-size(2 * 32), status::unsigned-big-integer-size(256), _::binary>>} ->
-        {:ok, status}
-
-      _ ->
-        {:error, :undecodable_job_status}
-    end
-  end
-
-  defp decode_job_status(other), do: {:error, {:unexpected_job_status, other}}
-
-  defp rebuild_session(entry, key, state) do
-    with {:ok, entries} <- fetch_history(state, key),
-         normalized = Enum.map(entries, &Parser.normalize/1),
-         :ok <- confirm_provider(normalized, state),
-         {:ok, requirement} <- requirement_from_history(normalized),
-         {:ok, %{from_amount: transfer_atomic}} <-
-           IntentDeriver.resolve(state.xochi_config, requirement) do
-      {:ok, reattached_session(entry, key, requirement, transfer_atomic)}
-    else
-      # IntentDeriver returns {:reject, _} | {:error, _}; the history seams return
-      # {:error, _}. Normalize all to {:error, reason} so reattach fails closed.
-      {_reject_or_error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp reattached_session(entry, {chain_id, job_id}, requirement, transfer_atomic) do
-    id = entry["jobId"] || job_id
-
-    %{
-      job_id: id,
-      chain_id: entry["chainId"] || chain_id,
-      job_id_uint: parse_job_id(id),
-      status: :awaiting_fund,
-      requirement: requirement,
-      transfer_amount_atomic: transfer_atomic
-    }
-  end
-
-  defp fetch_history(%{history_fn: history_fn}, key) when is_function(history_fn, 1) do
-    history_fn.(key)
-  end
-
-  defp fetch_history(state, key), do: Agent.get_history(state.agent, key)
-
-  # Only settle a job whose recorded provider is this solver -- reattach must not
-  # spend on a job we never accepted. The provider is read from the historical
-  # `job.created` entry (authoritative), not the funded event, which may not
-  # carry it.
-  defp confirm_provider(entries, state) do
-    created =
-      Enum.find(entries, fn
-        %{"kind" => "system", "event" => "job.created"} -> true
-        _ -> false
-      end)
-
-    case created do
-      %{"provider" => provider} when is_binary(provider) ->
-        if normalize_address(provider) == state.wallet_address,
-          do: :ok,
-          else: {:error, :not_our_job}
-
-      _ ->
-        {:error, :no_created_in_history}
-    end
-  end
-
-  # The buyer's requirement (carrying the signed intent bundle) is the last
-  # valid `requirement` message in the history.
-  defp requirement_from_history(entries) do
-    entries
-    |> Enum.reverse()
-    |> Enum.find_value(fn
-      %{"kind" => "message", "contentType" => "requirement", "content" => content} ->
-        case decode_requirement(content) do
-          {:ok, requirement} -> {:ok, requirement}
-          {:error, _} -> nil
-        end
-
-      _ ->
-        nil
-    end)
-    |> case do
-      {:ok, requirement} -> {:ok, requirement}
-      nil -> {:error, :no_requirement_in_history}
     end
   end
 
@@ -524,33 +363,18 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
     end
   end
 
-  # -- Budget proposal --
-
   @doc false
-  # The ACP job budget is the storefront fee only -- `fee_bps` basis points of
-  # the transfer amount. The transfer itself flows through Xochi (a buyer-signed
-  # intent the storefront relays), NOT through the ACP escrow, so the escrow is
-  # never sized to the transfer -- putting the transfer through the escrow would
-  # incur the core's 5-10% take on the full amount. Exposed for property tests.
   @spec budget_for(non_neg_integer(), non_neg_integer()) :: non_neg_integer()
-  def budget_for(transfer_atomic, fee_bps)
-      when is_integer(transfer_atomic) and transfer_atomic >= 0 and
-             is_integer(fee_bps) and fee_bps >= 0 do
-    div(transfer_atomic * fee_bps, 10_000)
-  end
+  defdelegate budget_for(transfer_atomic, fee_bps), to: Budget
 
-  # A storefront job is a PLAIN job (hook = address(0)): `set_budget` carries no
-  # hook data. The budget is the storefront fee; the transfer settles through
-  # Xochi off-escrow, so no FundTransfer hook is involved.
-  #
-  # The fee is sized on the AUTHORITATIVE amount the buyer signed -- read from
-  # Xochi by the intent id, never the relayed `amount_atomic` a buyer could
-  # understate (`IntentDeriver`). Fails the job closed if the intent can't be
-  # resolved rather than proposing a budget on an untrusted number.
+  # The fee is sized on the amount the buyer signed, read from Xochi by intent
+  # id, never the relayed `amount_atomic` a buyer could understate. An intent
+  # that cannot be resolved fails the job closed.
   defp propose_budget(state, key, session, requirement) do
     with {:ok, %{intent: intent, from_amount: transfer_atomic}} <-
            IntentDeriver.resolve(state.xochi_config, requirement),
-         {:ok, budget_atomic} <- fee_budget(state, intent, transfer_atomic) do
+         {:ok, budget_atomic} <-
+           Budget.fee_budget(intent, transfer_atomic, state.fee_bps, state.min_fee_atomic) do
       set_budget(state, key, session, requirement, transfer_atomic, budget_atomic)
     else
       {reject_or_error, reason} when reject_or_error in [:reject, :error] ->
@@ -558,86 +382,6 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
         put_session(state, key, %{session | status: :failed})
     end
   end
-
-  # The budget is `fee_bps` of the intent's `from_amount`, escrowed as the ACP
-  # payment token (USDC, 6dp). `from_amount` is denominated in the ORIGIN token's
-  # base units, so that arithmetic only means anything when the origin leg is
-  # itself a 6dp USD stablecoin.
-  #
-  # Rescaling by decimals cannot rescue a non-stablecoin: 1 WETH is 1e18 base
-  # units, and reading that as 1e6-scaled USDC understates the fee by roughly the
-  # ETH price. Sizing this correctly needs a price oracle, so until there is one
-  # the sound answer is to refuse the corridor rather than escrow a wrong number.
-  #
-  # An unregistered token is refused for the same reason: `Assets.decimals/2`
-  # answers 6 for anything it does not know, so an unlisted 18dp token would
-  # silently size a budget ~1e12 times too small.
-  #
-  # The USDC public offering gates both legs to USDC and is unaffected; this is
-  # the generic `xochi_cross_chain_transfer` path, which gates nothing. See #666.
-  @fee_base_symbols ~w(USDC USDT USDG)
-
-  # The scale the fee arithmetic assumes, asserted rather than trusted. Every
-  # registered @fee_base_symbols token is 6dp on every corridor chain today, so
-  # the symbol check alone happens to be right -- but the argument above is about
-  # DECIMALS, and a symbol is only a proxy for them. Registering an 18dp variant
-  # under one of these symbols would pass a symbol-only gate and size a budget
-  # ~1e12 too small. The symbol check still has to come first: `Assets.decimals/2`
-  # answers 6 for tokens it does not know, so on its own it would wave through
-  # every unregistered token.
-  @fee_base_decimals 6
-
-  # Returns the budget it validated, so the number that was checked is the
-  # number that gets escrowed. Recomputing it in `set_budget/6` would leave the
-  # gate guarding a value nothing downstream is bound to.
-  defp fee_budget(state, intent, transfer_atomic) do
-    budget_atomic = budget_for(transfer_atomic, state.fee_bps)
-
-    with :ok <- ensure_stable_origin(intent),
-         :ok <- ensure_fee_floor(budget_atomic, state.fee_bps, state.min_fee_atomic) do
-      {:ok, budget_atomic}
-    end
-  end
-
-  defp ensure_stable_origin(%{from_chain_id: chain, from_token: token}) do
-    with symbol when symbol in @fee_base_symbols <- Assets.symbol_for(chain, token),
-         @fee_base_decimals <- Assets.decimals(chain, token) do
-      :ok
-    else
-      decimals when is_integer(decimals) ->
-        {:reject, {:unsupported_fee_base_decimals, chain, token, decimals}}
-
-      _ ->
-        {:reject, {:unsupported_fee_base, chain, token}}
-    end
-  end
-
-  defp ensure_stable_origin(_intent), do: {:reject, {:unsupported_fee_base, nil, nil}}
-
-  # `budget_for/2` truncates through `div/2`, so a small enough transfer rounds
-  # the fee to zero. A zero budget is an escrow that can never pay, and the
-  # generic path has no order-size band of its own (the USDC public offering
-  # carries a 1 USDC floor), so reject rather than propose it.
-  #
-  # Two different zeros: a storefront configured with `fee_bps: 0` is charging
-  # nothing deliberately and its zero budget is the intended outcome. The floor
-  # is for the other one, where a fee was meant to be charged and truncated away.
-  defp ensure_fee_floor(_budget_atomic, 0, _min), do: :ok
-
-  defp ensure_fee_floor(budget_atomic, _fee_bps, min) do
-    if budget_atomic >= min,
-      do: :ok,
-      else: {:reject, {:fee_below_min, budget_atomic, min}}
-  end
-
-  # Read and checked once, at start_link, rather than per job. `>=` against a
-  # non-integer does not raise -- Erlang term order puts every number below every
-  # atom and binary, so `5000 >= "1"` and `5000 >= :infinity` are both false. A
-  # mistyped value would silently reject every job on this path, which is the
-  # worst way for a storefront to be down. Refusing to start says so instead.
-  @spec validate_min_fee(term()) :: {:ok, non_neg_integer()} | {:error, term()}
-  defp validate_min_fee(n) when is_integer(n) and n >= 0, do: {:ok, n}
-  defp validate_min_fee(other), do: {:error, {:invalid_solver_min_fee_atomic, other}}
 
   defp set_budget(state, key, session, requirement, transfer_atomic, budget_atomic) do
     case HookClient.set_budget(
@@ -668,8 +412,6 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
         put_session(state, key, %{session | status: :failed})
     end
   end
-
-  # -- Settlement --
 
   defp settle(state, key, session) do
     session = %{session | status: :settling}
@@ -725,15 +467,12 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
     end
   end
 
-  # -- Default settle (test-only) --
-
-  # In production, callers pass a `Raxol.Earn.Xochi.Settler` relay closure via
-  # :settle_fn. The default below produces a deterministic stub so the
-  # SolverAgent can be exercised in tests without a live Xochi server.
+  # Deterministic stub used when no `:settle_fn` is given; production passes a
+  # `Raxol.Earn.Xochi.Settler` relay closure.
   defp default_settle(%{transfer_amount_atomic: transfer_atomic}) do
     {:ok,
      %{
-       intent_id: ("stub-intent-" <> :erlang.unique_integer([:positive])) |> to_string(),
+       intent_id: "stub-intent-#{:erlang.unique_integer([:positive])}",
        quote_id: "stub-quote",
        settlement_tx_hash: "0x" <> String.duplicate("a", 64),
        receiving_tx_hash: "0x" <> String.duplicate("b", 64),
@@ -743,8 +482,6 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
      }}
   end
 
-  # -- Helpers --
-
   defp interested?(entry, state) do
     job_provider =
       entry["provider"] ||
@@ -753,28 +490,7 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
 
     case job_provider do
       nil -> false
-      addr -> normalize_address(addr) == state.wallet_address
-    end
-  end
-
-  defp decode_requirement(content) when is_binary(content) do
-    case Jason.decode(content) do
-      {:ok, req} when is_map(req) ->
-        if Offering.valid_requirement?(req), do: {:ok, req}, else: {:error, :invalid_requirement}
-
-      _ ->
-        {:error, :requirement_not_json}
-    end
-  end
-
-  defp decode_requirement(_), do: {:error, :requirement_missing}
-
-  defp parse_job_id(id) when is_integer(id), do: id
-
-  defp parse_job_id(id) when is_binary(id) do
-    case Integer.parse(id) do
-      {n, _} -> n
-      :error -> :erlang.phash2(id)
+      addr -> Requirement.normalize_address(addr) == state.wallet_address
     end
   end
 
@@ -791,8 +507,6 @@ defmodule Raxol.Earn.Xochi.SolverAgent do
   defp put_session(state, key, session) do
     %{state | sessions: Map.put(state.sessions, key, session)}
   end
-
-  defp normalize_address(addr) when is_binary(addr), do: String.downcase(addr)
 
   defp emit(_state, key, event, payload) do
     :telemetry.execute(

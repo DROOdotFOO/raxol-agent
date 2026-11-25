@@ -33,7 +33,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     {:ok, pub: pub, priv: priv, keyring: keyring}
   end
 
-  # -- low-level minting (exact-bytes control for malleability tests) ----------
+  # low-level minting (exact-bytes control for malleability tests)
 
   defp b64(bin), do: Base.url_encode64(bin, padding: false)
 
@@ -59,9 +59,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     )
   end
 
-  # ==========================================================================
-  # 1. Ed25519 known-answer vector — RFC 8032 §7.1 Test 1 (proves the primitive)
-  # ==========================================================================
+  # Ed25519 known-answer vector — RFC 8032 §7.1 Test 1 (proves the primitive)
 
   test "Ed25519 KAT: RFC 8032 Test 1 verifies, tamper + wrong-msg reject" do
     pub =
@@ -87,9 +85,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     refute :crypto.verify(:eddsa, :none, "", tampered, [pub, :ed25519])
   end
 
-  # ==========================================================================
-  # 2. Happy path + forgery / unknown-kid
-  # ==========================================================================
+  # Happy path + forgery / unknown-kid
 
   test "a valid token verifies to its claims", %{priv: priv, keyring: keyring} do
     token = mint(claims(), priv)
@@ -124,9 +120,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     assert {:error, :unknown_kid} = CapToken.verify(token, %{}, @now, @sid)
   end
 
-  # ==========================================================================
-  # 3. Temporal validity — exact boundaries (T-11, T-12, INV-AP9)
-  # ==========================================================================
+  # Temporal validity — exact boundaries (T-11, T-12, INV-AP9)
 
   test "expiry is strict: now == exp denies, now == exp-1 admits", %{
     priv: priv,
@@ -187,9 +181,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     end
   end
 
-  # ==========================================================================
-  # 4. Malleability + strict base64url (T-13, INV-AP6)
-  # ==========================================================================
+  # Malleability + strict base64url (T-13, INV-AP6)
 
   test "any single-bit flip anywhere in a valid token denies (INV-AP6)", %{
     priv: priv,
@@ -265,9 +257,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     assert {:ok, _} = CapToken.verify(token, keyring, @now, @sid)
   end
 
-  # ==========================================================================
-  # 5. Algorithm pinning / alg-confusion (T-14, INV-AP7)
-  # ==========================================================================
+  # Algorithm pinning / alg-confusion (T-14, INV-AP7)
 
   test "non-RXC1 prefixes (RXC2, JWT, none) all fail at V2 (:malformed)", %{
     priv: priv,
@@ -303,9 +293,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     assert c["alg"] == "none"
   end
 
-  # ==========================================================================
-  # 6. Session binding (T-15, INV-AP8) incl. prefix pairs
-  # ==========================================================================
+  # Session binding (T-15, INV-AP8) incl. prefix pairs
 
   test "a token for session A denies against B, including prefix pairs", %{
     priv: priv,
@@ -320,9 +308,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     end
   end
 
-  # ==========================================================================
-  # 7. Key rotation (grow-only key set)
-  # ==========================================================================
+  # Key rotation (grow-only key set)
 
   test "rotation: old + new keys each verify only their own tokens" do
     {pub1, priv1} = Issuer.generate_keypair()
@@ -344,9 +330,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
              CapToken.verify(t1, Map.delete(keyring, "k1"), @now, @sid)
   end
 
-  # ==========================================================================
-  # 8. Restrictive claims at the verify layer (T-27, INV-AP17)
-  # ==========================================================================
+  # Restrictive claims at the verify layer (T-27, INV-AP17)
 
   test "an unimplemented restrictive claim denies, never admitted-by-ignoring", %{
     priv: priv,
@@ -373,9 +357,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     assert {:ok, _} = CapToken.verify(jti, keyring, @now, @sid)
   end
 
-  # ==========================================================================
-  # 9. Totality + no atoms (T-20, INV-AP5) and offline purity (T-23, INV-AP4)
-  # ==========================================================================
+  # Totality + no atoms (T-20, INV-AP5) and offline purity (T-23, INV-AP4)
 
   test "verify is total over garbage and creates no atoms", %{keyring: keyring} do
     # Warm up (module/code loading may intern atoms once).
@@ -406,9 +388,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     assert {:ok, _} = CapToken.verify(token, keyring, @now, @sid)
   end
 
-  # ==========================================================================
-  # 10. Issuer TTL enforcement (§5.1, G5:S6)
-  # ==========================================================================
+  # Issuer TTL enforcement (§5.1, G5:S6)
 
   test "Issuer enforces the interactive TTL cap; archival opt-in extends it", %{
     priv: priv
@@ -466,9 +446,7 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     assert c["kid"] == "k1"
   end
 
-  # ==========================================================================
-  # 11. The Token attach policy (§3.4) — actor / surface / downgrade, via Runner
-  # ==========================================================================
+  # The Token attach policy (§3.4) — actor / surface / downgrade, via Runner
 
   describe "Token policy (with a configured keyring + real clock)" do
     setup %{pub: pub} do
@@ -628,8 +606,6 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
     end
   end
 
-  # -- Keyring load/validate ---------------------------------------------------
-
   test "Keyring normalizes hex/raw/file and rejects non-32-byte keys", %{pub: pub} do
     hex = Base.encode16(pub, case: :lower)
     assert %{"k1" => ^pub} = Keyring.normalize(%{"k1" => {:hex, hex}})
@@ -644,8 +620,6 @@ defmodule Raxol.AgentClientProtocol.Ext.TokenTest do
       Keyring.normalize(%{"bad" => {:hex, "zznothex"}})
     end
   end
-
-  # -- helpers ----------------------------------------------------------------
 
   defp flip_bit(bin, i) do
     byte_index = div(i, 8)

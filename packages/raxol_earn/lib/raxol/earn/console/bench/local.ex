@@ -111,8 +111,8 @@ defmodule Raxol.Earn.Console.Bench.Local do
         :exit_status,
         :stderr_to_stdout,
         args: args,
-        # A buyer-supplied agent package: no raxol secrets (`Raxol.Core.ChildEnv`).
-        env: Raxol.Core.ChildEnv.port_env(env)
+        # A buyer-supplied agent package: no credentials (`Raxol.Agent.ChildEnv`).
+        env: Raxol.Agent.ChildEnv.port_env(env)
       ])
 
     {:ok, port}

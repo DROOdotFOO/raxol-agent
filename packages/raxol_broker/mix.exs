@@ -13,6 +13,7 @@ defmodule RaxolBroker.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      dialyzer: [plt_add_apps: [:mix]],
       description: description(),
       package: package(),
       docs: docs(),
@@ -30,7 +31,7 @@ defmodule RaxolBroker.MixProject do
 
   defp deps do
     [
-      raxol_dep(:raxol_agent, "~> 3.0", "../raxol_agent", []),
+      raxol_dep(:raxol_agent, "~> 3.2", "../raxol_agent", []),
       runtime_dep(:raxol_journal, "~> 2.8", "packages/raxol_journal"),
       runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp"),
       # Floor: below 3.1.2, `Decimal.round/3` allocates in proportion to
@@ -44,8 +45,9 @@ defmodule RaxolBroker.MixProject do
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
       # `Raxol.Broker.MCP.Fake` is built on raxol_mcp's reference server,
-      # which compiles only with plug (optional upstream).
-      {:plug, "~> 1.16"},
+      # which compiles only with plug (optional upstream). Floor: CVE-2026-120287
+      # (multipart framing not charged to :length), fixed in 1.20.4.
+      {:plug, "~> 1.20 and >= 1.20.4"},
       {:stream_data, "~> 1.0", only: [:dev, :test]},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

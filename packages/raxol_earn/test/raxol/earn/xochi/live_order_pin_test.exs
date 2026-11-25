@@ -73,7 +73,7 @@ defmodule Raxol.Earn.Xochi.LiveOrderPinTest do
              "typed; unset must skip the cell instead"
   end
 
-  # -- The gate's source, as calls rather than text --
+  # The gate's source, as calls rather than text
 
   # `calls` are {LastAliasSegment, function, arity} for qualified calls and
   # {nil, function, arity} for local ones; `modules` is every alias segment named

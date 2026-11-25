@@ -28,7 +28,7 @@ defmodule Raxol.Agent.SessionStreamer do
 
   - `{:text_delta, text}` -- streaming text chunk
   - `{:tool_use, %{name, arguments, id}}` -- tool invocation
-  - `{:tool_result, %{name, result}}` -- tool result
+  - `{:tool_result, %{name, result, id}}` -- tool result answering `:tool_use` `id`
   - `{:state_change, %{from, to}}` -- agent status transition
   - `{:turn_complete, info}` -- end of one reasoning turn
   - `{:done, info}` -- session completed
@@ -64,8 +64,6 @@ defmodule Raxol.Agent.SessionStreamer do
           history: %{session_id() => :queue.queue()},
           max_history: pos_integer()
         }
-
-  # -- Client API ---------------------------------------------------------------
 
   @doc "Start the SessionStreamer (typically in your supervision tree)."
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -117,8 +115,6 @@ defmodule Raxol.Agent.SessionStreamer do
   def list_sessions(server \\ __MODULE__) do
     GenServer.call(server, :list_sessions)
   end
-
-  # -- Server Callbacks ---------------------------------------------------------
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do

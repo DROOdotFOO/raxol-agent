@@ -2,16 +2,10 @@ defmodule Raxol.Payments.Xochi.AgentStream do
   @moduledoc """
   Emit signed swap activity to Xochi's privacy-first live agent stream.
 
-  A user subscribes their browser to a capability-scoped topic and watches their
-  own agents execute swaps in real time, with nothing identity-linked persisted
-  server-side. When a raxol agent executes a swap under a Mandate, it POSTs a
-  signed activity event to the user's topic via `POST /api/agent/announce`. The
-  worker relays it (no persistence) to the topic's Durable Object, which fans it
-  out to the browser. The client verifies each event's signature against the
-  Mandate it holds.
-
-  This module is the agent side of that contract. It byte-matches the Xochi wire
-  contract so client, worker, and agent can never drift.
+  An agent swapping under a Mandate POSTs a signed activity event to the user's
+  capability-scoped topic (`POST /api/agent/announce`); the worker relays it
+  without persistence to the browser, which verifies the signature against the
+  Mandate. This module byte-matches that wire contract.
 
   ## Capability model
 
@@ -35,15 +29,9 @@ defmodule Raxol.Payments.Xochi.AgentStream do
       }
 
       event = %{
-        intent_id: "intent-abc",
-        from_chain_id: 8453,
-        to_chain_id: 42161,
-        from_token: "0x...",
-        to_token: "0x...",
-        from_amount: "100000000",
-        to_amount: "99780000",
-        status: "completed",
-        ts: 1_700_000_000_000
+        intent_id: "intent-abc", from_chain_id: 8453, to_chain_id: 42161,
+        from_token: "0x...", to_token: "0x...", from_amount: "100000000",
+        to_amount: "99780000", status: "completed", ts: 1_700_000_000_000
       }
 
       :ok = Raxol.Payments.Xochi.AgentStream.announce(config, event)
@@ -68,6 +56,9 @@ defmodule Raxol.Payments.Xochi.AgentStream do
   """
 
   require Logger
+
+  alias Raxol.Payments.Redact
+  alias Raxol.Payments.Xochi.Client
 
   @default_jitter_ms 250
   @announce_path "/api/agent/announce"
@@ -265,8 +256,6 @@ defmodule Raxol.Payments.Xochi.AgentStream do
     end
   end
 
-  # -- Private --
-
   defp build_req(config) do
     validate_base_url!(config.xochi_api_url)
 
@@ -357,12 +346,17 @@ defmodule Raxol.Payments.Xochi.AgentStream do
 
   defp addr_eq?(a, b), do: String.downcase(a) == String.downcase(b)
 
-  defp validate_base_url!("https://" <> _), do: :ok
-  defp validate_base_url!("http://localhost" <> _), do: :ok
-  defp validate_base_url!("http://127.0.0.1" <> _), do: :ok
-
+  # The host is parsed, not prefix-matched: `http://localhost@evil.example`
+  # starts with `http://localhost` and is a plaintext request to evil.example.
   defp validate_base_url!(url) do
+    case Client.validate_config(%{base_url: url}) do
+      :ok -> :ok
+      {:error, _} -> refuse_base_url!(url)
+    end
+  end
+
+  defp refuse_base_url!(url) do
     raise ArgumentError,
-          "Xochi agent-stream requires HTTPS base_url, got: #{inspect(url)}"
+          "Xochi agent-stream requires HTTPS base_url, got: #{Redact.url(url)}"
   end
 end

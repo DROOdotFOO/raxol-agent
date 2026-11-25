@@ -55,7 +55,7 @@ defmodule Raxol.Payments.SigningBoundaryPropertyTest do
     end
   end
 
-  # -- ExecuteXochiIntent: gate rejection never signs --
+  # ExecuteXochiIntent: gate rejection never signs
 
   describe "ExecuteXochiIntent signing boundary" do
     property "no amount over the per-request cap is ever signed" do
@@ -97,7 +97,7 @@ defmodule Raxol.Payments.SigningBoundaryPropertyTest do
     end
   end
 
-  # -- ExecuteXochiIntent: a signed intent that drifts from the request never signs --
+  # ExecuteXochiIntent: a signed intent that drifts from the request never signs
 
   describe "ExecuteXochiIntent intent binding" do
     property "any single-field perturbation of the served intent is refused before signing" do
@@ -141,7 +141,7 @@ defmodule Raxol.Payments.SigningBoundaryPropertyTest do
     end
   end
 
-  # -- Structural guards: keep the boundary from silently widening --
+  # Structural guards: keep the boundary from silently widening
 
   describe "signing-boundary structural guards" do
     test "every sensitive money-moving Action has a known signing mechanism" do
@@ -198,8 +198,6 @@ defmodule Raxol.Payments.SigningBoundaryPropertyTest do
     end
   end
 
-  # -- Helpers --
-
   defp dec(s), do: Decimal.new(s)
 
   defp cents_to_amount(cents),
@@ -213,8 +211,6 @@ defmodule Raxol.Payments.SigningBoundaryPropertyTest do
 
     start_supervised!(spec)
   end
-
-  # Xochi ------------------------------------------------------------------
 
   defp xochi_config do
     %{
@@ -352,8 +348,6 @@ defmodule Raxol.Payments.SigningBoundaryPropertyTest do
     |> xochi_ctx(policy)
     |> Map.merge(extra)
   end
-
-  # Relay ------------------------------------------------------------------
 
   defp relay_config do
     %{

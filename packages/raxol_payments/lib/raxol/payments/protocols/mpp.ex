@@ -144,14 +144,11 @@ defmodule Raxol.Payments.Protocols.MPP do
     |> Raxol.Payments.Assets.to_human(decimals)
   end
 
-  # -- Private --
-
   defp extract_payment_challenge(auth_header) do
     case String.split(auth_header, " ", parts: 2) do
       [_scheme, encoded] ->
-        with {:ok, json} <- Base.decode64(String.trim(encoded)),
-             {:ok, decoded} <- Jason.decode(json) do
-          {:ok, decoded}
+        with {:ok, json} <- Base.decode64(String.trim(encoded)) do
+          Jason.decode(json)
         end
 
       _ ->

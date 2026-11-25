@@ -59,6 +59,7 @@ defmodule Raxol.Payments.Req.AutoPay do
   require Logger
 
   alias Raxol.Payments.{Ledger, PolicyGate, Protocol, SpendingPolicy}
+  alias Raxol.Payments.Req.CrossOrigin
 
   @default_protocols [:x402, :mpp]
 
@@ -264,17 +265,17 @@ defmodule Raxol.Payments.Req.AutoPay do
     Enum.find_value(protocols, {:error, :no_matching_protocol}, fn proto_atom ->
       mod = Protocol.resolve(proto_atom)
 
-      if mod.detect?(402, headers) do
-        case mod.parse_challenge(headers) do
-          {:ok, challenge} ->
-            {:ok, mod, challenge}
-
-          {:error, reason} ->
-            log_unparsed_challenge(proto_atom, reason)
-            nil
-        end
-      end
+      if mod.detect?(402, headers),
+        do: parsed_challenge(mod, proto_atom, mod.parse_challenge(headers))
     end)
+  end
+
+  # nil moves the search on to the next protocol.
+  defp parsed_challenge(mod, _proto_atom, {:ok, challenge}), do: {:ok, mod, challenge}
+
+  defp parsed_challenge(_mod, proto_atom, {:error, reason}) do
+    log_unparsed_challenge(proto_atom, reason)
+    nil
   end
 
   # The challenge is server data, so only the reason's tag is logged.
@@ -386,10 +387,13 @@ defmodule Raxol.Payments.Req.AutoPay do
 
   defp request_host(_), do: nil
 
+  # Req drops only `authorization` on a cross-origin redirect, so a redirect
+  # from the paid retry would carry the signed payment to the new origin.
+  # The payment headers are removed before such a redirect is followed.
   defp add_payment_headers(request, headers) do
-    Enum.reduce(headers, request, fn {key, value}, req ->
-      Req.Request.put_header(req, key, value)
-    end)
+    headers
+    |> Enum.reduce(request, fn {key, value}, req -> Req.Request.put_header(req, key, value) end)
+    |> CrossOrigin.attach(:auto_pay_cross_origin, Enum.map(headers, &elem(&1, 0)))
   end
 
   # Strip internal details from error reasons before including in response bodies.

@@ -71,8 +71,6 @@ defmodule Raxol.Earn.Buyer.Resync do
 
   def handle_manager_info(_msg, state), do: {:noreply, state}
 
-  # -- Rehydration --
-
   defp rehydrate(job, buyer) do
     case normalize(job, buyer) do
       {:ok, intent} -> adopt(intent)
@@ -130,7 +128,7 @@ defmodule Raxol.Earn.Buyer.Resync do
 
   defp maybe_redrive(_intent), do: :ok
 
-  # -- Field readers (tolerant of the live vs mock shapes) --
+  # Field readers (tolerant of the live vs mock shapes)
 
   defp ours?(nil, _job_buyer), do: true
 

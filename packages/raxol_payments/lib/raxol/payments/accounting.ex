@@ -2,12 +2,10 @@ defmodule Raxol.Payments.Accounting do
   @moduledoc """
   Reads the settlement-accounting deployment contract from the environment.
 
-  The accounting sidecar (a read-only container that books each Xochi settlement
-  into `Raxol.Payments.SettlementLedger`) is configured entirely through env vars.
-  The `raxol_earn` sidecar release reads the contract
-  (`packages/raxol_earn/config/runtime.exs`). A release's `config/runtime.exs`
-  calls `env_config/0`, so the contract lives in one place and two releases
-  cannot drift.
+  The accounting sidecar (books each Xochi settlement into
+  `Raxol.Payments.SettlementLedger`) is configured entirely through env vars. A
+  release's `config/runtime.exs` calls `env_config/0`
+  (`packages/raxol_earn/config/runtime.exs` does), so the contract lives here.
 
   ## Contract
 
@@ -24,60 +22,29 @@ defmodule Raxol.Payments.Accounting do
   | `RAXOL_FX_ENABLED`          | Price EURC/EURe/ZCHF (ADR-0040)           | `false`     |
   | `RAXOL_SLEUTH_API_KEY`      | Sleuth key, required when FX is enabled   | (unset)     |
 
-  FX pricing reads the Chainlink EUR/USD and CHF/USD feeds through `RPC_BASE`
-  and `RPC_ETH`, so enabling it needs at least one of them; it prices in front
-  of `RAXOL_PRICE_SOURCE` rather than replacing it. `RAXOL_FX_ENABLED` is
-  `"true"`, `"false"` or empty, and anything else is refused like the other
-  parsed vars. Enabling it in a build without `raxol_web3`, without the key,
-  or without either RPC URL refuses too, naming what is missing. Pricing
-  only: no spend cap or delivery floor reads an FX rate (ADR-0040 decision 7).
-  `RAXOL_PRICE_SOURCE` also prices a WETH or RAXOL spend a `SpendingPolicy`
-  caps (`Raxol.Payments.SpendPricing`).
+  FX pricing reads the Chainlink EUR/USD and CHF/USD feeds through `RPC_BASE` or
+  `RPC_ETH` and prices in front of `RAXOL_PRICE_SOURCE`. Enabling it without
+  `raxol_web3`, the key or either RPC URL refuses, naming what is missing. FX is
+  pricing only: no spend cap or delivery floor reads it (ADR-0040 decision 7).
+  `RAXOL_PRICE_SOURCE` also prices WETH/RAXOL spends (`Raxol.Payments.SpendPricing`).
 
-  Demand-aware inventory floors are off unless `RAXOL_REBALANCE_DEMAND_MULTIPLIER`
-  is set: floors then track the largest recent fill per corridor rather than a
-  fixed number (`Raxol.Payments.RebalancePolicy.with_demand/2`). The multiplier and
-  the cap are one setting: either alone refuses to boot, because `peak` is sized
-  off orders anyone can place and an uncapped floor is unbounded in what it asks
-  the auto-rebalancer to move. Those two are the only vars this module does not
-  parse: it hands both on raw and unconditionally, because the pair rule can only
-  be enforced by something that sees BOTH values on every call.
+  Demand-aware floors (`Raxol.Payments.RebalancePolicy.with_demand/2`) are off
+  unless `RAXOL_REBALANCE_DEMAND_MULTIPLIER` is set. The multiplier and the cap
+  are one setting: either alone refuses to boot, since an uncapped floor sized off
+  anyone's orders is unbounded. Both are passed on raw so `with_demand/2` sees
+  the pair on every call.
 
-  SET BUT EMPTY reads as unset everywhere -- `FOO=` is what a fly.toml, a
-  docker-compose file, or a cleared secret leaves behind. Every var parsed here
-  reads it that way directly; the two demand knobs read it that way one layer
-  down, in `with_demand/2`, which normalizes `""` to the same `nil` an unset var
-  gives it.
+  SET BUT EMPTY (`FOO=`) reads as unset everywhere. Any other unrecognized value
+  is refused with a message naming the var.
 
-  Beyond that, the vars parsed here refuse a value they do not recognize with a
-  message naming themselves, because an operator has to be able to tell "my knob
-  did nothing" from "the feature does nothing". Both halves are load-bearing:
-  `RAXOL_PRICE_SOURCE=` used to yield the atom `:""`, which falls through
-  `RebalanceMonitor`'s price-source catch-all and silently dropped USD pricing
-  from the whole sweep, and `RAXOL_REBALANCE_INTERVAL_MS=` used to abort the boot
-  with `String.to_integer/1`'s message, which names nothing.
+  `RAXOL_ACCOUNTING_ENABLED` is the gate and cannot refuse: only the literal
+  `"true"` means on (`"1"`, `"yes"`, `"TRUE"` mean off, with a warning). While it
+  is off `env_config/0` returns `[]` and parses nothing else, so a malformed var
+  for a disabled feature cannot take a boot down.
 
-  Two deliberate exceptions to that rule:
-
-  `RAXOL_ACCOUNTING_ENABLED` is the gate, so it cannot refuse. It is read as
-  exactly `"true"` and ANY other value -- including `"1"`, `"yes"` and `"TRUE"`
-  -- means off. Refusing there would abort a release over a var whose only job
-  is to say the subsystem is not running, which is the failure the rest of this
-  section exists to prevent. Set it to the literal `"true"`.
-
-  It does WARN on a value that is neither `"true"` nor empty, because otherwise
-  "off" and "you typed `yes` and got off" are the same silence -- and telling
-  those apart is what this whole section is for.
-
-  And nothing else here is parsed AT ALL while that gate is off: `env_config/0`
-  reads it first and returns an empty opts list, so a malformed value for a
-  feature that is not running cannot take a boot down. The refusals below
-  therefore only ever fire on a deployment that asked for the subsystem.
-
-  Read-only by construction: no wallet key is read here and none of the started
-  processes move funds (the Riddler auto-rebalancer executes; the monitor only
-  recommends). Omitting `XOCHI_SOLVER_ADDRESS` yields ledger-only mode -- the
-  `RebalanceMonitor` is not started (see `Raxol.Earn.Supervisor`).
+  Read-only by construction: no wallet key is read and nothing started moves
+  funds (the Riddler auto-rebalancer executes; the monitor only recommends).
+  Without `XOCHI_SOLVER_ADDRESS` it runs ledger-only, with no `RebalanceMonitor`.
   """
 
   # Chain id => env var holding that chain's RPC URL.
@@ -177,14 +144,18 @@ defmodule Raxol.Payments.Accounting do
   end
 
   # Only chains with a non-empty RPC URL are included, so a partial deployment
-  # (say, Base + Optimism only) reads just those corridors.
-  @spec rpc_urls() :: %{optional(pos_integer()) => String.t()}
+  # (say, Base + Optimism only) reads just those corridors. Each URL is
+  # `Secret`-wrapped: it can embed a provider key and rides child start args.
+  @spec rpc_urls() :: %{optional(pos_integer()) => Raxol.Agent.Secret.t()}
   defp rpc_urls do
     @rpc_env
     |> Enum.reduce(%{}, fn {chain_id, env_var}, acc ->
       case System.get_env(env_var) do
-        url when is_binary(url) and url != "" -> Map.put(acc, chain_id, url)
-        _ -> acc
+        url when is_binary(url) and url != "" ->
+          Map.put(acc, chain_id, Raxol.Agent.Secret.new(url))
+
+        _ ->
+          acc
       end
     end)
   end
@@ -274,7 +245,7 @@ defmodule Raxol.Payments.Accounting do
       true ->
         [
           sleuth_api_key:
-            Raxol.Payments.Secret.new(String.trim(System.get_env("RAXOL_SLEUTH_API_KEY"))),
+            Raxol.Agent.Secret.new(String.trim(System.get_env("RAXOL_SLEUTH_API_KEY"))),
           rpc_urls: rpc_urls
         ]
     end

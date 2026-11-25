@@ -35,7 +35,7 @@ defmodule Raxol.Broker.Feed do
 
   alias Raxol.Broker.Feed.Bucket
   alias Raxol.Broker.MCP.Client
-  alias Raxol.Broker.Response
+  alias Raxol.Broker.{Redact, Response}
 
   @default_interval 15_000
   @default_backoff 1_000
@@ -165,7 +165,10 @@ defmodule Raxol.Broker.Feed do
         next(%{state | throttled: throttled}, now, backoff(state, throttled))
 
       {:error, reason} ->
-        Logger.warning("[Broker.Feed] quotes failed: #{inspect(reason, structs: false)}")
+        Logger.warning(
+          "[Broker.Feed] quotes failed: #{inspect(Redact.collapse(reason), structs: false)}"
+        )
+
         next(%{state | throttled: 0}, now, state.interval)
     end
   end

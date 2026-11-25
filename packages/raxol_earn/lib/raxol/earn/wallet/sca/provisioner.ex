@@ -102,7 +102,7 @@ defmodule Raxol.Earn.Wallet.SCA.Provisioner do
     end
   end
 
-  # -- Deploy (op 1) --
+  # Deploy (op 1)
 
   defp ensure_deployed(wallet, client, opts) do
     case RPC.deployed?(client, wallet.address()) do
@@ -135,7 +135,7 @@ defmodule Raxol.Earn.Wallet.SCA.Provisioner do
     end
   end
 
-  # -- Install (op 2) --
+  # Install (op 2)
 
   defp ensure_installed(wallet, client, opts) do
     case installed?(wallet, client, opts) do
@@ -232,8 +232,6 @@ defmodule Raxol.Earn.Wallet.SCA.Provisioner do
   end
 
   defp duplicate_marker?(_), do: false
-
-  # -- Shared --
 
   # Owner (native entity-0) nonce key. Provisioning ops are owner-signed;
   # the write path uses the session-entity key (wallet.nonce_key/0).

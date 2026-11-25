@@ -1,21 +1,5 @@
-# Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
-#
-# Adapted: module names restructured under Raxol.AgentClientProtocol.Schema.*
-# (McpServer/McpServerHttp/McpServerSse/McpServerStdio/EnvVariable/HttpHeader/
-# Implementation/InitializeRequest/CancelNotification all live nested under
-# `Schema.AgentTypes`, matching the `agent_types.ex` convention -- see that
-# file's moduledoc). Assertions updated for the total `from_json/1` contract
-# (`{:ok, t} | {:error, reason}`, never a bare/raising match).
-#
-# The "meta field uses _meta key" test below used to diverge from upstream's
-# exact expectation -- `Schema.AgentTypes.put_meta/2` flattened `_meta`
-# contents directly onto the top-level wire object instead of nesting them
-# under `"_meta"`, a genuine encode/decode asymmetry bug discovered while
-# porting this fixture (reported in full in the W8 coder report). Fixed in
-# `agent_types.ex` (`put_meta/2` now matches
-# `Raxol.AgentClientProtocol.Schema.WireFields.emit_meta/2`, the convention
-# every sibling module follows); the test now asserts the correct nested
-# behavior and matches upstream again.
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Byte-level wire fixtures; `from_json/1` assertions use the total contract.
 defmodule Raxol.AgentClientProtocol.Schema.SerializationTest do
   use ExUnit.Case, async: true
   @moduledoc "Cross-cutting JSON serialization tests matching the upstream Rust test cases."

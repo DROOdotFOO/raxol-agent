@@ -184,7 +184,8 @@ defmodule RaxolCli.MixProject do
       # existing at all.
       {:castore, "~> 1.0"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ] ++ acp_dep()
   end
 
@@ -198,7 +199,7 @@ defmodule RaxolCli.MixProject do
     path = "../raxol_agent_client_protocol"
 
     if hex_package?() do
-      [{:raxol_agent_client_protocol, "~> 0.1.0"}]
+      [{:raxol_agent_client_protocol, "~> 0.2.0"}]
     else
       [{:raxol_agent_client_protocol, path: path, override: true}]
     end

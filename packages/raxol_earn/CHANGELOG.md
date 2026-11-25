@@ -14,10 +14,34 @@ package formerly named `raxol_acp`; neither name has been on Hex before, so
 
 ### Added
 
-- The console bench runs a buyer-supplied agent package without raxol's own
-  secrets in its environment (`Raxol.Core.ChildEnv`), `RAXOL_ACP_AGENT_PRIVATE_KEY`
-  and `XOCHI_AUTH_TOKEN` included; it used to inherit the node's whole
+- The Privy signer sidecar and the BEAM authenticate each other on every
+  request (`SignerSidecar.Envelope`): signed requests with a 30s window and
+  replay protection, and responses bound to the request and the sidecar's
+  wallet. Its URL must be loopback unless `RAXOL_ACP_SIDECAR_ALLOW_REMOTE=1`.
+- The ACP SSE transport folds CR and CRLF line endings, and drops an event
+  larger than `:max_sse_buffer_bytes` instead of closing the stream.
+
+- `ProviderAdapter.JSONRPC.new/1` derives the address under
+  `Secret.with_revealed/2` and raises `ArgumentError` "private_key is not a
+  valid secp256k1 key" for a key the curve refuses (was a `MatchError`).
+- `mix raxol_earn.order` keeps `ORDER_XOCHI_TOKEN` and the RPC URLs wrapped
+  in its run config, which a `FunctionClauseError` in the task would print.
+- `ProviderAdapter.SCA.new/1` keeps `wallet_opts`' string `:bundler_url`
+  and `:paymaster_url` wrapped (they embed the bundler's API key) and
+  reveals them per call; a `{:system, var}` value is passed on as is.
+- `Xochi.SolverAgent` hides its provider and Xochi config from
+  `:sys.get_status` and crash reports (`format_status/1`).
+- The console bench runs a buyer-supplied agent package without credentials
+  in its environment (`Raxol.Agent.ChildEnv`): raxol's own secrets,
+  `RAXOL_ACP_AGENT_PRIVATE_KEY` and `XOCHI_AUTH_TOKEN` included, plus every
+  credential-named variable and RPC URL; it used to inherit the node's whole
   environment.
+- `Raxol.Earn.Auth` keeps its bearer JWT out of `Inspect` and
+  `:sys.get_status`; the provider adapters keep RPC URLs
+  `Raxol.Agent.Secret`-wrapped; the solver, settler and seller queue wrap the
+  Xochi member token. `Raxol.Earn.Secret` delegates to `Raxol.Agent.Secret`
+  (deprecated).
+- Requires `raxol_payments ~> 0.4`, `raxol_agent ~> 3.2` and `raxol_core ~> 2.9`.
 - **Job session**: `Raxol.Earn.JobSession` plus
   `JobSession.{Registry, Supervisor, Status, Provider, HandlerSeam, Client, Tools}`.
   One supervised process per active job, registered by `{chain_id, job_id}`.

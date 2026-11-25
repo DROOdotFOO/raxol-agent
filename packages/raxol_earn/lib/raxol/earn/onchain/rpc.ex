@@ -98,8 +98,6 @@ defmodule Raxol.Earn.Onchain.RPC do
     """
   end
 
-  # -- Methods --
-
   @doc "Return the chain ID the RPC reports (decimal integer)."
   @spec eth_chain_id(client()) :: {:ok, pos_integer()} | {:error, term()}
   def eth_chain_id(client) do
@@ -185,9 +183,7 @@ defmodule Raxol.Earn.Onchain.RPC do
       reward_percentiles
     ]
 
-    with {:ok, body} <- call(client, "eth_feeHistory", params) do
-      {:ok, body}
-    end
+    call(client, "eth_feeHistory", params)
   end
 
   @doc """
@@ -246,8 +242,6 @@ defmodule Raxol.Earn.Onchain.RPC do
     end
   end
 
-  # -- Encoding helpers --
-
   @doc "Encode a non-negative integer as a 0x-prefixed minimal hex quantity."
   @spec encode_quantity(non_neg_integer()) :: String.t()
   def encode_quantity(n) when is_integer(n) and n >= 0, do: Hex.encode_quantity(n)
@@ -292,8 +286,6 @@ defmodule Raxol.Earn.Onchain.RPC do
   def request(client, method, params \\ []) do
     call(client, method, params)
   end
-
-  # -- Core call --
 
   defp call(client, method, params) do
     body = %{

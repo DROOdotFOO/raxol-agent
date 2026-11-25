@@ -1,0 +1,69 @@
+name: Secret scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  # sha256 of gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz from the release's
+  # checksums file. Bump both together.
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Full history, so a pull request's range and the base branch's
+      # allowlist files are both reachable. No token is left in .git/config
+      # for the downloaded binary to read.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The binary, not gitleaks-action, which needs a paid license for
+      # organization repositories.
+      - name: Install gitleaks
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL --retry 3 -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+
+      # A pull request is scanned over the commits it adds, against the
+      # BASE branch's .gitleaks.toml and .gitleaksignore, and inline
+      # `gitleaks:allow` comments are ignored, so it cannot allowlist its own
+      # finding. A real false positive therefore takes two steps: land its
+      # fingerprint in .gitleaksignore on main first, then rebase the PR.
+      # Pushes to main and manual runs scan the whole history with the
+      # checked-out files. `--redact` keeps a finding's value out of the log.
+      - name: Scan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          args=(git --no-banner --redact --exit-code 1 --ignore-gitleaks-allow)
+
+          if [ -n "$BASE_SHA" ]; then
+            git show "$BASE_SHA:.gitleaks.toml" > "$RUNNER_TEMP/gitleaks.toml"
+            git show "$BASE_SHA:.gitleaksignore" > "$RUNNER_TEMP/gitleaksignore"
+            args+=(--config "$RUNNER_TEMP/gitleaks.toml"
+                   --gitleaks-ignore-path "$RUNNER_TEMP/gitleaksignore"
+                   --log-opts "$BASE_SHA..$HEAD_SHA")
+          fi
+
+          "$RUNNER_TEMP/gitleaks" "${args[@]}"

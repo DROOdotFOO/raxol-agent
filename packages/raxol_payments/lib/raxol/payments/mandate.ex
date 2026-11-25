@@ -299,7 +299,7 @@ defmodule Raxol.Payments.Mandate do
   @spec allowed_scopes() :: [scope()]
   def allowed_scopes, do: @allowed_scopes
 
-  # -- Private: validation --
+  # Private: validation
 
   defp fetch_address(attrs, key) do
     case Map.get(attrs, key) || Map.get(attrs, to_string(key)) do
@@ -388,7 +388,7 @@ defmodule Raxol.Payments.Mandate do
     }
   end
 
-  # -- Private: signature --
+  # Private: signature
 
   defp encode_hex_sig(<<_::binary-size(65)>> = sig) do
     "0x" <> Base.encode16(sig, case: :lower)
@@ -416,7 +416,7 @@ defmodule Raxol.Payments.Mandate do
     "0x" <> Base.encode16(address, case: :lower)
   end
 
-  # -- Private: envelope JSON canonicalization --
+  # Private: envelope JSON canonicalization
 
   # Canonical JSON: fixed field order matching the viem-side struct so
   # `H(envelope)` agrees across implementations. Jason.encode! preserves

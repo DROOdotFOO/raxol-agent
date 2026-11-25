@@ -291,8 +291,6 @@ defmodule Raxol.Agent.JournalRequiredTest do
     refute File.exists?(Path.join(base, id))
   end
 
-  # -- helpers ------------------------------------------------------------------
-
   defp start(id, base, bound \\ []) do
     journal_opts = Keyword.merge([base_dir: base, cwd: "/the/root", title: "The.App"], bound)
 

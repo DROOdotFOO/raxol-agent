@@ -1,9 +1,5 @@
-# Ported (as new coverage; upstream had no dedicated content test file) from
-# the conventions of the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Targets
-# Raxol.AgentClientProtocol.Schema.{Role,Annotations,TextContent,
-# ImageContent,AudioContent,TextResourceContents,BlobResourceContents,
-# EmbeddedResourceResource,EmbeddedResource,ResourceLink,ContentBlock}.
+# Content blocks and their payload structs, in the style of the MIT
+# `f1729/agent_client_protocol` suite (c) 2025 f1729; see NOTICE.md.
 defmodule Raxol.AgentClientProtocol.Schema.ContentTest do
   use ExUnit.Case, async: true
 
@@ -55,9 +51,9 @@ defmodule Raxol.AgentClientProtocol.Schema.ContentTest do
       assert Annotations.to_json(Annotations.new()) == %{}
     end
 
-    # --- Total decode + full leniency (every Annotations field is optional
+    # Total decode + full leniency (every Annotations field is optional
     #     with x-deserialize-default-on-error / -skip-invalid-items in the
-    #     schema oracle) ---
+    #     schema oracle)
 
     test "from_json/1 never fails for a map input, regardless of field shapes" do
       assert {:ok, %Annotations{}} = Annotations.from_json(%{})
@@ -271,7 +267,7 @@ defmodule Raxol.AgentClientProtocol.Schema.ContentTest do
       assert ContentBlock.from_string("hi") == {:text, TextContent.new("hi")}
     end
 
-    # --- Total decode: an unrecognized/missing type has no default variant ---
+    # Total decode: an unrecognized/missing type has no default variant
 
     test "from_json/1 is total: unrecognized type never raises" do
       assert {:error, {:unknown_content_block_type, "video"}} =

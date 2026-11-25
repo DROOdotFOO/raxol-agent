@@ -35,7 +35,7 @@ defmodule Raxol.Broker.Strategy.Supervisor do
 
   require Logger
 
-  alias Raxol.Broker.{Journal, Strategy}
+  alias Raxol.Broker.{Journal, Redact, Strategy}
   alias Raxol.Broker.Strategy.{Restorer, Runner}
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -130,13 +130,7 @@ defmodule Raxol.Broker.Strategy.Supervisor do
       sup = supervisor(opts)
       up = MapSet.new(running(sup), fn {_pid, info} -> info.id end)
 
-      for spec <- specs, not MapSet.member?(up, spec["id"]) do
-        with {:error, reason} <- start_runner(sup, spec) do
-          Logger.error(
-            "[Broker.Strategy] #{spec["id"]} not restored: #{inspect(reason, structs: false)}"
-          )
-        end
-      end
+      for spec <- specs, not MapSet.member?(up, spec["id"]), do: restore_runner(sup, spec)
 
       :ok
     end
@@ -180,6 +174,15 @@ defmodule Raxol.Broker.Strategy.Supervisor do
 
   defp not_added(specs, id) do
     if Enum.any?(specs, &(&1["id"] == id)), do: {:error, {:already_added, id}}, else: :ok
+  end
+
+  defp restore_runner(sup, spec) do
+    with {:error, reason} <- start_runner(sup, spec) do
+      Logger.error(
+        "[Broker.Strategy] #{spec["id"]} not restored: " <>
+          inspect(Redact.collapse(reason), structs: false)
+      )
+    end
   end
 
   defp start_runner(sup, spec) do

@@ -1,61 +1,10 @@
 defmodule Raxol.AgentClientProtocol.Client do
   @moduledoc """
-  `use Raxol.AgentClientProtocol.Client` to implement the **client** side of
-  ACP: the editor/host process that answers permission asks, filesystem, and
-  terminal requests, and receives `session/update` streaming notifications.
-
-  This is a **thin ergonomic layer** over `Raxol.AgentClientProtocol.Connection`
-  -- see `Raxol.AgentClientProtocol.Agent`'s moduledoc for the shared rationale
-  (identical wiring, mirrored side). Nothing here re-implements protocol
-  correlation, cancellation, or the turn/permission state machine; those
-  live in `Connection` and (agent-side) `Session`.
-
-  ## Callback surface
-
-  One `@callback` per `Raxol.AgentClientProtocol.MethodTable.rows_for_side(:client)`
-  row that carries an app-level callback -- `session/request_permission`,
-  `session/update`, `fs/write_text_file`, `fs/read_text_file`,
-  `terminal/create`, `terminal/output`, `terminal/release`,
-  `terminal/wait_for_exit`, `terminal/kill`. Naming and arity are generated
-  straight from the table, not hand-maintained; every current client row
-  has `params != nil`, so every generated callback is arity 2:
-  `callback(params, ctx)` (request or notification alike).
-
-  `ctx` is `Raxol.AgentClientProtocol.Connection.Ctx.t()`: read-only
-  per dispatch, carries `conn` (the `Connection` pid, for
-  `Connection.request/async_request/notify/reply/delegate_reply`),
-  `handler_state` (produced once by `c:init/1`), `reply_ref`, `rx_seq`,
-  `session_sup`, `task_sup` (client-role connections still get these two --
-  they are per-`Connection` infrastructure, not agent-specific).
-
-  A request callback (`request_permission`, `write_text_file`,
-  `read_text_file`, the four `terminal/*` methods) returns `{:ok,
-  result_struct}`, `{:error, %Error{}}`, or `:deferred` (legal only after
-  `Connection.delegate_reply/3`). `session_update/2`'s return value
-  is always ignored (`Router.dispatch/4`) -- it is the streaming sink for
-  `session/update` notifications during a prompt turn.
-
-  Call `callbacks/0` to introspect the generated `{callback, arity, wire}`
-  list.
-
-  ## Defaults
-
-  Every generated callback (and `c:handle_ext_request/3`,
-  `c:handle_ext_notification/3`) has an overridable default: requests
-  answer `{:error, Error.method_not_found()}`, `session_update/2` is a
-  silent `:ok`. Override only what your client supports -- an unimplemented,
-  capability-gated method never needs an explicit override (the client
-  simply never advertises the capability at `initialize`, so a well-behaved
-  agent never sends it; the `-32601` default is the honest fallback if one
-  does anyway). `c:init/1` defaults to `{:ok, handler_arg}`.
-
-  ## Extension methods
-
-  `"_"`-prefixed wire methods with no `MethodTable` row are routed by
-  `Connection` directly to `c:handle_ext_request/3` /
-  `c:handle_ext_notification/3` (never through the table-driven callbacks
-  above -- see `Router`'s moduledoc). Both default the same way as any other
-  unsupported method.
+  `use Raxol.AgentClientProtocol.Client` to implement the client (editor) side
+  of ACP: answering permission, filesystem and terminal requests and receiving
+  `session/update` notifications. Mirrors `Raxol.AgentClientProtocol.Agent`:
+  the same table-generated callbacks (see `callbacks/0`), defaults, extension
+  routing and supervision subtree, with `role: :client`.
 
   ## Example
 
@@ -63,262 +12,95 @@ defmodule Raxol.AgentClientProtocol.Client do
         use Raxol.AgentClientProtocol.Client
         alias Raxol.AgentClientProtocol.Client.FsSandbox
 
-        # `handler_arg:` is the project root the agent may read under.
         @impl true
         def init(root), do: {:ok, %{root: root}}
 
         @impl true
-        def session_update(notification, _ctx) do
-          IO.inspect(notification.update, label: "session/update")
-        end
-
-        @impl true
         def read_text_file(req, ctx), do: FsSandbox.read(ctx.handler_state.root, req)
-
-        # ... only what you support.
       end
 
-      {:ok, sup} =
-        Raxol.AgentClientProtocol.Client.start_link(MyClient,
-          transport: {mod, handle},
-          handler_arg: "/path/to/project"
-        )
+      {:ok, sup} = Client.start_link(MyClient, transport: {mod, handle}, handler_arg: "/project")
+      {:ok, conn} = Client.connection(sup)
 
-  ## Session-consumer ergonomics: subscribe / prompt / prompt_stream
+  ## Prompting
 
-  Overriding `c:session_update/2` yourself works fine, but most clients
-  just want "give me the updates for session X" without hand-rolling a
-  mailbox protocol. The generated default `c:session_update/2` (unless you
-  override it) forwards every decoded update to whichever processes called
-  `subscribe/3` for that `{conn, session_id}` pair, as
-  `{:acp_session_update, session_id, update}` -- `update` is always an
-  already-decoded `Raxol.AgentClientProtocol.Schema.SessionUpdate.t()` (see
-  `decode_update/1`'s doc for why an undecodable variant never reaches
-  this path at all). `subscribe/3` remains useful for a custom
-  `session_update/2` override that wants a broadcast fan-out, but it is
-  NOT how `prompt/3`/`prompt_stream/4` get their updates (see below).
+  `prompt/3` and `prompt_stream/4` send `session/prompt` and consume the
+  Connection's direct turn delivery: the Connection itself sends this process
+  every update of the turn, a turn-end count and the result, so mailbox order is
+  wire order. A count mismatch fails the turn with `{:error, {:delivery_gap, _}}`.
 
-      {:ok, {updates, response}} =
-        Client.prompt(client_conn, PromptRequest.new(session_id, prompt_blocks))
+  The default `c:session_update/2` also broadcasts each update as
+  `{:acp_session_update, session_id, update}` to processes registered with
+  `subscribe/3`. That path runs one handler task per notification and has no
+  ordering guarantee relative to the prompt result.
 
-      {:ok, response} =
-        Client.prompt_stream(client_conn, request, fn update ->
-          IO.inspect(update, label: "update")
-        end)
+  ## Filesystem sandbox
 
-  `prompt/3` and `prompt_stream/4` drive the request through
-  `Connection.async_request/6` and then consume the **direct turn-delivery
-  channel** (`Raxol.AgentClientProtocol.Delivery`'s moduledoc):
-  `Connection` opens a turn at submit time and, for every `session/update`
-  belonging to that turn, sends the calling process
-  `{:acp_turn_update, tag, ordinal, notification}` directly, itself --
-  the same single-sender operation it uses for the terminal
-  `{:acp_result, tag, outcome}`. Because one process sends every update,
-  the turn-end companion, and the result, BEAM's pairwise FIFO guarantees
-  they arrive in wire order with NO reorder buffer, NO settle timer, and a
-  synchronous, deterministic failure (`{:error, {:delivery_gap, _}}`) if
-  the turn-end count and the delivered-update count ever disagree. This
-  is why these two functions do not consume `subscribe/3`: that path runs a
-  separate handler task per notification while the Connection sends the
-  terminal result itself -- two different senders, no cross-sender FIFO
-  guarantee.
-
-  ## `fs_sandbox`: a working filesystem client with zero callbacks
-
-  `use Raxol.AgentClientProtocol.Client, fs_sandbox: "/path/to/root"` auto-
-  implements `c:read_text_file/2` and `c:write_text_file/2` (still
-  `defoverridable`) confined to that directory: every request path is
-  joined under the root, `..`-normalized, and checked against the root
-  using BOTH the lexical result and the fully symlink-resolved real path,
-  so a `../` escape or a symlink planted inside the sandbox that points
-  outside it are both rejected with `-32602 invalid params`. The file is
-  then opened and the open handle checked to be the regular file that was
-  resolved, and a read is capped at 16 MiB (`fs_max_read_bytes:` sets
-  another cap). `Raxol.AgentClientProtocol.Client.FsSandbox` states what
-  this does and does not guarantee against a peer that changes the
-  sandbox tree while requests run.
-  `terminal/*` handlers are deliberately NOT defaulted by any option here --
-  they stay `method_not_found` unless you implement them yourself.
-
-  ## Library-mode wiring
-
-  `start_link/2` and `child_spec/1` build exactly this subtree
-  (identical shape to the agent side, `role: :client`):
-
-      ConnectionSupervisor          Supervisor, :one_for_all,
-      │                             auto_shutdown: :any_significant
-      ├── Task.Supervisor           restart: :permanent
-      ├── DynamicSupervisor         restart: :permanent  (Session.Supervisor; :temporary children)
-      └── Connection                restart: :temporary, significant: true
-
-  See `Raxol.AgentClientProtocol.Agent`'s moduledoc for why `parent_sup` is
-  resolved via `self()` inside the nested supervisor's `init/1` rather than
-  passed in from outside. A client connection gets its own
-  `Session.Supervisor`/`SessionRegistry` slot too -- unused, since the client
-  side hosts no sessions, and kept only because the subtree shape is uniform
-  across roles (one less special case in `Connection`).
+  `use Raxol.AgentClientProtocol.Client, fs_sandbox: "/root"` implements
+  `c:read_text_file/2` and `c:write_text_file/2` (still overridable) confined to
+  that directory via `Raxol.AgentClientProtocol.Client.FsSandbox`; reads are
+  capped at 16 MiB unless `fs_max_read_bytes:` says otherwise. `terminal/*`
+  callbacks are never defaulted.
   """
 
   require Logger
   require Raxol.AgentClientProtocol.Handler.Codegen
   require Raxol.AgentClientProtocol.MethodTable
 
-  alias Raxol.AgentClientProtocol.Connection
-  alias Raxol.AgentClientProtocol.Delivery
-  alias Raxol.AgentClientProtocol.Error
-  alias Raxol.AgentClientProtocol.Handler.Codegen
-  alias Raxol.AgentClientProtocol.MethodTable
+  alias Raxol.AgentClientProtocol.Client.Subscriptions
+  alias Raxol.AgentClientProtocol.{Connection, Delivery, MethodTable}
+  alias Raxol.AgentClientProtocol.Handler.{Codegen, Wiring}
   alias Raxol.AgentClientProtocol.Schema.SessionUpdate
 
-  # This module bakes the `MethodTable` `@callback` surface at compile time, so it
-  # MUST recompile when the table source changes. See `MethodTable.depend_on_source/0`.
+  # Recompile when the method table changes.
   MethodTable.depend_on_source()
 
-  @typedoc "Per-dispatch context. See `Raxol.AgentClientProtocol.Connection.Ctx`."
+  @typedoc "Per-dispatch context."
   @type ctx :: Connection.Ctx.t()
 
-  @doc """
-  Produce this handler's per-connection state from `handler_arg` (the value
-  passed as `handler_arg:` to `start_link/2` / `child_spec/1`). Called once,
-  at `Connection` boot; the result is threaded read-only through every
-  dispatch as `ctx.handler_state`. Default: `{:ok, handler_arg}`.
-  """
-  @callback init(handler_arg :: term()) ::
-              {:ok, handler_state :: term()} | {:stop, term()}
+  @typedoc "A decoded `session/update` payload."
+  @type update :: SessionUpdate.t()
 
-  @doc """
-  Handle an inbound `"_"`-prefixed extension request with no `MethodTable`
-  row. Return shape matches the table-driven request callbacks. Default:
-  `{:error, Error.method_not_found()}`.
-  """
-  @callback handle_ext_request(wire :: String.t(), params :: map(), ctx()) ::
-              {:ok, map()} | {:error, Error.t()} | :deferred
-
-  @doc """
-  Handle an inbound `"_"`-prefixed extension notification. Return value is
-  ignored. Default: `:ok`.
-  """
-  @callback handle_ext_notification(wire :: String.t(), params :: map(), ctx()) ::
-              term()
+  @type prompt_result :: struct() | {:ext, map()}
 
   Codegen.defcallbacks(:client)
 
-  @doc "Introspect the generated callback surface: `{callback_atom, arity, wire_method}`, in table order."
+  @doc "The generated callbacks as `{callback, arity, wire_method}`, in table order."
   @spec callbacks() :: [{atom(), arity(), String.t()}]
-  def callbacks do
-    for row <- Codegen.rows(:client) do
-      {row.callback, if(row.params == nil, do: 1, else: 2), row.wire}
-    end
-  end
-
-  # ===========================================================================
-  # Session-update subscription (client ergonomics) -- see moduledoc.
-  #
-  # A single `:bag` ETS table, created lazily and idempotently (race-safe:
-  # `:ets.new/2` on an already-existing named table raises `ArgumentError`,
-  # caught and treated as "someone else won the race"). Keyed by
-  # `{conn_pid, session_id}` -> subscriber pid, exactly mirroring
-  # `SessionRegistry`'s `{conn_pid, session_id}` key shape even though this
-  # table is a client-ergonomics convenience, not part of the
-  # protocol/supervision contract.
-  # ===========================================================================
-
-  @subs_table :raxol_acp_client_session_subscriptions
+  def callbacks, do: Codegen.callbacks(:client)
 
   @doc """
-  Subscribe `subscriber` (default `self()`) to `session_id`'s
-  `session/update` deliveries on `conn`. The generated default
-  `c:session_update/2` (unless overridden) broadcasts
-  `{:acp_session_update, session_id, update}` to every subscriber
-  registered for `{conn, session_id}` -- `update` is always an
-  already-decoded `Raxol.AgentClientProtocol.Schema.SessionUpdate.t()`
-  (see `decode_update/1`'s doc for why an undecodable variant never
-  reaches this path). NOT idempotent: subscribing the same pid twice for
-  the same key registers it twice in the underlying `:bag` -- each
-  registration receives its own copy of every broadcast, so the pid gets
-  the update twice. Subscribe once per `{conn, session_id, pid}`, or
-  dedupe on receipt if you can't guarantee that.
-
-  This broadcast path still fans out through a per-notification dispatch
-  task (one task per `session/update`), so it has no cross-notification
-  ordering guarantee on its own -- it is NOT what `prompt/3`/
-  `prompt_stream/4` use (see the moduledoc's "Session-consumer ergonomics"
-  section); it remains here for custom `session_update/2` overrides that
-  want a simple fan-out primitive.
+  Registers `subscriber` for `{:acp_session_update, session_id, update}`
+  broadcasts from `conn`. Idempotent: subscribing the same pid twice registers
+  it once. Registrations end when the subscriber or the connection exits.
   """
   @spec subscribe(pid(), String.t(), pid()) :: :ok
   def subscribe(conn, session_id, subscriber \\ self())
-      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber) do
-    ensure_subs_table!()
-    :ets.insert(@subs_table, {{conn, session_id}, subscriber})
-    :ok
-  end
+      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber),
+      do: Subscriptions.subscribe(conn, session_id, subscriber)
 
-  @doc "Remove a subscription registered via `subscribe/3`. An unknown/already-removed entry is a no-op."
+  @doc "Removes a `subscribe/3` registration; unknown entries are a no-op."
   @spec unsubscribe(pid(), String.t(), pid()) :: :ok
   def unsubscribe(conn, session_id, subscriber \\ self())
-      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber) do
-    ensure_subs_table!()
-    :ets.delete_object(@subs_table, {{conn, session_id}, subscriber})
-    :ok
-  end
+      when is_pid(conn) and is_binary(session_id) and is_pid(subscriber),
+      do: Subscriptions.unsubscribe(conn, session_id, subscriber)
 
   @doc false
-  # Called by the generated default `c:session_update/2` -- not meant to be
-  # called directly by application code (use `subscribe/3` + your own
-  # `session_update/2` override if you need something other than plain
-  # `send`). Deliberately never raises: a broadcast is best-effort delivery
-  # to processes we don't control the lifetime of, and the request/
-  # notification handler task calling this must never crash on its account
-  # (a handler crash never reaches the wire).
+  # Called by the default `session_update/2`. Best effort; never raises.
   @spec broadcast_update(pid(), String.t(), term()) :: :ok
   def broadcast_update(conn, session_id, update) do
-    ensure_subs_table!()
-
-    for {_key, subscriber} <- :ets.lookup(@subs_table, {conn, session_id}) do
+    for subscriber <- Subscriptions.subscribers(conn, session_id) do
       send(subscriber, {:acp_session_update, session_id, update})
     end
 
     :ok
-  rescue
-    _ -> :ok
-  end
-
-  defp ensure_subs_table! do
-    if :ets.whereis(@subs_table) == :undefined do
-      try do
-        :ets.new(@subs_table, [:bag, :public, :named_table])
-      rescue
-        ArgumentError -> :ok
-      end
-    end
-
-    :ok
   end
 
   @doc """
-  Tolerant `session/update` payload decode: wraps
-  `Raxol.AgentClientProtocol.Schema.SessionUpdate.from_json/1`. On success,
-  `{:ok, SessionUpdate.t()}`; on failure (an unrecognized `sessionUpdate`
-  discriminator, or a variant payload that fails its own required-field
-  decode), logs a warning and returns `{:raw, map}` instead of propagating
-  the error. Never raises. Every variant the pinned v1.19.0 oracle defines
-  is ported, `usage_update` included (`Schema.UsageUpdate`), so an
-  unrecognized discriminator means a wire value from outside that schema --
-  see `SessionUpdate`'s moduledoc for the variant list.
-
-  **Not on the live wire-dispatch path.** `Connection`/`Router` decode
-  `session/update` centrally, via `SessionNotification.from_json/1`
-  (`method_table.ex`'s `session/update` row), and DROP the whole
-  notification + telemetry (`[:raxol, :acp, :unknown_notification]`)
-  *before a handler ever runs* when that decode fails -- `c:session_update/2`,
-  and therefore `subscribe/3`'s broadcast, is only ever invoked with an
-  already-successfully-decoded payload. This
-  function exists for callers that decode a raw `"update"` wire map
-  themselves (manual/offline processing, replay tooling, tests) and want
-  best-effort passthrough instead of Connection's silent drop. The live
-  pipeline stays strict; tolerating undecodable variants there would require
-  a change to `SessionNotification`/`Router` decode.
+  Decodes a raw `session/update` payload, returning `{:raw, map}` (and logging)
+  instead of an error. The live dispatch path decodes strictly and drops
+  undecodable notifications before any handler runs; this is for callers
+  decoding raw maps themselves (replay tooling, tests).
   """
   @spec decode_update(map()) :: {:ok, SessionUpdate.t()} | {:raw, map()}
   def decode_update(raw) when is_map(raw) do
@@ -335,129 +117,85 @@ defmodule Raxol.AgentClientProtocol.Client do
     end
   end
 
-  # ===========================================================================
-  # prompt/3, prompt_stream/4 -- session-consumer convenience over
-  # Connection.async_request/6, consuming the DIRECT turn-delivery
-  # channel (Raxol.AgentClientProtocol.Delivery's moduledoc), not the
-  # multi-sender subscribe/3 broadcast. `Connection` opens a turn at
-  # submit time and sends every `session/update` belonging to it, the
-  # turn-end companion, and the terminal result FROM ITSELF -- one sender,
-  # so this process's mailbox order is exactly wire order. No settle
-  # timer, no reorder buffer: a real gap is a synchronous, deterministic
-  # `{:error, {:delivery_gap, _}}` observed at the terminal result, never
-  # a race against a not-yet-scheduled task.
-  # ===========================================================================
-
-  @typedoc "A decoded session/update payload (always successfully decoded -- see `decode_update/1`)."
-  @type update :: SessionUpdate.t()
-
   @doc """
-  Send `session/prompt` and collect every `session/update` delivered for
-  the turn until the response resolves. Returns
-  `{:ok, {updates, response}}` -- `updates` is the list of decoded
-  `SessionUpdate.t()` payloads observed during the turn, oldest first;
-  `response` is the decoded result struct (or `{:ext, map()}` for a
-  non-table result marker) -- or `{:error, term()}` on timeout/transport
-  failure/decode failure/delivery gap, same vocabulary as
-  `Connection.async_request/6`'s `outcome` plus
-  `{:error, {:delivery_gap, %{delivered:, expected:}}}` when the
-  Connection's own turn-end count disagrees with what this process
-  actually received (a definite loss signal, not a heuristic).
-
-  No settle pass, no timer: the direct channel makes updates, the turn-end
-  count, and the result all arrive from the Connection itself, so mailbox
-  order already equals wire order.
+  Sends `session/prompt` and returns `{:ok, {updates, response}}` with the
+  turn's updates oldest first, or `{:error, reason}` (timeout, transport, decode
+  failure, `{:delivery_gap, %{delivered: n, expected: m}}`, or `:connection_closed`
+  when the Connection dies mid-turn).
   """
   @spec prompt(pid(), struct(), pos_integer()) ::
-          {:ok, {[update()], struct() | {:ext, map()}}} | {:error, term()}
+          {:ok, {[update()], prompt_result()}} | {:error, term()}
   def prompt(conn, request, timeout_ms \\ 60_000)
       when is_pid(conn) and is_integer(timeout_ms) and timeout_ms > 0 do
-    tag = make_ref()
-
-    case Connection.async_request(conn, "session/prompt", request, self(), tag, timeout_ms) do
-      :ok -> prompt_loop(tag, 0, [], nil)
-      {:error, _} = err -> err
-    end
-  end
-
-  defp prompt_loop(tag, next, acc, count) do
-    receive do
-      {:acp_turn_update, ^tag, ordinal, notif} when ordinal == next ->
-        prompt_loop(tag, next + 1, [notif.update | acc], count)
-
-      {:acp_turn_update, ^tag, ordinal, _notif} ->
-        # Single-sender FIFO (the Connection is the ONE sender of updates,
-        # turn_end, and result for this tag) makes this branch unreachable
-        # in practice -- a defensive tripwire, never a silent skip.
-        fail_turn(:delivery_order, %{expected: next, got: ordinal})
-
-      {:acp_turn_end, ^tag, n} ->
-        prompt_loop(tag, next, acc, n)
-
-      {:acp_result, ^tag, {:ok, response}} ->
-        if count != nil and next < count do
-          fail_turn(:delivery_gap, %{delivered: next, expected: count})
-        else
-          {:ok, {Enum.reverse(acc), response}}
-        end
-
-      {:acp_result, ^tag, {:error, _} = error} ->
-        error
+    with {:ok, {updates, response}} <- run_turn(conn, request, timeout_ms, [], &[&1 | &2]) do
+      {:ok, {Enum.reverse(updates), response}}
     end
   end
 
   @doc """
-  Streaming-callback variant of `prompt/3`: `on_update.(update)` is invoked
-  synchronously, in this process, for each `session/update` as it is
-  received -- no accumulation (O(1) memory: this loop keeps no update
-  list at all). Returns `{:ok, response}` / `{:error, term()}` for the
-  terminal outcome, same vocabulary as `prompt/3` (including the
-  `{:error, {:delivery_gap, _}}` fail-the-turn case).
+  Like `prompt/3`, but calls `on_update` in this process for each update as it
+  arrives instead of accumulating them. Returns `{:ok, response}` or
+  `{:error, reason}`.
   """
   @spec prompt_stream(pid(), struct(), (update() -> any()), pos_integer()) ::
-          {:ok, struct() | {:ext, map()}} | {:error, term()}
+          {:ok, prompt_result()} | {:error, term()}
   def prompt_stream(conn, request, on_update, timeout_ms \\ 60_000)
       when is_pid(conn) and is_function(on_update, 1) and is_integer(timeout_ms) and
              timeout_ms > 0 do
-    tag = make_ref()
+    step = fn update, acc ->
+      on_update.(update)
+      acc
+    end
 
-    case Connection.async_request(conn, "session/prompt", request, self(), tag, timeout_ms) do
-      :ok -> stream_loop(tag, 0, nil, on_update)
-      {:error, _} = err -> err
+    with {:ok, {nil, response}} <- run_turn(conn, request, timeout_ms, nil, step) do
+      {:ok, response}
     end
   end
 
-  defp stream_loop(tag, next, count, on_update) do
-    receive do
-      {:acp_turn_update, ^tag, ordinal, notif} when ordinal == next ->
-        on_update.(notif.update)
-        stream_loop(tag, next + 1, count, on_update)
+  # The monitor covers a Connection killed without running its teardown, which
+  # would otherwise leave this process waiting forever.
+  defp run_turn(conn, request, timeout_ms, acc, step) do
+    tag = make_ref()
+    mon = Process.monitor(conn)
 
+    try do
+      with :ok <-
+             Connection.async_request(conn, "session/prompt", request, self(), tag, timeout_ms) do
+        await_turn(%{tag: tag, mon: mon, next: 0, count: nil, acc: acc, step: step})
+      end
+    after
+      Process.demonitor(mon, [:flush])
+    end
+  end
+
+  defp await_turn(%{tag: tag, next: next} = turn) do
+    receive do
+      {:acp_turn_update, ^tag, ^next, notif} ->
+        await_turn(%{turn | next: next + 1, acc: turn.step.(notif.update, turn.acc)})
+
+      # Unreachable with a single sender; a tripwire, never a silent skip.
       {:acp_turn_update, ^tag, ordinal, _notif} ->
         fail_turn(:delivery_order, %{expected: next, got: ordinal})
 
       {:acp_turn_end, ^tag, n} ->
-        stream_loop(tag, next, n, on_update)
+        await_turn(%{turn | count: n})
 
       {:acp_result, ^tag, {:ok, response}} ->
-        if count != nil and next < count do
-          fail_turn(:delivery_gap, %{delivered: next, expected: count})
-        else
-          {:ok, response}
-        end
+        if turn.count != nil and next < turn.count,
+          do: fail_turn(:delivery_gap, %{delivered: next, expected: turn.count}),
+          else: {:ok, {turn.acc, response}}
 
       {:acp_result, ^tag, {:error, _} = error} ->
         error
+
+      {:DOWN, mon, :process, _pid, _reason} when mon == turn.mon ->
+        {:error, :connection_closed}
     end
   end
 
-  # Failing the turn is the only lossless resolution of a gap, so it is the
-  # default: emit exactly one `:fail` telemetry event and return the
-  # error tuple. Never a silent partial list, and never a timer/retry, since
-  # a hole in streamed content is corruption rather than late arrival.
-  @spec fail_turn(atom(), map()) :: {:error, {atom(), map()}}
+  # A gap is corruption, not lateness: fail the turn rather than retry.
   defp fail_turn(reason, meta) do
-    Delivery.emit(Map.merge(%{decision: :fail}, meta))
+    Delivery.emit(Map.put(meta, :decision, :fail))
     {:error, {reason, meta}}
   end
 
@@ -466,36 +204,9 @@ defmodule Raxol.AgentClientProtocol.Client do
     fs_opts = Keyword.take(opts, [:fs_max_read_bytes])
 
     quote do
-      @behaviour Raxol.AgentClientProtocol.Client
+      unquote(Codegen.using(__MODULE__, :client))
 
-      @impl Raxol.AgentClientProtocol.Client
-      def init(arg), do: {:ok, arg}
-
-      @impl Raxol.AgentClientProtocol.Client
-      def handle_ext_request(_wire, _params, _ctx) do
-        {:error, Raxol.AgentClientProtocol.Error.method_not_found()}
-      end
-
-      @impl Raxol.AgentClientProtocol.Client
-      def handle_ext_notification(_wire, _params, _ctx), do: :ok
-
-      require Raxol.AgentClientProtocol.Handler.Codegen
-      Raxol.AgentClientProtocol.Handler.Codegen.defdefaults(:client)
-
-      defoverridable [
-                       {:init, 1},
-                       {:handle_ext_request, 3},
-                       {:handle_ext_notification, 3}
-                     ] ++
-                       Raxol.AgentClientProtocol.Handler.Codegen.callback_arities(:client)
-
-      # -- session_update default: broadcast to subscribe/3 subscribers --
-      # `session_update/2` was included in the `defoverridable` list above
-      # (it's a row in `callback_arities(:client)`); this definition
-      # replaces the Codegen-generated `:ok` stub, and the second
-      # `defoverridable` call below re-opens it so a user's OWN
-      # `def session_update/2` (written after `use Client`) still wins --
-      # see client_test.exs's `OverridingClient` fixture.
+      # Replaces the generated `:ok` default; still overridable.
       @impl Raxol.AgentClientProtocol.Client
       def session_update(notification, ctx) do
         Raxol.AgentClientProtocol.Client.broadcast_update(
@@ -512,10 +223,6 @@ defmodule Raxol.AgentClientProtocol.Client do
   end
 
   @doc false
-  # Builds the `fs_sandbox:` opt-in block spliced into `__using__/1`'s
-  # quote -- kept as a plain function (not inlined in the macro body) so
-  # the `nil` (no sandbox) case is a one-line no-op AST rather than a
-  # branch duplicated inside the big quote block.
   @spec __fs_sandbox_block__(String.t() | nil, keyword()) :: Macro.t()
   def __fs_sandbox_block__(path, opts \\ [])
 
@@ -540,584 +247,47 @@ defmodule Raxol.AgentClientProtocol.Client do
 
       @impl Raxol.AgentClientProtocol.Client
       def read_text_file(req, _ctx),
-        do: FsSandbox.read(unquote(path), req, unquote(read_opts))
+        do:
+          Raxol.AgentClientProtocol.Client.FsSandbox.read(unquote(path), req, unquote(read_opts))
 
       @impl Raxol.AgentClientProtocol.Client
-      def write_text_file(req, _ctx), do: FsSandbox.write(unquote(path), req)
+      def write_text_file(req, _ctx),
+        do: FsSandbox.write(unquote(path), req)
 
       defoverridable read_text_file: 2, write_text_file: 2
     end
   end
 
-  # -- Library-mode wiring ---------------------------------------------------
-
   defmodule ConnectionSupervisor do
     @moduledoc false
-    # The per-connection subtree, client role. Infrastructure children come
-    # straight from `Session.Supervisor.child_specs/1`, same as the agent
-    # side -- see `Agent.ConnectionSupervisor` for the rationale (shared
-    # verbatim; not duplicated here beyond what's needed to keep this
-    # module self-contained) and for why `parent_sup` is resolved via
-    # `self()` inside `init/1`.
-
     use Supervisor
 
-    alias Raxol.AgentClientProtocol.Session
-
-    @spec start_link({module(), term(), term()}, keyword()) ::
+    @spec start_link(Raxol.AgentClientProtocol.Handler.Wiring.init_arg(), keyword()) ::
             Supervisor.on_start()
-    def start_link(init_arg, opts \\ []) do
-      Supervisor.start_link(__MODULE__, init_arg, opts)
-    end
+    def start_link(init_arg, opts \\ []), do: Supervisor.start_link(__MODULE__, init_arg, opts)
 
     @impl Supervisor
-    def init({handler, handler_arg, transport}) do
-      connection_spec = %{
-        id: Raxol.AgentClientProtocol.Connection,
-        start:
-          {Raxol.AgentClientProtocol.Connection, :start_link,
-           [
-             [
-               role: :client,
-               transport: transport,
-               handler: handler,
-               handler_arg: handler_arg,
-               parent_sup: self()
-             ]
-           ]},
-        restart: :temporary,
-        significant: true
-      }
-
-      children = Session.Supervisor.child_specs() ++ [connection_spec]
-
-      Supervisor.init(children,
-        strategy: :one_for_all,
-        auto_shutdown: :any_significant
-      )
-    end
+    def init(init_arg), do: Raxol.AgentClientProtocol.Handler.Wiring.init(:client, init_arg)
   end
 
   @doc """
-  Library-mode child spec: embed one ACP client connection subtree into the
-  caller's own supervision tree, e.g.
-
-      children = [
-        {Raxol.AgentClientProtocol.Client, handler: MyClient, transport: {Transport.Stdio, handle}}
-      ]
-
-  Required: `:handler` (a module using this behaviour), `:transport`
-  (a `{module, handle}` pair per `Raxol.AgentClientProtocol.Transport`).
-  Optional: `:handler_arg` (passed to `c:init/1`, default `nil`), `:name`
-  (registers the `ConnectionSupervisor`), `:id` (child id in the parent's
-  supervisor, defaults to `#{inspect(__MODULE__)}` -- override when
-  embedding more than one client connection in the same tree).
+  Child spec for embedding one client connection subtree. Requires `:handler`
+  and `:transport`; accepts `:handler_arg`, `:name` and `:id` (default
+  `#{inspect(__MODULE__)}`).
   """
   @spec child_spec(keyword()) :: Supervisor.child_spec()
-  def child_spec(opts) when is_list(opts) do
-    handler = Keyword.fetch!(opts, :handler)
-    transport = Keyword.fetch!(opts, :transport)
-    handler_arg = Keyword.get(opts, :handler_arg)
-    sup_opts = Keyword.take(opts, [:name])
+  def child_spec(opts) when is_list(opts),
+    do: Wiring.child_spec(ConnectionSupervisor, __MODULE__, opts)
 
-    %{
-      id: Keyword.get(opts, :id, __MODULE__),
-      start: {ConnectionSupervisor, :start_link, [{handler, handler_arg, transport}, sup_opts]},
-      type: :supervisor,
-      # One-shot by design: the subtree `auto_shutdown`s on a significant
-      # child's exit and is never restarted in place — connection
-      # recovery is a fresh reattach against the durable journal, not a
-      # supervisor restart. Embedders may override (`%{spec | restart: ...}`).
-      restart: :temporary
-    }
-  end
-
-  @doc """
-  Standalone start: `Client.start_link(MyClient, transport: {mod, handle})`.
-
-  Returns the `ConnectionSupervisor`'s `Supervisor.on_start()` result --
-  link to (or monitor) the returned pid to observe the whole subtree's
-  lifecycle (see `Agent.start_link/2`'s doc for the crash-vs-restart
-  rationale, identical here).
-
-  Options: same as `child_spec/1` minus `:handler` (positional) and `:id`.
-  """
+  @doc "Starts a standalone subtree. Options as `child_spec/1`, minus `:handler` and `:id`."
   @spec start_link(module(), keyword()) :: Supervisor.on_start()
-  def start_link(handler, opts \\ []) when is_atom(handler) do
-    transport = Keyword.fetch!(opts, :transport)
-    handler_arg = Keyword.get(opts, :handler_arg)
-    sup_opts = Keyword.take(opts, [:name])
-
-    ConnectionSupervisor.start_link({handler, handler_arg, transport}, sup_opts)
-  end
+  def start_link(handler, opts \\ []) when is_atom(handler),
+    do: Wiring.start_link(ConnectionSupervisor, handler, opts)
 
   @doc """
-  Resolve the `Connection` pid out of a started connection subtree. `sup`
-  must be the **`ConnectionSupervisor`'s own pid** -- this is the ONLY
-  supported way to reach the pid `Connection.request/4`, `async_request/6`,
-  `notify/3`, and this module's own `subscribe/3`/`prompt/3`/`prompt_stream/4`
-  need, since `start_link/2`/`child_spec/1` deliberately return/register the
-  `ConnectionSupervisor`, not the `Connection` child itself (the supervisor is
-  the stable handle across the child's `:temporary` restart policy).
-
-  Getting `sup`:
-
-    * `start_link/2` returns it directly -- pass that return value straight in.
-    * Any starter that hands you back the STARTED CHILD's pid also works
-      unchanged -- `start_supervised!/1` (ExUnit) and
-      `DynamicSupervisor.start_child/2` both do this for a `child_spec/1`
-      entry.
-    * A plain `Supervisor.start_link(children, ...)` where a `child_spec/1`
-      entry is one of several `children` does NOT hand you the
-      `ConnectionSupervisor` pid directly -- that call returns YOUR OWN
-      supervisor's pid, one level further out. Resolve the
-      `ConnectionSupervisor` child from
-      `Supervisor.which_children(your_sup)` yourself first, then pass THAT
-      pid here.
-
-  Returns `{:error, :not_found}` if `sup` has no live `Connection` child
-  (already torn down, or `sup` isn't a `ConnectionSupervisor` at all --
-  e.g. you passed your own outer supervisor's pid from the last bullet
-  above by mistake).
+  Returns the `Connection` pid of a started subtree. `sup` must be the
+  `ConnectionSupervisor` pid, not an outer supervisor.
   """
   @spec connection(pid()) :: {:ok, pid()} | {:error, :not_found}
-  def connection(sup) when is_pid(sup) do
-    sup
-    |> Supervisor.which_children()
-    |> Enum.find_value({:error, :not_found}, fn
-      {_id, pid, _type, mods} when is_pid(pid) and is_list(mods) ->
-        if Connection in mods, do: {:ok, pid}
-
-      _ ->
-        nil
-    end)
-  end
-end
-
-defmodule Raxol.AgentClientProtocol.Client.FsSandbox do
-  @moduledoc """
-  Confines `fs/read_text_file` / `fs/write_text_file` handling to a sandbox
-  directory -- backs `use Raxol.AgentClientProtocol.Client, fs_sandbox:
-  path` (see that module's moduledoc for the option). Not a general-purpose
-  path library: it exists solely to give a minimal client a working
-  filesystem story out of the box.
-
-  ## Path checks
-
-  Every request path is joined under the sandbox root and lexically
-  normalized (`..` resolved via `Path.expand/1`), checked against the root,
-  THEN fully symlink-resolved (`resolve/2`, a hand-rolled `realpath`) and
-  checked against the root a second time -- so a `../` escape and a
-  symlink planted inside the sandbox that points outside it are both
-  caught, not just the lexical case. Every refusal is a `-32602 invalid
-  params` `Error.t()`, safe to send straight to the peer: `data` carries a
-  `"reason"` and the path the peer sent, never the resolved absolute path.
-
-  ## Opening the file
-
-  A path that is checked and then opened leaves a window in which a peer
-  that can change the tree inside the root swaps the file for a symlink. So
-  the file is opened first and the open handle verified afterwards: the
-  device and inode of the handle (`:file.read_file_info/1` on it) must equal
-  those of the path re-resolved with `resolve/2` and read with
-  `File.lstat/1`, which does not follow a symlink at the leaf, and both
-  must be a regular file. A mismatch is refused as `"path_changed"`; a leaf
-  that is not a regular file (a directory, FIFO, device, or a symlink
-  swapped in for one) as `"not_a_regular_file"`.
-
-    * `read/3` checks the leaf with `File.lstat/1`, opens it read-only,
-      verifies the handle, and reads at most `:max_read_bytes` (default
-      16 MiB); a larger file is refused as `"file_too_large"`. `line` and
-      `limit` slice what was read.
-    * `write/2` creates missing parent directories one at a time, each
-      checked to be a directory and not a symlink, and re-resolves the path
-      afterwards. A new file is created with `O_EXCL`, which never follows
-      a symlink at the leaf; an existing file is opened without truncating
-      it. The handle is verified before it is truncated and written.
-
-  ## What is and is not guaranteed
-
-  Erlang's file API has no `openat` or `O_NOFOLLOW`, so checking a path and
-  opening it are separate system calls. With the verification above:
-
-    * Swapping the requested file itself (for a symlink, a FIFO, a device or
-      another file) while a request runs cannot make the request read or
-      write a file outside the root.
-    * A peer that can also rename the DIRECTORIES a requested path goes
-      through, and wins two races within one request (at the open and at
-      the verifying `lstat`), can still redirect that request. A path whose
-      only directory is the root itself is not exposed to this.
-    * There is no open mode that writes an existing file without `O_CREAT`,
-      so a leaf swapped for a dangling symlink at that instant, or a parent
-      directory swapped as above, can create an EMPTY file or directory
-      outside the root. Nothing is written into it: the handle check
-      refuses first.
-    * A leaf swapped for a FIFO between the `lstat` and the read-only open
-      blocks that one request until the FIFO has a writer.
-    * A hard link inside the root to a file outside it is that file; hard
-      links are not detected.
-    * On non-Unix file systems the inode is reported as zero, so the handle
-      check compares only the device and the file type.
-
-  `fs_sandbox` confines the paths the peer names. It is not a boundary
-  against a peer that can also change the sandbox tree by other means
-  while requests run: the checks above narrow those races but do not close
-  them.
-  """
-
-  alias Raxol.AgentClientProtocol.Error
-
-  alias Raxol.AgentClientProtocol.Schema.ClientTypes.{
-    ReadTextFileResponse,
-    WriteTextFileResponse
-  }
-
-  @max_symlink_depth 40
-  @default_max_read_bytes 16 * 1024 * 1024
-  @read_chunk_bytes 1024 * 1024
-
-  @doc """
-  Handle `fs/read_text_file` (`req` is a `ClientTypes.ReadTextFileRequest.t()`)
-  confined to `sandbox_root`.
-
-  Options: `:max_read_bytes` (default 16 MiB), the largest file read; a
-  larger one is refused as `"file_too_large"`.
-  """
-  @spec read(String.t(), struct(), keyword()) ::
-          {:ok, ReadTextFileResponse.t()} | {:error, Error.t()}
-  def read(sandbox_root, req, opts \\ []) do
-    max = Keyword.get(opts, :max_read_bytes, @default_max_read_bytes)
-
-    with {:ok, real} <- resolve(sandbox_root, req.path),
-         :ok <- regular_leaf(real, req.path),
-         {:ok, content} <- read_verified(sandbox_root, req.path, real, max) do
-      {:ok, ReadTextFileResponse.new(slice(content, req.line, req.limit))}
-    end
-  end
-
-  @doc "Handle `fs/write_text_file` (`req` is a `ClientTypes.WriteTextFileRequest.t()`) confined to `sandbox_root`. Creates parent directories as needed."
-  @spec write(String.t(), struct()) ::
-          {:ok, WriteTextFileResponse.t()} | {:error, Error.t()}
-  def write(sandbox_root, req) do
-    result =
-      with {:ok, real} <- resolve(sandbox_root, req.path),
-           :ok <- make_parents(sandbox_root, req.path, real),
-           {:ok, fd} <- open_for_write(real, req.path) do
-        try do
-          write_verified(fd, sandbox_root, req, real)
-        after
-          :file.close(fd)
-        end
-      end
-
-    case result do
-      {:error, %Error{}} = error -> error
-      {:error, reason} -> {:error, Error.with_data(Error.internal_error(), inspect(reason))}
-      ok -> ok
-    end
-  end
-
-  defp write_verified(fd, root, req, real) do
-    with :ok <- verify_handle(fd, root, req.path, real),
-         {:ok, 0} <- :file.position(fd, :bof),
-         :ok <- :file.truncate(fd),
-         :ok <- :file.write(fd, req.content) do
-      {:ok, WriteTextFileResponse.new()}
-    end
-  end
-
-  defp regular_leaf(real, path) do
-    case File.lstat(real) do
-      {:ok, %File.Stat{type: :regular}} ->
-        :ok
-
-      {:ok, %File.Stat{}} ->
-        {:error, invalid_params(:not_a_regular_file, path)}
-
-      {:error, reason} ->
-        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
-    end
-  end
-
-  defp read_verified(root, path, real, max) do
-    case :file.open(real, [:read, :binary, :raw]) do
-      {:ok, fd} ->
-        try do
-          with :ok <- verify_handle(fd, root, path, real) do
-            read_capped(fd, path, max)
-          end
-        after
-          :file.close(fd)
-        end
-
-      {:error, reason} ->
-        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
-    end
-  end
-
-  defp read_capped(fd, path, max), do: read_chunks(fd, path, max, [], 0)
-
-  defp read_chunks(fd, path, max, acc, size) do
-    case :file.read(fd, @read_chunk_bytes) do
-      {:ok, data} when size + byte_size(data) > max ->
-        {:error, file_too_large(path, max)}
-
-      {:ok, data} ->
-        read_chunks(fd, path, max, [acc | data], size + byte_size(data))
-
-      :eof ->
-        {:ok, IO.iodata_to_binary(acc)}
-
-      {:error, reason} ->
-        {:error, Error.with_data(Error.resource_not_found(path), inspect(reason))}
-    end
-  end
-
-  defp file_too_large(path, max) do
-    Error.with_data(Error.invalid_params(), %{
-      "reason" => "file_too_large",
-      "path" => path,
-      "max_read_bytes" => max
-    })
-  end
-
-  # Creates each missing directory between the real root and the leaf's
-  # parent with `mkdir` (which never follows a symlink at the name it
-  # creates), checks that each one is a directory and not a symlink, and then
-  # requires the path to resolve exactly as it did before.
-  defp make_parents(root, path, real) do
-    {:ok, root_real} = real_path(Path.expand(root))
-    parent = Path.dirname(real)
-
-    with :ok <- create_dirs(root_real, parent, path) do
-      case resolve(root, path) do
-        {:ok, ^real} -> :ok
-        {:ok, _moved} -> {:error, invalid_params(:path_changed, path)}
-        {:error, _} = error -> error
-      end
-    end
-  end
-
-  # Nothing to create when the parent is the root, or when the leaf IS the
-  # root (its parent lies above it; the open then refuses the directory).
-  defp create_dirs(root_real, parent, path) do
-    if within?(root_real, parent) and parent != root_real do
-      parent
-      |> Path.relative_to(root_real)
-      |> Path.split()
-      |> create_each(root_real, path)
-    else
-      :ok
-    end
-  end
-
-  defp create_each([], _dir, _path), do: :ok
-
-  defp create_each([comp | rest], dir, path) do
-    dir = Path.join(dir, comp)
-
-    with :ok <- make_dir(dir, path) do
-      create_each(rest, dir, path)
-    end
-  end
-
-  defp make_dir(dir, path) do
-    with result when result in [:ok, {:error, :eexist}] <- :file.make_dir(dir) do
-      case File.lstat(dir) do
-        {:ok, %File.Stat{type: :directory}} -> :ok
-        {:ok, %File.Stat{}} -> {:error, invalid_params(:path_changed, path)}
-        {:error, _} = error -> error
-      end
-    end
-  end
-
-  # A missing leaf is created with O_EXCL, which fails on any existing name,
-  # a symlink included, so it never follows one. An existing leaf must be a
-  # regular file and is opened read-write, which does not truncate it.
-  defp open_for_write(real, path) do
-    case File.lstat(real) do
-      {:error, :enoent} ->
-        case :file.open(real, [:write, :exclusive, :binary, :raw]) do
-          {:error, :eexist} -> open_existing(real, path)
-          opened -> opened
-        end
-
-      {:ok, _stat} ->
-        open_existing(real, path)
-
-      {:error, _} = error ->
-        error
-    end
-  end
-
-  defp open_existing(real, path) do
-    case File.lstat(real) do
-      {:ok, %File.Stat{type: :regular}} -> :file.open(real, [:read, :write, :binary, :raw])
-      {:ok, %File.Stat{}} -> {:error, invalid_params(:not_a_regular_file, path)}
-      {:error, _} = error -> error
-    end
-  end
-
-  # The open handle must be a regular file and the same file (device and
-  # inode) as the path re-resolved now, with the leaf read by `lstat` so a
-  # symlink swapped in at the leaf is seen as a symlink.
-  defp verify_handle(fd, root, path, real) do
-    with {:ok, record} <- :file.read_file_info(fd),
-         %File.Stat{type: :regular} = opened <- File.Stat.from_record(record),
-         {:ok, ^real} <- resolve(root, path),
-         {:ok, %File.Stat{type: :regular} = named} <- File.lstat(real),
-         true <- same_file?(opened, named) do
-      :ok
-    else
-      %File.Stat{} -> {:error, invalid_params(:not_a_regular_file, path)}
-      {:error, %Error{}} = error -> error
-      _changed -> {:error, invalid_params(:path_changed, path)}
-    end
-  end
-
-  defp same_file?(a, b), do: a.major_device == b.major_device and a.inode == b.inode
-
-  @doc """
-  Resolve `requested_path` against `sandbox_root`, rejecting any result
-  that escapes the sandbox -- lexically (`../` traversal) or via a symlink
-  (on the requested file itself or on any ancestor directory in its path).
-  Returns `{:ok, real_absolute_path}` or `{:error, %Error{}}`
-  (`-32602 invalid params`).
-  """
-  @spec resolve(String.t(), String.t()) ::
-          {:ok, String.t()} | {:error, Error.t()}
-  def resolve(sandbox_root, requested_path)
-      when is_binary(sandbox_root) and is_binary(requested_path) do
-    root = Path.expand(sandbox_root)
-    lexical = Path.expand(Path.join(root, requested_path))
-
-    with true <- within?(root, lexical) || {:error, :path_traversal},
-         {:ok, root_real} <- real_path(root),
-         {:ok, real} <- real_path(lexical),
-         true <- within?(root_real, real) || {:error, :symlink_escape} do
-      {:ok, real}
-    else
-      {:error, reason} -> {:error, invalid_params(reason, requested_path)}
-    end
-  end
-
-  defp invalid_params(reason, path) do
-    Error.with_data(Error.invalid_params(), %{
-      "reason" => to_string(reason),
-      "path" => path
-    })
-  end
-
-  defp within?(root, path),
-    do: path == root or String.starts_with?(path, root <> "/")
-
-  # Full symlink resolution (a hand-rolled `realpath`): walk the components
-  # left-to-right from the filesystem root, carrying a fully-resolved real
-  # `base`. A symlink is followed against `base` -- its REAL parent -- so a
-  # relative target (including `..`) resolves against where the link actually
-  # lives, not its lexical spelling. Resolving a relative target against the
-  # lexical parent instead would let a link under a symlinked
-  # ANCESTOR escape the sandbox while still looking interior. `.`/`..` adjust
-  # `base` directly; a component that is not a symlink -- or does not exist (the
-  # write-leaf case) -- is accepted literally, so the deepest existing ancestor
-  # still resolves. Only symlink hops count toward the depth cap, so deep
-  # symlink-free nesting is never mistaken for a cycle.
-  defp real_path(path) do
-    [root | rest] = Path.split(Path.expand(path))
-    walk_real(root, rest, 0)
-  end
-
-  defp walk_real(_base, _components, depth) when depth > @max_symlink_depth,
-    do: {:error, :too_many_symlinks}
-
-  defp walk_real(base, [], _depth), do: {:ok, base}
-
-  defp walk_real(base, ["." | rest], depth), do: walk_real(base, rest, depth)
-
-  defp walk_real(base, [".." | rest], depth),
-    do: walk_real(Path.dirname(base), rest, depth)
-
-  defp walk_real(base, [comp | rest], depth) do
-    candidate = Path.join(base, comp)
-
-    case :file.read_link(candidate) do
-      {:ok, target} ->
-        # A symlink resolves against its REAL parent (`base`): an absolute target
-        # restarts from its own anchor, a relative one (possibly with `..`) is
-        # spliced ahead of the remaining components and resolved against base.
-        {anchor, target_rest} = anchor_target(to_string(target), base)
-        walk_real(anchor, target_rest ++ rest, depth + 1)
-
-      {:error, _not_a_symlink_or_missing} ->
-        walk_real(candidate, rest, depth)
-    end
-  end
-
-  # Split a symlink target into the base it resolves against and the components
-  # to walk from there.
-  #
-  # `Path.split/1` is `:filename.split/1`, whose notion of "absolute" is
-  # OS-dependent: a Windows absolute target splits as `["c:/", "tmp", ...]`,
-  # keeping the drive as its own anchor, while the SAME string on Unix splits as
-  # `["c:", "tmp", ...]` with no anchor at all. Matching only the POSIX `"/"`
-  # anchor would send every Windows-absolute target down the relative branch,
-  # where it is spliced onto `base` and lands back INSIDE the root -- an escape
-  # the post-resolution re-check cannot see, because nothing has left.
-  #
-  # A drive anchor counts on EVERY host rather than only on Windows. Deciding it
-  # per-host would mean the same link is contained on one platform and not on
-  # another, and one rule errs the safe way: on Unix a target of `c:/outside/x`
-  # names a directory literally called `c:`, so treating it as absolute refuses a
-  # pathological-but-legal relative path instead of admitting a real escape.
-  defp anchor_target(target, base) do
-    case Path.split(target) do
-      ["/" | rest] ->
-        {"/", rest}
-
-      [anchor | rest] = split ->
-        case absolute_anchor(anchor) do
-          nil -> {base, split}
-          root -> {root, rest}
-        end
-
-      [] ->
-        {base, []}
-    end
-  end
-
-  # `"c:/"` is how Windows splits a drive-absolute target; `"c:"` is how Unix
-  # splits the same string. A bare drive is drive-RELATIVE on Windows rather than
-  # absolute, but anchoring it at the drive root refuses it, which is the safe
-  # direction for a boundary.
-  defp absolute_anchor(<<letter, ?:>>) when letter in ?A..?Z or letter in ?a..?z,
-    do: <<letter, ?:, ?/>>
-
-  defp absolute_anchor(<<letter, ?:, ?/>>)
-       when letter in ?A..?Z or letter in ?a..?z,
-       do: <<letter, ?:, ?/>>
-
-  # UNC, the same anchor issue one shape over. `:filename.split/1` on Windows gives
-  # a UNC path its own `"//"` component (both `"//host/share/x"` and the
-  # `"\\\\host\\share\\x"` spelling land there), which is no drive letter -- so it
-  # would otherwise take the relative branch, exactly like an unanchored drive.
-  #
-  # The clause matches TWO IDENTICAL separators, mirroring the `Slash, Slash`
-  # guard `:filename.win32_splitb/1` decides UNC by. That also covers the shape
-  # Unix produces: a backslash is an ordinary character there, so
-  # `"\\\\host\\share\\x"` never splits at all and arrives whole as the anchor,
-  # relative-looking. Same link, contained on Unix and escaping on Windows, which
-  # is exactly the per-host divergence this function exists to remove -- so the
-  # whole anchor is returned as the root and refused on both.
-  defp absolute_anchor(<<sep, sep, _::binary>> = unc) when sep in [?/, ?\\],
-    do: unc
-
-  defp absolute_anchor(_), do: nil
-
-  defp slice(content, nil, _limit), do: content
-
-  defp slice(content, line, limit) when is_integer(line) do
-    lines = content |> String.split("\n") |> Enum.drop(max(line - 1, 0))
-    lines = if limit, do: Enum.take(lines, limit), else: lines
-    Enum.join(lines, "\n")
-  end
+  def connection(sup) when is_pid(sup), do: Wiring.connection(sup)
 end

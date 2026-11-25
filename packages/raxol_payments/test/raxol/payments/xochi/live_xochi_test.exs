@@ -138,7 +138,7 @@ defmodule Raxol.Payments.Xochi.LiveXochiTest do
 
         # With XochiPull enabled the origin pull routes to the verified per-chain
         # pull contracts, not the bare solver EOA -- trust those alongside the
-        # pinned solver (Riddler #591; Raxol.Payments.Xochi.PullContracts).
+        # pinned solver (Raxol.Payments.Xochi.PullContracts).
         allowlist = Enum.uniq([solver | Raxol.Payments.Xochi.PullContracts.pull_recipients()])
         Application.put_env(:raxol_payments, :pull_solver_allowlist, allowlist)
         Application.put_env(:raxol_payments, :pull_require_solver_pin, true)
@@ -296,6 +296,22 @@ defmodule Raxol.Payments.Xochi.LiveXochiTest do
         print_margin_report(recorder)
       end
 
+      defp print_matrix_notes(transient, reconcile) do
+        if transient != [] do
+          IO.puts(
+            "  note     #{length(transient)} corridor(s) hit a transient worker error; " <>
+              "re-run for a verdict: #{Enum.join(transient, ", ")}"
+          )
+        end
+
+        if reconcile != [] do
+          IO.puts(
+            "  RECONCILE #{length(reconcile)} intent(s) submitted but did not cleanly " <>
+              "settle; funds may be in flight -- check: #{inspect(reconcile)}"
+          )
+        end
+      end
+
       # Tally the per-cell outcomes and fail the run only on a client FAULT -- an
       # intent that could not be submitted (bad signature, spend gate, solver pin).
       # A submitted intent the solver does not fill is a logged SKIP, not a failure:
@@ -327,19 +343,7 @@ defmodule Raxol.Payments.Xochi.LiveXochiTest do
             "(#{length(transient)} transient), #{length(faults)} fault(s)"
         )
 
-        if transient != [] do
-          IO.puts(
-            "  note     #{length(transient)} corridor(s) hit a transient worker error; " <>
-              "re-run for a verdict: #{Enum.join(transient, ", ")}"
-          )
-        end
-
-        if reconcile != [] do
-          IO.puts(
-            "  RECONCILE #{length(reconcile)} intent(s) submitted but did not cleanly " <>
-              "settle; funds may be in flight -- check: #{inspect(reconcile)}"
-          )
-        end
+        print_matrix_notes(transient, reconcile)
 
         assert faults == [],
                "matrix hit #{length(faults)} client fault(s) -- our integration bug " <>
@@ -720,8 +724,9 @@ defmodule Raxol.Payments.Xochi.LiveXochiTest do
 
       defp format_blocking(blocking) do
         blocking
-        |> Enum.map(fn {cell, reason} -> "#{cell_label(cell)} (#{terse_reason(reason)})" end)
-        |> Enum.join(", ")
+        |> Enum.map_join(", ", fn {cell, reason} ->
+          "#{cell_label(cell)} (#{terse_reason(reason)})"
+        end)
       end
 
       defp terse_reason({:http, code, _body}), do: "http #{code}"

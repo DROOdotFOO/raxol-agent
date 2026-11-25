@@ -87,9 +87,9 @@ defmodule Raxol.Payments.Conformance.XochiConformanceTest do
   # (read from the quote response at runtime).
   #
   # The domain comes from `Xochi.eip712_domain/1`, the same projection the
-  # signing path uses, so a served-to-signed mismatch fails here. Rebuilding
-  # that mapping locally is what let #772 ship green: the copy in this file was
-  # conditional on `version` while production was not, and nothing compared them.
+  # signing path uses, so a served-to-signed mismatch fails here. Do not rebuild
+  # that mapping locally: a local copy can drift from production and still agree
+  # with itself.
   describe "Xochi XochiIntent EIP-712 conformance vs CLI" do
     for vec <- ConformanceFixture.by_protocol("xochi") do
       @vec vec
@@ -223,8 +223,6 @@ defmodule Raxol.Payments.Conformance.XochiConformanceTest do
              "fixture and live domains must not collide: a fixture-signed intent must never validate against the live worker"
     end
   end
-
-  # -- Fixture shape helpers --
 
   # The domain salt rule on both sides: salt = keccak256(utf8(version)).
   defp keccak_utf8(value) do

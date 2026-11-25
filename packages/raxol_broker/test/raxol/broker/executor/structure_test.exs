@@ -36,10 +36,10 @@ defmodule Raxol.Broker.Executor.StructureTest do
     * The string scan over the source (order-writing tool names outside
       `executor/place.ex`) is best-effort: a name assembled at runtime from
       fragments passes it. The guarantees are the call-graph rules above and
-      the guards at the resources (the journal claim and the receipt key).
+      the guards at the resources (the journal claim and the review receipt).
 
   Code that deliberately writes into another module's private state (the
-  executor's process-dictionary slots, `:sys.replace_state/2`) is outside
+  executor's `:"$initial_call"`, `:sys.replace_state/2`) is outside
   what a structural test, or the BEAM, can stop.
   """
   use ExUnit.Case, async: true
@@ -178,8 +178,6 @@ defmodule Raxol.Broker.Executor.StructureTest do
     String.starts_with?(source, lib <> "/")
   end
 
-  # -- The checker ------------------------------------------------------------
-
   # Everything the rules read from one module: literal remote references
   # (`{m, f, arity}`, `:any` for an MFA pair), dynamic dispatch findings and
   # every atom literal.
@@ -302,8 +300,6 @@ defmodule Raxol.Broker.Executor.StructureTest do
   defp name({:atom, _, atom}), do: atom
   defp name(_expression), do: :var
 
-  # -- The rules --------------------------------------------------------------
-
   defp callers(facts, fun) do
     for %{module: module, refs: refs} <- facts, Enum.any?(refs, fun), uniq: true, do: module
   end
@@ -352,12 +348,10 @@ defmodule Raxol.Broker.Executor.StructureTest do
         do: {module, finding}
   end
 
-  # -- The app ----------------------------------------------------------------
-
   test "the walker sees remote calls (sanity)", %{facts: facts} do
     place = Enum.find(facts, &(&1.module == Place))
     assert {Journal, :append_to_group, 4} in place.refs
-    assert {@executor, :receipt_key, 0} in place.refs
+    assert {ReviewReceipt, :verify, 4} in place.refs
   end
 
   test "only the Executor references a sink", %{facts: facts} do
@@ -405,7 +399,7 @@ defmodule Raxol.Broker.Executor.StructureTest do
     assert inspect_violations(facts) == []
   end
 
-  # -- The rules catch their cases -------------------------------------------
+  # The rules catch their cases
 
   # Compile `body` into a throwaway module (in memory, never in lib) and
   # return its facts. `mix test` compiles without debug info, so the probe
@@ -522,8 +516,6 @@ defmodule Raxol.Broker.Executor.StructureTest do
       assert inspect_violations([probe(body)]) == [], body
     end
   end
-
-  # -- Best-effort source scan ------------------------------------------------
 
   @order_literal ~r/(["'}]|~[a-zA-Z].)(place|cancel|replace)_/
 

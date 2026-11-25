@@ -1,14 +1,6 @@
-# Tests for the client-role ergonomics layer added to
-# `Raxol.AgentClientProtocol.Client`: `subscribe/3`/`unsubscribe/3`,
-# `prompt/3` (collect variant), `prompt_stream/4` (callback variant),
-# `decode_update/1`'s tolerant passthrough, the `fs_sandbox:` use-option,
-# and the `caps` snapshot exposed via `Connection.Ctx`.
-#
-# Driving mechanism: `Raxol.AgentClientProtocol.Test.ScriptedPeer` plays the
-# *agent* peer at the raw wire-map level against a real, directly-started
-# `Raxol.AgentClientProtocol.Connection` (`role: :client`) -- same technique
-# as `connection_test.exs`'s `start_client_conn/1`, reimplemented locally
-# here (that file is owned by another agent; not touched).
+# Client ergonomics: `subscribe/3`, `prompt/3`, `prompt_stream/4`,
+# `decode_update/1`, the `fs_sandbox:` option and `ctx.caps`, against a real
+# client-role Connection driven by `ScriptedPeer`.
 defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
   # async: false -- the fs_sandbox tests share one real filesystem directory
   # (module attribute, fixed at compile time -- `fs_sandbox:` is a `use`-time
@@ -42,9 +34,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     file_system: %FileSystemCapability{read_text_file: true, write_text_file: true}
   }
 
-  # ===========================================================================
   # Fixtures
-  # ===========================================================================
 
   defmodule EchoClient do
     @moduledoc false
@@ -96,11 +86,9 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     def base, do: @sandbox_base
   end
 
-  # ===========================================================================
   # Helpers -- mirrors connection_test.exs's own `start_client_conn/1` /
   # `complete_handshake/1` (not shared code; that file is owned by another
   # agent and is explicitly off-limits to touch).
-  # ===========================================================================
 
   defp start_client_conn(handler, handler_arg \\ nil) do
     task_sup = start_supervised!({Task.Supervisor, []})
@@ -122,7 +110,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
   end
 
   # Drives the client-initiated `initialize` handshake (the client role
-  # sends the request; see `connection.ex`'s `maybe_stash_own_caps/3` --
+  # sends the request; see `Connection.Outbound`'s `stash_own_caps/3` --
   # `role: :client` stashes `own_caps` at OUTBOUND submit time). `client_caps`
   # becomes the negotiated-capability snapshot (`Capabilities.negotiated?/2`)
   # for the rest of the connection's lifetime -- pass `@fs_caps` for any test
@@ -145,9 +133,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     }
   end
 
-  # ===========================================================================
   # prompt/3 -- collect variant
-  # ===========================================================================
 
   describe "prompt/3 (collect variant)" do
     test "collects every session/update for the turn's session, in order, then returns the response" do
@@ -182,6 +168,18 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
                ["m1", "m2"]
     end
 
+    test "returns {:error, :connection_closed} when the Connection is killed mid-turn" do
+      %{conn: conn, peer: peer} = start_client_conn(EchoClient)
+      :ok = complete_handshake(conn, peer)
+
+      request = PromptRequest.new("sess-killed", [ContentBlock.from_string("hi")])
+      caller = Task.async(fn -> Client.prompt(conn, request, 60_000) end)
+      assert %{"method" => "session/prompt"} = ScriptedPeer.recv(peer)
+
+      Process.exit(conn, :kill)
+      assert {:error, :connection_closed} = Task.await(caller, 2_000)
+    end
+
     test "unsubscribes even on an error outcome (timeout)" do
       %{conn: conn, peer: peer} = start_client_conn(EchoClient)
       :ok = complete_handshake(conn, peer)
@@ -201,9 +199,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     end
   end
 
-  # ===========================================================================
   # prompt_stream/4 -- callback variant
-  # ===========================================================================
 
   describe "prompt_stream/4 (callback variant)" do
     test "invokes on_update synchronously per update with no post-hoc gap, then returns the response" do
@@ -250,9 +246,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     end
   end
 
-  # ===========================================================================
   # subscribe/3, unsubscribe/3
-  # ===========================================================================
 
   describe "subscribe/3 / unsubscribe/3" do
     test "broadcasts to every subscriber registered for {conn, session_id}" do
@@ -304,9 +298,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     end
   end
 
-  # ===========================================================================
   # session/update decode tolerance
-  # ===========================================================================
 
   describe "decode_update/1 (manual/offline tolerant decode)" do
     test "decodes a known sessionUpdate variant" do
@@ -359,9 +351,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     end
   end
 
-  # ===========================================================================
   # fs_sandbox: real filesystem effects, confined to the sandbox root
-  # ===========================================================================
 
   describe "fs_sandbox" do
     setup do
@@ -457,7 +447,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
       %{conn: conn, peer: peer} = start_client_conn(FsSandboxClient)
       :ok = complete_handshake(conn, peer, @fs_caps)
 
-      # -- leaf symlink: sandbox_root/escape_link -> outside/secret.txt --
+      # leaf symlink: sandbox_root/escape_link -> outside/secret.txt
       secret = Path.join(outside, "secret.txt")
       File.write!(secret, "top-secret")
       leaf_link = Path.join(root, "escape_link")
@@ -475,7 +465,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
       # the secret content never made it onto the wire in any form
       refute inspect(link_frame) =~ "top-secret"
 
-      # -- symlinked ancestor: sandbox_root/escape_dir -> outside/ --
+      # symlinked ancestor: sandbox_root/escape_dir -> outside/
       dir_link = Path.join(root, "escape_dir")
       File.ln_s!(outside, dir_link)
       leak_target = Path.join(outside, "leak.txt")
@@ -494,9 +484,7 @@ defmodule Raxol.AgentClientProtocol.ClientErgonomicsTest do
     end
   end
 
-  # ===========================================================================
   # caps snapshot immutability
-  # ===========================================================================
 
   describe "caps snapshot" do
     test "equals the client's own declared client_capabilities and is stable across dispatches in the same session" do

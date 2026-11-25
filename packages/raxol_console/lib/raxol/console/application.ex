@@ -4,16 +4,15 @@ defmodule Raxol.Console.Application do
 
   Started as the OTP application callback (`mod:`) outside `:test`. It reads the
   materialized agent package plus the deployment environment, builds a
-  `Raxol.Console.RuntimeConfig`, and boots the runtime via `Raxol.Console.Boot`.
-  When nothing is configured (a dev shell, or a container that has not yet been
-  handed a package) it starts an empty supervisor and stays up as a no-op, so
-  pulling `raxol_console` in as a dependency never self-boots a runtime.
+  `Raxol.Console.RuntimeConfig`, and boots via `Raxol.Console.Boot`. With nothing
+  configured it starts an empty supervisor, so depending on `raxol_console` never
+  self-boots a runtime.
 
   ## Configuration
 
   The package is a directory of the generator's output (`soul.md`, `AGENTS.md`,
-  `tasks.json`, `skills/`, `manifest.json`), located by `:package_dir` or the
-  `RAXOL_CONSOLE_PACKAGE` env var (the value a container most likely injects):
+  `tasks.json`, `skills/`, `manifest.json`), located by `:package_dir` or
+  `RAXOL_CONSOLE_PACKAGE`:
 
       config :raxol_console,
         package_dir: "/srv/agent",
@@ -25,69 +24,37 @@ defmodule Raxol.Console.Application do
 
   ## Who may talk to this agent
 
-  Nobody by default is NOT the default. With no `:pairing` key, every connected
-  platform is open to everyone, and anyone who can reach the bot can spend this
-  agent's LLM turns, its tools, and any credential they reach through. That is
-  the wrong default for a container that holds a wallet, so the boot logs a
-  warning and emits `[:raxol_console, :pairing, :open]` until a deployment says
-  what it wants:
+  With no `:pairing` key every inbound chat is DENIED, and the boot warns and
+  emits `[:raxol_console, :pairing, :undeclared]`. Choose one:
 
-      config :raxol_console,
-        pairing: [allow_platforms: [:telegram]]   # anyone on Telegram
-        pairing: [allowed_users: ["12345"]]       # these ids, any platform
-        pairing: [platform_users: [telegram: ["12345"]]]   # these ids, there
-        pairing: :open                            # open, and say so on purpose
-        pairing: []                                # deny everyone; pair by hand
+      pairing: [allow_platforms: [:telegram]]           # anyone on Telegram
+      pairing: [allowed_users: ["12345"]]               # these ids, any platform
+      pairing: [platform_users: [telegram: ["12345"]]]  # these ids, there
+      pairing: :open                                    # everyone, explicitly
+      pairing: []                                       # deny all; pair by hand
 
-  The allowlist decides who may OPEN a chat, keyed on the sender. It says
-  nothing about who can read the reply: an allowed user who adds the bot to a
-  group gets the agent's output -- tool results included -- delivered to that
-  group. Prefer `chat_type: :dm` channels for an agent with reachable
-  credentials.
+  The allowlist decides who may OPEN a chat, not who reads replies: an allowed
+  user who adds the bot to a group exposes its output there, so prefer
+  `chat_type: :dm` channels for an agent with credentials. `:allowed_users` and
+  confirmed pairings match on id alone, across platforms. There is no `/pair`
+  command; pair newcomers out of band (see `Raxol.Console.Inbound`). Inbound
+  events are gated by `Raxol.Console.Inbound.route/3` and by the router itself.
 
-  `pairing: []` denies everyone and there is no `/pair` command to escape it --
-  a denial is decided before a session exists, so pairing a newcomer is an out
-  of band call to `Raxol.Gateway.Pairing`. Seed `:allowed_users` instead unless
-  that is what you meant. Note also that `:allowed_users` and confirmed pairings
-  match on the id alone, across every connected platform.
+  ## Per-chat apps
 
-  Inbound events are gated by `Raxol.Console.Inbound.route/3` and by the router
-  itself, so a deployment's own feed loop cannot route around it. See
-  `Raxol.Console.RuntimeConfig.build/2` for the full option and
-  `Raxol.Gateway.Pairing` for the decision order.
-
-  A chat turn runs the stateless agent loop by default. To run a full TEA app per
-  chat instead, name a template registered in `Raxol.Console.AppRegistry`:
+  A chat turn runs the stateless agent loop by default. To run a TEA app per chat,
+  name a template registered in `Raxol.Console.AppRegistry`:
 
       config :raxol_console, :app_templates, %{"dashboard" => MyConsole.Dashboard}
-
       config :raxol_console,
-        handler_mode: :app,
-        app_template: "dashboard",
-        idle_timeout: :timer.hours(6),
-        max_sessions: 200
+        handler_mode: :app, app_template: "dashboard",
+        idle_timeout: :timer.hours(6), max_sessions: 200
 
-  A per-chat app holds its model in memory, and the session's idle timeout
-  discards it; `:idle_timeout` is how long a deployment's app is worth keeping
-  warm. A running app is several processes rather than a message list, so a long
-  idle timeout wants a `:max_sessions` chosen for it -- see
-  `Raxol.Console.RuntimeConfig.build/2` for how the two multiply. All of these
-  keys are deployment-owned; the package never selects the module that runs per
-  chat.
-
-  The package carries persona + behavior; the deployment supplies the rest. The
-  three deployment-owned inputs the Console injects -- credentials (agent wallet,
-  email, card, channel bot tokens), messaging channels, and inference -- arrive
-  through `:agent_opts`, the `:channels` adapter configs, and the payments
-  config, not through this module directly. Their exact injection contract
-  (env var names, mount points, ports, health/log conventions) is the one
-  Console-integration seam the partner has not published; confirming it maps to
-  setting these keys, not to a rewrite here. Health-endpoint and port wiring is
-  deferred with it (`raxol_console` bundles no web server).
-
-  A configured-but-invalid package fails the boot loudly (`{:error, reason}`),
-  which is the correct container behavior: the orchestrator restarts and surfaces
-  it rather than running a half-booted agent.
+  Pick `:max_sessions` for the `:idle_timeout` (see `RuntimeConfig.build/2`).
+  Credentials, channels and inference are deployment-owned and arrive through
+  `:agent_opts`, `:channels` and the payments config. There is no web server or
+  health endpoint. A configured-but-invalid package fails the boot with
+  `{:error, reason}`.
   """
 
   use Application
@@ -150,8 +117,6 @@ defmodule Raxol.Console.Application do
     end
   end
 
-  # -- planning ---------------------------------------------------------------
-
   defp package_dir(config) do
     case Keyword.get(config, :package_dir) do
       dir when is_binary(dir) and dir != "" -> dir
@@ -166,8 +131,6 @@ defmodule Raxol.Console.Application do
     |> Keyword.put_new(:agent_opts, [])
   end
 
-  # -- boot stages ------------------------------------------------------------
-
   defp load(dir) do
     case Package.load(dir) do
       {:ok, pkg} -> {:ok, pkg}
@@ -181,8 +144,6 @@ defmodule Raxol.Console.Application do
       {:error, reason} -> {:error, {:runtime_config_failed, reason}}
     end
   end
-
-  # -- results ----------------------------------------------------------------
 
   defp to_app_result({:ok, report}) do
     Logger.info(

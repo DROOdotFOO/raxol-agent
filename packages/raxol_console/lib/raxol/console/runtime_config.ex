@@ -148,11 +148,11 @@ defmodule Raxol.Console.RuntimeConfig do
 
   An unconfigured Console denies everyone, and `Raxol.Console.Boot` says so at
   boot. That locks out a deployment that never configured pairing, which is the
-  intended trade: the alternative made silence the permissive answer, so a
-  deployment could expose an agent's turns, tools and spend to anyone who could
+  intended trade: making silence the permissive answer would let a
+  deployment expose an agent's turns, tools and spend to anyone who could
   reach a connected platform without a single line of config saying so. A lockout
   is visible in one message; an open gate is discovered by whoever finds it first.
-  Adding `pairing: :open` restores the old behaviour explicitly.
+  Set `pairing: :open` to admit everyone explicitly.
 
   Open mode is not a bypass. It is seeded into `Pairing`'s own start options as
   `allow_platforms:` over the CONNECTED platforms, so the gate runs identically
@@ -245,8 +245,6 @@ defmodule Raxol.Console.RuntimeConfig do
     {Raxol.Gateway.Handler.Agent, [system_prompt: rc.system_prompt, agent_opts: agent_opts]}
   end
 
-  # -- handler mode ----------------------------------------------------------
-
   defp handler(opts) do
     case Keyword.get(opts, :handler_mode, :chat) do
       :chat -> {:ok, :chat, nil}
@@ -260,8 +258,6 @@ defmodule Raxol.Console.RuntimeConfig do
   defp resolve_app(name) do
     with {:ok, module} <- AppRegistry.fetch(name), do: {:ok, :app, module}
   end
-
-  # -- authorization ---------------------------------------------------------
 
   @pairing_keys [:allow_platforms, :allowed_users, :platform_users]
 
@@ -374,8 +370,6 @@ defmodule Raxol.Console.RuntimeConfig do
 
   defp scalar_id?(value), do: is_binary(value) or is_integer(value)
 
-  # -- router bounds ---------------------------------------------------------
-
   # Validated rather than defaulted: a bound that is not a positive integer
   # would otherwise reach the session's `Process.send_after/3` and fail there,
   # or -- worse for a string -- compare as a term and never fire the branch it
@@ -388,8 +382,6 @@ defmodule Raxol.Console.RuntimeConfig do
       other -> {:error, {error_tag, other}}
     end
   end
-
-  # -- persona ---------------------------------------------------------------
 
   defp persona(%Package{soul_md: soul} = pkg) when is_binary(soul) and soul != "" do
     base = String.trim_trailing(soul)
@@ -408,8 +400,6 @@ defmodule Raxol.Console.RuntimeConfig do
 
   defp persona(_pkg), do: {:error, :missing_soul}
 
-  # -- scheduler jobs --------------------------------------------------------
-
   defp scheduler_jobs(%Package{tasks: tasks}, opts) do
     target = Keyword.get(opts, :default_target)
 
@@ -424,8 +414,6 @@ defmodule Raxol.Console.RuntimeConfig do
       }
     end)
   end
-
-  # -- mcp servers -----------------------------------------------------------
 
   defp mcp_servers(opts) do
     cond do

@@ -19,7 +19,13 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
 
   ## Customization
 
-  The default formatter renders one structured line per event. To
+  The default formatter renders one structured line per event. It does
+  not print caller data: a nested metadata map shows only its keys, a tuple
+  its scalar elements, any other compound value only its kind, and every
+  `scheme://...` run inside a string only its origin. Control characters
+  are escaped, so a value cannot start a log line of its own. Numbers,
+  atoms, pids and the rest of a string print as given; dates print in ISO
+  8601. A custom formatter gets the raw terms and owns that redaction. To
   override:
 
       Raxol.Payments.Telemetry.LoggerHandler.attach(handler_id: "my-pay",
@@ -31,6 +37,7 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
 
   require Logger
 
+  alias Raxol.Payments.Redact
   alias Raxol.Payments.Telemetry
 
   @default_handler_id "raxol-payments-logger"
@@ -113,9 +120,43 @@ defmodule Raxol.Payments.Telemetry.LoggerHandler do
     |> Enum.map(fn {k, v} -> [?\s, to_string(k), ?=, format_value(v)] end)
   end
 
+  # Metadata can hold whatever a caller attached to a spend. Scalars render
+  # as themselves; a string that parses as a URL is cut to its origin, a map
+  # is rendered by its keys, a tuple element by element (one level), and any
+  # other compound term by its kind.
   defp format_value(%Decimal{} = v), do: Decimal.to_string(v, :normal)
-  defp format_value(v) when is_binary(v), do: v
-  defp format_value(v) when is_atom(v), do: Atom.to_string(v)
-  defp format_value(v) when is_integer(v) or is_boolean(v), do: to_string(v)
-  defp format_value(v), do: inspect(v)
+  defp format_value(%DateTime{} = v), do: DateTime.to_iso8601(v)
+  defp format_value(%NaiveDateTime{} = v), do: NaiveDateTime.to_iso8601(v)
+  defp format_value(%Date{} = v), do: Date.to_iso8601(v)
+  defp format_value(%module{}), do: "#" <> inspect(module)
+  defp format_value(v) when is_map(v), do: ["%{", v |> Map.keys() |> keys(), "}"]
+
+  defp format_value(v) when is_tuple(v),
+    do: ["{", v |> Tuple.to_list() |> Enum.map(&scalar/1) |> Enum.intersperse(","), "}"]
+
+  defp format_value(v), do: scalar(v)
+
+  defp scalar(v) when is_binary(v), do: v |> cut_urls() |> escape()
+  defp scalar(v) when is_atom(v), do: Atom.to_string(v)
+  defp scalar(v) when is_integer(v) or is_float(v), do: to_string(v)
+  defp scalar(v) when is_pid(v) or is_reference(v) or is_port(v), do: inspect(v)
+  defp scalar(%{}), do: "#map"
+  defp scalar(v) when is_list(v), do: "#list"
+  defp scalar(v) when is_tuple(v), do: "#tuple"
+  defp scalar(_v), do: "#term"
+
+  defp keys(keys), do: keys |> Enum.map(&key_name/1) |> Enum.sort() |> Enum.join(",")
+
+  defp key_name(k) when is_atom(k) or is_binary(k) or is_integer(k),
+    do: k |> to_string() |> escape()
+
+  defp key_name(_k), do: "?"
+
+  # Every `scheme://...` run in the text, prose included, is cut to its origin.
+  @url_run ~r{[A-Za-z][A-Za-z0-9+.-]*://[^\s"'<>]*}
+  defp cut_urls(text), do: Regex.replace(@url_run, text, &Redact.url/1)
+
+  # A newline or other control character would let a value forge a log line.
+  defp escape(text),
+    do: String.replace(text, ~r/[\x00-\x1f\x7f]/, fn c -> inspect(c) |> String.trim("\"") end)
 end

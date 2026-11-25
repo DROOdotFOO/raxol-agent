@@ -3,6 +3,7 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
 
   alias Raxol.Payments.Actions.Payments.PollXochiStatus
   alias Raxol.Payments.{Checkpoint, Failure, Ledger, SpendingPolicy}
+  alias Raxol.Payments.Test.VirtualClock
   alias Raxol.Payments.Xochi.{ReadTokenStore, SettlementState}
 
   # A checkpoint store that dies on delete, modelling a crash between the
@@ -61,6 +62,107 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
       lifetime_max: Decimal.new("1000.00"),
       session_window_ms: 3_600_000
     }
+  end
+
+  defp stub_status(body), do: Req.Test.stub(__MODULE__, &Req.Test.json(&1, body))
+
+  describe "terminal statuses" do
+    test "a completed status passes the output schema with its settlement fields" do
+      stub_status(%{
+        "intentId" => "int_1",
+        "status" => "completed",
+        "settlementType" => "stealth",
+        "txHash" => "0xabc",
+        "substatus" => "settled",
+        "substatus_message" => "filled from solver inventory",
+        "terminal" => true
+      })
+
+      assert {:ok, result} =
+               PollXochiStatus.call(%{intent_id: "int_1"}, %{xochi_config: config()})
+
+      assert result.status == "completed"
+      assert result.terminal == true
+      assert result.settlement_type == "stealth"
+      assert result.tx_hash == "0xabc"
+      assert result.settlement_speed == "within_budget"
+      assert result.substatus == "settled"
+      assert result.substatus_message == "filled from solver inventory"
+    end
+
+    test "a completed status without tx hash, settlement type or note fields passes the output schema" do
+      stub_status(%{"intentId" => "int_1", "status" => "completed", "terminal" => true})
+
+      assert {:ok, result} =
+               PollXochiStatus.call(%{intent_id: "int_1"}, %{xochi_config: config()})
+
+      assert result.status == "completed"
+      assert result.terminal == true
+
+      for field <- [:tx_hash, :settlement_type, :note_commitment, :nullifier_hash, :l2_tx_hash],
+          do: assert(is_nil(Map.fetch!(result, field)))
+    end
+
+    # A shielded (Aztec) settlement is note-based: at terminal status it carries
+    # a note commitment, nullifier and L2 tx in place of a stealth address.
+    test "a shielded status surfaces its note fields" do
+      note = "0x" <> String.duplicate("ab", 32)
+      nullifier = "0x" <> String.duplicate("cd", 32)
+      l2_tx = "0x" <> String.duplicate("ef", 32)
+
+      stub_status(%{
+        "intentId" => "int_sh",
+        "status" => "completed",
+        "settlementType" => "shielded",
+        "noteCommitment" => note,
+        "nullifierHash" => nullifier,
+        "l2TxHash" => l2_tx,
+        "terminal" => true
+      })
+
+      assert {:ok, result} =
+               PollXochiStatus.call(%{intent_id: "int_sh"}, %{xochi_config: config()})
+
+      assert result.settlement_type == "shielded"
+      assert result.note_commitment == note
+      assert result.nullifier_hash == nullifier
+      assert result.l2_tx_hash == l2_tx
+    end
+
+    test "a failed status is an error, not {:ok}" do
+      stub_status(%{
+        "intentId" => "int_2",
+        "status" => "failed",
+        "error" => "no liquidity for route",
+        "terminal" => true
+      })
+
+      assert {:error, %Failure{reason: :no_liquidity, retryable?: false} = failure} =
+               PollXochiStatus.run(%{intent_id: "int_2"}, %{xochi_config: config()})
+
+      assert failure.message =~ "fill"
+    end
+
+    test "a failed status without an error carries its substatus_message" do
+      stub_status(%{
+        "intentId" => "int_4",
+        "status" => "failed",
+        "substatus_message" => "reconcile: solver did not confirm execution",
+        "terminal" => true
+      })
+
+      assert {:error, %Failure{reason: :not_filled} = failure} =
+               PollXochiStatus.run(%{intent_id: "int_4"}, %{xochi_config: config()})
+
+      assert failure.message =~ "reconcile: solver did not confirm execution"
+    end
+
+    test "an expired status is a retryable error" do
+      stub_status(%{"intentId" => "int_3", "status" => "expired", "terminal" => true})
+
+      assert {:error, %Failure{reason: :expired, retryable?: true}} =
+               PollXochiStatus.run(%{intent_id: "int_3"}, %{xochi_config: config()})
+    end
   end
 
   test "Failure.from classifies a stranded intent as retryable with the id in detail" do
@@ -188,11 +290,19 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
     end)
 
     {:ok, ledger} = Ledger.start_link(table_name: :"poll_rp_#{:erlang.unique_integer()}")
-    ctx = %{xochi_config: config(), ledger: ledger, agent_id: "agent_1"}
+    # On a virtual clock the three polls take 20ms of its time, inside the
+    # 25ms window however slowly the host runs them.
+    ctx = %{
+      xochi_config: config(),
+      ledger: ledger,
+      agent_id: "agent_1",
+      poll_clock: VirtualClock.new()
+    }
+
     :ok = Ledger.try_spend(ledger, "agent_1", Decimal.new("1.00"), policy(), %{})
     :ok = Ledger.tag_reservation(ledger, "agent_1", "int_rp", Decimal.new("1.00"))
 
-    params = %{intent_id: "int_rp", timeout_ms: 2_000, interval_ms: 10, budget_ms: 0}
+    params = %{intent_id: "int_rp", timeout_ms: 25, interval_ms: 10, budget_ms: 0}
 
     assert {:error, %Failure{reason: :refunded}} = PollXochiStatus.run(params, ctx)
     assert :counters.get(polls, 1) == 3
@@ -218,7 +328,7 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatusTest do
     assert :released = Ledger.release_by_intent(ledger, "agent_1", "int_rq")
   end
 
-  # xochi#563: the worker withholds a stealth intent's legs unless the caller
+  # The worker withholds a stealth intent's legs unless the caller
   # presents the read token execute returned. The sim reveals `tx_hash` only
   # for the right token, as the worker does.
   describe "read_token" do

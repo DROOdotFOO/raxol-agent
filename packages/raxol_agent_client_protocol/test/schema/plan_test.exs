@@ -1,7 +1,5 @@
-# Ported from the MIT `f1729/agent_client_protocol` test suite
-# (`test/acp/plan_test.exs`, c) 2025 f1729; see NOTICE.md. Adapted to
-# `Raxol.AgentClientProtocol.Schema.{Plan,PlanEntry}`, and extended with
-# total-decode / forward-compat coverage for this port's defect fixes.
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Extended with decode-totality and `_meta` pass-through coverage.
 defmodule Raxol.AgentClientProtocol.Schema.PlanTest do
   use ExUnit.Case, async: true
 
@@ -43,7 +41,7 @@ defmodule Raxol.AgentClientProtocol.Schema.PlanTest do
       refute Map.has_key?(PlanEntry.to_json(entry), "_meta")
     end
 
-    # --- Total decode: never raises ---
+    # Total decode: never raises
 
     test "from_json/1 is total: missing required field never raises" do
       assert {:error, {:missing_field, "content"}} =
@@ -133,9 +131,9 @@ defmodule Raxol.AgentClientProtocol.Schema.PlanTest do
       assert decoded._meta == %{"key" => "value"}
     end
 
-    # --- Total decode + lenient leniency per the schema oracle
+    # Total decode + lenient leniency per the schema oracle
     #     (x-deserialize-default-on-error + x-deserialize-skip-invalid-items
-    #     on Plan.entries) ---
+    #     on Plan.entries)
 
     test "from_json/1 is total: never raises, even on non-map input" do
       assert {:ok, %Plan{entries: []}} = Plan.from_json(nil)

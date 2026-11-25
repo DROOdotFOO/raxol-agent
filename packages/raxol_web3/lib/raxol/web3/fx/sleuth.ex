@@ -48,9 +48,7 @@ defmodule Raxol.Web3.FX.Sleuth do
   decoded past its cap: `assets` past the page's `limit` (300 when none is
   given), `topPools` past 32, `corridors` past 64, their asset lists past 400
   in total, and `sleuth_fx_rates_usd` past 64 rates keyed by a three- or
-  four-letter code.
-  A body is bounded in bytes, not in entries: 262 KB of `{}` was 87,000 assets.
-  A list entry that is not a JSON object is skipped, a number included: `1.5`
+  four-letter code. A list entry that is not a JSON object is skipped, a number included: `1.5`
   decodes to a `%Decimal{}` struct, which `%{}` would match. A 200 body that
   is not the documented envelope is `{:decode_failed, :sleuth}` and is never
   cached. Rounding `deviationBps` runs in a pinned `Decimal` context, so no
@@ -65,8 +63,10 @@ defmodule Raxol.Web3.FX.Sleuth do
 
   alias Raxol.Web3.Backend
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.Scope
 
-  @derive {Inspect, except: [:api_key, :http_opts]}
+  # `:base_url` too: per `Raxol.Web3.Origin`, a host can name an account.
+  @derive {Inspect, except: [:http_opts, :base_url, :api_key]}
   @enforce_keys [:api_key]
   defstruct [
     :api_key,
@@ -219,8 +219,6 @@ defmodule Raxol.Web3.FX.Sleuth do
   @spec canonical_symbol(String.t()) :: String.t()
   def canonical_symbol(symbol), do: Map.get(@canonical, String.upcase(symbol, :ascii), symbol)
 
-  # -- arguments -----------------------------------------------------------------
-
   defp stables_query(opts) do
     Enum.reduce_while(opts, {:ok, []}, fn {key, value}, {:ok, acc} ->
       case param(key, value) do
@@ -254,8 +252,6 @@ defmodule Raxol.Web3.FX.Sleuth do
   # Sleuth looks up by its own names; `EURe` is `EURE` there.
   defp sleuth_symbol(symbol), do: String.upcase(symbol)
 
-  # -- transport -----------------------------------------------------------------
-
   # The body is decoded here so the cache stage can be told which 200s are worth
   # keeping: one that is not the documented envelope is a failure, and replaying
   # it for the TTL would answer every caller with it. `argument` names what a
@@ -270,13 +266,20 @@ defmodule Raxol.Web3.FX.Sleuth do
       |> Keyword.put_new(:max_bytes, @max_bytes)
       |> Backend.put_header({"authorization", "Bearer " <> sleuth.api_key})
       |> Backend.put_header({"accept", "application/json"})
-      |> put_cache(sleuth.cache?, {path, query}, decoder)
+      |> put_cache(sleuth.cache?, {scope(sleuth), {path, query}}, decoder)
 
     case HTTP.get(url, opts) do
       {:ok, %{status: status, body: body}} when status in 200..299 -> decoder.(body)
       {:ok, %{status: status}} -> {:error, status_error(status, argument)}
       {:error, _} = error -> error
     end
+  end
+
+  # The key travels as a header, so it is part of the source: two keys on one
+  # URL are two tenants and share no cache entry.
+  defp scope(sleuth) do
+    headers = Keyword.get(sleuth.http_opts, :headers, [])
+    Scope.id(sleuth.base_url, [{"authorization", "Bearer " <> sleuth.api_key} | headers])
   end
 
   defp put_cache(opts, false, _fragment, _decoder), do: opts
@@ -305,8 +308,6 @@ defmodule Raxol.Web3.FX.Sleuth do
   defp status_error(429, _argument), do: {:upstream_refused, :rate_limit}
   defp status_error(400, argument) when is_binary(argument), do: {:invalid_argument, argument}
   defp status_error(status, _argument), do: {:http, status}
-
-  # -- decoding ------------------------------------------------------------------
 
   # A JSON object. Not `%{}`: under `floats: :decimals` a number such as `1.5`
   # decodes to a `%Decimal{}`, and a struct matches `%{}`.

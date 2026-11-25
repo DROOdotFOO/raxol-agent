@@ -46,7 +46,9 @@ defmodule Raxol.Earn.Xochi.Heartbeat do
     uptime_ms = System.monotonic_time(:millisecond) - state.started_at
 
     :telemetry.execute(@telemetry_event, %{ticks: ticks, uptime_ms: uptime_ms}, %{})
-    Logger.info("xochi solver heartbeat", ticks: ticks, uptime_ms: uptime_ms)
+    # In the message, not metadata: the default formatter drops metadata keys
+    # the host has not configured.
+    Logger.info("xochi solver heartbeat ticks=#{ticks} uptime_ms=#{uptime_ms}")
 
     {:noreply, schedule(%{state | ticks: ticks})}
   end

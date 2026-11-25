@@ -13,7 +13,7 @@ defmodule Raxol.CLI.UpdaterTest do
   import Bitwise
 
   alias Raxol.CLI.Updater
-  alias Raxol.CLI.Updater.{Archive, Manifest}
+  alias Raxol.CLI.Updater.{Archive, Manifest, State}
   alias Raxol.Test.UpdaterReleaseServer, as: Server
 
   @repo "DROOdotFOO/raxol-agent"
@@ -233,6 +233,133 @@ defmodule Raxol.CLI.UpdaterTest do
       assert {:no_update, "1.1.0"} =
                Updater.check_for_updates(opts(base, ctx, force: true, current_version: "1.1.0"))
     end
+  end
+
+  describe "interval-gated checks" do
+    setup ctx do
+      %{settings: Path.join(ctx.dir, "update_settings.json")}
+    end
+
+    defp gated(base, ctx, extra \\ []),
+      do: opts(base, ctx, Keyword.put(extra, :settings_path, ctx.settings))
+
+    defp serve_1_1_0,
+      do: Server.start(Server.release_routes(@repo, "raxol-cli-v1.1.0", %{@asset => "x"}))
+
+    test "a due check goes to the network and records when it ran", ctx do
+      base = serve_1_1_0()
+      before = :os.system_time(:second)
+
+      assert {:update_available, "1.1.0"} = Updater.check_for_updates(gated(base, ctx))
+      assert_received {:release_request, _path}
+
+      assert Updater.get_update_settings(settings_path: ctx.settings).last_check >= before
+    end
+
+    test "a check inside the interval answers without a request", ctx do
+      base = serve_1_1_0()
+      now = :os.system_time(:second)
+
+      :ok =
+        Updater.set_update_settings(%{State.new() | last_check: now}, settings_path: ctx.settings)
+
+      assert {:no_update, "1.0.0"} = Updater.check_for_updates(gated(base, ctx))
+      refute_received {:release_request, _path}
+    end
+
+    test "with automatic checks off only a forced check runs, and it records nothing", ctx do
+      base = serve_1_1_0()
+      assert :ok = Updater.set_auto_check(false, settings_path: ctx.settings)
+
+      assert {:no_update, "1.0.0"} = Updater.check_for_updates(gated(base, ctx))
+      refute_received {:release_request, _path}
+
+      assert {:update_available, "1.1.0"} =
+               Updater.check_for_updates(gated(base, ctx, force: true))
+
+      settings = Updater.get_update_settings(settings_path: ctx.settings)
+      refute settings.auto_check
+      assert settings.last_check == nil
+    end
+  end
+
+  describe "start_update/1" do
+    test "await_update/2 returns the update's result", ctx do
+      base = serve_1_1_0()
+
+      {:ok, in_flight} = Updater.start_update(opts(base, ctx, version: "1.1.0"))
+
+      assert :ok = Updater.await_update(in_flight)
+      assert File.read!(ctx.exe) == "x"
+    end
+
+    test "cancel_update/1 stops an update in flight and leaves the binary alone", ctx do
+      base = hanging_server()
+
+      {:ok, in_flight} =
+        base |> opts(ctx, force: true) |> Keyword.delete(:work_dir) |> Updater.start_update()
+
+      assert_receive :connected, 5_000
+
+      assert File.dir?(in_flight.work_dir)
+      assert Updater.cancel_update(in_flight) == :cancelled
+      refute Process.alive?(in_flight.task.pid)
+      refute File.exists?(in_flight.work_dir)
+      assert File.read!(ctx.exe) == @old
+      refute File.exists?(ctx.backup)
+    end
+
+    test "await_update/2 stops an update that outlives its timeout", ctx do
+      base = hanging_server()
+
+      {:ok, in_flight} =
+        base |> opts(ctx, force: true) |> Keyword.delete(:work_dir) |> Updater.start_update()
+
+      assert_receive :connected, 5_000
+
+      assert Updater.await_update(in_flight, 50) == {:error, :timeout}
+      refute Process.alive?(in_flight.task.pid)
+      refute File.exists?(in_flight.work_dir)
+      assert File.read!(ctx.exe) == @old
+    end
+
+    test "the scratch directory it makes is private and new" do
+      assert {:ok, dir} = Raxol.CLI.Updater.Core.fresh_work_dir()
+      on_exit(fn -> File.rm_rf!(dir) end)
+
+      assert File.ls!(dir) == []
+      assert (File.stat!(dir).mode &&& 0o777) == 0o700
+    end
+
+    test "cancel_update/1 after the update finished hands back its result", ctx do
+      base = serve_1_1_0()
+
+      {:ok, in_flight} =
+        Updater.start_update(opts(base, ctx, version: "1.1.0", current_version: "1.1.0"))
+
+      %Task{pid: pid} = in_flight.task
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 5_000
+
+      assert Updater.cancel_update(in_flight) == {:finished, {:no_update, "1.1.0"}}
+    end
+  end
+
+  # A loopback listener that accepts a connection and never answers, so a
+  # request to it stays in flight until the requester is stopped.
+  defp hanging_server do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false])
+    {:ok, port} = :inet.port(listen)
+    test = self()
+
+    _acceptor =
+      spawn_link(fn ->
+        {:ok, _socket} = :gen_tcp.accept(listen)
+        send(test, :connected)
+        Process.sleep(:infinity)
+      end)
+
+    "http://127.0.0.1:#{port}"
   end
 
   defp tar_gz(path, entries) do

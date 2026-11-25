@@ -247,8 +247,6 @@ defmodule Raxol.Payments.Zksar do
 
   def from_json(_), do: {:error, :malformed}
 
-  # -- Private --
-
   defp check_structure(%{subject: s, issuer: i, signature: sig})
        when is_binary(s) and byte_size(s) > 0 and
               is_binary(i) and byte_size(i) > 0 and
@@ -281,19 +279,22 @@ defmodule Raxol.Payments.Zksar do
 
   defp check_signature(proof, opts) do
     if Keyword.get(opts, :verify_signature, true) do
-      case recover_signer(attestation_digest(proof), proof.signature) do
-        {:ok, recovered} ->
-          if addr_eq?(recovered, proof.issuer),
-            do: :ok,
-            else: {:error, :invalid_signature}
-
-        :error ->
-          {:error, :invalid_signature}
-      end
+      proof
+      |> attestation_digest()
+      |> recover_signer(proof.signature)
+      |> signed_by_issuer(proof.issuer)
     else
       :ok
     end
   end
+
+  defp signed_by_issuer({:ok, recovered}, issuer) do
+    if addr_eq?(recovered, issuer),
+      do: :ok,
+      else: {:error, :invalid_signature}
+  end
+
+  defp signed_by_issuer(:error, _issuer), do: {:error, :invalid_signature}
 
   defp recover_signer(digest, signature) do
     with {:ok, {r, s, recovery_id}} <- decode_signature(signature),

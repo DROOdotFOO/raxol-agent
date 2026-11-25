@@ -155,8 +155,6 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
     end
   end
 
-  # -- Stub scaffolding --
-
   # One plug for the node RPC (getCode/getNonce/installed?) + paymaster +
   # bundler, keyed on method. Returns the wallet_opts the caller threads
   # into Provisioner (carrying the same plug as a Req for the bundler /
@@ -168,31 +166,20 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
     single_signer = ModularAccount.single_signer_validation_address()
     owner = SessionKey.address()
 
+    world = %{
+      deployed: deployed,
+      installed: installed,
+      entry_point: entry_point,
+      single_signer: single_signer,
+      owner: owner
+    }
+
     plug = fn conn ->
       {:ok, body, conn} = Plug.Conn.read_body(conn)
       req = Jason.decode!(body)
       send(events, {:rpc_call, req["method"], req["params"]})
 
-      result =
-        case req["method"] do
-          "eth_call" ->
-            eth_call_result(req["params"], entry_point, single_signer, owner, installed)
-
-          "eth_getCode" ->
-            if deployed, do: "0x60806040", else: "0x"
-
-          "alchemy_requestGasAndPaymasterAndData" ->
-            @gm_result
-
-          "eth_sendUserOperation" ->
-            @op_hash
-
-          "eth_getUserOperationReceipt" ->
-            user_op_receipt(req["params"])
-
-          _ ->
-            nil
-        end
+      result = rpc_result(req["method"], req["params"], world)
 
       conn
       |> Plug.Conn.put_resp_content_type("application/json")
@@ -210,6 +197,15 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
       paymaster_url: "http://stub.invalid/bundler"
     ]
   end
+
+  defp rpc_result("eth_call", params, w),
+    do: eth_call_result(params, w.entry_point, w.single_signer, w.owner, w.installed)
+
+  defp rpc_result("eth_getCode", _params, w), do: if(w.deployed, do: "0x60806040", else: "0x")
+  defp rpc_result("alchemy_requestGasAndPaymasterAndData", _params, _w), do: @gm_result
+  defp rpc_result("eth_sendUserOperation", _params, _w), do: @op_hash
+  defp rpc_result("eth_getUserOperationReceipt", params, _w), do: user_op_receipt(params)
+  defp rpc_result(_method, _params, _w), do: nil
 
   # eth_call dispatches on `to`: EntryPoint.getNonce, the single-signer
   # installed? getter, or an arbitrary read.
@@ -249,8 +245,6 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
     }
   end
 
-  # -- Assertion helpers --
-
   # getNonce calls to the EntryPoint whose uint192 key equals `key`.
   defp getnonce_calls(calls, key) do
     for {"eth_call", [%{"to" => to, "data" => data} | _]} <- calls,
@@ -278,8 +272,6 @@ defmodule Raxol.Earn.Wallet.SCA.ProvisionerTest do
       0 -> Enum.reverse(acc)
     end
   end
-
-  # -- Byte helpers --
 
   defp down(s), do: String.downcase(s)
   defp hex(bin), do: "0x" <> Base.encode16(bin, case: :lower)

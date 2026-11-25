@@ -82,12 +82,10 @@ defmodule Raxol.CLI.Update do
   end
 
   defp format_invalid(invalid) do
-    invalid
-    |> Enum.map(fn
+    Enum.map_join(invalid, ", ", fn
       {flag, nil} -> flag
       {flag, value} -> flag <> " " <> value
     end)
-    |> Enum.join(", ")
   end
 
   defp execute(opts, runtime) do

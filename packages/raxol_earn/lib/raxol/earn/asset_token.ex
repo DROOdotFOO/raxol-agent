@@ -116,8 +116,6 @@ defmodule Raxol.Earn.AssetToken do
     Decimal.div(Decimal.new(raw), Decimal.new(Integer.pow(10, dp)))
   end
 
-  # -- Internal --
-
   defp to_raw(%Decimal{} = amount, decimals) do
     amount
     |> Decimal.mult(Decimal.new(Integer.pow(10, decimals)))

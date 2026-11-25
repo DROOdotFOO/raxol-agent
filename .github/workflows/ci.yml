@@ -16,6 +16,7 @@ permissions:
 env:
   MIX_ENV: test
   TMPDIR: /tmp
+  MIX_AUDIT_VERSION: 2.1.5
 
 jobs:
   package-tests:
@@ -26,6 +27,22 @@ jobs:
       fail-fast: false
       matrix:
         package: [raxol_agent, raxol_payments, raxol_broker, raxol_earn, raxol_web3, raxol_console, raxol_cli, raxol_agent_client_protocol]
+
+    # Only the raxol_agent leg gets a Postgres, for its ThreadLog adapter tests;
+    # an empty image skips the service on the other legs.
+    services:
+      postgres:
+        image: ${{ matrix.package == 'raxol_agent' && 'postgres:17-alpine' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: raxol_agent_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
 
     steps:
       - uses: actions/checkout@v7
@@ -56,7 +73,7 @@ jobs:
         if: matrix.package == 'raxol_payments' || matrix.package == 'raxol_cli'
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Cache pinned @xochi/spec
         if: matrix.package == 'raxol_payments'
@@ -75,27 +92,55 @@ jobs:
           )"
           echo "XOCHI_SPEC_DIR=$package_root" >> "$GITHUB_ENV"
 
+      # No package's .formatter.exs imports deps, so this needs nothing fetched
+      # and fails a misformatted change before the compile is paid for.
+      - name: Check formatting
+        working-directory: packages/${{ matrix.package }}
+        run: mix format --check-formatted
+
       # The shadow guard runs first: a Hex entry for a path sibling unpins that
       # entry's whole subtree, and `mix deps.get` does not remove it.
-      - name: Compile package
+      - name: Fetch dependencies
         working-directory: packages/${{ matrix.package }}
         run: |
           mix run --no-start --no-compile --no-deps-check ../../scripts/check_lock_path_shadows.exs
           mix deps.get --check-locked
-          mix compile --warnings-as-errors
+
+      # Retired releases and advisories, from Hex (`hex.audit`, which since
+      # Hex 2.7 reports advisories too) and from mix_audit (a pinned escript,
+      # so no package carries it as a dep). Here they only warn, so a newly
+      # published advisory does not fail every open PR; the nightly fails on
+      # them.
+      - name: Audit dependencies
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          mix escript.install hex mix_audit "$MIX_AUDIT_VERSION" --force
+          warn() {
+            echo "::warning title=Dependency audit (${{ matrix.package }})::$1 found retired or vulnerable deps; see this step's log. The nightly fails on them."
+          }
+          mix hex.audit || warn "mix hex.audit"
+          "$HOME/.mix/escripts/mix_audit" || warn mix_audit
+
+      - name: Compile package
+        working-directory: packages/${{ matrix.package }}
+        run: mix compile --warnings-as-errors
+
+      - name: Credo
+        working-directory: packages/${{ matrix.package }}
+        run: mix credo
 
       # Stated here, not left to each test_helper: raxol_payments computes its
-      # exclusions from which environment variables are present.
+      # exclusions from which environment variables are present. A parent tag
+      # covers the tests tagged inside its module (`live_xochi` covers
+      # `live_xochi_matrix`/`live_xochi_preflight`, `live_xochi_order` covers
+      # `live_xochi_order_settle`).
       - name: Run package tests
         working-directory: packages/${{ matrix.package }}
         run: |
           mix test \
             --exclude live_xochi \
-            --exclude live_xochi_matrix \
-            --exclude live_xochi_preflight \
             --exclude live_xochi_order \
             --exclude live_xochi_order_preflight \
-            --exclude live_xochi_order_settle \
             --exclude live_relay \
             --exclude live_property \
             --exclude live_parity \
@@ -103,22 +148,27 @@ jobs:
             --exclude live_chain \
             --exclude live_bundler \
             --exclude live_acp_dev \
-            --exclude cli_signer \
-            --exclude skip_on_ci
+            --exclude cli_signer
 
-      # `bin/raxol-acp --agent` as an OS process. Included by file: the other
-      # `:integration` suites in this package need a live Postgres.
+      # `bin/raxol-acp --agent` as an OS process. Included by file, as is the
+      # Postgres suite below: each `:integration` suite needs its own setup.
       - name: Run ACP stdio loopback
         if: matrix.package == 'raxol_agent'
         working-directory: packages/raxol_agent
         run: mix test --include integration test/raxol/agent/acp_loopback_test.exs
+
+      # The Postgrex ThreadLog adapter against the service container above.
+      - name: Run Postgres ThreadLog adapter tests
+        if: matrix.package == 'raxol_agent'
+        working-directory: packages/raxol_agent
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: '5432'
+          POSTGRES_DB: raxol_agent_test
+        run: mix test --include integration test/raxol/agent/thread_log/postgrex_test.exs
 
       # `raxol mcp` as an OS process.
       - name: Run raxol mcp subprocess tests
         if: matrix.package == 'raxol_cli'
         working-directory: packages/raxol_cli
         run: mix test --include integration test/raxol/cli/mcp_integration_test.exs
-
-      - name: Check formatting
-        working-directory: packages/${{ matrix.package }}
-        run: mix format --check-formatted

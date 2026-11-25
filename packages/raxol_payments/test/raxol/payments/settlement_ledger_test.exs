@@ -47,7 +47,7 @@ defmodule Raxol.Payments.SettlementLedgerTest do
     margin = fn -> SettlementLedger.cumulative_subsidy(ledger, price_fn: eth).usd_margin end
 
     # Legs recorded, euro leg unpriced, $5 fee: no basis, so out of the margin
-    # entirely. It used to fall back to the fee and read +$4.
+    # entirely, not a fallback to the fee (+$4).
     SettlementLedger.record_settlement(
       ledger,
       l1_fill(
@@ -66,8 +66,8 @@ defmodule Raxol.Payments.SettlementLedgerTest do
 
     assert margin.() == nil
 
-    # $0.000001 of spread, $1 of gas. With the entry above it used to read
-    # -$1.999999: both entries' gas against one entry's revenue.
+    # $0.000001 of spread, $1 of gas. Must not read -$1.999999 (both entries'
+    # gas against one entry's revenue).
     SettlementLedger.record_settlement(
       ledger,
       l1_fill(
@@ -256,8 +256,8 @@ defmodule Raxol.Payments.SettlementLedgerTest do
     assert Decimal.compare(agg.usd_margin, 0) == :lt
   end
 
-  # ADR-0040 decision 6: an unpriced leg used to vanish from usd_revenue with no
-  # trace, so a report with EUR legs read as smaller rather than as partial.
+  # ADR-0040 decision 6: an unpriced leg must not vanish from usd_revenue, or a
+  # report with EUR legs reads as smaller rather than as partial.
   test "an entry with an unpriced leg is counted, not silently dropped", %{ledger: ledger} do
     usdc_leg = %{from_amount: "1100000", from_symbol: "USDC", from_decimals: 6}
     eure_to = %{to_amount: "950000000000000000", to_symbol: "EURe", to_decimals: 18}

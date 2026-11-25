@@ -81,8 +81,6 @@ defmodule Raxol.Earn.Xochi.CapacityDeriver do
   @spec rpc_url(pos_integer()) :: String.t() | nil
   def rpc_url(chain), do: System.get_env("DERIVE_RPC_#{chain}") || Map.get(@default_rpc, chain)
 
-  # -- Internal --
-
   defp balance_row(chain, token, symbol, solver, eth_price, warn) do
     case rpc_url(chain) do
       nil ->

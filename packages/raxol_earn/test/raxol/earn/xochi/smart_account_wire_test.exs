@@ -3,26 +3,12 @@ defmodule Raxol.Earn.Xochi.SmartAccountWireTest do
   Pins the wire shape of a SMART-ACCOUNT signature: the 72-byte ma-v2 ERC-1271
   envelope `mix raxol_earn.order --signer privy` releases.
 
-  ## Why this exists
+  Xochi's ERC-1271 verification and Riddler's request schema both accept
+  exactly this envelope, so changing it changes something they agreed on, and
+  this fails the moment anyone does.
 
-  Every live gate that had ever passed used an EOA buyer. Nothing exercised an
-  ERC-1271 signature, and that gap let one assumption -- "a signature is 65
-  bytes" -- survive three layers into production, each needing its own fix:
-
-    1. raxol built the wrong ERC-1271 replay-safe domain (raxol#773)
-    2. Xochi's ERC-1271 verification silently never ran, because no `RPC_URL_*`
-       was set in production, so every smart-account signer got a bare 401
-       (xochi-fi/xochi#364, deployed 2026-08-15)
-    3. Riddler's request schema constrained the signature to exactly 65 bytes
-       (axol-io/Riddler#802, closed 2026-08-16)
-
-  All three are cleared. What is still worth pinning is OUR half of the contract:
-  three services were taught to accept this exact envelope, so changing it is
-  changing something they agreed on, and this fails the moment anyone does.
-
-  The 65-byte pattern below is kept as a HISTORICAL literal rather than a live
-  constraint. It is the shape the envelope had to outgrow, and holding it here
-  keeps the reason the envelope is 72 bytes executable instead of folkloric.
+  The 65-byte pattern below is the plain-EOA shape, kept as a literal so the
+  reason the envelope is 72 bytes stays executable.
 
   ## What this test can and cannot do
 
@@ -33,7 +19,7 @@ defmodule Raxol.Earn.Xochi.SmartAccountWireTest do
   executes the pull and moves the principal. A live probe would therefore either
   test the wrong layer or spend real money.
 
-  Confirmation is one funded run, which a smart-account buyer now pulls through
+  Confirmation is one funded run, which a smart-account buyer pulls through
   Permit2 rather than ERC-3009, so it needs the spender pin (and, the first time,
   the Permit2 approve):
 
@@ -98,10 +84,10 @@ defmodule Raxol.Earn.Xochi.SmartAccountWireTest do
       assert inner == @raw_sig
     end
 
-    test "outgrows the 65-byte pattern that used to reject it" do
+    test "outgrows the 65-byte EOA pattern" do
       hex = "0x" <> Base.encode16(envelope(), case: :lower)
 
-      # 72 bytes = 144 hex chars; the old pattern demanded exactly 130.
+      # 72 bytes = 144 hex chars; the EOA pattern demands exactly 130.
       assert String.length(hex) == 146
       refute Regex.match?(@legacy_65_byte_pattern, hex)
     end
@@ -116,7 +102,7 @@ defmodule Raxol.Earn.Xochi.SmartAccountWireTest do
 
   describe "the account itself" do
     test "matches the buyer `raxol_earn.order --signer privy` signs as" do
-      alias Mix.Tasks.RaxolEarn.Order.Sma7702Wallet
+      alias Mix.Tasks.RaxolEarn.Order.Signer.Sma7702Wallet
 
       assert Wallet.address() == Sma7702Wallet.address()
       assert Wallet.chain_id() == Sma7702Wallet.chain_id()

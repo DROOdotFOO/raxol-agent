@@ -18,6 +18,11 @@ defmodule Raxol.Agent.Backend.Lumo do
       PROTON_REFRESH_TOKEN=... # For automatic token refresh
       LUMO_NO_ENCRYPT=true     # Skip U2L encryption (for testing)
 
+  A refreshed session is kept in this node (`:persistent_term`,
+  `Raxol.Agent.Secret`-wrapped) and used ahead of the environment until a
+  refresh of that same session fails, which drops it. It is not written back to the OS
+  environment, which child processes inherit.
+
   ## Fallback
 
   If `LUMO_TAMER_URL` is set (e.g. `http://localhost:3000`), routes through
@@ -32,16 +37,16 @@ defmodule Raxol.Agent.Backend.Lumo do
   @behaviour Raxol.Agent.AIBackend
 
   alias Raxol.Agent.Backend.Lumo.Crypto
+  alias Raxol.Agent.Secret
 
   @lumo_api "https://lumo.proton.me/api"
   @chat_endpoint "ai/v1/chat"
   @app_version "web-lumo@1.0.0"
   @default_timeout 60_000
+  @session_key {__MODULE__, :refreshed_session}
 
   @default_tools ["proton_info"]
   @web_search_tools ["web_search", "weather", "stock", "cryptocurrency"]
-
-  # -- AIBackend callbacks ---------------------------------------------------
 
   @impl true
   def complete(messages, opts \\ []) do
@@ -78,8 +83,6 @@ defmodule Raxol.Agent.Backend.Lumo do
 
   @impl true
   def capabilities, do: [:completion, :streaming]
-
-  # -- Direct Lumo API (with U2L encryption) ---------------------------------
 
   @spec direct_complete([map()], keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -126,13 +129,15 @@ defmodule Raxol.Agent.Backend.Lumo do
             }
           end,
           &stream_next/1,
-          fn %{task_pid: pid} ->
-            if Process.alive?(pid), do: Process.exit(pid, :normal)
-          end
+          &stop_task/1
         )
 
       {:ok, stream}
     end
+  end
+
+  defp stop_task(%{task_pid: pid}) do
+    if Process.alive?(pid), do: Process.exit(pid, :normal)
   end
 
   @spec stream_next(map()) :: {[term()], map()} | {:halt, map()}
@@ -168,8 +173,6 @@ defmodule Raxol.Agent.Backend.Lumo do
         {:halt, state}
     end
   end
-
-  # -- Request building ------------------------------------------------------
 
   @spec build_payload([map()], keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -236,8 +239,6 @@ defmodule Raxol.Agent.Backend.Lumo do
     %{"role" => to_string(role), "content" => content}
   end
 
-  # -- HTTP ------------------------------------------------------------------
-
   @spec do_lumo_request(String.t(), String.t(), map(), pos_integer()) ::
           {:ok, term()} | {:error, term()}
   defp do_lumo_request(uid, token, payload, timeout) do
@@ -252,7 +253,7 @@ defmodule Raxol.Agent.Backend.Lumo do
         {:ok, body}
 
       {:ok, %{status: 401}} ->
-        maybe_refresh_and_retry(uid, payload, timeout)
+        maybe_refresh_and_retry(uid, token, payload, timeout)
 
       {:ok, %{status: status, body: body}} ->
         error_msg = if is_map(body), do: Map.get(body, "Error", ""), else: ""
@@ -318,8 +319,6 @@ defmodule Raxol.Agent.Backend.Lumo do
     end
   end
 
-  # -- SSE parsing -----------------------------------------------------------
-
   @spec parse_lumo_sse(binary(), map() | nil) :: {[term()], binary()}
   defp parse_lumo_sse(raw, encryption) do
     lines = String.split(raw, "\n")
@@ -375,8 +374,6 @@ defmodule Raxol.Agent.Backend.Lumo do
 
   defp decrypt_content(%{"content" => content}, _encryption), do: content
 
-  # -- Response parsing (non-streaming) --------------------------------------
-
   @spec parse_complete_response(term()) :: map()
   defp parse_complete_response(body) when is_binary(body) do
     %{
@@ -394,11 +391,9 @@ defmodule Raxol.Agent.Backend.Lumo do
     }
   end
 
-  # -- Token refresh ---------------------------------------------------------
-
-  @spec maybe_refresh_and_retry(String.t(), map(), pos_integer()) ::
+  @spec maybe_refresh_and_retry(String.t(), String.t(), map(), pos_integer()) ::
           {:ok, term()} | {:error, term()}
-  defp maybe_refresh_and_retry(uid, payload, timeout) do
+  defp maybe_refresh_and_retry(uid, token, payload, timeout) do
     case refresh_token() do
       nil ->
         {:error,
@@ -407,13 +402,29 @@ defmodule Raxol.Agent.Backend.Lumo do
       refresh_tok ->
         case do_token_refresh(uid, refresh_tok) do
           {:ok, new_uid, new_token} ->
-            System.put_env("PROTON_UID", new_uid)
-            System.put_env("PROTON_ACCESS_TOKEN", new_token)
+            :persistent_term.put(@session_key, {Secret.new(new_uid), Secret.new(new_token)})
             do_lumo_request(new_uid, new_token, payload, timeout)
 
           {:error, reason} ->
+            forget_session(token)
             {:error, {:refresh_failed, reason}}
         end
+    end
+  end
+
+  # Drop the cached session only if it still holds the token that just
+  # failed: a concurrent request may already have stored a fresh one, which
+  # a failed refresh with the consumed refresh token must not wipe. Not a
+  # compare-and-swap (`:persistent_term` has none), so the window is narrowed,
+  # not closed.
+  defp forget_session(failed_token) do
+    case :persistent_term.get(@session_key, nil) do
+      {_uid, cached} ->
+        if Secret.reveal(cached) == failed_token, do: :persistent_term.erase(@session_key)
+        :ok
+
+      nil ->
+        :ok
     end
   end
 
@@ -448,8 +459,6 @@ defmodule Raxol.Agent.Backend.Lumo do
     end
   end
 
-  # -- lumo-tamer fallback (OpenAI-compatible) -------------------------------
-
   @spec tamer_complete(String.t(), [map()], keyword()) ::
           {:ok, map()} | {:error, term()}
   defp tamer_complete(base_url, messages, opts) do
@@ -472,10 +481,15 @@ defmodule Raxol.Agent.Backend.Lumo do
     )
   end
 
-  # -- Config helpers --------------------------------------------------------
-
   @spec credentials() :: {String.t(), String.t()} | nil
   defp credentials do
+    case :persistent_term.get(@session_key, nil) do
+      {uid, token} -> {Secret.reveal(uid), Secret.reveal(token)}
+      nil -> env_credentials()
+    end
+  end
+
+  defp env_credentials do
     uid = System.get_env("PROTON_UID")
     token = System.get_env("PROTON_ACCESS_TOKEN")
 

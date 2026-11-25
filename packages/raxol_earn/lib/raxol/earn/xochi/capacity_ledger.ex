@@ -69,8 +69,6 @@ defmodule Raxol.Earn.Xochi.CapacityLedger do
   def load(server \\ __MODULE__, capacity_map),
     do: GenServer.call(server, {:load, normalize_map(capacity_map)})
 
-  # -- GenServer --
-
   @impl true
   def init(opts) do
     capacity =
@@ -140,8 +138,6 @@ defmodule Raxol.Earn.Xochi.CapacityLedger do
   def handle_call({:load, capacity_map}, _from, state) do
     {:reply, :ok, %{state | capacity: Map.merge(state.capacity, capacity_map)}}
   end
-
-  # -- Helpers --
 
   # Drop TTL-expired, still-in-flight reservations; confirmed ones are permanent.
   defp sweep(state) do

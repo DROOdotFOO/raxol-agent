@@ -14,6 +14,20 @@ defmodule Raxol.AgentClientProtocol.CtxTest.TestHandler do
   def initialize(_req, _ctx), do: {:ok, InitializeResponse.new(1)}
 end
 
+defmodule Raxol.AgentClientProtocol.CtxTest.AdoptingConn do
+  @moduledoc false
+  # The real Connection, except that delegating the fabricated `reply_ref`s
+  # these tests use succeeds (the real one answers `{:error, :unknown_ref}` and
+  # the Session would refuse the turn).
+  alias Raxol.AgentClientProtocol.Connection
+
+  def delegate_reply(_conn, _reply_ref, _adopter), do: :ok
+  defdelegate reply(conn, reply_ref, result), to: Connection
+  defdelegate notify(conn, method, params), to: Connection
+  defdelegate async_request(conn, method, params, owner, tag, timeout), to: Connection
+  defdelegate cancel_request(conn, tag), to: Connection
+end
+
 defmodule Raxol.AgentClientProtocol.CtxTest do
   @moduledoc """
   `Raxol.AgentClientProtocol.Ctx` — the agent-handler DX layer — exercised
@@ -24,8 +38,9 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
   directly from the test process (via `Task.async` since `request/4`
   blocks); `request_permission/3` and `post_update/2` need a live `Session`
   turn, so those tests start a real `Session` on top of the same
-  Connection (default `conn_mod`, no `FakeConnection` double — this is
-  meant to prove the Ctx <-> Connection <-> Session wiring end to end).
+  Connection. Only `delegate_reply/3` is stubbed (`AdoptingConn`), because
+  these tests fabricate `reply_ref`s; delegation is covered in
+  `connection_lifecycle_test.exs` (Inv-19).
   """
   use ExUnit.Case, async: false
   use Raxol.AgentClientProtocol.Test.InvariantSentinel
@@ -51,9 +66,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
   alias Raxol.AgentClientProtocol.Test.ScriptedPeer
   alias Raxol.AgentClientProtocol.Transport.Paired
 
-  # ---------------------------------------------------------------------------
   # Fixtures & helpers
-  # ---------------------------------------------------------------------------
 
   setup do
     start_supervised!(SessionSup.registry_child_spec())
@@ -105,6 +118,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
       session_id: sid,
       conn: ctx.conn,
       task_sup: ctx.task_sup,
+      conn_mod: Raxol.AgentClientProtocol.CtxTest.AdoptingConn,
       turn_runner: Keyword.fetch!(opts, :turn_runner),
       config: Keyword.get(opts, :config, %{cancel_backstop_ms: 200})
     ]
@@ -149,9 +163,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # fs/read_text_file, fs/write_text_file
-  # ---------------------------------------------------------------------------
 
   describe "read_text_file/3,4" do
     test "sends fs/read_text_file and decodes the response", ctx do
@@ -207,9 +219,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # terminal/*
-  # ---------------------------------------------------------------------------
 
   describe "create_terminal/3,4" do
     test "sends terminal/create with merged opts and decodes the response", ctx do
@@ -280,9 +290,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # request_permission/3,4 (Session-owned, fail-closed)
-  # ---------------------------------------------------------------------------
 
   describe "request_permission/3,4" do
     @tag expect_invariant: @invariants_by_construction
@@ -350,9 +358,7 @@ defmodule Raxol.AgentClientProtocol.CtxTest do
     end
   end
 
-  # ---------------------------------------------------------------------------
   # post_update/2 — streaming guards (session.ex)
-  # ---------------------------------------------------------------------------
 
   describe "post_update/2" do
     @tag expect_invariant: @invariants_by_construction

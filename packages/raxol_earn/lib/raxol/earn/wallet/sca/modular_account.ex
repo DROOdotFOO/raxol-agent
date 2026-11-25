@@ -205,8 +205,6 @@ defmodule Raxol.Earn.Wallet.SCA.ModularAccount do
     ExKeccak.hash_256(<<0x19, 0x01>> <> domain_separator <> struct_hash)
   end
 
-  # -- Internal --
-
   defp encode_address(addr) do
     <<0::96, decode_address!(addr)::binary-size(20)>>
   end

@@ -119,8 +119,6 @@ defmodule Raxol.AgentClientProtocol.TelemetryRegistryTest do
     end
   end
 
-  # -- Scanner ----------------------------------------------------------------
-
   defp lib_root, do: Path.join(File.cwd!(), "lib")
 
   # Parse each source file and walk its AST for `[:raxol, ...]` list literals of
@@ -128,7 +126,16 @@ defmodule Raxol.AgentClientProtocol.TelemetryRegistryTest do
   # an event name is prose, not an emit site, and must not satisfy the registry.
   @spec scan_lib() :: {[String.t()], %{[atom()] => [String.t()]}}
   defp scan_lib do
-    files = lib_root() |> Path.join("**/*.ex") |> Path.wildcard() |> Enum.sort()
+    # The registry module lists every event itself; scanning it would make the
+    # phantom-event check vacuous.
+    registry = Path.join(lib_root(), "raxol/agent_client_protocol/telemetry.ex")
+
+    files =
+      lib_root()
+      |> Path.join("**/*.ex")
+      |> Path.wildcard()
+      |> List.delete(registry)
+      |> Enum.sort()
 
     events =
       Enum.reduce(files, %{}, fn file, acc ->

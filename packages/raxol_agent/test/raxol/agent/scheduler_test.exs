@@ -385,8 +385,6 @@ defmodule Raxol.Agent.SchedulerTest do
     end
   end
 
-  # -- helpers ----------------------------------------------------------------
-
   # Drive the timer deterministically: send the fire message the real timer
   # would have sent, without waiting on wall-clock delay.
   defp send_fire(sched, id) do

@@ -163,8 +163,6 @@ defmodule Raxol.Payments.Actions.SpendGate do
 
   defp agent_id(context), do: Map.get(context, :agent_id, :unknown)
 
-  # -- Amount validation --
-
   # A spend must be a positive, finite amount. Zero, negative, and non-finite
   # (Infinity/NaN) amounts are rejected before any gate runs. A negative amount
   # would otherwise pass every cap check and, once reserved, lower the running
@@ -179,8 +177,6 @@ defmodule Raxol.Payments.Actions.SpendGate do
   end
 
   defp validate_amount(amount), do: {:error, {:invalid_amount, amount}}
-
-  # -- Policy presence --
 
   # A missing policy makes the gate a no-op (`gate(nil, ...)` passes and the
   # reservation is skipped), i.e. unlimited spending. That default-open posture
@@ -224,8 +220,6 @@ defmodule Raxol.Payments.Actions.SpendGate do
     SpendingPolicy.validate(policy, fields)
   end
 
-  # -- Non-budget gate --
-
   defp gate(nil, _amount, _target, _context), do: :ok
 
   defp gate(%SpendingPolicy{} = policy, amount, {:domain, host}, context)
@@ -256,8 +250,6 @@ defmodule Raxol.Payments.Actions.SpendGate do
 
   defp confirm_address(_on_confirm, amount, _addr),
     do: {:error, {:requires_confirmation, amount}}
-
-  # -- Budget reservation --
 
   # With a ledger the spend is checked against every cap and recorded
   # atomically. Without one only `per_request_max` can be checked, and nothing

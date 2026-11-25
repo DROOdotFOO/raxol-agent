@@ -1,0 +1,285 @@
+name: Burrito build
+
+# Builds and smokes the Burrito-wrapped binaries of one package (raxol_cli or
+# raxol_console), each natively on its own arch: Linux amd64/arm64 via Docker on
+# their own runners, macOS arm64 and Windows x86_64 on their own runners (native
+# builds avoid the termbox NIF cross-compile hazard -- see
+# docker/Dockerfile.raxol-cli). Publishes nothing: release-raxol-cli.yml and
+# release-raxol-console.yml publish what it uploads, and mcp-smoke.yml calls it
+# for the amd64 binary alone.
+#
+# Every binary is checked with Burrito's own `maintenance meta`, which reads the
+# wrapper's embedded metadata without booting ERTS: the binary runs on its arch
+# and carries the version in npm/package.json. Inputs add the deeper smokes.
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: raxol_cli or raxol_console. Names the Dockerfile, the release and the binaries.
+        required: true
+        type: string
+      dockerfile:
+        description: The Linux build recipe, e.g. docker/Dockerfile.raxol-cli.
+        required: true
+        type: string
+      cache-scope:
+        description: Buildx cache scope prefix the release builds read and write (`<scope>-<arch>`).
+        required: true
+        type: string
+      cache-write-scope:
+        description: Scope prefix to write instead, so a pull request never seeds the release cache. Empty writes `cache-scope`.
+        type: string
+        default: ''
+      cache-mode:
+        description: Buildx cache-to mode; `min` keeps per-PR caches small.
+        type: string
+        default: max
+      linux-arches:
+        description: JSON list of Linux arches to build.
+        type: string
+        default: '["amd64", "arm64"]'
+      macos:
+        type: boolean
+        default: true
+      windows:
+        type: boolean
+        default: false
+      doctor-smoke:
+        description: Run `<binary> doctor` in a clean container (raxol_cli).
+        type: boolean
+        default: false
+      mcp-smoke:
+        description: Drive `raxol mcp` through the npm launcher (raxol_cli).
+        type: boolean
+        default: false
+      upload:
+        description: Upload each binary as the artifact `<package>-<os>-<arch>`.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  # Burrito requires this exact Zig. The Dockerfiles take it as a build arg.
+  ZIG_VERSION: 0.16.0
+
+jobs:
+  linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.linux-arches) }}
+    env:
+      PACKAGE: ${{ inputs.package }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # mise.toml is the one toolchain pin; the Dockerfile's default is for local
+      # builds only.
+      - name: Read the Elixir pin
+        id: pin
+        run: |
+          elixir="$(sed -n 's/^elixir = "\(.*\)"$/\1/p' mise.toml)"
+          [[ -n "$elixir" ]] || { echo "::error::no elixir pin in mise.toml"; exit 1; }
+          echo "image=elixir:$elixir" >> "$GITHUB_OUTPUT"
+
+      # Native build for the runner's arch (no --platform): amd64 ->
+      # <package>_linux, arm64 -> <package>_linux_arm, exported by the
+      # Dockerfile's `export` stage. A caller with its own write scope still
+      # reads the release scope, so a warm release cache serves it; the
+      # Dockerfile's `COPY . .` precedes `deps.get` and the release, so only
+      # the apt and Zig layers hit.
+      - name: Build runtime binary
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ inputs.dockerfile }}
+          build-args: |
+            ELIXIR_IMAGE=${{ steps.pin.outputs.image }}
+            ZIG_VERSION=${{ env.ZIG_VERSION }}
+          target: export
+          outputs: type=local,dest=out
+          cache-from: |
+            type=gha,scope=${{ inputs.cache-scope }}-${{ matrix.arch }}
+            type=gha,scope=${{ inputs.cache-write-scope || inputs.cache-scope }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=${{ inputs.cache-mode }},scope=${{ inputs.cache-write-scope || inputs.cache-scope }}-${{ matrix.arch }}
+
+      - name: Locate the binary
+        id: bin
+        run: |
+          shopt -s nullglob
+          bins=(out/"${PACKAGE}"_*)
+          [[ ${#bins[@]} -eq 1 ]] || { echo "::error::expected one binary in out/, found: ${bins[*]:-none}"; exit 1; }
+          chmod +x "${bins[0]}"
+          echo "name=$(basename "${bins[0]}")" >> "$GITHUB_OUTPUT"
+
+      # In a clean container, so nothing on the runner stands in for what the
+      # binary must carry itself.
+      - name: Smoke the wrapper metadata
+        env:
+          BIN: ${{ steps.bin.outputs.name }}
+        run: |
+          set -euo pipefail
+          expected="$(jq -r .version "packages/$PACKAGE/npm/package.json")"
+          docker run --rm -v "$PWD/out:/work:ro" debian:trixie \
+            "/work/$BIN" maintenance meta > meta.json
+          actual="$(jq -r .app_version meta.json)"
+          [[ "$actual" == "$expected" ]] || {
+            echo "::error::$BIN reports app_version $actual, npm/package.json is $expected"
+            exit 1
+          }
+
+      # The packaged binary reports the packaged build and its ACP surface, and
+      # exits 0. Catches launcher/ERTS/arch breakage before any artifact ships
+      # (local amd64 verification is impossible on Apple hosts: the x86_64 BEAM
+      # does not boot under Rosetta emulation).
+      - name: Smoke the packaged binary
+        if: inputs.doctor-smoke
+        env:
+          BIN: ${{ steps.bin.outputs.name }}
+        run: |
+          docker run --rm -v "$PWD/out:/work:ro" \
+            debian:trixie sh -c \
+            "/work/$BIN doctor > /tmp/doctor.txt \
+             && grep -q 'packaged binary' /tmp/doctor.txt \
+             && grep -q 'acp surface available' /tmp/doctor.txt && echo SMOKE-OK"
+
+      - name: Set up Node
+        if: inputs.mcp-smoke
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      # `raxol mcp` as OMP runs it: through the npm launcher, from the vendored
+      # layout `scripts/pack.sh` produces, on the production authorizer path (a
+      # release ships no Mix). Boots the runtime in MCP mode, lists the tools and
+      # drives a session over stdio.
+      - name: Smoke raxol mcp through the launcher
+        if: inputs.mcp-smoke
+        env:
+          BIN: ${{ steps.bin.outputs.name }}
+        run: |
+          mkdir -p "packages/$PACKAGE/npm/vendor"
+          cp "out/$BIN" "packages/$PACKAGE/npm/vendor/"
+          cd "packages/$PACKAGE/npm" && node scripts/mcp_smoke.mjs
+
+      - name: Upload binary
+        if: inputs.upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.package }}-linux-${{ matrix.arch }}
+          path: out/${{ steps.bin.outputs.name }}
+          if-no-files-found: error
+
+  macos:
+    name: macos-arm64
+    if: inputs.macos
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      PACKAGE: ${{ inputs.package }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Erlang/Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: mise.toml
+          version-type: strict
+
+      # Pinned rather than via Homebrew, whose zig tracks latest. The macOS
+      # target builds natively here (an arm64 runner), so its NIF links
+      # correctly -- the reason it is not built on the Linux side.
+      - name: Install pinned Zig
+        run: |
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/zig-aarch64-macos-$ZIG_VERSION.tar.xz" \
+            | tar -xJ -C "$HOME"
+          echo "$HOME/zig-aarch64-macos-$ZIG_VERSION" >> "$GITHUB_PATH"
+
+      - name: Build runtime binary
+        working-directory: packages/${{ inputs.package }}
+        env:
+          MIX_ENV: prod
+          BURRITO_TARGET: macos
+        run: |
+          zig version
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get --only prod
+          mix release "$PACKAGE" --overwrite
+
+      - name: Smoke the wrapper metadata
+        run: |
+          set -euo pipefail
+          expected="$(jq -r .version "packages/$PACKAGE/npm/package.json")"
+          actual="$("packages/$PACKAGE/burrito_out/${PACKAGE}_macos" maintenance meta | jq -r .app_version)"
+          [[ "$actual" == "$expected" ]] || {
+            echo "::error::${PACKAGE}_macos reports app_version $actual, npm/package.json is $expected"
+            exit 1
+          }
+
+      - name: Upload binary
+        if: inputs.upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.package }}-macos-arm64
+          path: packages/${{ inputs.package }}/burrito_out/${{ inputs.package }}_macos
+          if-no-files-found: error
+
+  windows:
+    name: windows-x86_64
+    if: inputs.windows
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      PACKAGE: ${{ inputs.package }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Erlang/Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          version-file: mise.toml
+          version-type: strict
+
+      - name: Install pinned Zig
+        shell: pwsh
+        run: |
+          curl.exe -fsSL -o zig.zip "https://ziglang.org/download/$env:ZIG_VERSION/zig-x86_64-windows-$env:ZIG_VERSION.zip"
+          Expand-Archive -Path zig.zip -DestinationPath $env:USERPROFILE
+          "$env:USERPROFILE\zig-x86_64-windows-$env:ZIG_VERSION" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      # No NIF here: raxol_terminal drops :elixir_make on {:win32, _} and the
+      # driver uses the pure-Elixir IOTerminal. No Windows test leg runs in CI,
+      # so this build is the only Windows check.
+      - name: Build runtime binary
+        working-directory: packages/${{ inputs.package }}
+        shell: pwsh
+        env:
+          MIX_ENV: prod
+          BURRITO_TARGET: windows
+        run: |
+          zig version
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get --only prod
+          mix release $env:PACKAGE --overwrite
+
+      - name: Upload binary
+        if: inputs.upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.package }}-windows-x86_64
+          path: packages/${{ inputs.package }}/burrito_out/${{ inputs.package }}_windows.exe
+          if-no-files-found: error

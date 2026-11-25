@@ -1,8 +1,11 @@
-# Raise assert_receive's default timeout from ExUnit's 100ms to 1s. This suite
-# drives real cross-process message passing (Connection dispatch, session/update
-# fan-out, reattach subscriber forwarding), so a message that is correct but
-# arrives late under a loaded CI host should NOT read as a failure. 1s is far
-# below any real hang and only bites when a message is genuinely absent. Tests
-# that need a different bound still pass one explicitly.
+# `:telemetry` reaches this package only through raxol_core, which is a
+# `runtime: false` dependency, so nothing starts it. Every emit site in `lib/`
+# is `Code.ensure_loaded?(:telemetry)`-guarded; the suite starts it so
+# `Raxol.AgentClientProtocol.Test.InvariantSentinel` and the D9 handlers
+# observe real events.
+{:ok, _} = Application.ensure_all_started(:telemetry)
+
+# The suite passes real messages between processes; a 1s assert_receive
+# default keeps a slow CI host from reading late as missing.
 ExUnit.configure(assert_receive_timeout: 1_000)
 ExUnit.start()

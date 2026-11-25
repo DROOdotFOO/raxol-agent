@@ -191,6 +191,22 @@ defmodule Raxol.Payments.Pxe.ClientTest do
       assert {:error, {:unexpected_result, 42}} = Client.get_version(sim(&rpc_ok(&1, 42)))
     end
 
+    test "a Secret-wrapped api key is sent as the Bearer" do
+      parent = self()
+
+      config =
+        %{
+          sim(fn conn ->
+            send(parent, {:auth, Plug.Conn.get_req_header(conn, "authorization")})
+            rpc_ok(conn, "0.87.4")
+          end)
+          | api_key: Raxol.Agent.Secret.new("wrapped-key")
+        }
+
+      assert {:ok, _} = Client.get_version(config)
+      assert_received {:auth, ["Bearer wrapped-key"]}
+    end
+
     test "no bearer header without an api key" do
       parent = self()
 

@@ -70,8 +70,6 @@ defmodule Raxol.Earn.Console.Generator do
   defp resolve_runtime(%Spec{runtime: :either}), do: :openclaw
   defp resolve_runtime(%Spec{runtime: runtime}), do: runtime
 
-  # -- prompts ---------------------------------------------------------------
-
   defp system_prompt(runtime) do
     """
     You author configuration packages for hosted autonomous agents on the
@@ -107,8 +105,6 @@ defmodule Raxol.Earn.Console.Generator do
 
   defp cadence_hint({:cron, c}), do: %{"cron" => c}
   defp cadence_hint({:nl, text}), do: %{"natural_language" => text}
-
-  # -- envelope handling -----------------------------------------------------
 
   defp decode(raw) do
     raw

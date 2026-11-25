@@ -52,11 +52,12 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
   @behaviour Raxol.Earn.ProviderAdapter
 
-  alias Raxol.Earn.{ABI, Onchain.Hex, Onchain.RPC, Onchain.Transaction, Secret}
+  alias Raxol.Agent.Secret
+  alias Raxol.Earn.{ABI, Onchain.Hex, Onchain.RPC, Onchain.Transaction}
   alias Raxol.Earn.Wallet.NonceServer
 
   @type config :: %{
-          chains: %{required(pos_integer()) => String.t()},
+          chains: %{required(pos_integer()) => Secret.t()},
           private_key: Secret.t(),
           address: String.t(),
           fee_overrides: %{optional(pos_integer()) => fee_override()},
@@ -74,8 +75,10 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
   ## Required options
 
-  - `:chains` -- map of chain_id => RPC URL.
-  - `:private_key` -- 32-byte raw private key.
+  - `:chains` -- map of chain_id => RPC URL. Kept `Raxol.Agent.Secret`-wrapped:
+    a provider URL embeds its API key.
+  - `:private_key` -- 32-byte raw private key. Raises `ArgumentError` when
+    it is not 32 bytes or the curve refuses it; the message never holds it.
 
   ## Optional
 
@@ -104,11 +107,25 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
       raise ArgumentError, "private_key must be a 32-byte binary"
     end
 
-    address = address_from_private_key(private_key)
+    private_key = Secret.new(private_key)
+
+    # Under `with_revealed/2`, so a raise in the NIF never reports the key.
+    address =
+      case Secret.with_revealed(private_key, &address_from_private_key/1) do
+        {:ok, address} ->
+          address
+
+        # A raise inside: a NIF that failed to load, not the key.
+        {:error, :secret_operation_crashed} ->
+          raise ArgumentError, "private_key: address derivation crashed (secp256k1/keccak NIF)"
+
+        {:error, _} ->
+          raise ArgumentError, "private_key is not a valid secp256k1 key"
+      end
 
     config = %{
-      chains: chains,
-      private_key: Secret.new(private_key),
+      chains: Map.new(chains, fn {id, url} -> {id, Secret.new(url)} end),
+      private_key: private_key,
       address: address,
       fee_overrides: Keyword.get(opts, :fee_overrides, %{}),
       nonce_server: Keyword.get(opts, :nonce_server, NonceServer),
@@ -118,8 +135,6 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
     %{adapter: __MODULE__, config: config}
   end
 
-  # -- ProviderAdapter callbacks --
-
   @impl Raxol.Earn.ProviderAdapter
   def get_address(%{config: %{address: addr}}), do: addr
 
@@ -128,9 +143,8 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
   @impl Raxol.Earn.ProviderAdapter
   def send_calls(%{config: cfg} = adapter, chain_id, calls) do
-    with {:ok, client} <- rpc_client(adapter, chain_id),
-         {:ok, hashes} <- send_each(client, adapter, chain_id, calls, cfg.private_key) do
-      {:ok, hashes}
+    with {:ok, client} <- rpc_client(adapter, chain_id) do
+      send_each(client, adapter, chain_id, calls, cfg.private_key)
     end
   end
 
@@ -138,7 +152,7 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
   def sign_message(%{config: %{private_key: pk}}, _chain_id, message) when is_binary(message) do
     digest = eip191_digest(message)
 
-    case ExSecp256k1.sign(digest, Secret.reveal(pk)) do
+    case Secret.with_revealed(pk, &ExSecp256k1.sign(digest, &1)) do
       {:ok, {r, s, v}} ->
         {:ok, <<r::binary-size(32), s::binary-size(32), v + 27>>}
 
@@ -153,7 +167,7 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
     case Raxol.Payments.EIP712.hash(domain, types, message) do
       {:ok, digest} ->
-        case ExSecp256k1.sign(digest, Secret.reveal(pk)) do
+        case Secret.with_revealed(pk, &ExSecp256k1.sign(digest, &1)) do
           {:ok, {r, s, v}} ->
             {:ok, <<r::binary-size(32), s::binary-size(32), v + 27>>}
 
@@ -190,11 +204,9 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
     end
   end
 
-  # -- Internals --
-
   defp rpc_client(%{config: %{chains: chains}}, chain_id) do
     case Map.fetch(chains, chain_id) do
-      {:ok, url} -> {:ok, RPC.client(url: url)}
+      {:ok, url} -> {:ok, RPC.client(url: Secret.reveal(url))}
       :error -> {:error, {:unsupported_chain, chain_id}}
     end
   end
@@ -344,7 +356,7 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
   defp sign_tx(tx, private_key) do
     digest = Transaction.signing_hash(tx)
 
-    case ExSecp256k1.sign(digest, Secret.reveal(private_key)) do
+    case Secret.with_revealed(private_key, &ExSecp256k1.sign(digest, &1)) do
       {:ok, {r, s, v}} -> {:ok, <<r::binary-size(32), s::binary-size(32), v::8>>}
       err -> err
     end
@@ -373,10 +385,13 @@ defmodule Raxol.Earn.ProviderAdapter.JSONRPC do
 
   # secp256k1: address = last 20 bytes of keccak256(uncompressed_public_key[1..])
   defp address_from_private_key(<<_::binary-size(32)>> = private_key) do
-    {:ok, public_key} = ExSecp256k1.create_public_key(private_key)
-    <<_prefix::8, payload::binary-size(64)>> = public_key
-    hash = ExKeccak.hash_256(payload)
-    <<_padding::binary-size(12), addr::binary-size(20)>> = hash
-    Hex.encode(addr)
+    case ExSecp256k1.create_public_key(private_key) do
+      {:ok, <<_prefix::8, payload::binary-size(64)>>} ->
+        <<_padding::binary-size(12), addr::binary-size(20)>> = ExKeccak.hash_256(payload)
+        {:ok, Hex.encode(addr)}
+
+      _ ->
+        {:error, :invalid_private_key}
+    end
   end
 end

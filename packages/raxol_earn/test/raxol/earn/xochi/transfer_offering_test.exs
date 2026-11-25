@@ -85,7 +85,7 @@ defmodule Raxol.Earn.Xochi.TransferOfferingTest do
       assert {:accept, ^r} = TransferOffering.handle_request(r, @ctx)
     end
 
-    test "a stealth settlement to a different recipient is relayed, not gated (#368)" do
+    test "a stealth settlement to a different recipient is relayed, not gated" do
       # The privacy tier and recipient live inside the buyer's opaque signed
       # intent; the storefront relays it verbatim. So a requirement declaring
       # settlement_preference "stealth" and a destination distinct from the
@@ -179,7 +179,7 @@ defmodule Raxol.Earn.Xochi.TransferOfferingTest do
       refute Map.has_key?(deliverable, "receiving_tx_hash")
     end
 
-    test "a stealth deliverable surfaces the ERC-5564 announcement fields (#368)" do
+    test "a stealth deliverable surfaces the ERC-5564 announcement fields" do
       Application.put_env(:raxol_earn, :xochi_transfer_settler,
         settle_fn: fn %{requirement: _req} ->
           {:ok,

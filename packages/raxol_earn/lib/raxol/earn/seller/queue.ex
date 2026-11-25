@@ -63,8 +63,6 @@ defmodule Raxol.Earn.Seller.Queue do
   alias Raxol.Earn.JobSession.Provider
   alias Raxol.Earn.Offering.Registry, as: OfferingRegistry
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -83,8 +81,6 @@ defmodule Raxol.Earn.Seller.Queue do
   @doc "Inspect the Queue's currently resolved defaults from Application config."
   @spec defaults() :: map()
   def defaults, do: read_defaults()
-
-  # -- GenServer callbacks --
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(_opts), do: {:ok, %{jobs: %{}}}
@@ -112,10 +108,10 @@ defmodule Raxol.Earn.Seller.Queue do
         :raxol_earn
         |> Application.get_env(:xochi_transfer_settler, [])
         |> Keyword.get(:xochi_config)
+        |> Raxol.Payments.Xochi.Client.protect_config()
     }
   end
 
-  # -- Event handlers --
   #
   # Each clause requires the keys it needs in the head, so a malformed backend
   # event drops with telemetry instead of crashing the Queue. Handler and
@@ -212,8 +208,6 @@ defmodule Raxol.Earn.Seller.Queue do
     drop(nil, Map.get(event, :job_id), %{}, :malformed, state)
   end
 
-  # -- job_offered --
-
   defp offer(%{job_id: job_id} = event, name, state, defaults) do
     request = Map.get(event, :request, %{})
 
@@ -222,47 +216,67 @@ defmodule Raxol.Earn.Seller.Queue do
         {:ok, spec} = OfferingRegistry.lookup(name)
         provider = build_provider(session, spec, event, defaults, job_id)
 
-        case resolve_accept(spec, request, defaults) do
-          {:ok, resolved_request, budget} ->
-            case Provider.accept_request(provider, resolved_request, budget) do
-              {:ok, _} ->
-                emit(:dispatched, %{type: :job_offered, job_id: job_id, offering: name})
-                put_job(state, job_id, %{provider: provider, request: resolved_request})
+        offer = %{
+          job_id: job_id,
+          name: name,
+          session: session,
+          started: started,
+          provider: provider
+        }
 
-              # Mid-flight adoption: the session already reflects a later phase
-              # (Queue crash lost its tracking, or a Resync rehydrated the
-              # session), so there is nothing to accept -- but the Queue must
-              # re-track the job so payment / approval / expiry events route to
-              # it instead of dropping `:job_not_running`.
-              {:error, {:cannot_accept, status}} when status in [:funded, :submitted] ->
-                emit(:dispatched, %{type: :job_offered, job_id: job_id, offering: name})
-                put_job(state, job_id, %{provider: provider, request: resolved_request})
-
-              {:rejected, reason} ->
-                JobSession.apply_event(session, :expired, %{rejected: reason})
-                drop(:job_offered, job_id, %{offering: name}, {:rejected, reason}, state)
-
-              # The handler accepted (and may have reserved resources) but the
-              # on-chain setBudget failed: release before dropping so an accept
-              # reservation does not leak on a write failure.
-              {:error, reason} ->
-                Provider.release(provider, resolved_request)
-                stop_started_session(started)
-                drop(:job_offered, job_id, %{offering: name}, {:handler_error, reason}, state)
-            end
-
-          {:reject, reason} ->
-            JobSession.apply_event(session, :expired, %{rejected: reason})
-            drop(:job_offered, job_id, %{offering: name}, {:rejected, reason}, state)
-
-          {:error, reason} ->
-            stop_started_session(started)
-            drop(:job_offered, job_id, %{offering: name}, {:handler_error, reason}, state)
-        end
+        spec
+        |> resolve_accept(request, defaults)
+        |> offer_resolved(offer, state)
 
       {:error, reason} ->
         drop(:job_offered, job_id, %{offering: name}, {:start_failed, reason}, state)
     end
+  end
+
+  defp offer_resolved({:ok, resolved_request, budget}, offer, state) do
+    offer.provider
+    |> Provider.accept_request(resolved_request, budget)
+    |> offer_accepted(resolved_request, offer, state)
+  end
+
+  defp offer_resolved({:reject, reason}, offer, state) do
+    JobSession.apply_event(offer.session, :expired, %{rejected: reason})
+    drop(:job_offered, offer.job_id, %{offering: offer.name}, {:rejected, reason}, state)
+  end
+
+  defp offer_resolved({:error, reason}, offer, state) do
+    stop_started_session(offer.started)
+    drop(:job_offered, offer.job_id, %{offering: offer.name}, {:handler_error, reason}, state)
+  end
+
+  defp offer_accepted({:ok, _}, resolved_request, offer, state) do
+    emit(:dispatched, %{type: :job_offered, job_id: offer.job_id, offering: offer.name})
+    put_job(state, offer.job_id, %{provider: offer.provider, request: resolved_request})
+  end
+
+  # Mid-flight adoption: the session already reflects a later phase
+  # (Queue crash lost its tracking, or a Resync rehydrated the
+  # session), so there is nothing to accept -- but the Queue must
+  # re-track the job so payment / approval / expiry events route to
+  # it instead of dropping `:job_not_running`.
+  defp offer_accepted({:error, {:cannot_accept, status}}, resolved_request, offer, state)
+       when status in [:funded, :submitted] do
+    emit(:dispatched, %{type: :job_offered, job_id: offer.job_id, offering: offer.name})
+    put_job(state, offer.job_id, %{provider: offer.provider, request: resolved_request})
+  end
+
+  defp offer_accepted({:rejected, reason}, _resolved_request, offer, state) do
+    JobSession.apply_event(offer.session, :expired, %{rejected: reason})
+    drop(:job_offered, offer.job_id, %{offering: offer.name}, {:rejected, reason}, state)
+  end
+
+  # The handler accepted (and may have reserved resources) but the
+  # on-chain setBudget failed: release before dropping so an accept
+  # reservation does not leak on a write failure.
+  defp offer_accepted({:error, reason}, resolved_request, offer, state) do
+    Provider.release(offer.provider, resolved_request)
+    stop_started_session(offer.started)
+    drop(:job_offered, offer.job_id, %{offering: offer.name}, {:handler_error, reason}, state)
   end
 
   # Resolve the accept-time budget (and any request enrichment) for the offering.
@@ -284,8 +298,6 @@ defmodule Raxol.Earn.Seller.Queue do
       {:ok, request, AssetToken.usdc(spec.price_usdc || 0, defaults.chain_id)}
     end
   end
-
-  # -- Helpers --
 
   defp with_job(type, job_id, state, fun) do
     case Map.fetch(state.jobs, job_id) do

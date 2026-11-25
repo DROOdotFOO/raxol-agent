@@ -61,8 +61,6 @@ defmodule Raxol.Earn.Console.Delivery do
     end
   end
 
-  # -- pipeline steps --------------------------------------------------------
-
   defp materialize(%{files: files}, job_id) do
     dir = Path.join(System.tmp_dir!(), "raxol_console_" <> sanitize(job_id))
     _ = File.rm_rf(dir)
@@ -74,19 +72,19 @@ defmodule Raxol.Earn.Console.Delivery do
       # constrains its own keys, but materialize is the actual filesystem write,
       # so it fails closed on any `..`/absolute path from any source rather than
       # trusting the caller (defense in depth against a package-slip escape).
-      cond do
-        not safe_rel?(rel) ->
-          {:halt, {:error, {:unsafe_path, rel}}}
-
-        true ->
-          with :ok <- File.mkdir_p(Path.dirname(path)),
-               :ok <- File.write(path, bytes) do
-            {:cont, {:ok, dir}}
-          else
-            {:error, reason} -> {:halt, {:error, {:materialize, rel, reason}}}
-          end
-      end
+      if safe_rel?(rel),
+        do: write_file(path, rel, bytes, dir),
+        else: {:halt, {:error, {:unsafe_path, rel}}}
     end)
+  end
+
+  defp write_file(path, rel, bytes, dir) do
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(path, bytes) do
+      {:cont, {:ok, dir}}
+    else
+      {:error, reason} -> {:halt, {:error, {:materialize, rel, reason}}}
+    end
   end
 
   # A package-relative path is safe only when it is a non-empty, relative path

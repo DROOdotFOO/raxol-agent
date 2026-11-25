@@ -21,6 +21,9 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatus do
     Action. It proves that this principal owns the dispatched intent and supplies
     the intent's read token. A terminal summary (never the token) is retained for
     a bounded replay window under the API origin, principal, and intent id.
+  * `:poll_clock` -- optional `t:Raxol.Payments.Poll.clock/0` the poll loop
+    reads the time from and waits with (`Poll.system_clock/0` by default).
+    Distinct from `:clock`, the wall-clock seconds checkpoint deadlines use.
 
   The execute Action stores the read token outside its model-visible result, in
   private checkpoint state keyed by the API origin, executing principal, and
@@ -286,6 +289,7 @@ defmodule Raxol.Payments.Actions.Payments.PollXochiStatus do
     |> maybe_put(:timeout_ms, Map.get(params, :timeout_ms))
     |> maybe_put(:slow_interval_ms, Map.get(params, :interval_ms))
     |> maybe_put(:budget_ms, Map.get(params, :budget_ms))
+    |> maybe_put(:clock, Map.get(context, :poll_clock))
     |> maybe_put(
       :read_token,
       ReadTokenStore.fetch(

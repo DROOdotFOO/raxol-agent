@@ -1,14 +1,11 @@
 defmodule Raxol.Agent.SpendGateRobustnessTest do
   @moduledoc """
-  Regression suite for the U7-I SpendGate adversarial-review findings (money-critical
-  exception-safety + registry durability). These are NOT the reserve-before-call
-  *law* reds (that is `U7SpendGateRedTest`) — they pin that a RAISE in the frozen
-  seams (`try_reserve` / `emit` / `call_fun`) or a stray message to the registry
-  owner can never wedge a cost_ref or destroy the dedup table, and — the HIGH
-  finding — that a REAL journal-write failure on irreversible spend state is
-  never swallowed: it surfaces as `JournalWriteError` (only the ephemeral
-  `:noproc` dead-test-bus exit is tolerated), so charge and record cannot
-  silently diverge.
+  Exception safety and registry durability of `Raxol.Agent.SpendGate`. A
+  raise in `try_reserve`, `emit` or `call_fun`, or a stray message to the
+  registry owner, never wedges a `cost_ref` or destroys the dedup table. A
+  real journal-write failure on spend state raises `JournalWriteError`; only
+  a `:noproc` exit from a dead test bus is tolerated. The reserve-before-call
+  law itself is `Raxol.Agent.SpendGate.ReserveBeforeCallTest`.
 
   `async: false`: several tests poke the shared VM-global `SpendGate.Reservations`
   singleton (unexpected messages, scope sweeps), so they must not run concurrently
@@ -290,7 +287,7 @@ defmodule Raxol.Agent.SpendGateRobustnessTest do
       # The claim leaked: a retry of the same cost_ref is refused as duplicate.
       assert {:error, {:refused, :duplicate_reserve}} = SpendGate.reserve(c, cost_ref, 100)
 
-      # Scope teardown (what U7-I MUST wire at run/session end) reclaims it,
+      # Scope teardown at run or session end reclaims it,
       # and the cost_ref becomes reusable.
       assert Reservations.sweep_scope({:budget_id, budget_id}) == 1
       assert {:ok, _} = SpendGate.reserve(c, cost_ref, 100)

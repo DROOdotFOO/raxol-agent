@@ -181,8 +181,6 @@ defmodule Raxol.Agent.ThreadLog.Ets do
     end
   end
 
-  # --- Walk helpers ---------------------------------------------------------
-
   defp walk_thread(events, thread_id, from, to) do
     start_key = {thread_id, max(from - 1, -1)}
 

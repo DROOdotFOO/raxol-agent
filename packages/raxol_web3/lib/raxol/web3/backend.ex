@@ -2,83 +2,41 @@ defmodule Raxol.Web3.Backend do
   @moduledoc """
   The chain-read contract: two required callbacks plus twelve optional ones.
 
-  ADR-0033 decision 3. The shape follows what already exists in this repository
-  rather than inventing a new one: a `{module, state}` handle as in
-  `Raxol.Payments.ChainReader`, a capability-declaring callback as in
-  `Raxol.Earn.ProviderAdapter`'s `supported_chain_ids/1`, and a self-identifying
-  zero-arity callback as in `Raxol.Gateway.Adapter`'s `platform/0`.
+  ADR-0033 decision 3, amended by ADR-0039. A handle is `{module, state}`.
 
-  Eleven of the fourteen are optional, and the count got there in two steps.
-  ADR-0033 demoted two of an original eight on evidence about CHAINS: Canton has
-  no blocks (none of the Splice Scan API's 79 paths returns one) and on Solana an
-  empty slot is a valid success rather than an error, so `get_block/2` is
-  optional; outside EVM and TVM a token transfer is not an event but a parse,
-  which is the operation Solana providers meter most heavily, so
-  `list_token_transfers/3` is too.
+  Required is only what a source knows about the CHAIN: `chain_info/1` (which
+  chain) and `block_height/1` (how far it has got). Everything about a thing on
+  the chain needs an index a source may not have, so `account_info/2`,
+  `get_transaction/2`, `list_transactions/3`, `token_balances/2`, `get_block/2`,
+  `list_token_transfers/3` and the rest are optional and declared, not assumed.
 
-  ADR-0039 demoted four more on evidence about SOURCES, which is the question
-  the contract actually binds. A raw JSON-RPC node has no method that lists by
-  account: the allowlist in `Raxol.Web3.RPC` is ten methods and none of them
-  answers "the transactions of this address" or "the tokens this address holds".
-  Probed 2026-09-14, Aztec's public surface has no account resource at all
-  (`l2/accounts` is a 404) and its transactions carry a fee payer and no
-  counterparties; SQD Portal's nearest account tool summarizes activity over a
-  look-back window rather than reporting a current balance; and SQD's Solana
-  surface has no transaction-by-signature lookup at all, since its query tools
-  take a slot or timestamp range plus a cursor and the only id-shaped parameters
-  in its 31 tools belong to the EVM and Tron families. So `account_info/2`,
-  `get_transaction/2`, `list_transactions/3` and `token_balances/2` are declared
-  rather than assumed.
+  ## Load-bearing shapes
 
-  What survives as required is what a source knows about the CHAIN rather than
-  about anything in it: which chain this is, and how far it has got. Every
-  question about a thing on the chain needs an index over things of that kind,
-  and an index is what a node does not have and an archive has only over ranges.
+    * `block_height/1` returns a map with the unit, the finalized split and the
+      indexer lag, never a bare integer: Solana skips slots, Canton counts
+      rounds, Tron separates the irreversible view.
+    * `account_info/2` takes an opaque tagged reference, never a string: Canton
+      has party ids, Tron dual encodings, Solana several account kinds.
+    * Pagination is an opaque cursor both ways, never an offset or page number.
+      See `Raxol.Web3.Cursor`.
 
-  ## Three shapes that are load-bearing
+  ## Optional callbacks
 
-  Each is here because the naive version silently lies on a chain we target.
+  `capabilities/1` declares what a backend answers; `supports?/2` also checks
+  `function_exported?/3`, so a declared-but-missing callback fails as
+  `{:error, {:unsupported, callback}}` rather than `UndefinedFunctionError`.
 
-    * `block_height/1` returns a map, never a bare integer. Solana counts slots
-      that skip, Canton has no height at all, and Tron ships 26 parallel
-      `solidity*` tools purely to expose the irreversible view, so the unit and
-      the finalized split are first-class. It is a map rather than ADR-0033's
-      `{height, finalized_height, unit}` tuple for one reason: ADR-0038
-      decision 7 requires the indexer's lag to be reported alongside, and a
-      three-tuple has nowhere to put it. The tuple's point was that a bare
-      integer lies; a named map keeps that and can grow.
-    * `account_info/2` takes an opaque tagged reference, never a string.
-      **Canton has no addresses**, it has party ids, which is why its explorer's
-      tool is `get_party`. Tron has dual Base58 and hex encoding, and a Solana
-      account may be a wallet, a token account, a PDA or a program.
-    * Pagination is an opaque cursor in both directions, never an offset or a
-      page number. Every surveyed upstream paginates differently and one caps
-      `start + limit` at 10000, so an offset would leak a limit we cannot
-      honour uniformly. See `Raxol.Web3.Cursor`.
+  ## Read-only
 
-  ## Optional callbacks are asked, not assumed
+  Every callback is a read. `raw_request/2` is bounded by a per-backend
+  compile-time allowlist of read methods; a backend with nothing to pass through
+  declines it.
 
-  `capabilities/1` declares what a backend answers, and the `supports?/2`
-  wrapper checks `function_exported?/3` as well, so a backend that declares a
-  capability it did not implement fails as `{:error, {:unsupported, callback}}`
-  rather than as an `UndefinedFunctionError` inside a router.
+  ## Errors
 
-  ## Read-only by construction
-
-  Every callback here is a read. `raw_request/2` is the one that could escape
-  that, so it is bounded by a per-backend compile-time allowlist of read
-  methods: an unbounded passthrough to a JSON-RPC backend reaches
-  `eth_sendRawTransaction`. A backend with nothing to pass through declines the
-  callback, which is stronger than policing it.
-
-  ## One error taxonomy, written down once
-
-  `t:error/0` is the closed set, and its typedoc says which half of
-  `Raxol.Web3.Router.failover?/1`'s split each reason is on. A backend that
-  coins a reason outside it gets the wrong half by default, because an
-  unrecognised term is treated as an answer about the question and is final.
-  Reach for the list before naming a new one: two of the five backends had
-  invented a second spelling of a reason another already had.
+  `t:error/0` is the closed set; its typedoc says which side of
+  `Raxol.Web3.Router.failover?/1` each reason falls on. An unrecognised term is
+  treated as final, so use an existing reason before coining one.
   """
 
   alias Raxol.Web3.Cursor
@@ -309,8 +267,6 @@ defmodule Raxol.Web3.Backend do
 
   @type list_opts :: [cursor: Cursor.t() | nil]
 
-  # -- identity and capability -------------------------------------------------
-
   @doc "What this backend is, for logs, config and the router's failover order."
   @callback backend() :: atom()
 
@@ -350,12 +306,8 @@ defmodule Raxol.Web3.Backend do
   """
   @callback health_key(state :: term()) :: Raxol.MCP.CircuitBreaker.key() | nil
 
-  # -- required ----------------------------------------------------------------
-
   @callback chain_info(state :: term()) :: {:ok, chain_info()} | {:error, error()}
   @callback block_height(state :: term()) :: {:ok, height()} | {:error, error()}
-
-  # -- optional ----------------------------------------------------------------
 
   # The four reads about a thing on the chain rather than about the chain,
   # optional per ADR-0039. Each needs an index over things of its kind: over
@@ -469,8 +421,6 @@ defmodule Raxol.Web3.Backend do
   @spec required() :: keyword(non_neg_integer())
   def required, do: @required
 
-  # -- composing the request ---------------------------------------------------
-
   @doc """
   Add one header to a `Raxol.Web3.HTTP` option list, keeping the operator's.
 
@@ -493,8 +443,6 @@ defmodule Raxol.Web3.Backend do
       [header | Enum.reject(headers, fn {supplied, _value} -> supplied == name end)]
     end)
   end
-
-  # -- reading an upstream row -------------------------------------------------
 
   @doc """
   A monetary figure as a non-negative integer, or a decode failure naming it.

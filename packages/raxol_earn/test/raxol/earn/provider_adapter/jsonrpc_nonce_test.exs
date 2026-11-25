@@ -36,8 +36,6 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
     %{table: table}
   end
 
-  # -- Helpers --
-
   # A fresh, uniquely-named NonceServer per test so counter state never leaks.
   defp start_nonce_server(opts) do
     name = Module.concat(__MODULE__, "NS#{System.unique_integer([:positive])}")
@@ -72,18 +70,7 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
             result(id, hex(21_000))
 
           "eth_sendRawTransaction" ->
-            case :ets.lookup(table, :fail_send) do
-              [{:fail_send, true}] ->
-                %{
-                  "jsonrpc" => "2.0",
-                  "id" => id,
-                  "error" => %{"code" => -32_000, "message" => "execution reverted"}
-                }
-
-              _ ->
-                n = :ets.update_counter(table, :tx_counter, 1)
-                result(id, "0x" <> String.pad_leading(Integer.to_string(n, 16), 64, "0"))
-            end
+            send_raw_result(table, id)
 
           # send_calls now confirms the tx before reporting success; a mined
           # receipt with status 0x1 keeps the nonce assertions focused on the
@@ -98,6 +85,22 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
     end
   end
 
+  # A revert when the test armed `:fail_send`, otherwise the next fake tx hash.
+  defp send_raw_result(table, id) do
+    case :ets.lookup(table, :fail_send) do
+      [{:fail_send, true}] ->
+        %{
+          "jsonrpc" => "2.0",
+          "id" => id,
+          "error" => %{"code" => -32_000, "message" => "execution reverted"}
+        }
+
+      _ ->
+        n = :ets.update_counter(table, :tx_counter, 1)
+        result(id, "0x" <> String.pad_leading(Integer.to_string(n, 16), 64, "0"))
+    end
+  end
+
   defp result(id, value), do: %{"jsonrpc" => "2.0", "id" => id, "result" => value}
   defp hex(n), do: "0x" <> Integer.to_string(n, 16)
 
@@ -105,8 +108,6 @@ defmodule Raxol.Earn.ProviderAdapter.JsonrpcNonceTest do
     [{:get_tx_count_calls, n}] = :ets.lookup(table, :get_tx_count_calls)
     n
   end
-
-  # -- Tests --
 
   test "a seeded server serves a whole batch without touching the chain", %{table: table} do
     ns = start_nonce_server(initial_nonce: 5)

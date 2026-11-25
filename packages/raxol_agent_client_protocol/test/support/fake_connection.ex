@@ -27,11 +27,11 @@ defmodule Raxol.AgentClientProtocol.Test.FakeConnection do
 
   use GenServer
 
-  # -- IC surface (called by the Session via conn_mod) ------------------------
+  # IC surface (called by the Session via conn_mod)
 
-  @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref}
+  @spec delegate_reply(pid(), reference(), pid()) :: :ok | {:error, :unknown_ref | :cancelled}
   def delegate_reply(conn, reply_ref, adopter) do
-    GenServer.call(conn, {:record, {:delegate_reply, reply_ref, adopter}, :ok})
+    GenServer.call(conn, {:delegate_reply, reply_ref, adopter})
   end
 
   @spec reply(pid(), reference(), term()) :: :ok
@@ -55,8 +55,6 @@ defmodule Raxol.AgentClientProtocol.Test.FakeConnection do
     GenServer.call(conn, {:record, {:cancel_request, tag}, :ok})
   end
 
-  # -- test helpers -----------------------------------------------------------
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts)
 
@@ -78,16 +76,25 @@ defmodule Raxol.AgentClientProtocol.Test.FakeConnection do
   @spec count(pid(), atom()) :: non_neg_integer()
   def count(conn, kind), do: conn |> entries(kind) |> length()
 
-  # -- GenServer --------------------------------------------------------------
-
   @impl true
   def init(opts) do
-    {:ok, %{log: [], last_async: nil, perm_responder: Keyword.get(opts, :perm_responder)}}
+    {:ok,
+     %{
+       log: [],
+       last_async: nil,
+       perm_responder: Keyword.get(opts, :perm_responder),
+       delegate_result: Keyword.get(opts, :delegate_result, :ok)
+     }}
   end
 
   @impl true
   def handle_call({:record, event, reply}, _from, state) do
     {:reply, reply, %{state | log: [event | state.log]}}
+  end
+
+  def handle_call({:delegate_reply, reply_ref, adopter}, _from, state) do
+    event = {:delegate_reply, reply_ref, adopter}
+    {:reply, state.delegate_result, %{state | log: [event | state.log]}}
   end
 
   def handle_call({:async_request, method, params, owner, tag, _timeout}, _from, state) do

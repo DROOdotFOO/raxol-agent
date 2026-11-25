@@ -5,10 +5,115 @@ All notable changes to `raxol_payments` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - Unreleased
+
+### Changed
+
+- Requires, when present, `plug ~> 1.20 and >= 1.20.4` (was `~> 1.19 and >=
+  1.19.3`) for CVE-2026-120287 (multipart framing not charged to `:length`).
+
+- **Breaking: deposit-route attestations are verified as
+  `xochi-deposit-attestation:v3`; v1 is refused.** Riddler has issued only v3
+  since Riddler#862/#870, so the v1 verifier (seven lines, origin leg only)
+  rejected every live quote and accepted only historical v1 signatures, which
+  bind no depositor, recipient or destination and are replayable onto another
+  caller's request. `Xochi.DepositAttestation` now rebuilds Riddler's
+  eighteen-line EIP-191 message byte for byte, conformance-tested over every
+  vector Riddler publishes (vendored as
+  `test/fixtures/deposit_attestation_vectors.json`, sha256 pinned beside it).
+  `Protocols.Xochi.verify_deposit_route/4` binds the caller-supplied half
+  (wallet, origin chain/token/amount, destination chain/token, resolved
+  recipient, refund address, stealth meta-address, settlement preference) from
+  the request rather than the response, so a genuine attestation for any other
+  deal is `{:error, :attestation_mismatch}`. New refusals:
+  `{:unsupported_deposit_attestation_version, advertised}` when the capability
+  matrix's new `deposit_attestation_version` is not v3 (absent, including the
+  static fallback, counts as unsupported); `:missing_deposit_deadline` and
+  `{:deposit_deadline_passed, detail}` against an injectable `:clock`;
+  `{:invalid_quote_amount, detail}` for an absent or non-decimal `to_amount` /
+  `min_to_amount` (now required); `{:inconsistent_quote_amounts, detail}`;
+  `{:invalid_quote_id, detail}`; `:recipient_is_destination_token`; and
+  `{:newline_in_field, field}`. The signer comes only from the operator pin
+  (next entry); the matrix is read for its version only. API changes:
+  `DepositAttestation.message/1` returns `{:ok, message} | {:error, _}`,
+  `verify/3` takes `%{signer:, version:, now:}`, and a signature must carry its
+  `0x` prefix with `v` in {0, 1, 27, 28}. The deposit instructions add
+  `refund_address` and `settlement_preference`, drop the unattested
+  `expires_at`, and always carry `min_to_amount`. `DepositRouteRequest` gains
+  optional `refund_address` (Tron base58) and `stealth_spending_pub_key` /
+  `stealth_viewing_pub_key`. `payment_execute_deposit_route` passes its
+  context `:clock` through.
+- **Breaking (deployment config): the deposit-attestation signer comes only
+  from an operator pin, in every deployment.** `Protocols.Xochi.deposit_route_quote/3`
+  and `verify_deposit_route/4` take it from `:deposit_attestation_signer`, else
+  `config :raxol_payments, :xochi_deposit_attestation_signer`, and never from
+  the capability matrix's `deposit_attestation_signer` (served by the same
+  endpoint as the quote, so a compromised endpoint could attest its own forged
+  deposit address). Unpinned, every deposit route fails with
+  `{:error, :deposit_signer_unpinned}`, development and tests included: set the
+  pin in their config or pass it. A pin that is not `0x` + 40 hex is refused
+  with `{:error, :invalid_deposit_signer_pin}`. `Capabilities` no longer
+  parses `deposit_attestation_signer` (`deposit_attestation_signer/1` is
+  removed), and `:require_deposit_signer_pin` is gone: there is no fallback
+  left to relax. New `Protocols.Xochi.assert_deposit_signer_pinned!/0,1`,
+  called at boot by a release that serves deposit routes, raise on an unset or
+  malformed pin.
+- A served ERC-3009 `to` or Permit2 `spender` must be a clean `0x` + 40-hex
+  address (`Raxol.Payments.EIP712.address?/1`), whether or not a solver pin is
+  set, so an unpinned development pull that served a padded or bare-hex `to`
+  is now refused too: `{:authorization_mismatch, :pull_to}` (or
+  `:pull_spender`).
+- **Breaking: `Raxol.Payments.Secret` is deprecated** and delegates to
+  `Raxol.Agent.Secret` (raxol_agent); `new/1` returns a `Raxol.Agent.Secret`,
+  so a `%Raxol.Payments.Secret{}` pattern no longer matches.
+  `Accounting.env_config/0` returns its RPC URLs wrapped. Hence 0.4.0.
+- **Breaking: `Xochi.Stealth.derive_keys/1` returns each private key
+  `Raxol.Agent.Secret`-wrapped** (`{secret, public_key}`). `scan/3` takes raw
+  or wrapped keys, runs under `with_revealed/2` (a raise becomes `{:error,
+  :secret_operation_crashed}`), and returns `{:error, :invalid_announcements}`
+  for a non-list instead of raising.
+- `Xochi.Client` accepts a wrapped token in `auth: {:member, _}`;
+  `protect_config/1` wraps raw member tokens for a caller about to keep the
+  config. `Relay.Client` and `Pxe.Client` accept a wrapped token or key; a
+  `nil` relay token sends no `authorization` header (was `Bearer `).
+- `ChainReader.JSONRPC` and `Accounting.env_config/0` keep RPC URLs wrapped,
+  since provider URLs embed API keys.
+- Requires `raxol_agent ~> 3.2` (was `~> 3.0`), the release that ships
+  `Raxol.Agent.Secret`.
+- `Wallets.Op` hides its key and the failing call from `:sys.get_status` and
+  crash reports (`format_status/1`).
+- `Req.AutoPay`'s paid retry drops `x-payment` (and the other payment
+  headers), and `Req.Mandate` drops `x-xochi-delegation`, before following a
+  redirect to another origin: Req removes only `authorization` there, so the
+  signed payment or the delegation used to go with it. Same-origin redirects
+  keep them. The mandate step attaches only over HTTPS on the default port
+  (plain HTTP to a loopback host) and never again once a redirect chain has
+  left its first origin, so a hop to `http://api.xochi.fi`, another port or
+  another `*.xochi.fi` host does not get it back.
+- `Telemetry.LoggerHandler`'s default formatter no longer prints caller
+  data: a nested metadata map shows its keys, a tuple its scalar elements,
+  any other compound value its kind, and every URL inside a string its
+  origin; control characters are escaped. The line format changes with it:
+  a tuple prints as `{agent,7}` (was `{:agent, 7}`), a date in ISO 8601
+  (was `~U[...]`), a list as `#list`.
+- The Relay client and Xochi agent-stream refuse a base_url by its parsed
+  host, so `http://localhost@evil.example` is no longer accepted as local,
+  and the refusal names the URL's origin only.
 
 ### Added
 
+- `Raxol.Payments.EIP712.address?/1,2`: whether a value is a clean `0x` +
+  40-hex EVM address. A mixed-case address must carry a valid EIP-55
+  checksum; all-lowercase and all-uppercase carry none. `checksum: false`
+  checks the shape only. Operator input is checksum-checked: a deposit signer
+  pin with a wrong checksum is refused (`:invalid_deposit_signer_pin`, and
+  `assert_deposit_signer_pinned!` raises), as are solver allowlist entries and
+  `--solver`/`ORDER_SOLVER`. Addresses the endpoint serves (a pull `to` or
+  `spender`) are checked for shape only.
+- Origin-pull solver allowlist entries are trimmed and kept only when they
+  pass `address?/1`. A configured allowlist with no valid entry refuses every
+  pull instead of reading as unset. `origin_pull_pin_env_config!/0` raises on
+  a set `XOCHI_SOLVER_*` that is not a valid address, naming the variable.
 - The Xochi status parsers read every `IntentLifecycleStatus` of
   `@xochi/spec` 0.14.0. `IntentStatus` and `Intent` add `:pull_pending`,
   `:source_finalized` and `:refund_pending`; `ExecuteResponse` adds those and

@@ -48,17 +48,11 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
 
   ## Sequence allocation
 
-  `append/5` uses `INSERT ... VALUES (..., COALESCE((SELECT MAX(sequence)
-  + 1 FROM <table> WHERE thread_id = $1), 0), ...)` inside a single
-  statement. This is *racy* between concurrent writers to the same
-  `thread_id`: two writers can both read `MAX = N` and both try to
-  insert at `N + 1`, producing a `unique_violation` on the second.
-
-  The adapter catches `unique_violation` and retries up to three
-  times with a 5ms backoff. Under heavier contention the third
-  attempt fails with `{:error, :sequence_conflict}` and the caller
-  is expected to serialize through a single owning process. The
-  single-writer-per-thread contract is documented on the behaviour.
+  `append/5` allocates `MAX(sequence) + 1` in one statement, which races
+  between concurrent writers to one `thread_id`. A `unique_violation` is
+  retried up to three times with a 5ms backoff, then fails
+  `{:error, :sequence_conflict}`: serialize writes per thread through one
+  owning process (the behaviour's single-writer contract).
 
   ## Lazy expiry, retention, audit
 
@@ -95,83 +89,47 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
     metadata_bin = :erlang.term_to_binary(metadata)
     kind_str = Atom.to_string(kind)
 
-    do_append(
-      conn,
-      table,
-      thread_id,
-      kind,
-      kind_str,
-      payload,
-      payload_bin,
-      metadata_bin,
-      recorded_at,
-      0
-    )
+    row = %{
+      thread_id: thread_id,
+      kind: kind,
+      kind_str: kind_str,
+      payload: payload,
+      payload_bin: payload_bin,
+      metadata_bin: metadata_bin,
+      recorded_at: recorded_at
+    }
+
+    do_append(conn, table, row, 0)
   end
 
-  defp do_append(
-         _conn,
-         _table,
-         thread_id,
-         _kind_atom,
-         _kind_str,
-         _payload,
-         _payload_bin,
-         _metadata_bin,
-         _recorded_at,
-         attempt
-       )
-       when attempt >= @retry_attempts do
-    {:error, {:sequence_conflict, thread_id}}
+  defp do_append(_conn, _table, row, attempt) when attempt >= @retry_attempts do
+    {:error, {:sequence_conflict, row.thread_id}}
   end
 
-  defp do_append(
-         conn,
-         table,
-         thread_id,
-         kind_atom,
-         kind_str,
-         payload,
-         payload_bin,
-         metadata_bin,
-         recorded_at,
-         attempt
-       ) do
+  defp do_append(conn, table, row, attempt) do
     case Postgrex.query(conn, insert_sql(table), [
-           thread_id,
-           kind_str,
-           payload_bin,
-           metadata_bin,
-           recorded_at
+           row.thread_id,
+           row.kind_str,
+           row.payload_bin,
+           row.metadata_bin,
+           row.recorded_at
          ]) do
       {:ok, %{rows: [[sequence]]}} ->
         event =
           ThreadEvent.new(
-            thread_id: thread_id,
+            thread_id: row.thread_id,
             sequence: sequence,
-            kind: kind_atom,
-            payload: payload,
-            metadata: :erlang.binary_to_term(metadata_bin),
-            recorded_at: recorded_at
+            kind: row.kind,
+            payload: row.payload,
+            metadata: :erlang.binary_to_term(row.metadata_bin),
+            recorded_at: row.recorded_at
           )
 
         {:ok, event}
 
       {:error, %{postgres: %{code: :unique_violation}}} ->
         Process.sleep(@retry_backoff_ms * (attempt + 1))
-
-        do_append(
-          conn,
-          table,
-          thread_id,
-          kind_atom,
-          kind_str,
-          payload,
-          payload_bin,
-          metadata_bin,
-          recorded_at,
-          attempt + 1
-        )
+        do_append(conn, table, row, attempt + 1)
 
       {:error, reason} ->
         {:error, reason}
@@ -259,8 +217,6 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
     end
   end
 
-  # --- SQL builders ---------------------------------------------------------
-
   @doc """
   Returns the `CREATE TABLE IF NOT EXISTS` + secondary index SQL.
   Run once as part of the consumer's migration step.
@@ -286,6 +242,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec insert_sql(String.t()) :: String.t()
   def insert_sql(table) do
     table = quote_identifier!(table)
 
@@ -301,6 +258,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec select_latest_sql(String.t()) :: String.t()
   def select_latest_sql(table) do
     table = quote_identifier!(table)
 
@@ -314,6 +272,7 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
   end
 
   @doc false
+  @spec truncate_sql(String.t()) :: String.t()
   def truncate_sql(table) do
     table = quote_identifier!(table)
     "DELETE FROM #{table} WHERE thread_id = $1 AND sequence < $2\n"
@@ -351,8 +310,6 @@ defmodule Raxol.Agent.ThreadLog.Postgrex do
 
   defp limit_to_int(:all), do: 1_000_000
   defp limit_to_int(n) when is_integer(n) and n > 0, do: n
-
-  # --- Helpers --------------------------------------------------------------
 
   defp conn_and_table(config) do
     conn = Map.fetch!(config, :conn)

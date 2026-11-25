@@ -4,157 +4,63 @@ defmodule Raxol.Broker.Journal do
   per install, at `~/.raxol/broker/journal` (`$RAXOL_BROKER_JOURNAL` or the
   `:path` option), opened private (directory 0700, files 0600).
 
-  Every order decision is a group of consecutive records sharing a
-  `group_id`: the intent, a snapshot of the policy context, each verdict
-  (`:pre_review`, then `:post_review`), the review response, any human
-  approval of an ASK, a `placing` record, and a terminal record (the order
-  response, a DENY verdict, a declined approval, or a close). This process is
-  the journal's only appender, so a group written with `append_group/1` is
-  one Writer call and lands contiguously. A write-ahead caller opens the
-  group with `open_group/2` before any review or order call and adds records
-  with `append_to_group/2` as they happen; every broker record is synced to
-  disk before the call returns.
+  Every order decision is a group of records sharing a `group_id`: the
+  intent, a context snapshot, the `:pre_review` and `:post_review` verdicts,
+  the review response, any approval of an ASK, `placing`, and a terminal
+  record (order response, DENY verdict, declined approval or close). This
+  process is the only appender and syncs every broker record to disk before
+  replying.
 
   ## Claim
 
-  One executor writes orders per journal. `claim/1` claims the journal for
-  the calling process and monitors it; the claim is released when that
-  process exits. Only a `Raxol.Broker.Executor` may claim: a caller whose
-  proc_lib initial call is not `{Raxol.Broker.Executor, :init, 1}` is
-  refused with `{:error, :not_an_executor}`. The same process may claim
-  again; any other process is refused with `{:error, {:journal_claimed,
-  pid}}` while the claimant lives. A claim is taken even on a damaged
-  journal; group writes are still refused there.
-
-  Every group record (`open_group/4`, `append_to_group/4`, `append_group/3`,
-  any entry type) is written only for the claimant, and the claimant check is
-  the first thing the journal does with a group write: nothing the caller
-  sent is read, built into a record or encoded before it. With no claim held
-  the write is refused with `{:error, :unclaimed}`; with one held, any other
-  caller is refused with `{:error, {:not_claimant, id}}` (`id` is nil for a
-  group not yet written). Nothing is written in either case, so no other
-  process can open a group, forge a review, verdict or approval into the
-  executor's open group, close it, or write `placing`. `append_fill/2` is
-  not a group write and takes no claim.
-
-  Only then are the intent and context of a new group rebuilt from plain data
-  (`Raxol.Broker.Intent.normalize/1`, `Raxol.Broker.Policy.Context.normalize/1`),
-  before anything is encoded. A struct, function, pid or other non-plain value
-  anywhere inside them is refused with `{:error, {:invalid_intent, reason}}`
-  or `{:error, {:invalid_context, reason}}` and nothing is written, so no
-  protocol implementation from caller data ever runs in the journal.
-
-  Threat model: the BEAM cannot stop code that deliberately writes into
-  another module's private state, e.g. `Process.put(:"$initial_call", ...)`
-  in its own process or `:sys.replace_state/2` on this one. The guarantee is
-  that no path through public APIs writes a group record (and so sends an
-  order) without the Executor's review pipeline; every remaining bypass
-  requires impersonating the Executor's private process-dictionary slots on
-  purpose.
-
-  ## Write timeouts
-
-  Callers wait as long as the journal takes: `open_group/4`,
-  `append_to_group/4` and `append_group/3` wait `:infinity` by default (pass
-  a timeout to override). A caller that gives up does not undo its write: the
-  request stays queued and lands later.
-
-  The journal bounds each call to its Writer
-  (`Raxol.Agent.Journal.FileStore.append_many/3`) with `:write_deadline`
-  (default 60_000 ms), including for fills and the crash closes written on
-  start. A Writer that misses the deadline may still be about to land the
-  records, so the journal never answers `{:error, _}` for it: it kills the
-  Writer, waits for it to die, and stops with `{:writer_stalled, ms}`. Every
-  caller waiting on the journal exits, and the Executor, which monitors the
-  journal, stops too. The kill does not guarantee nothing lands: a dirty IO
-  NIF already running may still complete the write after it. Recovery reads
-  the disk, not the journal's memory, so on restart the disk is the truth: a `placing` that reached disk is closed as
-  `crash_outcome_unknown` and keeps counting, and one that did not leaves
-  its group closed as `crash_before_verdict`.
-
-  The trade-off: a fsync slower than the deadline costs a journal and
-  Executor restart instead of a slow write, and a journal whose Writer cannot
-  write at all stops rather than hanging every order and cancel behind it.
-  Answering `{:error, _}` on a timeout instead would let a `placing` land
-  after the Executor closed its group as refused, turning an order that was
-  never sent into a counted unknown outcome and a permanent duplicate.
+  `claim/1` claims the journal for the calling process until it exits. Only
+  a process whose proc_lib initial call is `{Raxol.Broker.Executor, :init,
+  1}` may claim (`{:error, :not_an_executor}`); another live claimant is
+  `{:error, {:journal_claimed, pid}}`. Every group write is checked against
+  the claim before anything the caller sent is read: `{:error, :unclaimed}`
+  or `{:error, {:not_claimant, id}}`. A new group's intent and context are
+  then rebuilt from plain data, so no protocol of caller data runs here.
+  `append_fill/2` is not a group write and takes no claim.
 
   ## Placing
 
-  `{:placing}` is written immediately before the order call, and only when
-  all of these hold (otherwise nothing is written):
+  `{:placing}` is written only when the group has a review and an ALLOW
+  post-review verdict or an approval (`{:not_reviewed, id}`), and no other
+  group placed the same intent id without failing (`{:duplicate_intent,
+  other}`). The journal prices the order from the group's own intent and
+  context and records that notional (`{:unpriced_order, reason}` otherwise;
+  cancels record nil). After `placing` only an order response or a close
+  may follow; a close then records an `unknown` outcome.
 
-    * the caller is the claimant, as for every group write (`{:error,
-      :unclaimed}` or `{:error, {:not_claimant, id}}`, see "Claim");
-    * the group has a `review` record and either its latest `:post_review`
-      verdict is ALLOW or it has an approved `approval` record
-      (`{:error, {:not_reviewed, id}}`);
-    * no other group for the same intent id reached `placing` with an
-      outcome other than `:failed` (`{:error, {:duplicate_intent, other_id}}`).
+  ## Writes and recovery
 
-  The journal prices the order from the group's own intent and context
-  (`Raxol.Broker.Policy.notional/2`) and records that notional; it refuses an
-  order it cannot price (`{:error, {:unpriced_order, reason}}`), so nothing
-  unpriced is ever sent. Cancels record a `nil` notional. After `placing` the
-  only records a group takes are its order response (`:placed`,
-  `:pending_approval`, `:failed` or `:unknown`) or a close, and an order
-  response is refused for a group with no
-  `placing` record (`{:error, {:not_placing, id}}`). A close after `placing`
-  records an `unknown` outcome: the order may exist.
+  Group writes wait `:infinity` by default; a caller that gives up does not
+  undo its write. Each Writer call is bounded by `:write_deadline` (default
+  60 s); a Writer that misses it is killed and the journal stops with
+  `{:writer_stalled, ms}`. It never answers `{:error, _}` there: the write
+  may still land, and a `placing` landing after its group was closed as
+  refused would turn an unsent order into a counted unknown.
 
-  ## Recovery
+  On start the chain is verified. A damaged journal stays up but refuses
+  every append and query. On a healthy one, every group left open is closed:
+  as `crash_before_verdict` (DENY) without `placing`, as
+  `crash_outcome_unknown` (still counted) with it.
 
-  On start the chain is verified. A damaged journal (`{:damaged, offset}`)
-  keeps the process up but refuses every append and every query: no order
-  can be sized against a journal that cannot be trusted. On a healthy
-  journal, every group left open by a crash is closed before anything else
-  is written:
-
-    * no `placing` record: closed as DENY `crash_before_verdict`, no order
-      was sent;
-    * a `placing` record but no order response: closed as
-      `crash_outcome_unknown`. The order call may have gone out, so the
-      group keeps counting toward notional and order rate.
-
-  The journal traps exits: a supervisor shutdown closes the Writer it started,
-  and if the Writer dies (including one this journal joined rather than
-  started) the journal stops so its supervisor restarts it.
-
-  ## Index
-
-  Queries read an ETS table (named after the server) built from the journal
-  on start and kept current on append. An order counts toward
-  `today_notional/1` and `orders_last_minute/1` from its `placing` record, at
-  that record's time and notional, until an order response says `:failed`;
-  cancels never count. Only recorded notionals are used, never recomputed, so
-  the live index and the one rebuilt on start agree. `realized_pnl_today/1`
-  sums `append_fill/1` records. The exchange-day boundary is the caller's:
-  pass the start of the day as a UTC instant. Queries return `{:error,
-  reason}` while the journal is damaged or not running; a policy context left
-  `nil` then denies.
-
-  `placing_for_intent/2` answers whether a group for an intent id reached
-  `placing` with an outcome other than `:failed`: the executor's idempotency
-  check, so a re-run of the same intent after a restart never sends a second
-  order, while an intent whose order definitely failed may be retried. The
-  same index backs the duplicate-intent gate on `placing`.
-
-  Arming must check `verify/1` first: it walks the chain on disk now,
-  where `status/1` reports what was found at start.
+  Queries read an ETS table named after the server. An order counts toward
+  `today_notional/2` and `orders_last_minute/2` from its `placing` record
+  until a `:failed` response; cancels never count. The day boundary is the
+  caller's, a UTC instant. Queries are `{:error, _}` while the journal is
+  damaged or down, so a context left `nil` denies. `placing_for_intent/2`
+  is the executor's idempotency check. `verify/1` walks the chain on disk
+  now, where `status/1` reports what start found; arming must call it first.
 
   ## Events
 
-  Records outside any group, written by any process with `append_event/3`
-  (no claim needed) and refused, like every other write, on a damaged
-  journal:
-
-    * `emit`: a strategy runner's intent, written before the runner hands it
-      to the executor (`emit/3`). It stays pending (`pending_intents/2`)
-      until a `dispatch` record names its id (`dispatched/3`), so a runner
-      that restarts re-sends it and the executor's idempotency check decides
-      whether it was already placed.
-    * `strategy`: a strategy added or stopped (`put_strategy/2`,
-      `drop_strategy/2`); `strategies/1` lists the ones still added.
+  Strategy runners record emitted intents before handing them to the executor.
+  An intent stays pending until a dispatch record names it. A restarted runner
+  resends pending intents and the executor checks whether it already placed them.
+  The journal also tracks added strategies until a stop record names them.
+  Event writes require no claim and follow the same durability rules as group writes.
   """
 
   use GenServer
@@ -163,8 +69,8 @@ defmodule Raxol.Broker.Journal do
 
   alias Raxol.Agent.Journal.FileStore
   alias Raxol.Agent.OperatorFile
-  alias Raxol.Broker.{Intent, Policy}
-  alias Raxol.Broker.Journal.{Codec, Groups}
+  alias Raxol.Broker.{Intent, Policy, Redact}
+  alias Raxol.Broker.Journal.{Codec, Groups, Index}
   alias Raxol.Broker.Policy.Context
 
   @event_types ~w(emit dispatch strategy)
@@ -173,7 +79,6 @@ defmodule Raxol.Broker.Journal do
   @order_statuses [:placed, :pending_approval, :failed, :unknown]
   @decisions [:approved, :declined]
   @before_placing [:verdict, :review, :approval, :placing]
-  @minute_us 60_000_000
   @default_write_deadline 60_000
 
   @type server :: atom()
@@ -196,20 +101,20 @@ defmodule Raxol.Broker.Journal do
         }
   @type status :: :ok | {:damaged, pos_integer()} | {:error, term()}
 
-  # -- Lifecycle ----------------------------------------------------------------
-
   @doc """
   Start the journal. Options: `:name` (default `#{inspect(__MODULE__, structs: false)}`, also
   the ETS table name), `:path`, `:clock`, a zero-arity function returning
   the UTC `DateTime` stamped on records (default `DateTime.utc_now/0`), and
   `:write_deadline`, the milliseconds each Writer call may take before the
-  journal kills the Writer and stops (default 60_000, see "Write timeouts").
+  journal kills the Writer and stops (default 60_000, see "Writes and recovery").
   """
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
     GenServer.start_link(__MODULE__, Keyword.put(opts, :name, name), name: name)
   end
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{id: Keyword.get(opts, :name, __MODULE__), start: {__MODULE__, :start_link, [opts]}}
   end
@@ -234,7 +139,7 @@ defmodule Raxol.Broker.Journal do
     with {:ok, deadline} <- write_deadline(opts),
          path when is_binary(path) <- path(opts) || {:error, :no_journal_path},
          {:ok, handle} <- open_store(path) do
-      table = :ets.new(name, [:named_table, :ordered_set, :protected, read_concurrency: true])
+      table = Index.new(name)
 
       state = %{
         handle: handle,
@@ -289,8 +194,6 @@ defmodule Raxol.Broker.Journal do
     :exit, _ -> :ok
   end
 
-  # -- Writes -------------------------------------------------------------------
-
   @doc """
   Write the intent and its context snapshot, durable before any review or
   order call. Returns the new group's id. Only the claimant may open a group
@@ -298,7 +201,7 @@ defmodule Raxol.Broker.Journal do
 
   `opts[:mode]` (`:dry_run` or `:armed`) is stored on the intent record and
   shown by replay; it is omitted when not given. `opts[:timeout]` bounds the
-  call (default `:infinity`, see "Write timeouts").
+  call (default `:infinity`, see "Writes and recovery").
   """
   @spec open_group(Intent.t(), Context.t(), server(), keyword()) ::
           {:ok, group_id()} | {:error, term()}
@@ -341,7 +244,7 @@ defmodule Raxol.Broker.Journal do
   Only an order response or a close may follow `{:placing}`
   (`{:already_placing, id}` otherwise).
 
-  `timeout` bounds the call (default `:infinity`, see "Write timeouts").
+  `timeout` bounds the call (default `:infinity`, see "Writes and recovery").
   """
   @spec append_to_group(group_id(), entry(), server(), timeout()) :: :ok | {:error, term()}
   def append_to_group(group_id, entry, server \\ __MODULE__, timeout \\ :infinity)
@@ -352,7 +255,7 @@ defmodule Raxol.Broker.Journal do
   Write a whole group (intent, context, then `entries` in order) as one
   contiguous run of records, with the same rules as `append_to_group/2`.
   Returns the group's id. `timeout` bounds the call (default `:infinity`,
-  see "Write timeouts").
+  see "Writes and recovery").
   """
   @spec append_group(group(), server(), timeout()) :: {:ok, group_id()} | {:error, term()}
   def append_group(group, server \\ __MODULE__, timeout \\ :infinity)
@@ -382,29 +285,25 @@ defmodule Raxol.Broker.Journal do
   @spec claim(server()) :: :ok | {:error, term()}
   def claim(server \\ __MODULE__), do: GenServer.call(server, :claim)
 
-  # -- Queries ------------------------------------------------------------------
-
   @doc "USD notional of counted orders at or after `since` (both sides)."
   @spec today_notional(DateTime.t(), server()) :: {:ok, Decimal.t()} | {:error, term()}
   def today_notional(%DateTime{} = since, server \\ __MODULE__) do
-    with :ok <- healthy(server), do: select(fn -> {:ok, sum(server, :order, to_us(since))} end)
+    with :ok <- healthy(server),
+         do: select(fn -> {:ok, Index.sum(server, :order, Index.to_us(since))} end)
   end
 
   @doc "Counted orders in the 60 seconds ending at `now` (exclusive start, inclusive end)."
   @spec orders_last_minute(DateTime.t(), server()) :: {:ok, non_neg_integer()} | {:error, term()}
   def orders_last_minute(%DateTime{} = now, server \\ __MODULE__) do
-    with :ok <- healthy(server) do
-      to = to_us(now)
-      from = to - @minute_us
-      spec = [{{{:order, :"$1", :_}, :_}, [{:>, :"$1", from}, {:"=<", :"$1", to}], [true]}]
-      select(fn -> {:ok, :ets.select_count(server, spec)} end)
-    end
+    with :ok <- healthy(server),
+         do: select(fn -> {:ok, Index.orders_last_minute(server, Index.to_us(now))} end)
   end
 
   @doc "Realized P&L of fills at or after `since`."
   @spec realized_pnl_today(DateTime.t(), server()) :: {:ok, Decimal.t()} | {:error, term()}
   def realized_pnl_today(%DateTime{} = since, server \\ __MODULE__) do
-    with :ok <- healthy(server), do: select(fn -> {:ok, sum(server, :fill, to_us(since))} end)
+    with :ok <- healthy(server),
+         do: select(fn -> {:ok, Index.sum(server, :fill, Index.to_us(since))} end)
   end
 
   @doc """
@@ -413,14 +312,8 @@ defmodule Raxol.Broker.Journal do
   """
   @spec placing_for_intent(String.t(), server()) :: {:ok, group_id() | nil} | {:error, term()}
   def placing_for_intent(intent_id, server \\ __MODULE__) when is_binary(intent_id) do
-    with :ok <- healthy(server), do: select(fn -> intent_placing(server, intent_id) end)
-  end
-
-  defp intent_placing(table, intent_id) do
-    case :ets.lookup(table, {:intent_placing, intent_id}) do
-      [{_key, group_id}] -> {:ok, group_id}
-      [] -> {:ok, nil}
-    end
+    with :ok <- healthy(server),
+         do: select(fn -> {:ok, Index.intent_placing(server, intent_id)} end)
   end
 
   @doc "Ids of the groups still open (no terminal record), oldest first."
@@ -433,9 +326,9 @@ defmodule Raxol.Broker.Journal do
   """
   @spec status(server()) :: status()
   def status(server \\ __MODULE__) do
-    case :ets.lookup(server, :status) do
-      [{:status, status}] -> status
-      [] -> {:error, :journal_not_ready}
+    case Index.status(server) do
+      {:ok, status} -> status
+      :error -> {:error, :journal_not_ready}
     end
   rescue
     ArgumentError -> {:error, :journal_not_running}
@@ -464,9 +357,13 @@ defmodule Raxol.Broker.Journal do
   def append_event(type, fields, server \\ __MODULE__) when is_atom(type) and is_map(fields) do
     name = Atom.to_string(type)
 
-    if name in @event_types,
-      do: GenServer.call(server, {:event, name, Codec.term(fields)}, :infinity),
-      else: {:error, {:invalid_event, type}}
+    if name in @event_types do
+      with {:ok, json} <- Jason.encode(Codec.term(fields)) do
+        GenServer.call(server, {:event, name, json}, :infinity)
+      end
+    else
+      {:error, {:invalid_event, type}}
+    end
   end
 
   @doc "Record that strategy `strategy_id` emitted `intent` (see \"Events\")."
@@ -487,8 +384,8 @@ defmodule Raxol.Broker.Journal do
   def pending_intents(strategy_id, server \\ __MODULE__) when is_binary(strategy_id) do
     with :ok <- healthy(server),
          {:ok, emitted} <-
-           select(fn -> {:ok, by_seq(server, {{:emit, :_}, :_, strategy_id, :_})} end) do
-      decode_all(emitted, fn {_key, _seq, _strategy, intent} -> Codec.decode_intent(intent) end)
+           select(fn -> {:ok, Index.pending_intents(server, strategy_id)} end) do
+      decode_all(emitted, &Codec.decode_intent/1)
     end
   end
 
@@ -506,12 +403,9 @@ defmodule Raxol.Broker.Journal do
   @spec strategies(server()) :: {:ok, [map()]} | {:error, term()}
   def strategies(server \\ __MODULE__) do
     with :ok <- healthy(server) do
-      select(fn -> {:ok, Enum.map(by_seq(server, {{:strategy, :_}, :_, :_}), &elem(&1, 2))} end)
+      select(fn -> {:ok, Index.strategies(server)} end)
     end
   end
-
-  defp by_seq(table, pattern),
-    do: table |> :ets.match_object(pattern) |> Enum.sort_by(&elem(&1, 1))
 
   defp decode_all(items, decode) do
     Enum.reduce_while(items, {:ok, []}, fn item, {:ok, acc} ->
@@ -588,23 +482,38 @@ defmodule Raxol.Broker.Journal do
   end
 
   def handle_call({:append_fill, fill}, _from, state) do
-    with {:ok, fields} <- encode_fill(fill),
+    with {:ok, fields} <- Codec.encode_fill(fill),
          at = state.clock.(),
          record = %{"kind" => "broker", "type" => "fill", "at" => iso(at), "fill" => fields},
          {:ok, [offset]} <- write(state, [record]) do
-      :ets.insert(state.table, {{:fill, to_us(at), offset}, fill.realized_pnl})
+      Index.put_fill(state.table, Index.to_us(at), offset, fill.realized_pnl)
       {:reply, :ok, state}
     else
       {:error, reason} -> refuse(state, reason)
     end
   end
 
-  def handle_call({:event, type, fields}, _from, state) do
-    record = Map.merge(fields, %{"kind" => "broker", "type" => type, "at" => iso(state.clock.())})
+  # Decode the caller payload here so only JSON data reaches the Writer.
+  def handle_call({:event, type, json}, _from, state)
+      when type in @event_types and is_binary(json) do
+    case Jason.decode(json) do
+      {:ok, fields} when is_map(fields) -> append_event_record(state, type, fields)
+      _invalid -> {:reply, {:error, :invalid_event_fields}, state}
+    end
+  end
+
+  def handle_call({:event, _type, _fields}, _from, state),
+    do: {:reply, {:error, :invalid_event}, state}
+
+  defp append_event_record(state, type, fields) do
+    record =
+      fields
+      |> Map.delete("group_id")
+      |> Map.merge(%{"kind" => "broker", "type" => type, "at" => iso(state.clock.())})
 
     case write(state, [record]) do
       {:ok, _offsets} ->
-        index_event(state.table, record)
+        Index.event(state.table, record)
         {:reply, :ok, state}
 
       {:error, reason} ->
@@ -619,12 +528,12 @@ defmodule Raxol.Broker.Journal do
   def handle_info({:DOWN, ref, :process, pid, _reason}, %{claimant: {pid, ref}} = state),
     do: {:noreply, %{state | claimant: nil}}
 
-  # `structs: false`: a message from any process may hold a struct, and its
-  # Inspect implementation must not run here.
+  # Only the message's tag is logged: a message from any process may hold a
+  # credential, or a struct whose Inspect implementation must not run here.
   def handle_info(message, state) do
     Logger.warning(
       "#{inspect(__MODULE__, structs: false)} ignored an unexpected message: " <>
-        inspect(message, structs: false)
+        Redact.shape(message)
     )
 
     {:noreply, state}
@@ -638,8 +547,6 @@ defmodule Raxol.Broker.Journal do
     Logger.warning("#{inspect(__MODULE__, structs: false)} ignored an unexpected cast")
     {:noreply, state}
   end
-
-  # -- Claim --------------------------------------------------------------------
 
   # The claim goes only to a process started as `Raxol.Broker.Executor`
   # (proc_lib records its initial call). Reading another process's dictionary
@@ -673,8 +580,6 @@ defmodule Raxol.Broker.Journal do
   defp claimant(%{claimant: nil}, _caller, _id), do: {:error, :unclaimed}
   defp claimant(%{claimant: {caller, _ref}}, caller, _id), do: :ok
   defp claimant(_state, _caller, id), do: {:error, {:not_claimant, id}}
-
-  # -- Entries ------------------------------------------------------------------
 
   # A new group's id, open state and records (intent, context, then
   # `entries`), built only after the claimant check and only from the
@@ -803,8 +708,8 @@ defmodule Raxol.Broker.Journal do
 
   defp placing_allowed(id, %{reviewed?: true} = group, state)
        when group.post_action == "allow" or group.approved? do
-    case :ets.lookup(state.table, {:intent_placing, group.intent.id}) do
-      [{_key, other}] when other != id -> {:error, {:duplicate_intent, other}}
+    case Index.intent_placing(state.table, group.intent.id) do
+      other when other not in [nil, id] -> {:error, {:duplicate_intent, other}}
       _ -> :ok
     end
   end
@@ -823,44 +728,27 @@ defmodule Raxol.Broker.Journal do
   end
 
   # After a successful write: keep the group open or drop it, count a
-  # `placing` record and uncount a failed order. The same `index_placing/3`
-  # builds the index on start, so both read the recorded notional.
+  # `placing` record and uncount a failed order.
   defp settle(state, id, group, records) do
     open =
       if group.finished?,
         do: Map.delete(state.open, id),
         else: Map.put(state.open, id, group)
 
-    state = %{state | open: open}
-
-    Enum.reduce(records, state, fn
+    Enum.reduce(records, %{state | open: open}, fn
       %{"type" => "placing"} = placing, state ->
-        :ets.insert(state.table, {{:intent_placing, group.intent.id}, id})
-
-        case index_placing(state.table, id, placing) do
-          :ok -> state
-          {:error, reason} -> set_status(state, {:error, reason})
-        end
+        indexed(state, Index.placed(state.table, group.intent.id, id, placing))
 
       %{"type" => "order", "status" => "failed"}, state ->
-        :ets.delete_object(state.table, {{:intent_placing, group.intent.id}, id})
-        uncount(state, id, group.placing)
+        indexed(state, Index.failed(state.table, group.intent.id, id, group.placing))
 
       _record, state ->
         state
     end)
   end
 
-  defp uncount(state, id, %{"at" => at}) do
-    case parse_us(at) do
-      {:ok, us} ->
-        :ets.delete(state.table, {:order, us, id})
-        state
-
-      :error ->
-        set_status(state, {:error, {:unindexable_group, id, :at}})
-    end
-  end
+  defp indexed(state, :ok), do: state
+  defp indexed(state, {:error, reason}), do: set_status(state, {:error, reason})
 
   defp fetch_open(state, id) do
     case Map.fetch(state.open, id) do
@@ -868,32 +756,6 @@ defmodule Raxol.Broker.Journal do
       :error -> {:error, {:unknown_or_finished_group, id}}
     end
   end
-
-  defp encode_fill(%{order_id: order_id, symbol: symbol, side: side} = fill)
-       when is_binary(order_id) and order_id != "" and side in [:buy, :sell] do
-    decimals = [:qty, :price, :realized_pnl]
-
-    if Intent.symbol?(symbol) and Enum.all?(decimals, &finite?(Map.get(fill, &1))) do
-      {:ok,
-       %{
-         "order_id" => order_id,
-         "symbol" => symbol,
-         "side" => Atom.to_string(side),
-         "qty" => Decimal.to_string(fill.qty),
-         "price" => Decimal.to_string(fill.price),
-         "realized_pnl" => Decimal.to_string(fill.realized_pnl)
-       }}
-    else
-      {:error, {:invalid_fill, fill}}
-    end
-  end
-
-  defp encode_fill(fill), do: {:error, {:invalid_fill, fill}}
-
-  defp finite?(%Decimal{coef: coef}), do: is_integer(coef)
-  defp finite?(_value), do: false
-
-  # -- Recovery and index -------------------------------------------------------
 
   # One scan of the journal: a damaged one is only scanned again to name the
   # offset. Closing a crashed group changes no count (an in-flight group
@@ -910,10 +772,8 @@ defmodule Raxol.Broker.Journal do
     {groups, fills} = Groups.fold(records)
 
     with {:ok, _offsets} <- write(state, crash_closes(state, groups)),
-         :ok <- index_groups(state.table, Enum.filter(groups, &Groups.counts?/1)),
-         :ok <- index_intents(state.table, groups),
-         :ok <- index_fills(state.table, fills) do
-      Enum.each(records, &index_event(state.table, &1))
+         :ok <- Index.build(state.table, groups, fills) do
+      Enum.each(records, &Index.event(state.table, &1))
       {:ok, set_status(state, :ok)}
     else
       {:error, {:writer_stalled, _ms} = reason} -> {:stop, reason}
@@ -921,100 +781,12 @@ defmodule Raxol.Broker.Journal do
     end
   end
 
-  # Events are indexed in journal order, so a later record wins. Each entry
-  # carries a monotonic sequence number for ordered listings.
-  defp index_event(table, %{"kind" => "broker", "type" => "emit"} = record) do
-    case record do
-      %{"intent" => %{"id" => id} = intent, "strategy_id" => strategy} when is_binary(id) ->
-        :ets.insert(table, {{:emit, id}, seq(), strategy, intent})
-
-      _malformed ->
-        true
-    end
-  end
-
-  defp index_event(table, %{"kind" => "broker", "type" => "dispatch", "intent_id" => id}),
-    do: :ets.delete(table, {:emit, id})
-
-  defp index_event(
-         table,
-         %{"kind" => "broker", "type" => "strategy", "strategy_id" => id} = record
-       ) do
-    case record do
-      %{"action" => "add", "spec" => spec} -> :ets.insert(table, {{:strategy, id}, seq(), spec})
-      %{"action" => "stop"} -> :ets.delete(table, {:strategy, id})
-      _malformed -> true
-    end
-  end
-
-  defp index_event(_table, _record), do: true
-
-  defp seq, do: System.unique_integer([:monotonic])
-
   defp crash_closes(state, groups) do
     for group <- groups, Groups.outcome(group) in [:open, :in_flight] do
       {reason, outcome} = Groups.crash_close(group)
       record(state, "close", group.id, %{"reason" => reason, "outcome" => outcome})
     end
   end
-
-  defp index_groups(table, groups) do
-    Enum.reduce_while(groups, :ok, fn group, :ok ->
-      case index_placing(table, group.id, group.placing) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp index_intents(table, groups) do
-    Enum.reduce_while(groups, :ok, fn
-      %Groups{placing: nil}, :ok ->
-        {:cont, :ok}
-
-      %Groups{order: %{"status" => "failed"}}, :ok ->
-        {:cont, :ok}
-
-      %Groups{intent: %{"id" => intent_id}, id: id}, :ok when is_binary(intent_id) ->
-        :ets.insert(table, {{:intent_placing, intent_id}, id})
-        {:cont, :ok}
-
-      %Groups{id: id}, :ok ->
-        {:halt, {:error, {:unindexable_group, id, :intent}}}
-    end)
-  end
-
-  # Count an order at its `placing` record's time and recorded notional; a
-  # cancel records none and never counts.
-  defp index_placing(_table, _id, %{"notional" => nil}), do: :ok
-
-  defp index_placing(table, id, %{"notional" => notional, "at" => at}) do
-    with {:ok, notional} <- parse_decimal(notional, {:unindexable_group, id, :notional}),
-         {:ok, us} <- parse_us(at, {:unindexable_group, id, :at}) do
-      :ets.insert(table, {{:order, us, id}, notional})
-      :ok
-    end
-  end
-
-  defp index_placing(_table, id, _placing), do: {:error, {:unindexable_group, id, :placing}}
-
-  defp index_fills(table, fills) do
-    Enum.reduce_while(fills, :ok, fn record, :ok ->
-      unindexable = {:unindexable_fill, record["id"]}
-
-      with %{"id" => offset, "at" => at, "fill" => %{"realized_pnl" => pnl}} <- record,
-           {:ok, pnl} <- parse_decimal(pnl, unindexable),
-           {:ok, us} <- parse_us(at, unindexable) do
-        :ets.insert(table, {{:fill, us, offset}, pnl})
-        {:cont, :ok}
-      else
-        {:error, _} = error -> {:halt, error}
-        _malformed -> {:halt, {:error, unindexable}}
-      end
-    end)
-  end
-
-  # -- Helpers ------------------------------------------------------------------
 
   defp record(state, type, id, fields) do
     Map.merge(fields, %{
@@ -1025,7 +797,7 @@ defmodule Raxol.Broker.Journal do
     })
   end
 
-  # Each Writer call is bounded by the write deadline (see "Write timeouts").
+  # Each Writer call is bounded by the write deadline (see "Writes and recovery").
   # A call that misses it may still land, so it is never reported as a
   # failed write: the Writer is killed, and dead before this returns, so
   # nothing lands after the journal stops.
@@ -1061,7 +833,7 @@ defmodule Raxol.Broker.Journal do
   end
 
   defp set_status(state, status) do
-    :ets.insert(state.table, {:status, status})
+    Index.put_status(state.table, status)
     %{state | status: status}
   end
 
@@ -1088,38 +860,5 @@ defmodule Raxol.Broker.Journal do
     ArgumentError -> {:error, :journal_not_running}
   end
 
-  defp sum(table, tag, from) do
-    table
-    |> :ets.select([{{{tag, :"$1", :_}, :"$2"}, [{:>=, :"$1", from}], [:"$2"]}])
-    |> Enum.reduce(Decimal.new(0), &Decimal.add/2)
-  end
-
   defp iso(%DateTime{} = at), do: at |> DateTime.shift_zone!("Etc/UTC") |> DateTime.to_iso8601()
-
-  defp to_us(%DateTime{} = at), do: DateTime.to_unix(at, :microsecond)
-
-  defp parse_us(at, error) do
-    case parse_us(at) do
-      {:ok, us} -> {:ok, us}
-      :error -> {:error, error}
-    end
-  end
-
-  defp parse_us(at) when is_binary(at) do
-    case DateTime.from_iso8601(at) do
-      {:ok, datetime, _offset} -> {:ok, to_us(datetime)}
-      {:error, _} -> :error
-    end
-  end
-
-  defp parse_us(_at), do: :error
-
-  defp parse_decimal(value, error) when is_binary(value) do
-    case Decimal.parse(value) do
-      {%Decimal{} = decimal, ""} -> {:ok, decimal}
-      _ -> {:error, error}
-    end
-  end
-
-  defp parse_decimal(_value, error), do: {:error, error}
 end

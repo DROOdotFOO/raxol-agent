@@ -1,7 +1,5 @@
-# Ported (as new coverage, upstream had no dedicated ext test file) from the
-# conventions of the MIT `f1729/agent_client_protocol` test suite
-# (c) 2025 f1729; see NOTICE.md. Targets
-# Raxol.AgentClientProtocol.Schema.Ext.{ExtRequest,ExtNotification,ExtResponse}.
+# `Schema.Ext` request/notification/response, in the style of the MIT
+# `f1729/agent_client_protocol` suite (c) 2025 f1729; see NOTICE.md.
 defmodule Raxol.AgentClientProtocol.Schema.ExtTest do
   use ExUnit.Case, async: true
 
@@ -106,7 +104,7 @@ defmodule Raxol.AgentClientProtocol.Schema.ExtTest do
       assert Jason.encode!(%ExtResponse{data: nil}) == "null"
     end
 
-    # --- Regression test for the upstream defect ---
+    # Regression test for the upstream defect
     #
     # Upstream `ACP.Client`/`ACP.Agent`'s `__using__`-injected default
     # `ext_method/1` constructed `%ACP.ExtResponse{value: nil}`, but the

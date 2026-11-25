@@ -20,15 +20,12 @@ defmodule Raxol.Agent.OperatorFile do
 
   ## No home directory means no control file
 
-  These paths used to fall back to `System.tmp_dir!/0` when there was no home
-  directory -- a container running a bare UID, a systemd unit without
-  `User=`, a daemon that dropped HOME. That put the control at
-  `/tmp/.raxol/<name>`: a path any local user can create FIRST, and whose
-  contents then belong to whoever won the race. A grant sourced from an
-  attacker is worse than no grant, so a homeless process has no default path
-  at all -- `path/2` returns nil and every reader treats that as a refusal.
-  An operator who really runs without a home sets the explicit override,
-  which is a deliberate act naming a directory they chose.
+  A process without a home directory (a container with a bare UID, a systemd
+  unit without `User=`, a daemon that dropped HOME) has no default path:
+  `path/2` returns nil and every reader treats that as a refusal. A
+  `System.tmp_dir!/0` fallback would put the control at `/tmp/.raxol/<name>`,
+  which any local user can create first. An operator without a home sets
+  the explicit override.
 
   ## Ownership is checked, not assumed
 

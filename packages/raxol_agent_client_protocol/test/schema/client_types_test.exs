@@ -1,11 +1,5 @@
-# Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
-# Adapted: module names flattened directly under Raxol.AgentClientProtocol.Schema.* (matching
-# the convention established by content.ex/plan.ex/tool_call.ex); assertions updated for the
-# total from_json contract ({:ok, t} | {:error, reason}, never a bare/raising match); several
-# wire shapes corrected to match the pinned ACP schema-oracle (schema-v1.19.0) -- see moduledocs
-# in lib/raxol/agent_client_protocol/schema/client_types.ex for the specific defects fixed
-# (TerminalExitStatus.signal, TerminalOutputResponse.truncated, WaitForTerminalExitResponse
-# flattening, CreateTerminalRequest.output_byte_limit, KillTerminal{Request,Response} naming).
+# Ported from the MIT `f1729/agent_client_protocol` test suite (c) 2025 f1729; see NOTICE.md.
+# Wire shapes follow the pinned schema (v1.19.0) where upstream differed.
 defmodule Raxol.AgentClientProtocol.Schema.ClientTypesTest do
   use ExUnit.Case, async: true
 

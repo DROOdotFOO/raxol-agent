@@ -1,17 +1,16 @@
 # Raxol Agent
 
-AI agent framework for Elixir built on OTP. TEA-based agents with crash isolation, inter-agent messaging, team supervision, and real SSE streaming.
+TEA-based agents on OTP: crash isolation, inter-agent messaging, team supervision, a ReAct turn
+loop and SSE streaming backends.
 
 ## Install
 
 ```elixir
-{:raxol_agent, "~> 3.1"}
+{:raxol_agent, "~> 3.2"}
 ```
 
-3.1 adds the ACP agent (`raxol acp`, `Raxol.Agent.ClientProtocol.StdioAgent`)
-to a Hex install by requiring `raxol_agent_client_protocol`. 3.0 and later
-require `raxol`, `raxol_mcp` and `raxol_journal` 2.8. The session journal
-(`Raxol.Agent.Journal`) ships in `raxol_journal`.
+Requires `raxol`, `raxol_mcp` and `raxol_journal` 2.8 and `raxol_agent_client_protocol`. The
+session journal (`Raxol.Agent.Journal`) ships in `raxol_journal`.
 
 ## Quick start
 
@@ -33,15 +32,6 @@ end
 {:ok, _} = Raxol.Agent.Session.start_link(app_module: MyAgent, id: :my_agent)
 Raxol.Agent.Session.send_message(:my_agent, {:analyze, "mix.exs"})
 ```
-
-## Features
-
-- **TEA-based agents**: `init/update/view` with OTP supervision
-- **Agent teams**: Supervisor-based coordinator/worker groups
-- **Inter-agent messaging**: Registry-routed messages via `Agent.Comm`
-- **Real SSE streaming**: Anthropic, OpenAI, Ollama, LM Studio, DeepSeek, Kimi, LLM7, OpenRouter, LongCat, Lumo
-- **Shell commands**: Port-based execution with result callbacks
-- **Headless mode**: `view/1` is optional; skip rendering entirely
 
 ## Agent teams
 
@@ -81,4 +71,4 @@ a stopped id is spawned again with the same app; its state starts from
 `mcp_spawnable_apps` is also the list `raxol acp --agent <app>` serves from
 (see [Editor ACP](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/EDITOR_ACP.md#serving-your-own-agent)).
 
-See the [agent framework guide](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/AGENT_FRAMEWORK.md) for full examples.
+The [Agent Framework](https://github.com/DROOdotFOO/raxol-agent/blob/main/docs/features/AGENT_FRAMEWORK.md) covers messaging, the turn contract, tools, backends and credentials.

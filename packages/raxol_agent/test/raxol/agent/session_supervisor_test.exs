@@ -1,8 +1,6 @@
 defmodule Raxol.Agent.Session.SupervisorTest do
   @moduledoc """
-  SS — the per-session OTP tree + `session_id → pid` registry.
-
-  Proves:
+  The per-session OTP tree and the `session_id → pid` registry:
 
     1. `start_session/2` brings up one supervised subtree (sink + session), both
        registered; `stop_session/1` tears it down cleanly and closes the journal.
@@ -240,7 +238,7 @@ defmodule Raxol.Agent.Session.SupervisorTest do
     end
   end
 
-  describe "lifecycle ownership (RED 1 — no leak, no reattach-to-dead)" do
+  describe "lifecycle ownership (no leak, no reattach to a dead lifecycle)" do
     test "stop_session tears down the tree-owned lifecycle — no orphaned runtime" do
       base = tmp_base()
       sid = "ss-lifeleak-#{uniq()}"
@@ -550,6 +548,41 @@ defmodule Raxol.Agent.Session.SupervisorTest do
       refute Map.has_key?(m3, sid_a)
       assert Map.has_key?(m3, sid_b)
     end
+
+    # The Registry removes a dead process's entries when its partition handles
+    # the exit, a moment after the process is gone. Suspending the partitions
+    # holds that moment open: the stopped tree's entries are still in the
+    # Registry, and no read may report the tree as running.
+    test "a stopped tree reads as gone before the registry has cleaned up" do
+      sid = "ss-stale-#{uniq()}"
+
+      {:ok, sup} =
+        Session.Supervisor.start_session(EchoAgent,
+          id: :"ss_stale_#{uniq()}",
+          session_id: sid,
+          journal_opts: [base_dir: tmp_base()],
+          owner: :stale_test
+        )
+
+      partitions =
+        for {_id, pid, _type, _modules} <- Supervisor.which_children(Raxol.Agent.Registry),
+            do: pid
+
+      Enum.each(partitions, &:sys.suspend/1)
+
+      try do
+        assert :ok = Session.Supervisor.stop_session(sid)
+        refute Process.alive?(sup)
+        assert [{^sup, _}] = registry_lookup({:session_supervisor, sid})
+
+        assert Session.Supervisor.owner(sid) == :error
+        assert Session.Supervisor.whereis(sid) == nil
+        refute List.keymember?(Session.Supervisor.owners(), sid, 0)
+        refute List.keymember?(Session.Supervisor.list_sessions(), sid, 0)
+      after
+        Enum.each(partitions, &:sys.resume/1)
+      end
+    end
   end
 
   describe "standalone sessions still resolve through the seam" do
@@ -588,8 +621,6 @@ defmodule Raxol.Agent.Session.SupervisorTest do
       wait_until(fn -> Session.Supervisor.whereis(sid) == nil end)
     end
   end
-
-  # --- helpers ---------------------------------------------------------------
 
   defp agent_id(session) do
     %{id: id} = :sys.get_state(session)

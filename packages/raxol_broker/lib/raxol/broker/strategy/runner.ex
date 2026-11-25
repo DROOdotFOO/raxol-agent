@@ -37,7 +37,7 @@ defmodule Raxol.Broker.Strategy.Runner do
 
   require Logger
 
-  alias Raxol.Broker.{Executor, Feed, Journal, Strategy}
+  alias Raxol.Broker.{Executor, Feed, Journal, Redact, Strategy}
   alias Raxol.Broker.Policy.Context
 
   @default_retry_ms 5_000
@@ -107,7 +107,7 @@ defmodule Raxol.Broker.Strategy.Runner do
       {:error, reason} ->
         Logger.error(
           "[Broker.Strategy] #{state.id}: intent not journaled, not sent: " <>
-            inspect(reason, structs: false)
+            inspect(Redact.collapse(reason), structs: false)
         )
 
         state
@@ -122,7 +122,7 @@ defmodule Raxol.Broker.Strategy.Runner do
       {:error, reason} ->
         Logger.warning(
           "[Broker.Strategy] #{state.id}: pending intents unreadable: " <>
-            inspect(reason, structs: false)
+            inspect(Redact.collapse(reason), structs: false)
         )
 
         retry_later(state)
@@ -140,7 +140,7 @@ defmodule Raxol.Broker.Strategy.Runner do
         with {:error, reason} <- Journal.dispatched(intent.id, outcome, state.journal) do
           Logger.warning(
             "[Broker.Strategy] #{state.id}: dispatch of #{intent.id} not journaled: " <>
-              inspect(reason, structs: false)
+              inspect(Redact.collapse(reason), structs: false)
           )
         end
 

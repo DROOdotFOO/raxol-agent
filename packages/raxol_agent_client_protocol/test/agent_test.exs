@@ -1,18 +1,5 @@
-# Tests for Raxol.AgentClientProtocol.Agent -- the ergonomic `use`-based
-# behaviour + library-mode start helpers for the agent side of ACP. Not a
-# port of any upstream f1729 test file (f1729 has no equivalent ergonomic
-# layer). Two tiers:
-#
-#   1. Pure unit tests of the generated callback surface (naming, arity,
-#      defaults, overridability) and of `child_spec/1`'s shape -- these
-#      never touch `Connection`/`Session` and always run.
-#   2. One end-to-end smoke test wiring a minimal agent + client pair over
-#      `Transport.Paired` and driving a real `initialize` -> `session/new`
-#      -> `session/prompt` (2 streamed updates + response) turn through
-#      `Connection`. `Connection`/`Session` are sibling-wave modules that
-#      may not have landed in this worktree yet; the `describe` block below
-#      tags itself `:skip` at load time via `Code.ensure_loaded?/1` when they
-#      are absent, so the rest of the suite stays green either way.
+# `Agent`: the generated callback surface, `child_spec/1`, and an end-to-end
+# turn over `Transport.Paired`.
 defmodule Raxol.AgentClientProtocol.AgentTest do
   use ExUnit.Case, async: true
 
@@ -22,8 +9,6 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
   alias Raxol.AgentClientProtocol.MethodTable
   alias Raxol.AgentClientProtocol.Test.Teardown
   alias Raxol.AgentClientProtocol.Transport
-
-  # -- fixtures -----------------------------------------------------------
 
   defmodule BareAgent do
     @moduledoc false
@@ -49,7 +34,7 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
     def handle_ext_request(_wire, _params, _ctx), do: {:ok, %{"echo" => true}}
   end
 
-  # -- callback surface: naming/arity mirrors MethodTable exactly ---------
+  # callback surface: naming/arity mirrors MethodTable exactly
 
   describe "generated callback surface" do
     test "callbacks/0 matches MethodTable.rows_for_side(:agent) exactly" do
@@ -61,7 +46,7 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
       assert Agent.callbacks() == expected
       # 13 core agent rows minus session/cancel (layer: :session_control, no
       # callback) = 12, plus the additive `_raxol/session.load` and
-      # `_raxol/session.steer` (Track E / U6-I) ext rows = 14.
+      # `_raxol/session.steer` ext rows = 14.
       assert length(Agent.callbacks()) == 14
     end
 
@@ -83,7 +68,7 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
     end
   end
 
-  # -- defaults: every unoverridden callback is a safe, wire-correct no-op --
+  # defaults: every unoverridden callback is a safe, wire-correct no-op
 
   describe "default implementations (BareAgent, nothing overridden)" do
     test "init/1 default is the identity {:ok, handler_arg}" do
@@ -119,8 +104,6 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
     end
   end
 
-  # -- overridability -------------------------------------------------------
-
   describe "overriding generated defaults" do
     test "an overridden callback wins over the generated default" do
       assert OverridingAgent.init(%{x: 1}) == {:ok, {:custom_init, %{x: 1}}}
@@ -134,7 +117,7 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
     end
   end
 
-  # -- child_spec/1 / start_link/2 shape (no Connection required) -----------
+  # child_spec/1 / start_link/2 shape (no Connection required)
 
   defmodule DummyHandler do
     @moduledoc false
@@ -182,7 +165,7 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
     end
   end
 
-  # -- end-to-end smoke: initialize -> session/new -> prompt (2 updates) ----
+  # end-to-end smoke: initialize -> session/new -> prompt (2 updates)
 
   defmodule E2EAgent do
     @moduledoc false
@@ -234,13 +217,6 @@ defmodule Raxol.AgentClientProtocol.AgentTest do
   end
 
   describe "end-to-end smoke over Transport.Paired" do
-    # ExUnit has no runtime skip: a callback returning {:skip, _} raises and
-    # invalidates the module. Decide at load time instead.
-    if not Code.ensure_loaded?(Raxol.AgentClientProtocol.Connection) do
-      @describetag skip:
-                     "Raxol.AgentClientProtocol.Connection has not landed in this worktree yet"
-    end
-
     test "initialize -> session/new -> session/prompt streams 2 updates then a response" do
       alias Raxol.AgentClientProtocol.Connection
 

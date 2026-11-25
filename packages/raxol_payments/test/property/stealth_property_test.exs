@@ -11,7 +11,7 @@ defmodule Raxol.Payments.StealthPropertyTest do
   use ExUnit.Case, async: true
   use ExUnitProperties
 
-  alias Raxol.Payments.Secret
+  alias Raxol.Agent.Secret
   alias Raxol.Payments.Xochi.Stealth
 
   # Any byte string seeds a recipient key pair via the domain-separated

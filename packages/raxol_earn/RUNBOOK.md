@@ -17,6 +17,11 @@ rehearsal) are reproducible offline.
   Account v2 SCA (`ProviderAdapter.SCA`); fallback: the Privy signer sidecar
   (`ProviderAdapter.Privy`) if sandbox registration insists on a Virtuals-issued
   wallet. Keys come from `Raxol.Payments.Wallets.{Env, Op}`, never a literal.
+  The sidecar authenticates every request and response with a key derived from
+  `RAXOL_ACP_SIGNER_PRIVATE_KEY`, so BEAM and sidecar must share that value and a
+  clock within 30s. Its URL (`RAXOL_ACP_SIDECAR_URL`, bind host
+  `RAXOL_ACP_SIGNER_HOST`) must be loopback unless
+  `RAXOL_ACP_SIDECAR_ALLOW_REMOTE=1`; traffic is authenticated, not encrypted.
 - The `@virtuals-protocol/acp-cli` for one-time identity provisioning only (it is
   NOT in the runtime path).
 - For `bench_validated` delivery: an operator wrapper per runtime that boots the

@@ -1,199 +1,129 @@
 defmodule Raxol.CLI.Updater.State do
   @moduledoc """
-  Updater state module with GenServer-based state management.
+  The updater's persisted settings: a struct, pure transitions over it, and
+  `load/1` and `save/2` as the only functions that touch the file.
 
-  This module provides backward compatibility while eliminating Process dictionary usage.
-  All state is now managed through the Updater.State.Server GenServer.
-
-  ## Features Maintained
-
-  * Update settings management
-  * Progress tracking for active updates
-  * Update history and statistics
-  * Error tracking and logging
-  * Auto-update configuration
+  The file is `~/.raxol/update_settings.json` unless the caller passes
+  `:settings_path` (see `path/1`). A missing, unreadable or malformed file
+  loads as the defaults, and a key that is unknown or holds the wrong type
+  keeps its default: nothing read from the file becomes an atom.
   """
 
-  alias Raxol.CLI.Updater.State.UpdaterServer, as: Server
+  alias Raxol.CLI.Updater.Validation
 
-  # @update_settings_file "~/.raxol/update_settings.json"
+  @default_check_interval 86_400
 
-  defp ensure_server_started do
-    Raxol.Core.Utils.GenServerHelpers.ensure_started(
-      Server,
-      fn -> GenServer.start(Server, [], name: Server) end
-    )
-  end
+  @enforce_keys [:download_path, :backup_path]
+  defstruct [
+    :download_path,
+    :backup_path,
+    auto_check: true,
+    check_interval: @default_check_interval,
+    last_check: nil
+  ]
 
-  @doc """
-  Get the current update settings.
+  @typedoc """
+    * `:auto_check` - whether interval-gated checks run at all
+    * `:check_interval` - seconds between automatic checks
+    * `:last_check` - Unix seconds of the last automatic check, if any
+    * `:download_path` - where `download_update/2` stores a verified asset
+    * `:backup_path` - where an install keeps the executable it replaced
   """
-  def get_update_settings do
-    ensure_server_started()
-    Server.get_update_settings()
-  end
-
-  @doc """
-  Set the update settings.
-  """
-  def set_update_settings(settings) do
-    ensure_server_started()
-    Server.set_update_settings(settings)
-  end
-
-  @doc """
-  Get the update history.
-  """
-  def get_update_history do
-    ensure_server_started()
-    Server.get_update_history()
-  end
-
-  @doc """
-  Clear the update history.
-  """
-  def clear_update_history do
-    ensure_server_started()
-    Server.clear_update_history()
-  end
-
-  @doc """
-  Get the current update progress (0-100).
-  """
-  def get_update_progress do
-    ensure_server_started()
-    Server.get_update_progress()
-  end
-
-  @doc """
-  Set the update progress.
-  """
-  def set_update_progress(progress) do
-    ensure_server_started()
-    Server.set_update_progress(progress)
-  end
-
-  @doc """
-  Cancel the current update operation.
-  """
-  def cancel_update do
-    ensure_server_started()
-    Server.cancel_update()
-  end
-
-  @doc """
-  Get any error from the last update attempt.
-  """
-  def get_update_error do
-    ensure_server_started()
-    Server.get_update_error()
-  end
-
-  @doc """
-  Set an update error.
-  """
-  def set_update_error(error) do
-    ensure_server_started()
-    Server.set_update_error(error)
-  end
-
-  @doc """
-  Clear any update error.
-  """
-  def clear_update_error do
-    ensure_server_started()
-    Server.clear_update_error()
-  end
-
-  @doc """
-  Get the update log.
-  """
-  def get_update_log do
-    ensure_server_started()
-    Server.get_update_log()
-  end
-
-  @doc """
-  Clear the update log.
-  """
-  def clear_update_log do
-    ensure_server_started()
-    Server.clear_update_log()
-  end
-
-  @doc """
-  Log an update message.
-  """
-  def log_update(message) do
-    ensure_server_started()
-    Server.log_update(message)
-  end
-
-  @doc """
-  Get update statistics.
-  """
-  def get_update_stats do
-    ensure_server_started()
-    Server.get_update_stats()
-  end
-
-  @doc """
-  Clear update statistics.
-  """
-  def clear_update_stats do
-    ensure_server_started()
-    Server.clear_update_stats()
-  end
-
-  @doc """
-  Update the statistics.
-  """
-  def update_stats(stats) do
-    ensure_server_started()
-    Server.update_stats(stats)
-  end
-
-  @doc """
-  Enable or disable automatic update checking.
-  """
-  def set_auto_check(enabled) when is_boolean(enabled) do
-    ensure_server_started()
-    Server.set_auto_check(enabled)
-  end
-
-  @doc """
-  Returns the default update settings.
-  This is provided for backward compatibility.
-  """
-  @spec default_update_settings() :: %{
-          :auto_update => boolean(),
-          :check_interval => pos_integer(),
-          :update_channel => atom(),
-          :notify_on_update => boolean(),
-          :download_path => String.t(),
-          :backup_path => String.t(),
-          :max_backups => pos_integer(),
-          :retry_count => non_neg_integer(),
-          :retry_delay => pos_integer(),
-          :timeout => pos_integer(),
-          :require_confirmation => boolean()
+  @type t :: %__MODULE__{
+          auto_check: boolean(),
+          check_interval: pos_integer(),
+          last_check: non_neg_integer() | nil,
+          download_path: Path.t(),
+          backup_path: Path.t()
         }
-  def default_update_settings do
-    %{
-      auto_update: true,
-      # 24 hours in seconds
-      check_interval: 24 * 60 * 60,
-      update_channel: :stable,
-      notify_on_update: true,
-      download_path: Path.expand("~/.raxol/downloads"),
-      backup_path: Path.expand("~/.raxol/backups"),
-      max_backups: 5,
-      retry_count: 3,
-      # seconds
-      retry_delay: 5,
-      # seconds
-      timeout: 300,
-      require_confirmation: true
+
+  @doc "The default settings, with paths under `home`'s `.raxol` directory."
+  @spec new(Path.t()) :: t()
+  def new(home \\ System.user_home!()) do
+    root = Path.expand(Path.join(home, ".raxol"))
+
+    %__MODULE__{
+      download_path: Path.join(root, "downloads"),
+      backup_path: Path.join(root, "backups")
     }
   end
+
+  @spec set_auto_check(t(), boolean()) :: t()
+  def set_auto_check(%__MODULE__{} = state, enabled) when is_boolean(enabled),
+    do: %{state | auto_check: enabled}
+
+  @doc "Whether an automatic check is due at `now` (Unix seconds)."
+  @spec check_due?(t(), integer()) :: boolean()
+  def check_due?(%__MODULE__{} = state, now),
+    do: Validation.should_check_for_update?(Map.from_struct(state), now)
+
+  @doc "Records an automatic check made at `now` (Unix seconds)."
+  @spec checked(t(), non_neg_integer()) :: t()
+  def checked(%__MODULE__{} = state, now) when is_integer(now) and now >= 0,
+    do: %{state | last_check: now}
+
+  @doc "Settings decoded from `json`, each missing or invalid field taken from `defaults`."
+  @spec decode(binary(), t()) :: t()
+  def decode(json, %__MODULE__{} = defaults) do
+    case Jason.decode(json) do
+      {:ok, %{} = fields} -> Enum.reduce(fields, defaults, &put_field/2)
+      _malformed -> defaults
+    end
+  end
+
+  @spec encode(t()) :: binary()
+  def encode(%__MODULE__{} = state), do: state |> Map.from_struct() |> Jason.encode!()
+
+  @doc "The settings file: `opts[:settings_path]`, else `~/.raxol/update_settings.json`."
+  @spec path(keyword()) :: Path.t()
+  def path(opts) do
+    Keyword.get_lazy(opts, :settings_path, fn ->
+      Path.join([System.user_home!(), ".raxol", "update_settings.json"])
+    end)
+  end
+
+  @doc "Reads the settings at `path`; the defaults when there are none to read."
+  @spec load(Path.t()) :: t()
+  def load(path) do
+    case File.read(path) do
+      {:ok, json} -> decode(json, new())
+      {:error, _reason} -> new()
+    end
+  end
+
+  @doc """
+  Writes `state` to `path`. The file is replaced by a rename, so a reader
+  never sees half of it.
+  """
+  @spec save(t(), Path.t()) :: :ok | {:error, File.posix()}
+  def save(%__MODULE__{} = state, path) do
+    staged = "#{path}.#{System.unique_integer([:positive])}.tmp"
+
+    with :ok <- File.mkdir_p(Path.dirname(path)),
+         :ok <- File.write(staged, encode(state)),
+         :ok <- File.rename(staged, path) do
+      :ok
+    else
+      {:error, _reason} = error ->
+        _ = File.rm(staged)
+        error
+    end
+  end
+
+  defp put_field({"auto_check", value}, state) when is_boolean(value),
+    do: %{state | auto_check: value}
+
+  defp put_field({"check_interval", value}, state) when is_integer(value) and value > 0,
+    do: %{state | check_interval: value}
+
+  defp put_field({"last_check", value}, state) when is_integer(value) and value >= 0,
+    do: %{state | last_check: value}
+
+  defp put_field({"download_path", value}, state) when is_binary(value) and value != "",
+    do: %{state | download_path: value}
+
+  defp put_field({"backup_path", value}, state) when is_binary(value) and value != "",
+    do: %{state | backup_path: value}
+
+  defp put_field(_unknown_or_invalid, state), do: state
 end

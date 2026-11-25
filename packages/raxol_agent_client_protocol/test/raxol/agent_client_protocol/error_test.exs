@@ -55,8 +55,6 @@ defmodule Raxol.AgentClientProtocol.ErrorTest do
     assert decoded["message"] == "Internal error"
   end
 
-  # -- Defect-fix regression coverage ---------------------------------------
-
   test "from_json/1 is total: missing required fields never raise" do
     assert {:error, :invalid_error} = Error.from_json(%{"message" => "no code"})
     assert {:error, :invalid_error} = Error.from_json(%{"code" => -32_000})

@@ -11,8 +11,6 @@ defmodule Raxol.Payments.LedgerPropertyTest do
 
   alias Raxol.Payments.{Ledger, SpendingPolicy}
 
-  # Generators -----------------------------------------------------------
-
   defp small_amount do
     # Atomic-style integers; keep them small so a long sequence still
     # fits under realistic lifetime caps without rejecting everything.
@@ -54,8 +52,6 @@ defmodule Raxol.Payments.LedgerPropertyTest do
     end
   end
 
-  # Helpers --------------------------------------------------------------
-
   defp fresh_ledger do
     {:ok, pid} =
       Ledger.start_link(table_name: :"prop_ledger_#{:erlang.unique_integer([:positive])}")
@@ -79,8 +75,6 @@ defmodule Raxol.Payments.LedgerPropertyTest do
       end
     end)
   end
-
-  # Properties -----------------------------------------------------------
 
   property "sum of accepted spends never exceeds policy.lifetime_max" do
     check all(

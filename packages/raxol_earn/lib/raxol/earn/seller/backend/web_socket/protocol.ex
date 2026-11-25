@@ -8,10 +8,8 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Protocol do
 
       io(acpUrl, { auth: { walletAddress }, transports: ["websocket"] })
 
-  Forcing `transports: ["websocket"]` lets us skip the engine.io
-  long-polling phase and the WebSocket upgrade handshake. We connect
-  straight to `wss://host/socket.io/?EIO=4&transport=websocket` and
-  speak the binary-free packet protocol over WebSocket text frames.
+  So it connects straight to `wss://host/socket.io/?EIO=4&transport=websocket`
+  and speaks the text-frame packet protocol (no long-polling, no upgrade).
 
   ## Wire format
 
@@ -46,9 +44,7 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Protocol do
   | `3`  | ACK            |
   | `4`  | CONNECT_ERROR  |
 
-  For v0 we only support the **default namespace** (`/`). Multi-
-  namespace support adds a `<namespace>,` prefix which we don't emit
-  or parse.
+  Only the default namespace (`/`) is supported.
 
   ## Examples (raw frames as the server sends them)
 
@@ -66,7 +62,7 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Protocol do
       "3"                                  # PONG
   """
 
-  # -- Engine.IO packet type ids (mirrors the spec) --
+  # Engine.IO packet type ids (mirrors the spec)
 
   @eio_open "0"
   @eio_close "1"
@@ -74,7 +70,7 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Protocol do
   @eio_pong "3"
   @eio_message "4"
 
-  # -- Socket.IO packet type ids (subtype inside MESSAGE) --
+  # Socket.IO packet type ids (subtype inside MESSAGE)
 
   @sio_connect "0"
   @sio_disconnect "1"
@@ -152,7 +148,7 @@ defmodule Raxol.Earn.Seller.Backend.WebSocket.Protocol do
   @spec encode_disconnect() :: binary()
   def encode_disconnect, do: @eio_message <> @sio_disconnect
 
-  # -- Internal: Socket.IO packet decoder --
+  # Internal: Socket.IO packet decoder
 
   defp decode_message(@sio_connect <> rest) do
     case parse_json(rest) do

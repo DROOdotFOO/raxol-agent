@@ -89,8 +89,6 @@ defmodule Raxol.Earn.JobIdResolver.Receipt do
     end
   end
 
-  # -- Internals --
-
   # Narrow the search to the JobCreated this buyer caused: an ERC-4337 bundle
   # receipt also carries the logs of every other UserOp in the bundle.
   defp match_opts(resolver) do

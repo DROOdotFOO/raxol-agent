@@ -1,4 +1,10 @@
 defmodule Raxol.Payments.Actions.Payments.SpendingStatus do
+  @moduledoc """
+  Agent Action that reports session and lifetime spend against the context's
+  `SpendingPolicy` caps, with what remains of each. Without a ledger or policy
+  every limit reads "unlimited".
+  """
+
   @compile {:no_warn_undefined, Raxol.Agent.Action}
 
   use Raxol.Agent.Action,

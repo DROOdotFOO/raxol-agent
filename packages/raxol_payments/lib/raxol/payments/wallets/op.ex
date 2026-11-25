@@ -20,11 +20,9 @@ defmodule Raxol.Payments.Wallets.Op do
 
   use Raxol.Core.Behaviours.BaseManager
 
-  alias Raxol.Payments.Secret
+  alias Raxol.Agent.Secret
 
   @default_chain_id 8453
-
-  # -- Public API --
 
   @spec address(GenServer.server()) :: String.t()
   def address(server) do
@@ -58,7 +56,10 @@ defmodule Raxol.Payments.Wallets.Op do
     GenServer.call(server, {:sign_hash, digest})
   end
 
-  # -- BaseManager callbacks --
+  # The key is a `Secret`, but `:sys.get_status` and an Erlang-formatted
+  # crash report print its bytes; neither sees it, nor the call that crashed.
+  @impl GenServer
+  def format_status(status), do: Secret.redact_status(status, [:privkey], failure: true)
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(opts) do
@@ -130,8 +131,6 @@ defmodule Raxol.Payments.Wallets.Op do
         {:reply, {:error, reason}, state}
     end
   end
-
-  # -- Private --
 
   defp ensure_loaded(%{privkey: %Secret{}} = state), do: {:ok, state}
 

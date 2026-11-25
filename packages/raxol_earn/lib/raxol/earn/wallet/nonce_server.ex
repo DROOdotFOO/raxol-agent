@@ -38,8 +38,6 @@ defmodule Raxol.Earn.Wallet.NonceServer do
 
   @type server :: GenServer.server()
 
-  # -- Public API --
-
   @doc """
   Start a NonceServer.
 
@@ -137,8 +135,6 @@ defmodule Raxol.Earn.Wallet.NonceServer do
       when is_integer(chain_nonce) and chain_nonce >= 0 do
     GenServer.call(server, {:seed_and_next, chain_nonce})
   end
-
-  # -- GenServer callbacks --
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(state), do: {:ok, state}

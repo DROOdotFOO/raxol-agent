@@ -140,8 +140,6 @@ defmodule Raxol.Agent.BenchmarkProfile do
       output / 1_000_000 * profile.cost_per_mtok_out
   end
 
-  # -- Parsing ---------------------------------------------------------------
-
   defp parse_pos_int(env, key) do
     case blank_to_nil(env[key]) do
       nil ->

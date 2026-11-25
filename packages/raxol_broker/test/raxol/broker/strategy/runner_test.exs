@@ -87,6 +87,27 @@ defmodule Raxol.Broker.Strategy.RunnerTest do
     assert id == intent.id
   end
 
+  test "a journal error logs its shape and prevents executor dispatch", ctx do
+    sync(ctx.runner)
+
+    :sys.replace_state(ctx.journal, fn state ->
+      %{state | status: {:error, {:write_failed, %{token: "runner-secret"}}}}
+    end)
+
+    log =
+      ExUnit.CaptureLog.capture_log(fn ->
+        quote!(ctx.runner, "10.00")
+        quote!(ctx.runner, "9.80")
+        sync(ctx.runner)
+      end)
+
+    assert log =~
+             "intent not journaled, not sent: {:journal_unavailable, {:write_failed, :error}}"
+
+    refute log =~ "runner-secret"
+    assert Fake.calls(ctx.fake, "place_") == []
+  end
+
   test "stop ends the runner and restore does not bring it back", ctx do
     assert :ok = Strategy.Supervisor.stop("dip_buy-F", ctx.opts)
     assert Strategy.Supervisor.running(ctx.sup) == []

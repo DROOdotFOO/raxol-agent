@@ -17,15 +17,55 @@ defmodule Raxol.AgentClientProtocol.Rpc do
 
   Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
+
+  @max_printable 128
+  @max_printable_bytes 512
+
+  @doc """
+  A peer-supplied string made safe for logs and telemetry: cut to
+  #{@max_printable} characters and #{@max_printable_bytes} bytes, then escaped as in a
+  string literal (so a peer cannot forge log lines). Invalid UTF-8 becomes
+  `"<binary>"`.
+  """
+  @spec printable(binary()) :: String.t()
+  def printable(string) when is_binary(string) do
+    if String.valid?(string) do
+      escaped =
+        string
+        |> String.slice(0, @max_printable)
+        |> cap_bytes()
+        |> inspect(binaries: :as_strings)
+
+      binary_part(escaped, 1, byte_size(escaped) - 2)
+    else
+      "<binary>"
+    end
+  end
+
+  @doc "`printable/1` for a string; any other term unchanged (for telemetry metadata)."
+  @spec safe(term()) :: term()
+  def safe(value) when is_binary(value), do: printable(value)
+  def safe(value), do: value
+
+  @doc "A term from the peer for a log line: quoted `printable/1` for strings, capped `inspect/2` otherwise."
+  @spec loggable(term()) :: String.t()
+  def loggable(value) when is_binary(value), do: ~s("#{printable(value)}")
+  def loggable(value) when is_integer(value), do: value |> Integer.to_string() |> printable()
+  def loggable(value), do: inspect(value, limit: 10, printable_limit: @max_printable)
+
+  defp cap_bytes(string) when byte_size(string) <= @max_printable_bytes, do: string
+
+  defp cap_bytes(string),
+    do: string |> binary_part(0, @max_printable_bytes) |> String.replace_invalid("")
 end
 
 defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
   @moduledoc """
   JSON-RPC request id: `null | integer | string`. Wire type is preserved
   exactly (no coercion between string and integer ids).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
+
+  alias Raxol.AgentClientProtocol.Rpc
 
   @type t :: nil | integer() | String.t()
 
@@ -48,17 +88,16 @@ defmodule Raxol.AgentClientProtocol.Rpc.RequestId do
   def from_json(id) when is_integer(id), do: id
   def from_json(id) when is_binary(id), do: id
 
+  @doc "The id for logs and telemetry; string ids go through `Rpc.printable/1`."
   @spec display(t()) :: String.t()
   def display(nil), do: "null"
-  def display(id) when is_integer(id), do: Integer.to_string(id)
-  def display(id) when is_binary(id), do: id
+  def display(id) when is_integer(id), do: id |> Integer.to_string() |> Rpc.printable()
+  def display(id) when is_binary(id), do: Rpc.printable(id)
 end
 
 defmodule Raxol.AgentClientProtocol.Rpc.Request do
   @moduledoc """
   JSON-RPC 2.0 Request object (`id` + `method` + optional `params`).
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Rpc.RequestId
@@ -128,8 +167,6 @@ defmodule Raxol.AgentClientProtocol.Rpc.Response do
   invalid-request error detected before any request id could be read is
   answered with a `null`-id error response; this is not an absent id, it is
   the spec-mandated value for an uncorrelatable error.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Error
@@ -188,8 +225,6 @@ defmodule Raxol.AgentClientProtocol.Rpc.Notification do
   @moduledoc """
   JSON-RPC 2.0 Notification object: `method` + optional `params`, no `id`,
   no response expected.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   @enforce_keys [:method]
@@ -250,8 +285,6 @@ defmodule Raxol.AgentClientProtocol.Rpc.Message do
       `jsonrpc` field is present but not `"2.0"`)
 
   It never raises.
-
-  Ported from the MIT `f1729/agent_client_protocol` (c) 2025 f1729; see NOTICE.md.
   """
 
   alias Raxol.AgentClientProtocol.Rpc.{Notification, Request, Response}

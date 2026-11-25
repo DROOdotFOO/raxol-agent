@@ -137,224 +137,249 @@ defmodule Raxol.Agent.StreamPump do
     close_message_item(session_id, turn_id, counter, acc)
   end
 
-  defp handle_stream_event(session_id, turn_id, counter, event, acc) do
-    case event do
-      # Chain-of-thought / thinking text. Reasoning gets the SAME item
-      # lifecycle a message does (lazily-opened durable item, its own
-      # turn-scoped item_id, ephemeral deltas streaming into the live
-      # tail), so what the machine actually thought seals as a durable,
-      # peekable ∴ block instead of evaporating from the live tail when
-      # the answer's message item seals. See `stream_reasoning/5`.
-      {:reasoning, chunk} when is_binary(chunk) ->
-        stream_reasoning(session_id, turn_id, counter, acc, chunk)
+  # Chain-of-thought / thinking text. Reasoning gets the SAME item
+  # lifecycle a message does (lazily-opened durable item, its own
+  # turn-scoped item_id, ephemeral deltas streaming into the live
+  # tail), so what the machine actually thought seals as a durable,
+  # peekable ∴ block instead of evaporating from the live tail when
+  # the answer's message item seals. See `stream_reasoning/5`.
+  defp handle_stream_event(session_id, turn_id, counter, {:reasoning, chunk}, acc)
+       when is_binary(chunk) do
+    stream_reasoning(session_id, turn_id, counter, acc, chunk)
+  end
 
-      {:text_delta, chunk} ->
-        # First delta of the answer: the reasoning→answer transition
-        # seals the open reasoning item as its own durable block, ordered
-        # before this message (its item_started was emitted first).
-        acc = close_reasoning_item(session_id, turn_id, counter, acc)
-        stream_message(session_id, turn_id, counter, acc, chunk)
+  defp handle_stream_event(session_id, turn_id, counter, {:text_delta, chunk}, acc) do
+    # First delta of the answer: the reasoning→answer transition
+    # seals the open reasoning item as its own durable block, ordered
+    # before this message (its item_started was emitted first).
+    acc = close_reasoning_item(session_id, turn_id, counter, acc)
+    stream_message(session_id, turn_id, counter, acc, chunk)
+  end
 
-      {:tool_use, %{name: name} = tool_use} ->
-        # A text run interrupted by a tool call is a real assistant
-        # message: seal it as its own item (ordered before the tool
-        # items) rather than leaking it into the final answer's item.
-        # Any open reasoning (think→tool, no intervening answer text)
-        # seals first as its own ∴ block, ahead of the tool.
-        acc = seal_open_items(session_id, turn_id, counter, acc)
+  defp handle_stream_event(
+         session_id,
+         turn_id,
+         counter,
+         {:tool_use, %{name: name} = tool_use},
+         acc
+       ) do
+    # A text run interrupted by a tool call is a real assistant
+    # message: seal it as its own item (ordered before the tool
+    # items) rather than leaking it into the final answer's item.
+    # Any open reasoning (think→tool, no intervening answer text)
+    # seals first as its own ∴ block, ahead of the tool.
+    acc = seal_open_items(session_id, turn_id, counter, acc)
 
-        complete_item(session_id, turn_id, counter, acc, :tool_use, %{
-          name: name,
-          arguments: Map.get(tool_use, :arguments, %{}),
-          call_id: Map.get(tool_use, :id)
-        })
+    complete_item(session_id, turn_id, counter, acc, :tool_use, %{
+      name: name,
+      arguments: Map.get(tool_use, :arguments, %{}),
+      call_id: Map.get(tool_use, :id)
+    })
+  end
 
-      {:tool_result, %{name: name} = tool_result} ->
-        # Seal an open message/reasoning first (symmetric with :tool_use), so
-        # a result arriving with a message still open does not later fuse
-        # pre- and post-result text into one block across the boundary.
-        acc = seal_open_items(session_id, turn_id, counter, acc)
+  defp handle_stream_event(
+         session_id,
+         turn_id,
+         counter,
+         {:tool_result, %{name: name} = tool_result},
+         acc
+       ) do
+    # Seal an open message/reasoning first (symmetric with :tool_use), so
+    # a result arriving with a message still open does not later fuse
+    # pre- and post-result text into one block across the boundary.
+    acc = seal_open_items(session_id, turn_id, counter, acc)
 
-        complete_item(
-          session_id,
-          turn_id,
-          counter,
-          acc,
-          :tool_result,
-          tool_result_extra(name, Map.get(tool_result, :result))
-        )
+    complete_item(
+      session_id,
+      turn_id,
+      counter,
+      acc,
+      :tool_result,
+      name
+      |> tool_result_extra(Map.get(tool_result, :result))
+      |> put_call_id(Map.get(tool_result, :id))
+    )
+  end
 
-      # A consequential tool is holding for a keyboard answer. Emitted
-      # through pump (not out-of-band) so it shares the run's id sequence
-      # and the surface's BlockBuilder folds it — with its later
-      # `approval_decided` answer — into ONE approval block that holds the
-      # seal frontier between the tool_use and its result (correct ordering).
-      {:approval_requested, payload} when is_map(payload) ->
-        acc = seal_open_items(session_id, turn_id, counter, acc)
+  # A consequential tool is holding for a keyboard answer. Emitted
+  # through pump (not out-of-band) so it shares the run's id sequence
+  # and the surface's BlockBuilder folds it — with its later
+  # `approval_decided` answer — into ONE approval block that holds the
+  # seal frontier between the tool_use and its result (correct ordering).
+  defp handle_stream_event(session_id, turn_id, counter, {:approval_requested, payload}, acc)
+       when is_map(payload) do
+    acc = seal_open_items(session_id, turn_id, counter, acc)
 
-        ev =
-          emit_event(
-            session_id,
-            turn_id,
-            counter,
-            :approval_requested,
-            :durable,
-            payload
-          )
+    ev =
+      emit_event(
+        session_id,
+        turn_id,
+        counter,
+        :approval_requested,
+        :durable,
+        payload
+      )
 
-        %{acc | journal: [ev | acc.journal]}
+    %{acc | journal: [ev | acc.journal]}
+  end
 
-      {:approval_decided, payload} when is_map(payload) ->
-        acc = seal_open_items(session_id, turn_id, counter, acc)
+  defp handle_stream_event(session_id, turn_id, counter, {:approval_decided, payload}, acc)
+       when is_map(payload) do
+    acc = seal_open_items(session_id, turn_id, counter, acc)
 
-        ev =
-          emit_event(
-            session_id,
-            turn_id,
-            counter,
-            :approval_decided,
-            :durable,
-            payload
-          )
+    ev =
+      emit_event(
+        session_id,
+        turn_id,
+        counter,
+        :approval_decided,
+        :durable,
+        payload
+      )
 
-        %{acc | journal: [ev | acc.journal]}
+    %{acc | journal: [ev | acc.journal]}
+  end
 
-      # The honesty marker: a tool call the model made that produced no
-      # receipt. A claim of action with zero receipts is NEVER silent — it
-      # seals a visible ⚠ message item into the transcript (full item
-      # lifecycle, like every other completed item).
-      {:tool_unexecuted, payload} when is_map(payload) ->
-        acc = seal_open_items(session_id, turn_id, counter, acc)
+  # The honesty marker: a tool call the model made that produced no
+  # receipt. A claim of action with zero receipts is NEVER silent — it
+  # seals a visible ⚠ message item into the transcript (full item
+  # lifecycle, like every other completed item).
+  defp handle_stream_event(session_id, turn_id, counter, {:tool_unexecuted, payload}, acc)
+       when is_map(payload) do
+    acc = seal_open_items(session_id, turn_id, counter, acc)
 
-        complete_item(session_id, turn_id, counter, acc, :message, %{
-          content: tool_unexecuted_marker(payload)
-        })
+    complete_item(session_id, turn_id, counter, acc, :message, %{
+      content: tool_unexecuted_marker(payload)
+    })
+  end
 
-      # An honest wire-boundary marker: a length-truncated round that still
-      # produced partial answer text (complete/2 loop), or an unparseable /
-      # again-degraded chunk forwarded on the streaming path. A truncated or
-      # unparseable marker seals as a durable ⚠ message so the notice is a
-      # peekable transcript fact. Any OPEN reasoning seals FIRST (∴ ahead of
-      # the warning); an open message is LEFT open, so its own `done` seal
-      # keeps the partial answer a single, un-duplicated block that (by
-      # pump's first-appearance order) renders BEFORE the marker qualifying
-      # it. Blank marker → no-op.
-      {:marker, text} when is_binary(text) ->
-        if blank?(text) do
-          acc
-        else
-          acc = close_reasoning_item(session_id, turn_id, counter, acc)
+  # An honest wire-boundary marker: a length-truncated round that still
+  # produced partial answer text (complete/2 loop), or an unparseable /
+  # again-degraded chunk forwarded on the streaming path. A truncated or
+  # unparseable marker seals as a durable ⚠ message so the notice is a
+  # peekable transcript fact. Any OPEN reasoning seals FIRST (∴ ahead of
+  # the warning); an open message is LEFT open, so its own `done` seal
+  # keeps the partial answer a single, un-duplicated block that (by
+  # pump's first-appearance order) renders BEFORE the marker qualifying
+  # it. Blank marker → no-op.
+  defp handle_stream_event(session_id, turn_id, counter, {:marker, text}, acc)
+       when is_binary(text) do
+    if blank?(text) do
+      acc
+    else
+      acc = close_reasoning_item(session_id, turn_id, counter, acc)
 
-          complete_item(session_id, turn_id, counter, acc, :message, %{
-            content: text
-          })
-        end
-
-      {:turn_complete, info} ->
-        # Close any reasoning that ran this round (think with no answer
-        # text before the round boundary) so it seals as a durable block
-        # rather than dangling in the live tail into the next round.
-        acc = close_reasoning_item(session_id, turn_id, counter, acc)
-
-        ev =
-          emit_event(
-            session_id,
-            turn_id,
-            counter,
-            :turn_completed,
-            :durable,
-            put_model(
-              %{
-                iteration: Map.get(info, :iteration, 0),
-                usage: Map.get(info, :usage, %{}),
-                final: false
-              },
-              info
-            )
-          )
-
-        %{acc | journal: [ev | acc.journal]}
-
-      {:done, %{content: content} = info} ->
-        # A pure-thinking tail (reasoning with no answer text) seals as
-        # its own durable ∴ block before the final message closes.
-        acc = close_reasoning_item(session_id, turn_id, counter, acc)
-
-        # The final message closes the open (streamed) message item when
-        # one exists — the SAME item the deltas accumulated into, so the
-        # tail hands off to the sealed block. The done content is
-        # authoritative for the sealed record. A turn ending with NO open
-        # item and BLANK done content (a tool-only or answerless turn)
-        # resolves to no item at all — sealing an empty message would
-        # paint a blank ❮ block, and an empty message is not information.
-        {item_id, acc} =
-          done_message_item(session_id, turn_id, counter, acc, content)
-
-        journal =
-          case item_id do
-            nil ->
-              acc.journal
-
-            item_id ->
-              message_ev =
-                emit_event(
-                  session_id,
-                  turn_id,
-                  counter,
-                  :item_completed,
-                  :durable,
-                  %{item_id: item_id, item_type: :message, content: content}
-                )
-
-              [message_ev | acc.journal]
-          end
-
-        # The journal accumulates newest-first (prepend); DoneGate consumes it
-        # chronologically, so reverse ONCE here at the single read site. This
-        # is the exact list the append form produced, so evidence offsets on
-        # the wire are unchanged.
-        chronological = Enum.reverse(journal)
-        refs = DoneGate.evidence_refs(chronological, turn_id)
-
-        final_ev =
-          emit_event(
-            session_id,
-            turn_id,
-            counter,
-            :turn_completed,
-            :durable,
-            gated_done_payload(chronological, turn_id, refs, info)
-          )
-
-        %{
-          acc
-          | result: {:ok, %{content: content, usage: Map.get(info, :usage, %{})}},
-            journal: [final_ev | journal]
-        }
-
-      {:error, reason} ->
-        # A halted stream (backend error, timeout, dropped connection) must
-        # not leave a dangling item_started with no completion: whatever
-        # reasoning/answer text streamed before the halt is sealed FIRST
-        # (reasoning ahead of the message, mirroring every other boundary
-        # in this reduce), so the durable journal never loses an open item
-        # and the partial content survives replay instead of evaporating.
-        acc = close_reasoning_item(session_id, turn_id, counter, acc)
-        acc = close_message_item(session_id, turn_id, counter, acc)
-
-        error_ev =
-          emit_event(session_id, turn_id, counter, :error, :durable, %{
-            reason: reason
-          })
-
-        %{acc | journal: [error_ev | acc.journal], result: {:error, reason}}
-
-      _other ->
-        acc
+      complete_item(session_id, turn_id, counter, acc, :message, %{
+        content: text
+      })
     end
   end
 
-  # -- item lifecycle bookkeeping -------------------------------------------
+  defp handle_stream_event(session_id, turn_id, counter, {:turn_complete, info}, acc) do
+    # Close any reasoning that ran this round (think with no answer
+    # text before the round boundary) so it seals as a durable block
+    # rather than dangling in the live tail into the next round.
+    acc = close_reasoning_item(session_id, turn_id, counter, acc)
+
+    ev =
+      emit_event(
+        session_id,
+        turn_id,
+        counter,
+        :turn_completed,
+        :durable,
+        put_model(
+          %{
+            iteration: Map.get(info, :iteration, 0),
+            usage: Map.get(info, :usage, %{}),
+            final: false
+          },
+          info
+        )
+      )
+
+    %{acc | journal: [ev | acc.journal]}
+  end
+
+  defp handle_stream_event(session_id, turn_id, counter, {:done, %{content: content} = info}, acc) do
+    # A pure-thinking tail (reasoning with no answer text) seals as
+    # its own durable ∴ block before the final message closes.
+    acc = close_reasoning_item(session_id, turn_id, counter, acc)
+
+    # The final message closes the open (streamed) message item when
+    # one exists — the SAME item the deltas accumulated into, so the
+    # tail hands off to the sealed block. The done content is
+    # authoritative for the sealed record. A turn ending with NO open
+    # item and BLANK done content (a tool-only or answerless turn)
+    # resolves to no item at all — sealing an empty message would
+    # paint a blank ❮ block, and an empty message is not information.
+    {item_id, acc} =
+      done_message_item(session_id, turn_id, counter, acc, content)
+
+    journal =
+      case item_id do
+        nil ->
+          acc.journal
+
+        item_id ->
+          message_ev =
+            emit_event(
+              session_id,
+              turn_id,
+              counter,
+              :item_completed,
+              :durable,
+              %{item_id: item_id, item_type: :message, content: content}
+            )
+
+          [message_ev | acc.journal]
+      end
+
+    # The journal accumulates newest-first (prepend); DoneGate consumes it
+    # chronologically, so reverse ONCE here at the single read site. This
+    # is the exact list the append form produced, so evidence offsets on
+    # the wire are unchanged.
+    chronological = Enum.reverse(journal)
+    refs = DoneGate.evidence_refs(chronological, turn_id)
+
+    final_ev =
+      emit_event(
+        session_id,
+        turn_id,
+        counter,
+        :turn_completed,
+        :durable,
+        gated_done_payload(chronological, turn_id, refs, info)
+      )
+
+    %{
+      acc
+      | result: {:ok, %{content: content, usage: Map.get(info, :usage, %{})}},
+        journal: [final_ev | journal]
+    }
+  end
+
+  defp handle_stream_event(session_id, turn_id, counter, {:error, reason}, acc) do
+    # A halted stream (backend error, timeout, dropped connection) must
+    # not leave a dangling item_started with no completion: whatever
+    # reasoning/answer text streamed before the halt is sealed FIRST
+    # (reasoning ahead of the message, mirroring every other boundary
+    # in this reduce), so the durable journal never loses an open item
+    # and the partial content survives replay instead of evaporating.
+    acc = close_reasoning_item(session_id, turn_id, counter, acc)
+    acc = close_message_item(session_id, turn_id, counter, acc)
+
+    error_ev =
+      emit_event(session_id, turn_id, counter, :error, :durable, %{
+        reason: reason
+      })
+
+    %{acc | journal: [error_ev | acc.journal], result: {:error, reason}}
+  end
+
+  defp handle_stream_event(_session_id, _turn_id, _counter, _other, acc) do
+    acc
+  end
 
   # Turn-scoped item ids, mirroring the fixture corpus ("i1", "i2", …).
   # Uniqueness only matters within the turn: the projection keys its
@@ -362,7 +387,6 @@ defmodule Raxol.Agent.StreamPump do
   defp next_item_id(acc),
     do: {"i#{acc.item_seq + 1}", %{acc | item_seq: acc.item_seq + 1}}
 
-  # -- message item lifecycle -------------------------------------------------
   #
   # The answer mirrors the reasoning lifecycle below, with the same
   # deliberate laziness: the item is opened at the first NON-BLANK
@@ -452,7 +476,6 @@ defmodule Raxol.Agent.StreamPump do
     %{acc | journal: [ev | acc.journal], msg_item: nil, msg_chunks: []}
   end
 
-  # -- reasoning item lifecycle ---------------------------------------------
   #
   # Reasoning mirrors the message lifecycle with one deliberate difference:
   # the item is opened LAZILY at the first NON-BLANK thought — a
@@ -674,6 +697,15 @@ defmodule Raxol.Agent.StreamPump do
   defp evidence_rejected_detail(refs, {reason, offset}) when is_atom(reason) do
     %{"refs" => refs, "reason" => Atom.to_string(reason), "ref" => offset}
   end
+
+  # The answered tool_use's id. It comes from the provider, so only a short
+  # string is journaled.
+  @max_call_id_bytes 256
+
+  defp put_call_id(extra, id) when is_binary(id) and byte_size(id) <= @max_call_id_bytes,
+    do: Map.put(extra, :call_id, id)
+
+  defp put_call_id(extra, _id), do: extra
 
   # A tool result whose payload carries a before/after image of a file
   # is flattened so the surface renders it as a

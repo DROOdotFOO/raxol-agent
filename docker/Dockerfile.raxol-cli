@@ -16,7 +16,8 @@
 # a runtime host with an equal-or-newer glibc runs it. Bump the base down if an
 # older target is required.
 
-ARG ELIXIR_IMAGE=elixir:1.20.0-otp-29
+# Default only: CI passes the elixir pin from mise.toml as this build arg.
+ARG ELIXIR_IMAGE=elixir:1.20.2-otp-29
 ARG ZIG_VERSION=0.16.0
 
 FROM ${ELIXIR_IMAGE} AS builder

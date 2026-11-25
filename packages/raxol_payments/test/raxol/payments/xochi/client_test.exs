@@ -33,7 +33,7 @@ defmodule Raxol.Payments.Xochi.ClientTest do
     test "a Secret-wrapped auth_token is revealed into the Bearer header" do
       config = %{
         base_url: "https://api.xochi.fi",
-        auth_token: Raxol.Payments.Secret.new("wrapped-jwt"),
+        auth_token: Raxol.Agent.Secret.new("wrapped-jwt"),
         req_options: [plug: echo_plug(self())]
       }
 
@@ -42,6 +42,25 @@ defmodule Raxol.Payments.Xochi.ClientTest do
       assert {"authorization", "Bearer wrapped-jwt"} in downcase(headers)
       # The token never renders in the clear (redacted Inspect).
       refute inspect(config.auth_token) =~ "wrapped-jwt"
+    end
+
+    test "a Secret-wrapped member token is revealed into the Bearer header" do
+      config = config(auth: {:member, Raxol.Agent.Secret.new("member-jwt")})
+      assert {:ok, _} = Client.claim(config, @claim_params)
+      assert_receive {:req, _method, _path, headers, _body}
+      assert {"authorization", "Bearer member-jwt"} in downcase(headers)
+    end
+
+    test "protect_config/1 wraps raw member tokens and leaves other modes alone" do
+      protected = Client.protect_config(%{base_url: "u", auth: {:member, "raw-jwt"}})
+      refute inspect(protected) =~ "raw-jwt"
+
+      legacy = Client.protect_config(%{base_url: "u", auth_token: "raw-legacy"})
+      refute inspect(legacy) =~ "raw-legacy"
+
+      assert Client.protect_config(%{base_url: "u", auth: :none}) == %{base_url: "u", auth: :none}
+      assert Client.protect_config(nil) == nil
+      assert Client.protect_config(protected) == protected
     end
 
     test "none mode sends no Authorization header" do
@@ -133,7 +152,7 @@ defmodule Raxol.Payments.Xochi.ClientTest do
     end
   end
 
-  # xochi#563: execute returns a one-time read capability; the reads present it
+  # Execute returns a one-time read capability; the reads present it
   # in a header so a stealth/shielded intent's on-chain legs come back.
   describe "read token" do
     @token "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"
@@ -467,8 +486,6 @@ defmodule Raxol.Payments.Xochi.ClientTest do
       assert_raise ArgumentError, fn -> Client.claim(config, @claim_params) end
     end
   end
-
-  # -- Helpers --
 
   defp config(opts) do
     %{base_url: "https://api.xochi.fi", req_options: [plug: echo_plug(self())]}

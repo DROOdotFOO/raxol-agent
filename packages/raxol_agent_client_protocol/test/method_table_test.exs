@@ -1,7 +1,5 @@
-# Tests pinning Raxol.AgentClientProtocol.MethodTable per
-# scratchpad/specs/acp-methodtable-design.md §8 ("Tests that pin the
-# design") and its G1 gate-review fix log. Not a port of any upstream
-# f1729 test file -- this module and its table have no upstream analogue.
+# `MethodTable`: row shape and invariants, and agreement with the pinned
+# schema's `meta.json`.
 defmodule Raxol.AgentClientProtocol.MethodTableTest do
   # async: false -- the atom-count property tests below assert a tight
   # bound on global atom growth (:erlang.system_info(:atom_count) is
@@ -13,7 +11,7 @@ defmodule Raxol.AgentClientProtocol.MethodTableTest do
 
   @meta_path Path.expand("../priv/schema-oracle/v1/meta.json", __DIR__)
 
-  # -- §8.1 Oracle diff ---------------------------------------------------------
+  # §8.1 Oracle diff
 
   describe "oracle diff" do
     @tag :oracle
@@ -88,7 +86,7 @@ defmodule Raxol.AgentClientProtocol.MethodTableTest do
     end
   end
 
-  # -- §8.2-ish: table shape / invariant sanity (direct, not via Code.compile_string) --
+  # §8.2-ish: table shape / invariant sanity (direct, not via Code.compile_string)
 
   describe "row shape" do
     test "every row has all nine expected keys" do
@@ -154,7 +152,7 @@ defmodule Raxol.AgentClientProtocol.MethodTableTest do
     end
   end
 
-  # -- §2.1 / D1-7: rows_for_side/1 --------------------------------------------
+  # §2.1 / D1-7: rows_for_side/1
 
   describe "rows_for_side/1" do
     test ":agent sees client_to_agent + both" do
@@ -181,7 +179,7 @@ defmodule Raxol.AgentClientProtocol.MethodTableTest do
     end
   end
 
-  # -- §1.1 compile-time invariants: fixtures via Code.compile_string ---------
+  # §1.1 compile-time invariants: fixtures via Code.compile_string
 
   describe "compile-time invariants" do
     test "duplicate {direction, wire} raises CompileError" do
@@ -252,7 +250,7 @@ defmodule Raxol.AgentClientProtocol.MethodTableTest do
     end
   end
 
-  # -- §8.3: no-atom-creation property ------------------------------------------
+  # §8.3: no-atom-creation property
 
   describe "no atom creation on unknown methods" do
     test "decoding 10k random unknown method binaries never creates a new atom" do
@@ -304,8 +302,6 @@ defmodule Raxol.AgentClientProtocol.MethodTableTest do
       assert after_count - before_count < 50
     end
   end
-
-  # -- helpers ------------------------------------------------------------------
 
   defp read_meta! do
     @meta_path |> File.read!() |> Jason.decode!()

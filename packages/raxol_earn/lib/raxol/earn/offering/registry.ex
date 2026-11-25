@@ -55,8 +55,6 @@ defmodule Raxol.Earn.Offering.Registry do
 
   @table __MODULE__
 
-  # -- Public API --
-
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -108,8 +106,6 @@ defmodule Raxol.Earn.Offering.Registry do
   @spec clear() :: :ok
   def clear, do: GenServer.call(__MODULE__, :clear)
 
-  # -- GenServer callbacks --
-
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(_opts) do
     table = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
@@ -140,8 +136,6 @@ defmodule Raxol.Earn.Offering.Registry do
     :ets.delete_all_objects(@table)
     {:reply, :ok, state}
   end
-
-  # -- Helpers --
 
   defp to_spec(%Spec{} = spec), do: spec
   defp to_spec(map) when is_map(map), do: struct!(Spec, Map.to_list(map))

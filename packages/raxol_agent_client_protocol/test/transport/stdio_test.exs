@@ -61,6 +61,132 @@ defmodule Raxol.AgentClientProtocol.Transport.StdioTest do
     end
   end
 
+  describe "child environment" do
+    test "credential-looking variables are unset unless named in :env" do
+      suffix = System.unique_integer([:positive])
+      dropped = "ACP_STDIO_TEST_#{suffix}_API_KEY"
+      kept = "ACP_STDIO_TEST_#{suffix}_TOKEN"
+      plain = "ACP_STDIO_TEST_#{suffix}_PLAIN"
+
+      for name <- [dropped, kept, plain], do: System.put_env(name, "v")
+      on_exit(fn -> for name <- [dropped, kept, plain], do: System.delete_env(name) end)
+
+      script =
+        ~s(printf '{"dropped":"%s","kept":"%s","plain":"%s"}\\n' ) <>
+          ~s("${#{dropped}-unset}" "${#{kept}-unset}" "${#{plain}-unset}")
+
+      {:ok, _transport} =
+        Stdio.start_spawn("sh", ["-c", script],
+          owner: self(),
+          env: [{String.to_charlist(kept), ~c"given"}]
+        )
+
+      assert_receive {:acp_transport, _ref,
+                      {:message, %{"dropped" => "unset", "kept" => "given", "plain" => "v"}}},
+                     2_000
+    end
+
+    # Concrete names, independent of either regex: the first list is what the
+    # suffix pattern this transport had during 0.2.0 development scrubbed
+    # (never released), the second what only raxol_core adds.
+    test "secret?/1 covers the old suffix scrub and raxol_core's shapes" do
+      old =
+        ~w(OPENAI_API_KEY AWS_ACCESS_KEY_ID ALCHEMY_APIKEY GH_TOKEN WALLET_PRIVKEY APP_SECRET
+           DB_PASSWORD SMTP_PASS GPG_PASSPHRASE WALLET_MNEMONIC WALLET_SEED_PHRASE
+           GOOGLE_CREDENTIALS SENTRY_DSN MAINNET_RPC RPC_BASE BASE_RPC_URL MNEMONIC
+           SEED_PHRASE SSH_AUTH_SOCK OP_SESSION_me my_api_key smtp_pass x_dsn seed_phrase
+           op_session_me)
+
+      core = ~w(DATABASE_URL PGPASSWORD API_KEYS SECRET_KEY_BASE RELEASE_COOKIE KEY TOKEN)
+      kept = ~w(PATH HOME KEYBOARD TOKENIZERS_PARALLELISM GRPC_TRACE PASSPORT_HOME DSNX)
+
+      for name <- old ++ core, do: assert(Stdio.secret?(name), name)
+      for name <- kept, do: refute(Stdio.secret?(name), name)
+    end
+
+    # raxol_core 2.9.1's pattern, pinned: a release that changes it fails
+    # here, so a narrowing cannot reach spawned agents unnoticed.
+    test "raxol_core's credential pattern is the 2.9.1 one" do
+      core = Raxol.Core.ChildEnv.credential_pattern()
+
+      # Whitespace is insignificant in an `x` regex.
+      assert String.replace(Regex.source(core), ~r/\s+/, "") ==
+               ~S"(\A|_)(APIKEYS?|KEYS?|PRIVKEY|PRIVATEKEY|TOKENS?|SECRETS?|CLIENTSECRET|AUTHTOKEN|AUTHKEY" <>
+                 ~S"|APITOKEN|ACCESSTOKEN|CREDENTIALS?|DSN|PAT|CONNECTION_STRING|PASSWORD|PASSWD" <>
+                 ~S"|PASSPHRASE|PASS|MNEMONICS?|SEEDPHRASE|SEED_PHRASE|(WALLET|MASTER|HD|TOTP)_SEED)" <>
+                 ~S"(_|\d|\z)" <>
+                 ~S"|(\A|_)PK\d*\z|_PWD(_|\d|\z)|WEBHOOK|\AOP_SESSION_|(\A|_)(BW|LPASS)_SESSION(_|\z)" <>
+                 ~S"|(\A|_)(DATABASE|POSTGRES|POSTGRESQL|MYSQL|MARIADB|MSSQL|REDIS|REDISCLOUD|REDISTOGO" <>
+                 ~S"|VALKEY|MEMCACHED|MONGO|MONGODB|AMQP|AMQPS|CLOUDAMQP|RABBITMQ|ELASTICSEARCH" <>
+                 ~S"|OPENSEARCH|CLICKHOUSE|COUCHDB|MONGOHQ|MONGOLAB)(_\w+)?_UR[LI]" <>
+                 ~S"|(\A|_)(DB|PG|BROKER|SMTP|MAIL|EMAIL)_UR[LI]|(\A|_)PG\w*PASSWORD|(?<!G)RPC"
+
+      assert Enum.sort(Regex.opts(core)) == [:caseless, :extended]
+    end
+
+    # Before raxol_core 2.9.1 this transport added these shapes on top of
+    # Core (`credential_gaps/0`, now removed). Every name they matched must
+    # still be denied by Core alone.
+    test "every name the removed gap list covered is still scrubbed" do
+      removed_gaps = ~r/(_PASS|_SEED_PHRASE|_DSN)\z|\ASEED_PHRASE\z|\AOP_SESSION_/i
+
+      names =
+        for prefix <- ["X_", "MY_APP_", "A1_", "x_", "my_app_"],
+            stem <- ~w(PASS SEED_PHRASE DSN WALLET_SEED_PHRASE SMTP_PASS SENTRY_DSN),
+            name = prefix <> stem,
+            variant <- [name, String.downcase(name)],
+            do: variant
+
+      names =
+        names ++
+          ~w(SEED_PHRASE seed_phrase Seed_Phrase OP_SESSION_ OP_SESSION_me op_session_x
+             OP_SESSION_my_team_1 Op_Session_abc)
+
+      covered = Enum.filter(names, &Regex.match?(removed_gaps, &1))
+      assert length(covered) == length(names)
+
+      for name <- covered, do: assert(Stdio.secret?(name), name)
+    end
+
+    test "malformed :env and :scrub_env raise in the caller" do
+      assert_raise ArgumentError, ~r/:env entries.*\{string, nil\}/, fn ->
+        Stdio.start_spawn("sh", ["-c", "true"], env: [{"X_API_KEY", nil}])
+      end
+
+      assert_raise ArgumentError, ~r/:env entries.*\{string, integer\}/, fn ->
+        Stdio.start_spawn("sh", ["-c", "true"], env: [{"PORT", 4000}], scrub_env: false)
+      end
+
+      assert_raise ArgumentError, ~r/:scrub_env must be true or false/, fn ->
+        Stdio.start_spawn("sh", ["-c", "true"], scrub_env: nil)
+      end
+    end
+
+    test ":unset_env names are unset too, even without a credential name" do
+      name = "ACP_STDIO_TEST_#{System.unique_integer([:positive])}_HOST"
+      System.put_env(name, "v")
+      on_exit(fn -> System.delete_env(name) end)
+
+      script = ~s(printf '{"value":"%s"}\\n' "${#{name}-unset}")
+
+      {:ok, _transport} =
+        Stdio.start_spawn("sh", ["-c", script], owner: self(), unset_env: [name])
+
+      assert_receive {:acp_transport, _ref, {:message, %{"value" => "unset"}}}, 2_000
+    end
+
+    test "scrub_env: false inherits everything" do
+      name = "ACP_STDIO_TEST_#{System.unique_integer([:positive])}_SECRET"
+      System.put_env(name, "v")
+      on_exit(fn -> System.delete_env(name) end)
+
+      script = ~s(printf '{"value":"%s"}\\n' "${#{name}-unset}")
+      {:ok, _transport} = Stdio.start_spawn("sh", ["-c", script], owner: self(), scrub_env: false)
+
+      assert_receive {:acp_transport, _ref, {:message, %{"value" => "v"}}}, 2_000
+    end
+  end
+
   describe "tolerant decoding of a misbehaving peer" do
     test "a non-JSON line and a valid-JSON-but-non-object line both produce decode_error, not a crash" do
       {:ok, transport} =

@@ -2,11 +2,9 @@ defmodule Raxol.Payments.Xochi.Client do
   @moduledoc """
   Client for the Xochi private execution protocol.
 
-  Talks to the Xochi worker's `/api/intent/*` endpoints. The worker is the sole
-  agent surface: it applies trust-tier fees and attestations, is the x402
-  boundary, and calls the Riddler solver internally. Do not target
-  `riddler.axol.io/xochi/*` directly -- that bypasses Xochi's fee/tier logic and
-  returns the raw solver quote (a thinner shape, no `can_solve`/`xochi_fee`).
+  Talks to the Xochi worker's `/api/intent/*` endpoints, the sole agent surface
+  (fees, attestations, x402, solver). Do not target `riddler.axol.io/xochi/*`
+  directly: it bypasses Xochi's fee/tier logic.
 
   ## Endpoints
 
@@ -17,47 +15,33 @@ defmodule Raxol.Payments.Xochi.Client do
   - `get_history/2` -- GET /api/intent/history?wallet=
   - `claim/2` -- POST /api/stealth/claim
 
-  Quote, execute and status follow the Xochi intent API contract; the history
-  and stealth claim paths follow the worker's OpenAPI spec.
-
   ## Authentication
 
-  An autonomous agent cannot mint a passkey-issued Member JWT the way a browser
-  can, so the client supports the worker's three auth modes via `:auth`:
+  `:auth` selects one of the worker's three modes:
 
-  - `{:mandate, agent_wallet}` -- a Member signs an EIP-712 delegation envelope
-    once; the agent presents `X-Xochi-Delegation` per call. Best fit for an
-    agent acting for a Member. Wires `Raxol.Payments.Req.Mandate`, which looks
-    up the soonest-expiring active mandate for the wallet. Pass plugin overrides
-    with `{:mandate, agent_wallet, opts}`.
-  - `{:x402, wallet: MyWallet, policy: policy}` -- Guest mode. The agent signs an
-    EIP-3009 USDC micropayment per call and sends `X-PAYMENT`. Wires
-    `Raxol.Payments.Req.AutoPay` (restricted to `:x402`), which regenerates the
-    payment from each 402 challenge; like `AutoPay`, it requires a
-    `SpendingPolicy` as `:policy`.
+  - `{:mandate, agent_wallet}` (or `{:mandate, agent_wallet, opts}`) -- a Member
+    signs an EIP-712 delegation once; the agent presents `X-Xochi-Delegation`
+    per call via `Raxol.Payments.Req.Mandate`.
+  - `{:x402, wallet: MyWallet, policy: policy}` -- Guest mode: an EIP-3009 USDC
+    micropayment per call via `Raxol.Payments.Req.AutoPay`; requires a
+    `SpendingPolicy`.
   - `{:member, jwt}` -- only if a passkey-issued JWT is provisioned out of band.
 
   ## Read capability
 
-  For a non-`public` (stealth/shielded) intent the worker withholds the
-  on-chain legs (`tx_hash`, `receiving_tx_hash`, ...) on `get_status/3` and
-  `get_intent/3` unless the caller proves ownership. `execute/2`
-  returns a one-time `read_token` (`ExecuteResponse.read_token`; nil from an
-  older worker); pass it back as `read_token:` and it travels only in the
-  `X-Xochi-Read-Token` request header, never in a URL. It is a bearer secret
-  for privacy, not funds: keep it with the intent record, out of logs, and away
-  from any other host. A missing or invalid token yields the anonymous view
-  (same shape, legs absent), not an error. A `read_token:` that is not 43
-  unpadded base64url characters is refused with `{:error, :invalid_read_token}`
-  before any request.
+  For a stealth/shielded intent the worker withholds on-chain legs on
+  `get_status/3` and `get_intent/3` unless the caller presents the one-time
+  `ExecuteResponse.read_token` as `read_token:`. It travels only in the
+  `X-Xochi-Read-Token` header; treat it as a bearer secret (keep it out of logs
+  and other hosts). A missing or invalid token gives the anonymous view, not an
+  error; a malformed one (not 43 base64url chars) is
+  `{:error, :invalid_read_token}` before any request.
 
-  Any transport failure, 5xx, or malformed response after the execute request
-  starts is returned as a reconciling `ExecuteResponse`: the worker may have
-  accepted the intent even when the client could not read a valid answer. So
-  is a refusal because the intent already left `quoted` (409 another writer is
-  executing it, or 400 naming any status but `expired`): this request did not
-  execute it, but another may have. Any other structurally valid 4xx remains a
-  clean rejection. Error bodies always redact `read_token`.
+  After the execute request starts, a transport failure, 5xx, malformed
+  response, or a refusal because the intent already left `quoted` (409, or 400
+  naming any status but `expired`) returns a reconciling `ExecuteResponse`: the
+  intent may have executed. Other valid 4xx are clean rejections. Error bodies
+  redact `read_token`.
 
   ## Configuration
 
@@ -76,6 +60,8 @@ defmodule Raxol.Payments.Xochi.Client do
       {:ok, quote} = Xochi.Client.get_quote(config, %QuoteRequest{...})
   """
 
+  alias Raxol.Agent.Secret
+
   alias Raxol.Payments.Xochi.Schemas.{
     DepositRouteRequest,
     ExecuteRequest,
@@ -87,7 +73,7 @@ defmodule Raxol.Payments.Xochi.Client do
   }
 
   @type auth ::
-          {:member, String.t()}
+          {:member, String.t() | Secret.t()}
           | {:mandate, String.t()}
           | {:mandate, String.t(), keyword()}
           | {:x402, keyword()}
@@ -96,7 +82,7 @@ defmodule Raxol.Payments.Xochi.Client do
   @type config :: %{
           :base_url => String.t(),
           optional(:auth) => auth(),
-          optional(:auth_token) => String.t() | Raxol.Payments.Secret.t(),
+          optional(:auth_token) => String.t() | Secret.t(),
           optional(:req_options) => keyword()
         }
 
@@ -262,8 +248,6 @@ defmodule Raxol.Payments.Xochi.Client do
 
   def validate_config(_config), do: {:error, :invalid_base_url}
 
-  # -- Private --
-
   defp prepare_execute(config, request) do
     with :ok <- validate_config(config) do
       {:ok, build_req(config), ExecuteRequest.to_json(request)}
@@ -277,6 +261,28 @@ defmodule Raxol.Payments.Xochi.Client do
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
+  @doc """
+  `config` with its member token `Raxol.Agent.Secret`-wrapped (`:auth_token`
+  and `auth: {:member, token}`), for a caller about to keep the config in
+  process state. Already wrapped tokens and other auth modes are unchanged.
+  """
+  @spec protect_config(config() | nil) :: config() | nil
+  def protect_config(%{} = config) do
+    config
+    |> protect(:auth_token)
+    |> protect(:auth)
+  end
+
+  def protect_config(other), do: other
+
+  defp protect(%{auth_token: token} = config, :auth_token) when is_binary(token),
+    do: %{config | auth_token: Secret.new(token)}
+
+  defp protect(%{auth: {:member, token}} = config, :auth) when is_binary(token),
+    do: %{config | auth: {:member, Secret.new(token)}}
+
+  defp protect(config, _key), do: config
+
   defp build_req(config) do
     validate_base_url!(config.base_url)
 
@@ -288,17 +294,17 @@ defmodule Raxol.Payments.Xochi.Client do
 
   # Explicit `:auth` wins; a bare legacy `:auth_token` maps to Member Bearer;
   # otherwise the request is anonymous (the worker answers 402 with a Guest
-  # invite). A `Raxol.Payments.Secret`-wrapped token is revealed only here, so
-  # the token stays redacted in any config/state that a crash report might dump.
+  # invite). A `Secret`-wrapped member token is revealed only when the header
+  # is set, so it stays redacted in any config or state a crash report dumps.
   defp auth_mode(%{auth: auth}), do: auth
-
-  defp auth_mode(%{auth_token: %Raxol.Payments.Secret{} = token}),
-    do: {:member, Raxol.Payments.Secret.reveal(token)}
-
-  defp auth_mode(%{auth_token: token}) when is_binary(token), do: {:member, token}
+  defp auth_mode(%{auth_token: token}) when not is_nil(token), do: {:member, token}
   defp auth_mode(_), do: :none
 
-  defp apply_auth(req, {:member, token}) do
+  defp apply_auth(req, {:member, %Secret{} = token}) do
+    Req.Request.put_header(req, "authorization", "Bearer #{Secret.reveal(token)}")
+  end
+
+  defp apply_auth(req, {:member, token}) when is_binary(token) do
     Req.Request.put_header(req, "authorization", "Bearer #{token}")
   end
 

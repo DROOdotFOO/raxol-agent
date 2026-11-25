@@ -47,56 +47,52 @@ defmodule Raxol.Payments.Directive.PayTest do
 
   describe "Executor for Pay" do
     test "successful perform sends pay_result" do
-      pay =
-        Pay.new(
-          amount: Decimal.new("0.01"),
-          domain: "x.com",
-          perform: fn -> {:ok, %{ok: true}} end
-        )
-
-      Executor.execute(pay, %{pid: self(), runtime_pid: self()})
-
-      assert_receive {:command_result, {:pay_result, %{ok: true}}}, 1_000
+      assert execute(fn -> {:ok, %{ok: true}} end) == {:pay_result, %{ok: true}}
     end
 
     test "error perform sends pay_error" do
-      pay =
-        Pay.new(
-          amount: Decimal.new("0.01"),
-          domain: "x.com",
-          perform: fn -> {:error, :insufficient_funds} end
-        )
-
-      Executor.execute(pay, %{pid: self(), runtime_pid: self()})
-
-      assert_receive {:command_result, {:pay_error, :insufficient_funds}}, 1_000
+      assert execute(fn -> {:error, :insufficient_funds} end) ==
+               {:pay_error, :insufficient_funds}
     end
 
     test "raised exception sends pay_error with exception tag" do
-      pay =
-        Pay.new(
-          amount: Decimal.new("0.01"),
-          domain: "x.com",
-          perform: fn -> raise "wallet locked" end
-        )
-
-      Executor.execute(pay, %{pid: self(), runtime_pid: self()})
-
-      assert_receive {:command_result, {:pay_error, {:exception, "wallet locked"}}},
-                     1_000
+      assert execute(fn -> raise "wallet locked" end) ==
+               {:pay_error, {:exception, "wallet locked"}}
     end
 
     test "non-tuple return is treated as pay_result" do
-      pay =
-        Pay.new(
-          amount: Decimal.new("0.01"),
-          domain: "x.com",
-          perform: fn -> :raw_value end
-        )
+      assert execute(fn -> :raw_value end) == {:pay_result, :raw_value}
+    end
+  end
 
-      Executor.execute(pay, %{pid: self(), runtime_pid: self()})
+  # Run `perform` through the executor and return the `{:command_result, _}`
+  # payload it sends. `perform` runs in a process the executor starts; it
+  # reports itself first, so the wait is for that process's result or its
+  # exit, with no clock.
+  defp execute(perform) do
+    test = self()
 
-      assert_receive {:command_result, {:pay_result, :raw_value}}, 1_000
+    pay =
+      Pay.new(
+        amount: Decimal.new("0.01"),
+        domain: "x.com",
+        perform: fn ->
+          send(test, {:performing, self()})
+          perform.()
+        end
+      )
+
+    Executor.execute(pay, %{pid: test, runtime_pid: test})
+    worker = receive(do: ({:performing, pid} -> pid))
+    ref = Process.monitor(worker)
+
+    receive do
+      {:command_result, result} ->
+        Process.demonitor(ref, [:flush])
+        result
+
+      {:DOWN, ^ref, :process, ^worker, reason} ->
+        flunk("the perform process exited (#{inspect(reason)}) without a result")
     end
   end
 end

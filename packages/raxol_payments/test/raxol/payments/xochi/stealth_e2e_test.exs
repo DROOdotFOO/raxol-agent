@@ -8,7 +8,8 @@ defmodule Raxol.Payments.Xochi.StealthE2ETest do
   use ExUnit.Case, async: true
 
   alias Raxol.Payments.Xochi.Stealth
-  alias Raxol.Payments.{PrivacyTier, Router, Secret}
+  alias Raxol.Agent.Secret
+  alias Raxol.Payments.{PrivacyTier, Router}
 
   defp generate_keypair do
     priv = :crypto.strong_rand_bytes(32)
@@ -32,21 +33,16 @@ defmodule Raxol.Payments.Xochi.StealthE2ETest do
 
   describe "full payment lifecycle" do
     test "recipient discovers payment and derives controlling private key" do
-      # 1. Recipient sets up stealth keys
       {spending_priv, spending_pub} = generate_keypair()
       {viewing_priv, viewing_pub} = generate_keypair()
       meta = %{spending_pub_key: spending_pub, viewing_pub_key: viewing_pub, chain_id: 1}
 
-      # 2. Sender generates stealth address
       {:ok, settlement} = Stealth.generate(meta)
 
-      # 3. On-chain announcement published
       announcement = make_announcement(settlement)
 
-      # 4. Recipient scans and discovers payment
       {:ok, [payment]} = Stealth.scan(spending_priv, viewing_priv, [announcement])
 
-      # 5. Verify stealth private key controls the stealth address
       {:ok, derived_pub} = ExSecp256k1.create_public_key(Secret.reveal(payment.stealth_priv_key))
       {:ok, compressed_pub} = ExSecp256k1.public_key_compress(derived_pub)
       # Drop 0x04 prefix from uncompressed, keccak256, take last 20 bytes
@@ -202,26 +198,20 @@ defmodule Raxol.Payments.Xochi.StealthE2ETest do
 
   describe "meta-address registry flow" do
     test "encode -> publish -> decode -> generate -> scan round-trip" do
-      # 1. Recipient derives keys from signature
       sig = "0x" <> Base.encode16(:crypto.strong_rand_bytes(65), case: :lower)
       {:ok, keys} = Stealth.derive_keys(sig)
       {spending_priv, spending_pub} = keys.spending
       {viewing_priv, viewing_pub} = keys.viewing
 
-      # 2. Encode meta-address for ERC-6538 registry
       meta = %{spending_pub_key: spending_pub, viewing_pub_key: viewing_pub, chain_id: 1}
       encoded = Stealth.encode_meta_address(meta)
 
-      # 3. Sender decodes meta-address from registry
       {:ok, decoded} = Stealth.decode_meta_address(encoded, 1)
 
-      # 4. Sender generates stealth address
       {:ok, settlement} = Stealth.generate(decoded)
 
-      # 5. Announcement on-chain
       announcement = make_announcement(settlement)
 
-      # 6. Recipient scans
       {:ok, [payment]} = Stealth.scan(spending_priv, viewing_priv, [announcement])
       assert payment.announcement.stealth_address == settlement.stealth_address
     end

@@ -1,7 +1,7 @@
 defmodule RaxolAgent.MixProject do
   use Mix.Project
 
-  @version "3.1.0"
+  @version "3.2.0"
   @source_url "https://github.com/DROOdotFOO/raxol-agent"
   @source_ref "raxol_agent-v#{@version}"
 
@@ -38,6 +38,10 @@ defmodule RaxolAgent.MixProject do
   defp deps do
     [
       runtime_dep(:raxol, "~> 2.8", "."),
+      # `Raxol.Agent.ChildEnv` delegates its matching to `Raxol.Core.ChildEnv`
+      # (`pass/0`, `secret?/1`); 2.9.1 covers the `_PASS`, `_SEED_PHRASE`,
+      # `_DSN` and `OP_SESSION_*` shapes it used to add itself.
+      runtime_dep(:raxol_core, "~> 2.9 and >= 2.9.1", "packages/raxol_core"),
       runtime_dep(:raxol_mcp, "~> 2.8", "packages/raxol_mcp"),
       runtime_dep(:raxol_journal, "~> 2.8", "packages/raxol_journal"),
       {:circular_buffer, "~> 1.0"},
@@ -45,6 +49,15 @@ defmodule RaxolAgent.MixProject do
       {:yaml_elixir, "~> 2.12"},
       # Floor: CVE-2026-49755 (unbounded decompression), fixed in 0.6.1.
       {:req, "~> 0.6 and >= 0.6.1", optional: true},
+      # Floors for deps that only raxol and raxol_mcp pull in, optional so they
+      # bound the version without adding a dependency: phoenix CVE-2026-128361
+      # (presence key crash) and CVE-2026-129344 (V1 serializer broadcast
+      # crash), fixed in 1.8.17; phoenix_live_view CVE-2026-126334 (join
+      # without "url" skips on_mount), fixed in 1.2.14; plug CVE-2026-120287
+      # (multipart framing not charged to :length), fixed in 1.20.4.
+      {:phoenix, "~> 1.8 and >= 1.8.17", optional: true},
+      {:phoenix_live_view, "~> 1.2 and >= 1.2.15", optional: true},
+      {:plug, "~> 1.20 and >= 1.20.4", optional: true},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -66,7 +79,7 @@ defmodule RaxolAgent.MixProject do
     path = "../raxol_agent_client_protocol"
 
     if hex_package?() do
-      [{:raxol_agent_client_protocol, "~> 0.1.0"}]
+      [{:raxol_agent_client_protocol, "~> 0.2.0"}]
     else
       [{:raxol_agent_client_protocol, path: path, override: true}]
     end

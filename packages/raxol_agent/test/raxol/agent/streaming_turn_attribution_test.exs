@@ -1,14 +1,10 @@
 defmodule Raxol.Agent.StreamingTurnAttributionTest do
   @moduledoc """
-  Async cross-turn contamination regression (PR #547 review, finding 3).
-
-  A streaming agent dispatches an async command in turn N whose delta lands
-  AFTER turn N+1 has started and finished. The dispatcher is a single mailbox,
-  so an emit-time read of `state.turn_id` would stamp the late delta with
-  whatever is current — nil between turns, or a later turn's id if one is in
-  flight — poisoning U6's `expected_turn_id` CAS. The fix snapshots the
-  minting turn's id into the command's own context at dispatch; the executor
-  echoes it back, so the delta carries its ORIGINATING turn's id.
+  An async command dispatched in turn N whose delta lands after turn N+1
+  has started and finished carries turn N's id. The dispatcher snapshots
+  the minting turn's id into the command's context and the executor echoes
+  it back; reading `state.turn_id` at emit time would stamp nil or a later
+  turn's id, breaking the `expected_turn_id` check.
   """
   use ExUnit.Case, async: false
 
@@ -85,8 +81,7 @@ defmodule Raxol.Agent.StreamingTurnAttributionTest do
     turn_n = started_n.turn_id
     assert is_binary(turn_n)
 
-    # Turn N+1 starts AND completes while turn N's async result is still
-    # pending — the overlap Drew's finding 3 describes.
+    # Turn N+1 starts and completes while turn N's async result is pending.
     :ok = Session.send_message(agent_id(sess), :noop)
 
     assert_receive {:session_event, ^session_id, %Event{type: :turn_started} = started_n1},
@@ -109,8 +104,6 @@ defmodule Raxol.Agent.StreamingTurnAttributionTest do
     assert delta.turn_id == turn_n
     refute delta.turn_id == turn_n1
   end
-
-  # --- helpers ---------------------------------------------------------------
 
   defp agent_id(sess) do
     %{id: id} = :sys.get_state(sess)

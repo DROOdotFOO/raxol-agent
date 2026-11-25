@@ -82,6 +82,83 @@ defmodule Raxol.Payments.Protocols.XochiPullPinDefaultTest do
     end
   end
 
+  describe "a pinned ERC-3009 pull" do
+    @solver "0x000000000000000000000000000000000000dEaD"
+
+    test "matches the allowlist only on a clean 0x + 40-hex served `to`" do
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [@solver])
+      "0x" <> bare = @solver
+
+      assert :ok = Xochi.validate_pull(erc3009_quote(@solver), request(), SignerWallet)
+
+      assert :ok =
+               Xochi.validate_pull(erc3009_quote(String.upcase(@solver)), request(), SignerWallet)
+
+      for served <- [bare, @solver <> "\n", " " <> @solver, "0x" <> @solver, nil] do
+        assert {:error, {:authorization_mismatch, :pull_to}} =
+                 Xochi.validate_pull(erc3009_quote(served), request(), SignerWallet)
+      end
+    end
+
+    test "a configured allowlist with no valid entry refuses every pull instead of failing open" do
+      Application.put_env(:raxol_payments, :deployment, :development)
+      Application.put_env(:raxol_payments, :pull_require_solver_pin, false)
+
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [
+        "0x1234",
+        "0x" <> String.duplicate("aB", 20)
+      ])
+
+      assert {:error, {:authorization_mismatch, :pull_to}} =
+               Xochi.validate_pull(erc3009_quote(@solver), request(), SignerWallet)
+    end
+
+    test "a served `to` is matched whatever its case; its checksum is not checked" do
+      Application.put_env(:raxol_payments, :pull_solver_allowlist, [@solver])
+      # Mixed case that is not @solver's EIP-55 form.
+      served = "0x000000000000000000000000000000000000DeAd"
+
+      assert :ok = Xochi.validate_pull(erc3009_quote(served), request(), SignerWallet)
+    end
+
+    test "an unpinned pull outside production still needs a well-formed `to`" do
+      Application.put_env(:raxol_payments, :deployment, :development)
+
+      assert {:error, {:authorization_mismatch, :pull_to}} =
+               Xochi.validate_pull(erc3009_quote(@solver <> " "), request(), SignerWallet)
+    end
+  end
+
+  describe "origin_pull_fail_open?/2 and assert_origin_pull_pinned!/2" do
+    @pinned ["0x8d7d8AcfC25E999273394F7Ab44C239806724e2B"]
+
+    test "an empty allowlist without a required pin is fail-open and refused" do
+      # nil, blank and non-binary entries normalize away to an empty list.
+      for allowlist <- [[], nil, ["", "  "], [nil, 123]] do
+        assert Xochi.origin_pull_fail_open?(allowlist, false)
+
+        assert_raise ArgumentError, ~r/solver pin is not configured/, fn ->
+          Xochi.assert_origin_pull_pinned!(allowlist, false)
+        end
+      end
+    end
+
+    test "malformed allowlist entries do not count as a pin" do
+      for allowlist <- [["0x1234"], ["not-an-address"], ["0x" <> String.duplicate("aB", 20)]] do
+        assert Xochi.origin_pull_fail_open?(allowlist, false)
+      end
+
+      assert Xochi.origin_pull_fail_open?([" " <> hd(@pinned) <> "\n"], false) == false
+    end
+
+    test "a required pin or a populated allowlist is not fail-open" do
+      for {allowlist, require_pin?} <- [{[], true}, {@pinned, false}, {@pinned, true}] do
+        refute Xochi.origin_pull_fail_open?(allowlist, require_pin?)
+        assert :ok = Xochi.assert_origin_pull_pinned!(allowlist, require_pin?)
+      end
+    end
+  end
+
   defp request do
     %QuoteRequest{
       wallet: @signer,
@@ -94,7 +171,7 @@ defmodule Raxol.Payments.Protocols.XochiPullPinDefaultTest do
     }
   end
 
-  defp erc3009_quote do
+  defp erc3009_quote(to \\ "0x000000000000000000000000000000000000dEaD") do
     valid_before = Integer.to_string(System.system_time(:second) + 600)
 
     %QuoteResponse{
@@ -123,7 +200,7 @@ defmodule Raxol.Payments.Protocols.XochiPullPinDefaultTest do
         },
         "message" => %{
           "from" => @signer,
-          "to" => "0x000000000000000000000000000000000000dEaD",
+          "to" => to,
           "value" => "1000000",
           "validAfter" => "0",
           "validBefore" => valid_before,

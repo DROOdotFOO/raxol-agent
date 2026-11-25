@@ -23,6 +23,18 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
   degrades to a no-op: `fetch` misses, `put`/`delete` do nothing, and recovery
   is simply disabled -- the same as configuring no checkpoint at all.
 
+  ## Concurrency
+
+  The whole store is one `ContextStore` entry, and every write rewrites it, so
+  `put/3`, `put_new/3`, `delete/2` and `sweep_expired/2` each take a per-store
+  `Raxol.Payments.Checkpoint.Lock`. That makes `put_new/3` one owner per key,
+  and keeps a write from erasing a concurrent one. `fetch/2` reads without it.
+
+  The lock lives in the `raxol_payments` application tree and fails closed: a
+  write whose lock is not running, or exits mid-write, is aborted and the
+  caller exits with `{:lock_lost, resource}`, rather than returning as though
+  the checkpoint were stored.
+
   ## Durability
 
   Inherits `ContextStore`'s durability: its ETS table survives a process crash
@@ -34,6 +46,8 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
   @behaviour Raxol.Payments.Checkpoint
 
   @compile {:no_warn_undefined, Raxol.Agent.ContextStore}
+
+  alias Raxol.Payments.Checkpoint.Lock
 
   @context_store Raxol.Agent.ContextStore
 
@@ -60,13 +74,7 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
 
   @impl true
   def put(store_id, key, record) do
-    if available?() do
-      case @context_store.update(store_id, &Map.put(&1, key, record)) do
-        {:ok, _records} -> :ok
-        {:error, :not_found} -> @context_store.save(store_id, %{key => record})
-      end
-    end
-
+    if available?(), do: with_lock(store_id, fn -> write(store_id, key, record) end)
     :ok
   end
 
@@ -79,7 +87,9 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
 
   @impl true
   def delete(store_id, key) do
-    if available?(), do: @context_store.update(store_id, &Map.delete(&1, key))
+    if available?(),
+      do: with_lock(store_id, fn -> @context_store.update(store_id, &Map.delete(&1, key)) end)
+
     :ok
   end
 
@@ -90,13 +100,32 @@ defmodule Raxol.Payments.Checkpoint.ContextStore do
       else: :ok
   end
 
-  defp with_lock(store_id, fun),
-    do: :global.trans({{__MODULE__, store_id}, self()}, fun)
+  # Every write is a read-modify-write of the whole entry (`ContextStore.update/2`
+  # loads, applies and saves), so two unlocked writes to one store lose one of
+  # them: a `put` landing inside `put_new`'s fetch-then-write would erase the
+  # claim `put_new` just made. All writes to a store therefore take its lock.
+  #
+  # `fun` runs in the lock's short-lived writer process, and `ContextStore`
+  # creates its ETS table in whichever process first touches it, so the
+  # caller creates it first: a table the writer created would die with it,
+  # and every checkpoint with the table.
+  defp with_lock(store_id, fun) do
+    :ok = @context_store.init()
+    Lock.with_lock({__MODULE__, store_id}, fun)
+  end
+
+  # Called with the store's lock held; the lock is not reentrant.
+  defp write(store_id, key, record) do
+    case @context_store.update(store_id, &Map.put(&1, key, record)) do
+      {:ok, _records} -> :ok
+      {:error, :not_found} -> @context_store.save(store_id, %{key => record})
+    end
+  end
 
   defp put_unless_present(store_id, key, record) do
     case fetch(store_id, key) do
       :error ->
-        put(store_id, key, record)
+        write(store_id, key, record)
         :ok
 
       {:ok, _record} ->

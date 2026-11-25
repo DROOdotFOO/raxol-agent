@@ -23,7 +23,7 @@ defmodule Raxol.AgentClientProtocol.Ext.JournalTest do
     {sid, j}
   end
 
-  # -- Finding 4 (LOW): ETS protection posture --------------------------------
+  # Finding 4 (LOW): ETS protection posture
   #
   # DROOdotFOO flagged the `:public` table (any co-resident process can forge
   # offsets) and asked for `:protected`. `:protected` is architecturally
@@ -56,7 +56,7 @@ defmodule Raxol.AgentClientProtocol.Ext.JournalTest do
     assert Mem.high_watermark(j) == 1
   end
 
-  # -- Mem: the offset law, sequential ----------------------------------------
+  # Mem: the offset law, sequential
 
   test "an empty session has high_watermark 0 and an empty read" do
     {_sid, j} = open()
@@ -99,7 +99,7 @@ defmodule Raxol.AgentClientProtocol.Ext.JournalTest do
     assert {:ok, []} = Mem.read(j, 4, 2)
   end
 
-  # -- J2: decision-time high_watermark (reads the store, never a counter) -----
+  # J2: decision-time high_watermark (reads the store, never a counter)
 
   test "high_watermark reads the store max at call time (decision-time-fold)" do
     {_sid, j} = open()
@@ -184,7 +184,7 @@ defmodule Raxol.AgentClientProtocol.Ext.JournalTest do
     assert Mem.high_watermark(mem) == length(recs)
   end
 
-  # -- J8: offset law under CONCURRENT appends (via the single-publisher Writer) --
+  # J8: offset law under CONCURRENT appends (via the single-publisher Writer)
 
   property "offset law: concurrent appends through the Writer are contiguous, monotone, no gap/dup" do
     check all(n <- integer(1..40), max_runs: 20) do

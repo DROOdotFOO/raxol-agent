@@ -2,17 +2,11 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
   @moduledoc """
   Fetch and verify a Tron-origin cross-chain deposit-route quote.
 
-  A non-EVM (Tron) origin has no gasless pull, so the quote returns a bare
-  `deposit_address` the payer funds directly. This action fetches the quote and
-  verifies its `deposit_attestation` recovers to the pinned signer BEFORE
-  returning the deposit instructions, failing closed otherwise -- so the agent
-  never sends TRC-20 funds to an address a compromised quote endpoint could have
-  swapped.
-
-  raxol does not send the funds (it has no Tron transaction stack): the agent's
-  own Tron wallet funds `deposit_address` before `deposit_deadline`, then polls
-  settlement with `payment_poll_xochi_status` (`pending -> completed | refunded`,
-  with the refund reason surfaced on rejection).
+  A Tron origin has no gasless pull, so the quote returns a bare
+  `deposit_address`. This verifies its `deposit_attestation` recovers to the
+  pinned signer BEFORE returning deposit instructions, failing closed otherwise.
+  raxol sends nothing: the agent's Tron wallet funds `deposit_address` before
+  `deposit_deadline`, then polls with `payment_poll_xochi_status`.
 
   ## Context
 
@@ -21,11 +15,14 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
       ownership. Pass the same value to `payment_poll_xochi_status`. Without one,
       the route's `wallet` input is the principal and must be supplied as the
       poll context's `:wallet`.
+    * `:clock` -- optional zero-arity function returning unix seconds, used for
+      the attested-deadline check and the checkpoint binding.
     * `:checkpoint` -- optional private checkpoint store that records that
       principal's ownership before returning the deposit instructions.
     * `:deposit_attestation_signer` -- optional operator pin for the expected
-      signer; otherwise `config :raxol_payments, :xochi_deposit_attestation_signer`,
-      otherwise the live capability matrix's `deposit_attestation_signer`.
+      signer; otherwise `config :raxol_payments, :xochi_deposit_attestation_signer`.
+      With neither, the route is refused (`:deposit_signer_unpinned`); the
+      capability matrix is never a source of the signer.
 
   ## Delivery floor: a pre-funding filter, not a bound
 
@@ -38,21 +35,24 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
   amount it states (its `to_amount`, and its own `min_to_amount` when it gives
   one), and a quote below the floor returns no deposit address.
 
-  That is all it does. The deposit attestation binds the deposit address and
-  the origin leg, not `to_amount`, `min_to_amount`, the destination or the
-  recipient, and the floor is not sent to Xochi, so a compromised quote
-  endpoint can state any amount and nothing here bounds what is delivered
-  after the deposit lands.
+  The floor is not sent to Xochi. The quote's terms are bound by the
+  `xochi-deposit-attestation:v3` signature, so a substituted or replayed quote is
+  refused; what is delivered after the deposit lands is bounded only by what the
+  venue signed.
 
   Errors are machine-readable: `:attestation_mismatch`, `:missing_attestation`,
-  `:deposit_signer_unavailable`, `:not_a_deposit_route`, `{:not_solvable, reason}`,
+  `{:unsupported_deposit_attestation_version, advertised}` (anything but v3,
+  including a v1 venue), `:missing_deposit_deadline`,
+  `{:deposit_deadline_passed, detail}` (against `:clock`),
+  `{:inconsistent_quote_amounts, detail}`, `{:invalid_quote_id, detail}`,
+  `:recipient_is_destination_token`, `{:newline_in_field, field}`, `:deposit_signer_unpinned`,
+  `:invalid_deposit_signer_pin`, `:not_a_deposit_route`, `{:not_solvable, reason}`,
   `{:unpriced_asset, detail}`, `{:invalid_min_to_amount, value}`,
   `{:implausible_min_to_amount, detail}`, `{:delivery_below_floor, detail}`,
-  `{:invalid_quote_amount, %{field: field, value: value}}` (the quote served
-  `to_amount` or `min_to_amount` as a JSON float that is not an integer of at
-  most 2^53, which is refused rather than reformatted; an integral one is
-  returned as its integer string), or a request-validation tuple (e.g.
-  `{:invalid_wallet, _}`).
+  `{:invalid_quote_amount, %{field: field, value: value}}` (the quote's
+  `to_amount` or `min_to_amount` absent, or not a decimal integer -- a JSON
+  float counts only when integral and at most 2^53 -- refused rather than
+  reformatted), or a request-validation tuple (e.g. `{:invalid_wallet, _}`).
   """
 
   use Raxol.Agent.Action,
@@ -111,7 +111,7 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
         to_amount: [type: :string],
         min_to_amount: [
           type: :string,
-          description: "The quote's own stated minimum delivery, when it gives one; unattested"
+          description: "The quote's own stated minimum delivery, bound by the attestation"
         ],
         recipient_address: [type: :string]
       ]
@@ -168,11 +168,11 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
     end
   end
 
-  # An operator's out-of-band signer pin (and, for tests, a pre-fetched
-  # capability matrix) pass straight through to the protocol's signer resolution.
+  # An operator's out-of-band signer pin, the clock and (for tests) a pre-fetched
+  # capability matrix pass straight through to the protocol's verification.
   defp signer_opts(context) do
     context
-    |> Map.take([:deposit_attestation_signer, :capabilities])
+    |> Map.take([:deposit_attestation_signer, :capabilities, :clock])
     |> Map.to_list()
   end
 
@@ -190,45 +190,18 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteDepositRoute do
     }
   end
 
-  # `min_to_amount` only when the quote stated one. Amounts are reported as the
-  # strings the output schema declares: a quote may serve them as JSON numbers,
-  # which pass the floor and would otherwise fail output validation. A JSON
-  # float is stringified only when it is integral and at most 2^53, where the
-  # float is exactly the integer the quote wrote; any other float is refused as
-  # `{:invalid_quote_amount, %{field: field, value: value}}` rather than
-  # reformatted into an amount the quote never stated.
+  # Every amount is already the attested decimal string: the protocol refuses a
+  # quote amount it cannot state exactly (`{:invalid_quote_amount, detail}`).
   defp summary(instructions) do
-    instructions
-    |> Map.take([
-      :intent_id,
-      :deposit_address,
-      :deposit_deadline,
-      :from_amount,
-      :to_amount,
-      :min_to_amount,
-      :recipient_address
-    ])
-    |> Map.reject(&match?({:min_to_amount, nil}, &1))
-    |> Enum.reduce_while({:ok, %{}}, fn {field, value}, {:ok, acc} ->
-      case amount_string(field, value) do
-        {:ok, value} -> {:cont, {:ok, Map.put(acc, field, value)}}
-        :error -> {:halt, {:error, {:invalid_quote_amount, %{field: field, value: value}}}}
-      end
-    end)
+    {:ok,
+     Map.take(instructions, [
+       :intent_id,
+       :deposit_address,
+       :deposit_deadline,
+       :from_amount,
+       :to_amount,
+       :min_to_amount,
+       :recipient_address
+     ])}
   end
-
-  @max_exact_float Integer.pow(2, 53)
-
-  defp amount_string(field, n) when field in [:to_amount, :min_to_amount] and is_integer(n),
-    do: {:ok, Integer.to_string(n)}
-
-  defp amount_string(field, n) when field in [:to_amount, :min_to_amount] and is_float(n) do
-    int = trunc(n)
-
-    if int == n and abs(int) <= @max_exact_float,
-      do: {:ok, Integer.to_string(int)},
-      else: :error
-  end
-
-  defp amount_string(_field, value), do: {:ok, value}
 end

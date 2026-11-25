@@ -2,6 +2,7 @@ defmodule Raxol.Payments.PollTest do
   use ExUnit.Case, async: true
 
   alias Raxol.Payments.Poll
+  alias Raxol.Payments.Test.VirtualClock
 
   defp terminal?(%{done: done}), do: done
 
@@ -58,6 +59,57 @@ defmodule Raxol.Payments.PollTest do
       fetch = fn -> {:ok, %{done: false}} end
 
       assert {:error, :timeout} = Poll.run(fetch, &terminal?/1, timeout_ms: 0)
+    end
+  end
+
+  describe "run/3 on an injected clock" do
+    # Counts the calls of a fetch that never reaches terminal.
+    defp counting_fetch do
+      calls = :counters.new(1, [])
+      {calls, fn -> :counters.add(calls, 1, 1) && {:ok, %{done: false}} end}
+    end
+
+    test "polls exactly as often as the intervals fit in the timeout" do
+      {calls, fetch} = counting_fetch()
+
+      assert {:error, :timeout} =
+               Poll.run(fetch, &terminal?/1,
+                 clock: VirtualClock.new(),
+                 budget_ms: 0,
+                 slow_interval_ms: 10,
+                 timeout_ms: 100
+               )
+
+      # At 0, 10, ..., 100; the wait after the last would pass the deadline.
+      assert :counters.get(calls, 1) == 11
+    end
+
+    test "switches from the fast to the slow interval when the budget is spent" do
+      {calls, fetch} = counting_fetch()
+
+      assert {:error, :timeout} =
+               Poll.run(fetch, &terminal?/1,
+                 clock: VirtualClock.new(),
+                 budget_ms: 30,
+                 fast_interval_ms: 10,
+                 slow_interval_ms: 100,
+                 timeout_ms: 230
+               )
+
+      # Fast at 0, 10, 20, 30, then slow at 130 and 230.
+      assert :counters.get(calls, 1) == 6
+    end
+
+    test "reports the elapsed time of the clock it was given" do
+      fetch =
+        scripted_fetch([{:ok, %{done: false}}, {:ok, %{done: false}}, {:ok, %{done: true}}])
+
+      assert {:ok, %{done: true}, 40} =
+               Poll.run(fetch, &terminal?/1,
+                 clock: VirtualClock.new(),
+                 budget_ms: 0,
+                 slow_interval_ms: 20
+               )
     end
   end
 end

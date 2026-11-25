@@ -39,14 +39,11 @@ defmodule Raxol.Agent.Policy.Grants do
   which `{:cd, cwd}` prevents. On a shared host that is a cross-tenant read
   and write primitive.
 
-  A jail has NO unlock here. It used to accept any `%Sandbox.Shell{}` in the
-  context as evidence of confinement, but that struct is a string matcher:
-  `Sandbox.Shell.none()` satisfied the check and restored an unrestricted
-  shell, and even an allowlist only ever inspected the first token. What
-  would justify re-enabling this is OS-level confinement -- a separate uid,
-  a chroot, a container -- which does not exist here yet. When it does, it
-  gets its own explicit seam rather than reusing a lexical policy's struct
-  as a flag.
+  A jail has no unlock. A `%Sandbox.Shell{}` in the context is not evidence
+  of confinement: it is a string matcher (`Sandbox.Shell.none()` matches
+  everything, and an allowlist inspects only the first token). Only OS-level
+  confinement (a separate uid, a chroot, a container) could justify a shell
+  here, and it would get its own seam.
   """
   @spec shell_jail_allow(map()) :: :ok | {:error, :shell_disabled_in_jail}
   def shell_jail_allow(context) do

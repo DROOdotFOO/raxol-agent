@@ -292,8 +292,6 @@ defmodule Raxol.Agent.Backend.Resolver do
     end
   end
 
-  # -- explicit harness -------------------------------------------------------
-
   defp resolve_explicit(harness, opts) do
     case spec_for(harness) do
       nil ->
@@ -322,13 +320,11 @@ defmodule Raxol.Agent.Backend.Resolver do
     end
   end
 
-  # -- auto detection ---------------------------------------------------------
-
   # Auto-detection never spends money. A provider billed in `:api_credits` is
   # skipped no matter how well configured it is -- including the generic
   # `AI_API_KEY` endpoint, which is someone's prepaid balance too. Naming one
   # explicitly (`harness: :openrouter`) still works and is the
-  # opt-in; `RAXOL_ALLOW_PAID_API=1` restores the old walk-everything order for
+  # opt-in; `RAXOL_ALLOW_PAID_API=1` restores walking every provider for
   # a deployment that wants it.
   defp auto_detect(opts) do
     Enum.find_value(auto_detect_providers(), fn spec ->
@@ -403,8 +399,6 @@ defmodule Raxol.Agent.Backend.Resolver do
     end
   end
 
-  # -- key resolution ---------------------------------------------------------
-
   # `:skip_op` is set only by `provider_diag/2`. The resolution path proper never
   # skips: a user actually starting a turn wants their stored key read, and is
   # willing to wait for an unlock prompt to do it. A diagnostic is not.
@@ -469,8 +463,6 @@ defmodule Raxol.Agent.Backend.Resolver do
     end)
   end
 
-  # -- config building --------------------------------------------------------
-
   defp build_config(harness, key, model, base_url) do
     ExecutorConfig.new(
       harness: harness,
@@ -515,8 +507,6 @@ defmodule Raxol.Agent.Backend.Resolver do
   end
 
   defp base_url_opt(opts), do: Keyword.get(opts, :base_url)
-
-  # -- helpers ----------------------------------------------------------------
 
   defp configured?(harness) do
     match?({:ok, _}, Credentials.fetch(harness)) or not is_nil(op_ref(harness))

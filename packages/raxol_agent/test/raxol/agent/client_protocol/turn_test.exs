@@ -99,7 +99,7 @@ defmodule Raxol.Agent.ClientProtocol.TurnTest do
   test "a prompt for an agent that is not running is agent_not_running", %{root: root, id: id} do
     pipe = serving(@counter, root, id)
     :ok = Session.Supervisor.stop_session(id)
-    Session.await_free(id)
+    Session.Registration.await_free(id)
 
     assert {%{"tag" => "agent_not_running", "reason" => reason}, _log} =
              failed_turn(pipe, id, "get")

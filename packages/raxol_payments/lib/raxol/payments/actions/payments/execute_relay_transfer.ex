@@ -10,18 +10,12 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
   `Raxol.Payments.Actions.Payments.PollRelayStatus`.
 
   `amount` is a human amount of `from_token`. `SpendGate` converts it into the
-  spending policy's unit (`Raxol.Payments.SpendPricing`: a stablecoin pegged
-  to it at par, a token that is not a stablecoin at its USD price from the
-  configured source under a USD policy) and gates and reserves that, or
-  refuses the transfer as `{:unpriced_asset, detail}` before anything is
-  signed or broadcast. A stablecoin pegged to another currency (EURC, EURe,
-  ZCHF under a USD policy) and an unregistered or unpriced source token are
-  refused.
+  policy's unit (`Raxol.Payments.SpendPricing`) and gates and reserves that, or
+  refuses `{:unpriced_asset, detail}` before anything is signed (e.g. EURC under
+  a USD policy, or an unpriced token).
 
-  Tron has no stealth settlement. A stealth or shielded request to a Tron
-  destination fails closed with `{:error, :stealth_unsupported_on_chain}` and
-  must be re-requested with public settlement, rather than silently downgrading
-  the privacy preference to public.
+  Tron has no stealth settlement: a stealth or shielded request to a Tron
+  destination fails `{:error, :stealth_unsupported_on_chain}`, never downgraded.
 
   ## Funding the deposit
 
@@ -50,28 +44,20 @@ defmodule Raxol.Payments.Actions.Payments.ExecuteRelayTransfer do
 
   ## Idempotent recovery
 
-  The `transfer_id` is minted client-side, so a naive re-run after a crash would
-  mint a fresh one, re-quote, and re-sign or re-broadcast -- a double-spend. With
-  a `:checkpoint` store the transfer is checkpointed before the funding step;
-  a re-run of the same logical payment resumes the recorded transfer (returning
-  it to poll) instead of starting a new one. The reused `transfer_id` also lets
-  an idempotent broadcaster dedupe a retried deposit. Without a store the path is
-  unchanged.
+  `transfer_id` is minted client-side, so without a store a re-run after a crash
+  re-quotes and re-funds. With a `:checkpoint` store the transfer is recorded
+  before funding and a re-run resumes it; the reused `transfer_id` also lets an
+  idempotent broadcaster dedupe.
 
   ## Funding in doubt
 
-  Once the signed gasless pull has been sent to execute, or the broadcaster was
-  asked to send the deposit, the solver may already hold the funds. A
-  transport error, timeout, 5xx or raise from execute after a signature, and a
-  broadcaster error, raise, exit or throw (other than `{:error, {:not_sent,
-  reason}}`), leave the outcome unknown. The Action then returns
-  `{:ok, %{transfer_id: id, status: "unknown", reconciling: true, ...}}`: the
-  reservation stays, tagged with the `transfer_id` so a refund seen by
-  `PollRelayStatus` releases it, and the checkpoint stays so a re-run returns
-  the same result instead of signing or sending again. Poll the transfer; do
-  not retry the payment. A 4xx from execute, or a connection that never
-  opened, is a clean rejection: the reservation is released and the checkpoint
-  deleted, as for any failure before a signature or broadcast.
+  After a signed pull reaches execute or the broadcaster is asked to send, a
+  transport error, timeout, 5xx or raise from execute, or a broadcaster failure
+  other than `{:error, {:not_sent, reason}}`, returns
+  `{:ok, %{transfer_id: id, status: "unknown", reconciling: true, ...}}`. The
+  reservation (tagged with `transfer_id`, released by a refund `PollRelayStatus`
+  sees) and checkpoint stay. **Poll; do not retry the payment.** A 4xx from
+  execute, or a connection that never opened, releases both.
   """
 
   @compile {:no_warn_undefined, Raxol.Agent.Action}

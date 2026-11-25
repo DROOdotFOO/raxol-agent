@@ -238,8 +238,6 @@ defmodule Raxol.AgentClientProtocol.Transport.ReassemblyTest do
     end
   end
 
-  # -- Helpers --------------------------------------------------------------
-
   defp frame_generator do
     gen all(
           method <- member_of(["session/update", "initialize", "session/prompt"]),

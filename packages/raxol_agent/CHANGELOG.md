@@ -5,6 +5,101 @@ All notable changes to `raxol_agent` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - Unreleased
+
+### Added
+
+- **`Raxol.Agent.Secret`**, the one credential wrapper for this repository: it
+  renders as `#Raxol.Agent.Secret<redacted>`, has `reveal/1`,
+  `with_revealed/2` (a raise inside becomes `{:error,
+  :secret_operation_crashed}`) and `redact_status/2` for `format_status/1`.
+  `Raxol.Payments.Secret` and `Raxol.Earn.Secret` delegate to it.
+- **`Raxol.Agent.ChildEnv`**, `Raxol.Core.ChildEnv` plus this package's own
+  names, for children that run
+  model- or third-party-chosen code. `secrets/0` leaves out `pass:` names;
+  `unset_names/0` is the full list for a spawner that takes names (the ACP
+  stdio transport's `:unset_env`).
+- `Raxol.Agent.Stream.react/2` `{:tool_result, _}` events carry the `id` of
+  the `:tool_use` they answer, and `Raxol.Agent.StreamPump` journals it as
+  the `tool_result` item's `call_id`.
+
+### Changed
+
+- Requires, when present, `phoenix ~> 1.8 and >= 1.8.17` for CVE-2026-128361
+  and CVE-2026-129344, `phoenix_live_view ~> 1.2 and >= 1.2.15` for
+  CVE-2026-126334, and `plug ~> 1.20 and >= 1.20.4` for CVE-2026-120287. All
+  three arrive through `raxol` and `raxol_mcp`; the optional entries only bound
+  the version a consumer resolves.
+
+- **Breaking: no silent `Backend.Mock` fallback.** `Raxol.Agent.Stream.run/2`
+  and `react/2` with neither an `:executor` nor a `:backend` (including an
+  `auto_provider: true` that resolves nothing) now yield `{:error,
+  :no_backend}` instead of a mock answer, and an executor no backend can
+  serve yields `{:error, {:backend_unavailable, reason}}` instead of falling
+  back to `:backend` or Mock. A malformed `:executor` or a `:backend` that is
+  not a module yields `{:error, {:invalid_executor, _}}` or `{:error,
+  {:invalid_backend, _}}`. A scheduled fire with no provider returns that
+  error. `Raxol.Agent.Process` no longer defaults `:backend` to Mock; a
+  `:strategy` without a `:backend` refuses to start with
+  `{:missing_option, :backend}`.
+- **Breaking: directive shell commands no longer inherit provider API keys
+  or any other credential-named variable.** `Raxol.Agent.ChildEnv` unsets
+  everything `Raxol.Core.ChildEnv` (raxol_core 2.9.1) does -- every name
+  with a credential segment (`_KEY`, `_TOKEN`, `_SECRET`, `_PASSWORD`,
+  `_PASS`, `_PAT`, `_SEED_PHRASE`, `_DSN`, ...), `OP_SESSION_*` and the
+  Bitwarden and LastPass sessions, wallet seeds, a database, broker or mail
+  URL, a webhook URL, `RPC` anywhere but in `GRPC`, `SSH_AUTH_SOCK` -- plus
+  the `Backend.Catalog` key variables, `PROTON_UID` and the earn/order URLs. This reverses 3.0.0's "provider API keys are not
+  scrubbed". It ships in a minor release because it removes access rather
+  than changing an API, and the old behaviour exposed every key to a
+  prompt-injected command. `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` and
+  the AWS credentials are unset on purpose; a command
+  that needs one gets it through the directive's own `env`
+  (`Directive.shell(cmd, env: [{"GH_TOKEN", token}])`, that command only) or,
+  node-wide, `config :raxol_core, Raxol.Core.ChildEnv, pass: ["GH_TOKEN"]`.
+- **Lumo keeps a refreshed Proton session in the node** (`:persistent_term`,
+  wrapped) instead of `System.put_env`, so children no longer inherit the
+  refreshed token. A failed refresh of that same session drops it.
+- `Raxol.Agent.Process` hides `backend_config` from `Inspect` and
+  `:sys.get_status`, and reduces a crash's `:reason` and last `:message` in
+  crash reports (`redact_status(status, keys, failure: true)`).
+- `Directive.Shell` renders its `env` names but not their values.
+- Requires `raxol_agent_client_protocol ~> 0.2.0`, whose stdio transport
+  scrubs a spawned agent's environment with `Raxol.Core.ChildEnv`, and
+  `raxol_core ~> 2.9 and >= 2.9.1`, whose `Raxol.Core.ChildEnv` this
+  delegates to (2.10 and later are allowed).
+  2.9.1's pattern covers the `_PASS`, `_SEED_PHRASE`, `_DSN`, `SEED_PHRASE`
+  and `OP_SESSION_*` shapes 2.9.0 missed, so `Raxol.Agent.ChildEnv` no
+  longer adds a pattern of its own (a test checks that every name the old
+  one matched is still denied). An ACP agent still inherits this package's
+  named list (the
+  Catalog key variables, `ORDER_*` URLs, `PROTON_UID`, the sidecar URL)
+  unless its spawner passes `unset_env: Raxol.Agent.ChildEnv.unset_names()`.
+  That transport ignores `Raxol.Core.ChildEnv`'s `pass:`, so a name passed
+  to directive shells is not handed to ACP agents.
+  **Upgrade note:** 2.9 also rejects an unknown or repeated key in
+  `config :raxol_core, Raxol.Core.ChildEnv` (a misspelt `extra_secret:`,
+  say). A shell directive then answers `%{exit_status: :error, output:
+  message}` instead of running.
+- `Backend.HTTP.stream/2` ends with `{:error, message}` when a response
+  passes 128 MiB of wire bytes in total (every redirect hop included,
+  counted as it arrives, so the cap holds while the stream is not being
+  read), its unframed remainder passes 1 MiB, its
+  streamed tool-call arguments pass 1 MiB, or it streams more than 128 tool
+  calls (`:max_stream_bytes`, `:max_sse_buffer_bytes`,
+  `:max_tool_call_bytes`, `:max_tool_calls`). A halted stream now kills its
+  request process and drops what it sent; it used to keep reading the
+  response into the caller's mailbox. Only a 2xx body is streamed, so a
+  redirect's or an error's body no longer surfaces as model output.
+  Enumerating the stream outside the process that called `stream/2` (which
+  never received anything) now raises `ArgumentError` and stops the request.
+- `Backend.Credentials.create_item/3` writes its 1Password template in a
+  fresh, randomly named 0700 directory under `$XDG_RUNTIME_DIR`, else the
+  system temp directory, using either only when it is ours and 0700 or
+  sticky; it removes the directory whatever happens, and sweeps ones a
+  killed VM left behind once they are older than the op timeout plus a
+  minute (at least ten minutes).
+
 ## [3.1.0] - 2026-11-14
 
 ### Changed

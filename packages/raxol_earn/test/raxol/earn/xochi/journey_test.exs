@@ -15,7 +15,7 @@ defmodule Raxol.Earn.Xochi.JourneyTest do
   2. destination-inventory exhaustion -> the fillable subset settles, the rest
      quote `can_solve: false` (the L1-heavy USDC finding);
   3. an unavailable origin (Robinhood/USDG) 503s while EVM corridors still quote
-     (axol-io/Riddler#419), as a red test rather than a live surprise.
+     as a red test rather than a live surprise.
   """
 
   use ExUnit.Case, async: false

@@ -48,8 +48,6 @@ defmodule Raxol.Agent.Orchestrator do
     height: Raxol.Core.Defaults.terminal_height()
   }
 
-  # -- Client API --------------------------------------------------------------
-
   @doc "Start the orchestrator."
   @spec start_link(keyword()) :: {:ok, pid()}
   def start_link(opts \\ []) do
@@ -142,8 +140,6 @@ defmodule Raxol.Agent.Orchestrator do
   def subscribe(orchestrator) do
     GenServer.call(orchestrator, {:subscribe, self()})
   end
-
-  # -- Server ------------------------------------------------------------------
 
   @impl Raxol.Core.Behaviours.BaseManager
   def init_manager(_opts) do
@@ -374,8 +370,6 @@ defmodule Raxol.Agent.Orchestrator do
   end
 
   def handle_manager_info(_msg, %__MODULE__{} = state), do: {:noreply, state}
-
-  # -- Private -----------------------------------------------------------------
 
   defp start_agent_process(agent_id, agent_module, opts) do
     agent_opts =

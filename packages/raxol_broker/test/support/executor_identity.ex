@@ -3,10 +3,9 @@ defmodule Raxol.Broker.Test.ExecutorIdentity do
   Impersonate `Raxol.Broker.Executor` in the calling test process.
 
   The journal only grants its claim to a process whose proc_lib initial call
-  is `{Raxol.Broker.Executor, :init, 1}`, and `Raxol.Broker.Executor.Place`
-  only verifies receipts against the key in the Executor's own process
-  dictionary. Tests that drive the journal or `Place` directly need both, so
-  this module writes them into the caller's process dictionary by hand.
+  is `{Raxol.Broker.Executor, :init, 1}`. Tests that drive the journal or
+  `Raxol.Broker.Executor.Place` directly need that claim, so this module
+  writes the initial call into the caller's process dictionary by hand.
 
   That is exactly the deliberate-subversion path the broker's threat model
   excludes: the BEAM cannot stop code that writes another module's private
@@ -21,19 +20,12 @@ defmodule Raxol.Broker.Test.ExecutorIdentity do
   @doc """
   Make the calling process look like an Executor and claim `journal` for it.
 
-  Sets `:"$initial_call"` to `{Raxol.Broker.Executor, :init, 1}`; with
-  `opts[:key]`, also puts that receipt key where the Executor keeps its own.
-  Asserts the claim succeeds.
+  Sets `:"$initial_call"` to `{Raxol.Broker.Executor, :init, 1}` and
+  asserts the claim succeeds.
   """
-  @spec assume!(Journal.server(), keyword()) :: :ok
-  def assume!(journal, opts \\ []) do
+  @spec assume!(Journal.server()) :: :ok
+  def assume!(journal) do
     Process.put(:"$initial_call", {Raxol.Broker.Executor, :init, 1})
-
-    case Keyword.fetch(opts, :key) do
-      {:ok, key} -> Process.put({Raxol.Broker.Executor, :receipt_key}, key)
-      :error -> :ok
-    end
-
     assert Journal.claim(journal) == :ok
     :ok
   end

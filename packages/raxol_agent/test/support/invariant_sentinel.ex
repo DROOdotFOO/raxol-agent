@@ -9,10 +9,8 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
       end
 
   An invariant event is one that can only fire if this library is wrong (see
-  `Raxol.Agent.Telemetry`). Before this module existed, such an event was
-  emitted, logged, and ignored -- which is how a turn that delivered zero
-  content shipped while the library was warning about it on stderr. A guard
-  that nothing asserts on is not a guard.
+  `Raxol.Agent.Telemetry`). This module fails the test when one fires, so the
+  warning cannot be emitted, logged and ignored.
 
   ## Declaring an invariant on purpose
 
@@ -94,8 +92,6 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
     :ok
   end
 
-  # -- verdict ----------------------------------------------------------------
-
   defp verdict(handler_id, expected) do
     fired = :ets.lookup(@table, handler_id)
     :ets.delete(@table, handler_id)
@@ -150,8 +146,6 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
     """
   end
 
-  # -- tag parsing ------------------------------------------------------------
-
   defp expected_invariants(context) do
     context
     |> Map.get(:expect_invariant)
@@ -200,8 +194,6 @@ defmodule Raxol.Agent.Test.InvariantSentinel do
         """)
     end
   end
-
-  # -- collector --------------------------------------------------------------
 
   # One process for the whole run, owning the public table. It holds no state
   # of its own: it exists only so the table outlives every test process.

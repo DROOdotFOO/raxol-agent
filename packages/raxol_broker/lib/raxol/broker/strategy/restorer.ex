@@ -13,7 +13,7 @@ defmodule Raxol.Broker.Strategy.Restorer do
 
   require Logger
 
-  alias Raxol.Broker.Strategy
+  alias Raxol.Broker.{Redact, Strategy}
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
@@ -27,7 +27,7 @@ defmodule Raxol.Broker.Strategy.Restorer do
 
     with {:error, reason} <- Strategy.Supervisor.restore(restore_opts) do
       Logger.error(
-        "[Broker.Strategy] strategies not restored: #{inspect(reason, structs: false)}"
+        "[Broker.Strategy] strategies not restored: #{inspect(Redact.collapse(reason), structs: false)}"
       )
     end
 

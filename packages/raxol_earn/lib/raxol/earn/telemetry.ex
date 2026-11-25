@@ -3,64 +3,34 @@ defmodule Raxol.Earn.Telemetry do
   The registry of every `:telemetry` event `raxol_earn` emits, each classified
   as exactly one of `:invariant`, `:peer` or `:operational`.
 
-  ## Why this exists
+  `:invariant` events are armed by `Raxol.Core.Telemetry.InvariantSentinel`,
+  which fails any test in which one fires undeclared. `:peer` (a remote party
+  misbehaved) and `:operational` (normal life) are recorded, not enforced. If a
+  peer, the network, the chain, the filesystem, the clock or a user can cause
+  it, it is NOT an invariant: a false invariant makes the suite flaky.
 
-  A telemetry event is only a guard if something fails when it fires. The
-  classification is what makes that possible: `:invariant` events are armed by
-  `Raxol.Core.Telemetry.InvariantSentinel`, which fails any test in which one
-  fires undeclared. `:peer` (a remote party misbehaved) and `:operational`
-  (normal life) are recorded but not enforced.
+  ## No invariants yet
 
-  The criterion, applied literally: if a peer, the network, the chain, the
-  filesystem, the clock, or a user can cause it, it is NOT an invariant. Err
-  toward `:peer`/`:operational` -- a false invariant makes the suite flaky, and
-  a flaky guard gets deleted, which is strictly worse than a missed one.
-
-  ## Finding: this package currently has no expressible invariant
-
-  Every entry below is `:operational`, and that is a fact about this package's
-  telemetry vocabulary rather than a claim that nothing here can go wrong.
-  `raxol_earn` emits BROAD CHANNELS, not one-event-per-condition: the ACP job
-  state machine, both runtimes and the Xochi solver each publish a single event
-  name and put the specific occurrence in metadata.
-
-  The sentinel keys on the EVENT NAME (that is what `:telemetry.attach_many/4`
-  subscribes to), so a channel that carries the happy path cannot be enforced,
-  no matter how alarming an individual metadata value looks. Concretely, for
-  `[:raxol, :earn, :job_session, :transition]`:
-
-    * `Raxol.Earn.JobSession.commit_status/4` is the only emit site, and it is
-      reached only AFTER `check_role/3`, `Status.target_status/1` and
-      `Status.validate/2` all pass -- so every LEGAL transition fires it;
-    * an ILLEGAL transition never reaches the emit site at all. It short-circuits
-      to `{:reply, {:error, reason}, state}` and emits nothing, so "impossible
-      transition" is not merely indistinguishable from a legal one here, it is
-      invisible to telemetry;
-    * `apply_event/3` deliberately bypasses adjacency validation (an observed
-      on-chain/SSE status is authoritative and an agent joining mid-stream may
-      jump), and reports through the same name with `action: :apply_event`.
-
-  Expressing "the state machine took a transition it cannot take" would need a
-  DISTINCT event name emitted from the rejection branch. Adding one is out of
-  scope for this registry; recording the gap is not.
+  Every entry is `:operational`. `raxol_earn` emits broad channels (one event
+  name per state machine, runtime or solver, with the occurrence in metadata),
+  and the sentinel keys on event names, so a channel carrying the happy path
+  cannot be enforced. For `[:raxol, :earn, :job_session, :transition]`:
+  `JobSession.commit_status/4` emits only after validation passes, an illegal
+  transition emits nothing, and `apply_event/3` (observed on-chain status,
+  unvalidated) reports with `action: :apply_event`. An invariant would need a
+  distinct event from the rejection branch.
 
   ## Dynamic families
 
   The buyer/seller `queue` and `resync` modules build the last segment at run
-  time (`:telemetry.execute([:raxol, :earn, :buyer, :queue, suffix], ...)`), so
-  a source scan cannot enumerate the names. They are declared as `dynamic:`
-  families with the suffix range recorded per family below. A dynamic family
-  cannot be `:invariant` -- the sentinel cannot subscribe to a name it cannot
-  spell -- and each of these four is `:operational` as an umbrella even though
-  some members (a drain against an unreachable job API, a drop of a malformed
-  inbound event) are `:peer` in isolation. `:peer` for the whole family would
-  misdescribe the healthy-path members that share the prefix.
+  time, so they are declared as `dynamic:` families with their suffix ranges. A
+  dynamic family cannot be `:invariant` (the sentinel cannot subscribe to it);
+  these four are `:operational` as umbrellas.
 
-  ## Completeness is asserted, not trusted
+  ## Completeness
 
-  `test/raxol/earn/telemetry_registry_test.exs` scans this package's `lib/` and
-  fails if an emitted event is missing here, so a new event cannot be added
-  without someone classifying it.
+  `test/raxol/earn/telemetry_registry_test.exs` scans `lib/` and fails on any
+  emitted event missing here.
   """
 
   # Each entry carries WHY it lands where it does, read off the emit site
@@ -99,7 +69,12 @@ defmodule Raxol.Earn.Telemetry do
       # the healthy signal; its ABSENCE is the alarm, and absence is what
       # external monitoring watches. Emitted via the `@telemetry_event`
       # attribute, which is why the registry test also does a text-level scan.
-      [:raxol, :earn, :xochi, :solver, :heartbeat] => :operational
+      [:raxol, :earn, :xochi, :solver, :heartbeat] => :operational,
+
+      # PEER. `Transport.SSE` emits it when the ACP server sent an event larger
+      # than `:max_sse_buffer_bytes`, which was dropped unrecovered. Only the
+      # remote party can cause it.
+      [:raxol, :earn, :transport, :sse_dropped] => :peer
     },
     # Umbrella :operational (the `dynamic:` default). Suffixes recorded so a
     # future reader knows exactly what each family hides.

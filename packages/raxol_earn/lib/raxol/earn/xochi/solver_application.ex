@@ -90,7 +90,7 @@ defmodule Raxol.Earn.Xochi.SolverApplication do
     # building the Authorization header.
     xochi_config = %{
       base_url: System.fetch_env!("XOCHI_BASE_URL"),
-      auth_token: Raxol.Payments.Secret.new(System.fetch_env!("XOCHI_AUTH_TOKEN"))
+      auth_token: Raxol.Agent.Secret.new(System.fetch_env!("XOCHI_AUTH_TOKEN"))
     }
 
     settle_fn = Settler.build(xochi_config: xochi_config)
@@ -149,8 +149,8 @@ defmodule Raxol.Earn.Xochi.SolverApplication do
   end
 
   # Delegated (Privy + Alchemy managed wallet) when a wallet id + address are set;
-  # otherwise the legacy local-EOA path. Delegated mode holds NO signing key in the
-  # BEAM -- the sidecar does, from its own env.
+  # otherwise the legacy local-EOA path. Delegated mode signs nothing in the BEAM --
+  # the sidecar does, from its own env; the BEAM only derives its MAC key from it.
   defp privy_mode? do
     present?(System.get_env("RAXOL_ACP_WALLET_ID")) and
       present?(System.get_env("RAXOL_ACP_WALLET_ADDRESS"))
@@ -172,17 +172,18 @@ defmodule Raxol.Earn.Xochi.SolverApplication do
           chains: %{@chain_id => rpc_url}
         )
 
-      # Start the sidecar FIRST (its init blocks until GET /health is 200), so Auth and
+      # Start the sidecar FIRST (its init blocks until an authenticated health check
+      # passes for this wallet), so Auth and
       # everything downstream only start once delegated signing is actually available.
       {provider, address, [{Raxol.Earn.SignerSidecar, []}]}
     else
       # Secret-handling invariant -- KEEP THIS if you reuse the solver pattern. The raw
       # key exists only as this transient local; `JSONRPC.new/1` immediately wraps it in a
-      # `Raxol.Earn.Secret` before it enters the provider config. That wrapper redacts under
+      # `Raxol.Agent.Secret` before it enters the provider config. That wrapper redacts under
       # `Inspect`, so the key never renders into an OTP/SASL crash report even though the
       # provider is passed as a supervised child's start arg (a plain unwrapped key here
-      # WOULD leak on any boot-time child crash -- see Secret's moduledoc). Do not log or
-      # interpolate `private_key`; only `Secret.reveal/1` at a sign call site unwraps it.
+      # WOULD leak on any boot-time child crash). Do not log or interpolate `private_key`;
+      # only `Secret.with_revealed/2` at a sign call site unwraps it.
       private_key = decode_pk!(System.fetch_env!("RAXOL_ACP_AGENT_PRIVATE_KEY"))
 
       provider =

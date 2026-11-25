@@ -182,6 +182,7 @@ defmodule Raxol.Agent.Sandbox.Shell do
   end
 
   @doc false
+  @spec binary_name(String.t()) :: String.t()
   def binary_name(command) when is_binary(command) do
     command
     |> String.trim()

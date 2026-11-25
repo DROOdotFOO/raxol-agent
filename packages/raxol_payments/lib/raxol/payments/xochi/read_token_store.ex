@@ -5,7 +5,8 @@ defmodule Raxol.Payments.Xochi.ReadTokenStore do
   # The principal binding prevents a model turn or another agent sharing the
   # checkpoint store from presenting someone else's capability.
 
-  alias Raxol.Payments.{Checkpoint, Secret}
+  alias Raxol.Agent.Secret
+  alias Raxol.Payments.Checkpoint
   alias Raxol.Payments.Xochi.Schemas.ExecuteResponse
 
   @token_ttl_seconds 3_600

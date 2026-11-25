@@ -21,7 +21,7 @@ defmodule Raxol.Earn.TestSupport.SocketIOTestServer.Handler do
 
   defstruct connected?: false, auth: nil
 
-  # -- :cowboy_websocket callbacks --
+  # :cowboy_websocket callbacks
 
   @impl true
   def init(req, _state) do
@@ -90,8 +90,6 @@ defmodule Raxol.Earn.TestSupport.SocketIOTestServer.Handler do
     SocketIOTestServer.deregister_handler(self())
     :ok
   end
-
-  # -- Helpers --
 
   defp schedule_ping(interval_ms) do
     Process.send_after(self(), :ping_tick, interval_ms)

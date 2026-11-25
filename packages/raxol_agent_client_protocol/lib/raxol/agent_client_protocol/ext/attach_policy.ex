@@ -133,6 +133,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
   require Logger
 
   alias Raxol.AgentClientProtocol.Ext.AttachPolicy.Grant
+  alias Raxol.AgentClientProtocol.Rpc
 
   @default_timeout_ms 5_000
   @default_supervisor Raxol.AgentClientProtocol.Ext.AttachPolicy.TaskSupervisor
@@ -188,8 +189,6 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
   @spec deny_wire() :: %{code: integer(), message: String.t()}
   def deny_wire, do: %{code: -32_000, message: "attach denied"}
 
-  # -- internals --------------------------------------------------------------
-
   @spec start_task(GenServer.server(), module(), map()) :: {:ok, Task.t()} | :error
   defp start_task(sup, policy, ctx) do
     {:ok, Task.Supervisor.async_nolink(sup, fn -> policy.authorize_attach(ctx) end)}
@@ -237,7 +236,7 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
       [:raxol, :acp, :attach, :granted],
       %{},
       %{
-        session_id: ctx[:session_id],
+        session_id: Rpc.safe(ctx[:session_id]),
         surface: ctx[:surface],
         via: grant.via
       }
@@ -250,14 +249,14 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
     # Reason to telemetry + Logger (stderr) ONLY — never to the wire (anti-oracle).
     Logger.warning(
       "acp attach denied: #{inspect(reason)} " <>
-        "session=#{inspect(ctx[:session_id])} surface=#{inspect(ctx[:surface])}"
+        "session=#{Rpc.loggable(ctx[:session_id])} surface=#{inspect(ctx[:surface])}"
     )
 
     telemetry(
       [:raxol, :acp, :attach, :denied],
       %{},
       %{
-        session_id: ctx[:session_id],
+        session_id: Rpc.safe(ctx[:session_id]),
         surface: ctx[:surface],
         reason: reason
       }
@@ -266,16 +265,8 @@ defmodule Raxol.AgentClientProtocol.Ext.AttachPolicy.Runner do
     deny
   end
 
-  # Emit telemetry only when :telemetry is available; apply/3 keeps it an
-  # optional, un-declared dependency (no compile-time reference).
-  @spec telemetry([atom()], map(), map()) :: :ok
-  defp telemetry(event, measurements, metadata) do
-    if Code.ensure_loaded?(:telemetry) do
-      apply(:telemetry, :execute, [event, measurements, metadata])
-    end
-
-    :ok
-  end
+  defp telemetry(event, measurements, metadata),
+    do: Raxol.AgentClientProtocol.Telemetry.execute(event, measurements, metadata)
 
   @spec supervisor() :: GenServer.server()
   defp supervisor do

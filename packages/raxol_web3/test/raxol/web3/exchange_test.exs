@@ -258,8 +258,6 @@ defmodule Raxol.Web3.ExchangeTest do
     end
   end
 
-  # -- scripted peers ----------------------------------------------------------
-
   defp flood(_sock, _chunk, 0), do: :ok
 
   defp flood(sock, chunk, remaining) do

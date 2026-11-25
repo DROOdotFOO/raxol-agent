@@ -1,16 +1,7 @@
-# Drift guard (migration P5, confinement-seam-proposal option b): binds
-# `Raxol.AgentClientProtocol.Client.FsSandbox.resolve/2` to the SAME
-# raxol_core-authored shared boundary vectors that gate
-# `Raxol.Core.Boundary.Path.confine/3` (`test/support/boundary_vectors/
-# path_{reject,accept}_vectors.json`, copied here verbatim -- see their own
-# `description` field). `FsSandbox` is an intentionally independent
-# reimplementation of the same lexical + symlink confinement rules (this
-# package cannot depend on raxol_core); this test is what keeps the two from
-# silently diverging. Vectors carrying `ref_format` are a `Path.confine`-only
-# gate (regex-constrained ref names under a `blobs/`/`snapshots/` root) that
-# `FsSandbox` does not implement at all -- skipped, not asserted either way,
-# but accounted for by a dedicated "was skipped" test so a vendored-file edit
-# that adds/removes one is still noticed.
+# Binds `FsSandbox.resolve/2` to the shared boundary vectors used by
+# `Raxol.Core.Boundary.Path.confine/3` (copied under
+# `test/support/boundary_vectors/`), so the two implementations cannot drift.
+# Vectors with `ref_format` are `confine`-only and are skipped, but counted.
 defmodule Raxol.AgentClientProtocol.Client.FsSandboxVectorsTest do
   use ExUnit.Case, async: false
 
@@ -67,7 +58,6 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandboxVectorsTest do
     end
   end
 
-  # -- MUST-REJECT vectors -----------------------------------------------------
   #
   # Vector generation itself (the `for`/`Jason.decode!` below) runs at
   # compile time, directly in the module body -- it cannot call this
@@ -115,8 +105,6 @@ defmodule Raxol.AgentClientProtocol.Client.FsSandboxVectorsTest do
       assert @reject_skipped_count > 0
     end
   end
-
-  # -- MUST-ACCEPT vectors ------------------------------------------------------
 
   describe "MUST-ACCEPT vectors (path_accept_vectors.json)" do
     all_accept_vectors =

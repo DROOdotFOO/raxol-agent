@@ -3,91 +3,49 @@ defmodule Raxol.Earn.Xochi.OriginPull do
   Decide, and grant, the origin-pull allowance a Xochi quote needs before the
   buyer signs it.
 
-  Every pulling quote serves a `pull_authorization` the buyer signs so the solver
-  can collect the origin funds. Two rails, with different on-chain guarantees:
+  Two rails, read from the quote's `payment_method` (never guessed from the
+  token; a smart-account buyer of USDC pulls through Permit2, an EOA through
+  ERC-3009):
 
-    * `erc3009` -- the signed authorization names the recipient and the token
-      enforces `msg.sender == to`, so the chain bounds the destination. No
-      standing allowance exists to grant.
-    * `permit2` -- the buyer must already hold a standing ERC-20 allowance for
-      the universal Permit2 contract, and the `spender` named in the permit
-      chooses the recipient at call time. There is NO on-chain recipient guard.
+    * `erc3009` -- the authorization names the recipient and the token enforces
+      `msg.sender == to`. No standing allowance to grant.
+    * `permit2` -- needs a standing ERC-20 allowance for Permit2, and the
+      permit's `spender` picks the recipient at call time. No on-chain recipient
+      guard.
 
-  The rail is read from the quote's `payment_method`, never guessed from the
-  token: a smart-account (ERC-1271) buyer pulls USDC through Permit2, where an
-  EOA buyer of the same token pulls through ERC-3009.
+  So `allowance_plan/3` refuses a Permit2 quote unless the operator pinned the
+  expected spender AND the quote served exactly that spender.
 
-  Because Permit2 has no on-chain recipient guard, the pinned spender is the only
-  destination control on that rail. `allowance_plan/3` therefore refuses a Permit2
-  quote unless the operator named the spender they expect AND the quote served
-  exactly that spender. Granting an allowance towards an unpinned spender is the
-  one thing this module will not do.
+  **That refusal binds only callers of this module.** The signing layer's
+  `validate_permit2_pull/2` accepts any spender in `:pull_solver_allowlist`, which
+  defaults to `Raxol.Payments.Xochi.PullContracts.pull_recipients/0` (including the
+  Permit2 proxy). `XochiProtocol.quote_and_sign/3` called directly will sign such
+  a pull with no operator pin. New callers must route through `allowance_plan/3`
+  before signing.
 
-  ## That refusal binds this module's callers, and no one else
+  ## Cross-checks
 
-  Read the sentence above as scoped, because the signing layer underneath applies
-  a WEAKER rule. `Raxol.Payments.Protocols.Xochi`'s `validate_permit2_pull/2` asks
-  only that the spender be in `:pull_solver_allowlist`, and both
-  `Raxol.Payments.Protocols.Xochi.origin_pull_pin_env_config!/0` and the live
-  solver-fee gate populate that list from
-  `Raxol.Payments.Xochi.PullContracts.pull_recipients/0` -- the checked-in mirror,
-  which contains the Permit2 pull proxy. So `XochiProtocol.quote_and_sign/3`
-  called directly WILL sign a Permit2 pull naming that proxy with no operator
-  input at all.
+  The permit's `domain.chainId` and `permitted.token` must match the ordered
+  origin chain and token, and `permitted.amount` must not exceed the intended
+  origin amount; otherwise the permit is refused.
 
-  That is deliberate at this stage and not something this module can close from
-  here: a mirror of a deployment record is a reasonable default for a server that
-  has no operator at the keyboard, and tightening it would stop existing
-  deployments settling. What it means for anyone adding a new caller is that the
-  operator pin arrives with THIS module and not with the signature. Route through
-  `allowance_plan/3` before signing, or the pin is simply absent.
+  ## Bounded allowance
 
-  ## The served permit decides nothing on its own
+  The approve is for exactly this intent's pull, not a standing max: the signer
+  is an agent signing whatever a quote serves, so a max approve would expose the
+  whole balance. That costs one approve per run. An allowance already large
+  enough (including an out-of-band max) is left alone.
 
-  A quote is served by a remote solver, so every field the allowance depends on is
-  cross-checked against what the OPERATOR asked for before any of it is acted on:
-  the permit's `domain.chainId` and `permitted.token` must be the origin chain and
-  token of the transfer being ordered, and `permitted.amount` must not exceed the
-  origin amount the operator intended. A permit that disagrees is refused rather
-  than approved for, because the allowance is granted on the origin chain for the
-  origin token and would otherwise be sized by the counterparty.
+  ## When the grant happens
 
-  ## The allowance is bounded, not a standing max
+  `allowance_plan/3` refuses before signing. The grant can wait until settlement:
 
-  The conventional Permit2 pattern is one max ERC-20 approve per token, on the
-  reasoning that each `PermitWitnessTransferFrom` signature carries its own
-  spender/amount/deadline and is therefore the real bound. That reasoning assumes
-  a human reviews each signature. Here the signer is an agent's delegated
-  authority signing whatever a quote serves, so a standing max approve would turn
-  any single bad signature into a loss of the whole origin balance.
+    * `ensure_allowance/4` broadcasts the approve itself;
+    * `allowance_status/3` + `approve_calls/1` return the approve as calls to
+      batch into an existing write, for sponsored ERC-4337 buyers whose paymaster
+      refuses a standalone approve.
 
-  So the approve is for exactly this intent's authorized pull, which caps the
-  blast radius at the amount already being ordered. It costs one approve per run,
-  since the pull spends the allowance down to zero. An allowance that is already
-  large enough -- including a standing max granted out of band -- is left alone
-  and sends nothing, so an operator who prefers the conventional pattern is not
-  fought, only never given it by default.
-
-  ## The decision is early; the effect need not be
-
-  Refusing happens before the signature -- an allowance towards an unverified
-  spender is what this exists to prevent, so `allowance_plan/3` runs while there
-  is still nothing signed to regret. The GRANT is a separate question, because
-  the allowance is not needed until the solver pulls, which is at settlement.
-
-  Two effect shapes, for two kinds of caller:
-
-    * `ensure_allowance/4` broadcasts the approve on its own. Right for a buyer
-      that can simply send a transaction.
-    * `allowance_status/3` + `approve_calls/1` hand the approve back as calls to
-      batch into a write the caller was already making. Right for a sponsored
-      ERC-4337 buyer, whose paymaster refuses a standalone approve to a token
-      contract -- and better besides, since batching lands the allowance in the
-      same transaction rather than an earlier one that could be the only leg to
-      land.
-
-  Both are bounded by the same plan and both send nothing when the allowance
-  already covers the pull.
+  Both send nothing when the allowance already covers the pull.
   """
 
   alias Raxol.Earn.Onchain.Permit2Approver
@@ -347,8 +305,6 @@ defmodule Raxol.Earn.Xochi.OriginPull do
     so check the origin chain's RPC and whether the buyer can send a UserOp there.
     """
   end
-
-  # -- Internal --
 
   defp permit2_plan(_pull, pinned, _origin) when pinned in [nil, ""],
     do: {:error, :unpinned_permit2_spender}

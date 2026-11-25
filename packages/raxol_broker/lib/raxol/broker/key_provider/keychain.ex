@@ -111,8 +111,27 @@ defmodule Raxol.Broker.KeyProvider.Keychain do
         _gone -> nil
       end
 
-    true = Port.command(port, "add-generic-password -s #{@service} -a #{@account} -w #{hex}\n")
+    case send_command(port, "add-generic-password -s #{@service} -a #{@account} -w #{hex}\n") do
+      :ok ->
+        await_add(port, os_pid, timeout)
 
+      # Drained, so its exit status does not land in the caller's mailbox.
+      :closed ->
+        _ = await_exit(port, System.monotonic_time(:millisecond) + timeout)
+        {:error, {:keychain_unavailable, :port_closed}}
+    end
+  end
+
+  # A port that already exited makes `Port.command/2` raise badarg, and the
+  # crash report would print its arguments: the hex wrapping key.
+  defp send_command(port, command) do
+    Port.command(port, command)
+    :ok
+  rescue
+    ArgumentError -> :closed
+  end
+
+  defp await_add(port, os_pid, timeout) do
     case await_exit(port, System.monotonic_time(:millisecond) + timeout) do
       {:ok, status} when status in [0, @duplicate] ->
         :ok

@@ -10,6 +10,13 @@ defmodule Raxol.AgentClientProtocol.RpcTest do
     assert RequestId.display(1) == "1"
     assert RequestId.display(-1) == "-1"
     assert RequestId.display("abc") == "abc"
+    assert RequestId.display("a\n[error] forged") == ~S(a\n[error] forged)
+    assert "abc" |> String.duplicate(100) |> RequestId.display() |> String.length() == 128
+    assert RequestId.display(<<97, 98, 255, 10>>) == "<binary>"
+    assert RequestId.display("a\0b") == ~S(a\0b)
+    assert RequestId.display("x\x1F\x7F") == ~S(x\x1F\d)
+    combining = "a" <> String.duplicate("\u0301", 5_000)
+    assert byte_size(RequestId.display(combining)) <= 600
   end
 
   test "RequestId round-trip" do
@@ -101,8 +108,6 @@ defmodule Raxol.AgentClientProtocol.RpcTest do
     json_str = ~s({"jsonrpc":"1.0","method":"test"})
     assert {:error, :invalid_jsonrpc_version} = Message.decode(json_str)
   end
-
-  # -- Defect-fix regression coverage ---------------------------------------
 
   describe "id type preservation matrix" do
     test "integer id round-trips as integer through Request" do

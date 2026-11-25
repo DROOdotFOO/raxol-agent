@@ -20,7 +20,7 @@ defmodule Raxol.Earn.Xochi.SolverAgentPropertyTest do
 
   @fundable [:budget_proposed, :awaiting_fund]
 
-  # -- budget_for/2 --
+  # budget_for/2
 
   property "the storefront fee never exceeds the transfer for a fractional fee" do
     check all(
@@ -48,7 +48,7 @@ defmodule Raxol.Earn.Xochi.SolverAgentPropertyTest do
     end
   end
 
-  # -- settle_target/2 --
+  # settle_target/2
 
   property "settle_target selects only the funded key, never another session" do
     check all(
@@ -84,8 +84,6 @@ defmodule Raxol.Earn.Xochi.SolverAgentPropertyTest do
       assert SolverAgent.settle_target(merged, key) == SolverAgent.settle_target(sessions, key)
     end
   end
-
-  # -- generators --
 
   defp ordered_fee_pair do
     gen all(a <- integer(0..100_000), b <- integer(0..100_000)) do
@@ -139,7 +137,7 @@ defmodule Raxol.Earn.Xochi.SolverAgentPropertyTest do
   # So the collisions stay and the rejection goes. `Map.new/1` keeps the last
   # value for a repeated key, which is the same distinct-key map `map_of/3` was
   # after, reached by construction instead of by retrying. The map may hold
-  # fewer than eight entries; it always used to as well.
+  # fewer than eight entries.
   defp sessions_gen do
     gen all(pairs <- list_of({job_key_gen(), session_gen()}, max_length: 8)) do
       Map.new(pairs)

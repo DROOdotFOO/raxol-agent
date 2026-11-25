@@ -22,8 +22,6 @@ defmodule Raxol.Payments.LedgerModelPropertyTest do
 
   alias Raxol.Payments.{Ledger, SpendingPolicy}
 
-  # Command shape --------------------------------------------------------
-
   defp command do
     one_of([
       tuple({constant(:spend), member_of([:a, :b]), integer(1..100)}),
@@ -37,20 +35,14 @@ defmodule Raxol.Payments.LedgerModelPropertyTest do
     list_of(command(), min_length: 1, max_length: 50)
   end
 
-  # Reference model ------------------------------------------------------
-
   defp empty_model, do: %{frozen?: false, history: %{}}
 
   defp model_step({:spend, agent_id, amount}, model) do
-    cond do
-      model.frozen? ->
-        {{:over_limit, :frozen}, model}
-
-      true ->
-        new_history =
-          Map.update(model.history, agent_id, [amount], &[amount | &1])
-
-        {:ok, %{model | history: new_history}}
+    if model.frozen? do
+      {{:over_limit, :frozen}, model}
+    else
+      new_history = Map.update(model.history, agent_id, [amount], &[amount | &1])
+      {:ok, %{model | history: new_history}}
     end
   end
 
@@ -61,8 +53,6 @@ defmodule Raxol.Payments.LedgerModelPropertyTest do
     len = Map.get(model.history, agent_id, []) |> length()
     {len, model}
   end
-
-  # Real-Ledger executor -------------------------------------------------
 
   defp ledger_step({:spend, agent_id, amount}, ledger) do
     Ledger.try_spend(
@@ -79,8 +69,6 @@ defmodule Raxol.Payments.LedgerModelPropertyTest do
   defp ledger_step({:history, agent_id}, ledger) do
     Ledger.get_history(ledger, agent_id) |> length()
   end
-
-  # Property -------------------------------------------------------------
 
   property "Ledger outcomes match the pure-Elixir reference model" do
     check all(cmds <- commands()) do

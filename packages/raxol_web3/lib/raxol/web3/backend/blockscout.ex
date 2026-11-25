@@ -2,86 +2,63 @@ defmodule Raxol.Web3.Backend.Blockscout do
   @moduledoc """
   The EVM backend, against a Blockscout instance's `/api/v2/*` surface.
 
-  ADR-0038 decision 7. Every path below returned 200 on 2026-09-13 and the
-  shapes are pinned by recorded responses in `test/fixtures/blockscout`, because
-  the vendor publishes no spec for this surface: `/api-docs` is a 404 on every
-  instance probed, so the mapping is probe-derived and has to be re-probed on
-  upgrade rather than read.
+  ADR-0038 decision 7. The vendor publishes no spec for this surface, so the
+  mapping is probe-derived, pinned by recorded responses in
+  `test/fixtures/blockscout`, and must be re-probed on upgrade. It consumes the
+  public REST API; the server is not forked (its licence forbids derivatives).
 
-  Consuming the REST API rather than forking the server is the whole point.
-  ADR-0033 records that the Blockscout stack was relicensed in April and May
-  2026 under revocable terms that forbid distributing derivative works, so a
-  public fork is unavailable; calling a public HTTP API carries no licence
-  obligation at all.
+  ## Read-only and one-source heights
 
-  ## Two structural points
+  `raw_request/2` is not implemented: a REST backend has no method parameter to
+  abuse, so declining it keeps the backend read-only by construction.
 
-  `raw_request/2` is **not implemented**, so this backend's read allowlist is
-  empty. ADR-0033 §3 introduced that allowlist because an unbounded passthrough
-  to a JSON-RPC backend reaches `eth_sendRawTransaction`. A REST backend has no
-  method parameter to abuse, so declining the callback keeps §4's "read-only by
-  construction" claim structural rather than policed.
-
-  `block_height/1` never mixes sources. With an RPC URL configured, both
-  numbers come from the node (`eth_blockNumber` and
-  `eth_getBlockByNumber("finalized")`); without one, the height comes from REST
-  and `finalized_height` is `nil`. The obvious third option, a REST height
-  composed with an RPC finality, is the one that is wrong: they are different
-  systems, the REST one is an indexer view and is cacheable, and an indexer
-  that is behind yields `finalized_height` above `height`, which is the one
-  invariant the shape exists to express. A consumer using the pair for
-  confirmation depth would read a negative depth. The lag that composition
-  would have hidden is reported instead, from `/api/v2/main-page/indexing-status`.
+  `block_height/1` never mixes sources. With an RPC URL configured both numbers
+  come from the node (`eth_blockNumber`, `eth_getBlockByNumber("finalized")`);
+  without one the height comes from REST and `finalized_height` is `nil`. A REST
+  height with RPC finality could put `finalized_height` above `height`. Indexer
+  lag is reported from `/api/v2/main-page/indexing-status`.
 
   ## Chains
 
-  Final hosts only, because §7 refuses redirects: `optimism.blockscout.com`
-  answers 301 to `explorer.optimism.io`, so the table carries the destination
-  or Optimism simply fails.
+  Final hosts only, since redirects are refused (`optimism.blockscout.com` 301s
+  to `explorer.optimism.io`, so the table carries the latter). Chain 4663 is
+  marked `challenge_gated`: its API answers 403 `cf-mitigated: challenge`, so
+  the breaker trips and the router fails over to raw RPC until the rule lifts.
 
-  Chain 4663 is present and marked `challenge_gated`. Its API paths answered
-  403 with `cf-mitigated: challenge` on 2026-09-13 while `/` returned 200 and
-  the chain registry still listed the instance, so this is a dated WAF state
-  rather than a structural fact. Carrying it as health means the circuit
-  breaker trips, the router fails over to raw RPC, and coverage returns on its
-  own if the rule lifts. Excluding it from the table would have needed a code
-  change to get back.
+  ## `contract?`
 
-  ## `contract?` is code presence, not account type
-
-  `account_info/2` passes the upstream's `is_contract` through unchanged, and
-  that field means "this address has code", which since EIP-7702 is no longer
-  the same question as "this is not an externally owned account". The recorded
-  fixture makes the point: `vitalik.eth` comes back `is_contract: true`,
-  because the address carries a delegation designator. A consumer deciding
-  whether it is talking to a wallet or a contract has to ask something else,
-  and reinterpreting the field here would only move the wrong answer closer to
-  the caller.
+  `account_info/2` passes `is_contract` through: code presence, which since
+  EIP-7702 includes delegated wallets (the `vitalik.eth` fixture is
+  `is_contract: true`).
 
   ## Token balances
 
-  `token_balances/2` reads `/api/v2/addresses/{hash}/tokens`, **not**
-  `/token-balances`. The latter is unpaginated and scales with holdings:
-  measured on 2026-09-13 it returned 3,289,596 bytes carrying 8,009 items for
-  one well-known wallet, against 26,160 bytes for a 50-item page from `/tokens`.
-  No fixed byte ceiling bounds an unpaginated list, so the answer is a
-  different endpoint rather than a bigger ceiling.
+  `token_balances/2` reads the paginated `/api/v2/addresses/{hash}/tokens`, not
+  `/token-balances`, which is unpaginated and ran to 3 MB for one wallet.
   """
 
   @behaviour Raxol.Web3.Backend
 
+  import Raxol.Web3.Backend.Decode,
+    only: [field: 2, iso8601: 1, object: 1, ok_or: 2, page_rows: 1, rows_of: 1]
+
   alias Raxol.Web3.Backend
-  alias Raxol.Web3.Cursor
+  alias Raxol.Web3.Backend.Cache
+  alias Raxol.Web3.Backend.Decode
+  alias Raxol.Web3.Backend.Paging
+  alias Raxol.Web3.Backend.PathSegment
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.Origin
   alias Raxol.Web3.RPC
-  alias Raxol.Web3.TTL
+  alias Raxol.Web3.Scope
 
   # `:http_opts` is an operator's own keyword list and may carry an
   # authorization header, and `:rpc_url` often embeds a provider key, so
   # neither is something `inspect/1` may render: a handle reaches an operator
   # through `Raxol.Web3.Router.candidates/3`, and a crash anywhere below formats
   # the struct whole into a log line.
+  # `:host` stays visible: it comes from the fixed table of public explorers
+  # below, never from configuration.
   @derive {Inspect, except: [:rpc_url, :http_opts]}
   @enforce_keys [:chain_ref, :host]
   defstruct [:chain_ref, :host, :rpc_url, http_opts: [], cache?: true]
@@ -177,7 +154,10 @@ defmodule Raxol.Web3.Backend.Blockscout do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
-  # -- required ----------------------------------------------------------------
+  defp origin_id(state), do: Origin.for_url("https://#{state.host}/")
+
+  # The REST base is the chain's host and nothing else, so the scope is too.
+  defp scope(state), do: Scope.of("https://#{state.host}/", state.http_opts)
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
@@ -215,7 +195,8 @@ defmodule Raxol.Web3.Backend.Blockscout do
 
   @impl Backend
   def get_transaction(%__MODULE__{} = state, hash) when is_binary(hash) do
-    with {:ok, body} <- get(state, "/api/v2/transactions/#{segment(hash)}", %{}, :transaction) do
+    with {:ok, segment} <- PathSegment.encode(hash, "hash"),
+         {:ok, body} <- get(state, "/api/v2/transactions/#{segment}", %{}, :transaction) do
       transaction(body)
     end
   end
@@ -265,18 +246,17 @@ defmodule Raxol.Web3.Backend.Blockscout do
     end
   end
 
-  # -- optional ----------------------------------------------------------------
-
   @impl Backend
   def get_block(%__MODULE__{} = state, number) do
-    with {:ok, body} <- get(state, "/api/v2/blocks/#{segment(number)}", %{}, :block),
+    with {:ok, segment} <- PathSegment.encode(number, "block"),
+         {:ok, body} <- get(state, "/api/v2/blocks/#{segment}", %{}, :block),
          {:ok, height} <- Backend.int(body["height"], :height),
          {:ok, count} <- Backend.int(body["transactions_count"], :transactions_count) do
       {:ok,
        %{
          height: height,
          hash: body["hash"],
-         timestamp: timestamp(body["timestamp"]),
+         timestamp: iso8601(body["timestamp"]),
          transactions_count: count,
          miner: address_ref(body["miner"])
        }}
@@ -346,25 +326,17 @@ defmodule Raxol.Web3.Backend.Blockscout do
     RPC.eth_call(url, call, Map.get(call, :block, "latest"), state.http_opts)
   end
 
-  # -- the outbound path -------------------------------------------------------
-
   # `class` names the cache class, or `nil` for a request that must not be
   # cached. The key fragment is built here, from the endpoint's own path and
   # its own query map, and never from the assembled URI: that is what keeps a
   # credential-bearing query parameter out of a cache key by construction
-  # rather than by review. `Raxol.Web3.HTTP` composes it with the origin id.
+  # rather than by review. It sits under the handle's scope, and
+  # `Raxol.Web3.HTTP` adds the origin id.
   defp get(state, path, query \\ %{}, class \\ nil) do
     state
     |> url(path, query)
-    |> HTTP.get(cache_opts(state, path, query, class))
-    |> decode()
-  end
-
-  defp cache_opts(state, _path, _query, nil), do: state.http_opts
-  defp cache_opts(%{cache?: false} = state, _path, _query, _class), do: state.http_opts
-
-  defp cache_opts(state, path, query, class) do
-    Keyword.put(state.http_opts, :cache, key: {path, query}, ttl_ms: TTL.for(class))
+    |> HTTP.get(Cache.opts(state.http_opts, scope(state), state.cache?, {path, query}, class))
+    |> Decode.json_object()
   end
 
   defp url(state, path, query) when map_size(query) == 0, do: "https://#{state.host}#{path}"
@@ -373,74 +345,27 @@ defmodule Raxol.Web3.Backend.Blockscout do
     "https://#{state.host}#{path}?#{URI.encode_query(query)}"
   end
 
-  # Percent-encodes everything outside the unreserved set, so a caller-supplied
-  # hash, address or block identifier cannot carry a `/`, a `?` or a `#` and
-  # reshape the path it is interpolated into. `URI.encode/1`'s default
-  # predicate leaves all three alone and would be no defence at all.
-  # `Raxol.Web3.Backend.Aztec` encodes its own path parameters the same way.
-  defp segment(value) when is_integer(value), do: Integer.to_string(value)
-  defp segment(value) when is_binary(value), do: URI.encode(value, &URI.char_unreserved?/1)
-
-  # A non-2xx carries no body onward: a 403 challenge page is HTML written by
-  # someone else, and ADR-0038 decision 6 keeps upstream text out of an error
-  # term. The status is what the router classifies on.
-  defp decode({:ok, %{status: status, body: body}}) when status in 200..299 do
-    case Jason.decode(body) do
-      {:ok, decoded} when is_map(decoded) -> {:ok, decoded}
-      {:ok, _other} -> {:error, {:decode_failed, :not_an_object}}
-      {:error, _reason} -> {:error, {:decode_failed, :json}}
-    end
-  end
-
-  defp decode({:ok, %{status: status}}), do: {:error, {:http, status}}
-  defp decode({:error, _reason} = error), do: error
+  # For an address `evm_address/1` has already validated: encoding it is
+  # defence in depth, not the check.
+  defp segment(address) when is_binary(address), do: URI.encode(address, &URI.char_unreserved?/1)
 
   # Every list shares the `:list` class, and the cursor's decoded parameters are
   # part of the key: page two of a walk is a different cache entry from page
   # one, which is the only way a cached page and a cursor can coexist without
   # one serving the other's contents.
   defp page(state, path, endpoint, opts, mapper) do
-    with {:ok, query} <- cursor_query(state, endpoint, Keyword.get(opts, :cursor)),
+    with {:ok, query} <-
+           Paging.cursor_params(Keyword.get(opts, :cursor), scope(state), endpoint),
          {:ok, body} <- get(state, path, query, :list),
          {:ok, rows} <- page_rows(body["items"]),
          {:ok, items} <- Backend.map_rows(rows, mapper, endpoint) do
       {:ok,
        %{
          items: items,
-         next: next_cursor(state, body["next_page_params"], endpoint)
+         next: Paging.next_cursor(body["next_page_params"], scope(state), endpoint)
        }}
     end
   end
-
-  # An absent list is an empty page, and a list-shaped key holding something
-  # else is a body that is not what it claimed rather than a page with no
-  # rows: an empty page would report an account as holding nothing.
-  defp page_rows(nil), do: {:ok, []}
-  defp page_rows(rows) when is_list(rows), do: {:ok, rows}
-  defp page_rows(_other), do: {:error, {:decode_failed, :page}}
-
-  # `Raxol.Web3.Cursor.encode/3` takes a map or `nil`, and `next_page_params`
-  # is whatever the upstream put under that key: anything else is the last
-  # page rather than a `FunctionClauseError` on the way out of a successful
-  # read.
-  defp next_cursor(state, params, endpoint) when is_map(params) do
-    Cursor.encode(params, origin_id(state), endpoint)
-  end
-
-  defp next_cursor(_state, _absent, _endpoint), do: nil
-
-  defp cursor_query(_state, _endpoint, nil), do: {:ok, %{}}
-
-  defp cursor_query(state, endpoint, cursor) do
-    case Cursor.decode(cursor, origin_id(state), endpoint) do
-      {:ok, params} -> {:ok, params}
-      {:error, reason} -> {:error, {:invalid_cursor, reason}}
-    end
-  end
-
-  defp origin_id(state), do: Origin.id(URI.new!("https://#{state.host}/"))
-
-  # -- normalization -----------------------------------------------------------
 
   defp transaction(item) when is_map(item) do
     fee = item |> field("fee") |> object()
@@ -459,7 +384,7 @@ defmodule Raxol.Web3.Backend.Blockscout do
       hash: item["hash"],
       status: status(item["status"]),
       block: block,
-      timestamp: timestamp(item["timestamp"]),
+      timestamp: iso8601(item["timestamp"]),
       from: address_ref(item["from"]),
       to: address_ref(item["to"]),
       value: value,
@@ -490,7 +415,7 @@ defmodule Raxol.Web3.Backend.Blockscout do
          from: address_ref(item["from"]),
          to: address_ref(item["to"]),
          block: block,
-         timestamp: timestamp(item["timestamp"]),
+         timestamp: iso8601(item["timestamp"]),
          transaction: item["transaction_hash"]
        }}
     end
@@ -562,15 +487,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
   defp status("error"), do: :reverted
   defp status(_pending), do: :pending
 
-  defp field(map, key) when is_map(map), do: Map.get(map, key)
-  defp field(_other, _key), do: nil
-
-  defp object(value) when is_map(value), do: value
-  defp object(_other), do: %{}
-
-  defp rows_of(value) when is_list(value), do: value
-  defp rows_of(_other), do: []
-
   # Advisory, so a failure here is `nil` rather than a failed read: the lag is
   # extra information about a height, not the height.
   defp indexer(state) do
@@ -600,9 +516,6 @@ defmodule Raxol.Web3.Backend.Blockscout do
 
   defp chain_id(other), do: {:error, {:unsupported_chain, other}}
 
-  defp ok_or({:ok, _value} = ok, _reason), do: ok
-  defp ok_or(:error, reason), do: {:error, reason}
-
   # The one place a caller's account reference becomes a path segment, so the
   # FORMAT is checked here rather than at the tool boundary: validation sits on
   # the function that performs the side effect. `is_binary/1` alone was not a
@@ -613,8 +526,9 @@ defmodule Raxol.Web3.Backend.Blockscout do
   #
   # Rejecting beats encoding for this one: this upstream has exactly one
   # address shape, and a percent-encoded traversal is a 404 a caller cannot act
-  # on. `segment/1` still wraps every interpolation, so a path parameter added
-  # later cannot reopen the hole.
+  # on. `segment/1` still encodes every address it interpolates, and every
+  # other id goes through `Raxol.Web3.Backend.PathSegment.encode/2`'s
+  # allowlist, so a path parameter added later cannot reopen the hole.
   #
   # Case is carried through rather than normalized: an EIP-55 checksum is the
   # caller's own typo protection, and downcasing it would throw that away.
@@ -648,15 +562,4 @@ defmodule Raxol.Web3.Backend.Blockscout do
   end
 
   defp float(_other), do: nil
-
-  defp timestamp(nil), do: nil
-
-  defp timestamp(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, _offset} -> datetime
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp timestamp(_other), do: nil
 end
