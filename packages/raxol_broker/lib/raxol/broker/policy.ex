@@ -122,8 +122,7 @@ defmodule Raxol.Broker.Policy do
   defp evaluate_plain(%Intent{kind: :cancel} = intent, %Context{}), do: {:allow, intent}
 
   defp evaluate_plain(%Intent{} = intent, %Context{} = context) do
-    with {:ok, policy} <- validate_policy(context.policy),
-         :ok <- validate_context(context) do
+    with {:ok, policy} <- validate_policy(context.policy) do
       input = %{
         intent: intent,
         context: context,
@@ -149,37 +148,6 @@ defmodule Raxol.Broker.Policy do
       {:error, reason} -> {:deny, {:policy_file, reason}}
     end
   end
-
-  @decimal_fields [:portfolio_value, :start_of_day_value, :day_pnl, :today_notional]
-
-  defp validate_context(%Context{} = context) do
-    invalid =
-      Enum.find(@decimal_fields, &(not optional_decimal?(Map.fetch!(context, &1)))) ||
-        cond do
-          not price_map?(context.positions) -> :positions
-          not price_map?(context.quotes) -> :quotes
-          not optional_count?(context.orders_last_minute) -> :orders_last_minute
-          context.market_session not in [nil, :regular, :extended, :closed] -> :market_session
-          not is_list(context.review_warnings) -> :review_warnings
-          true -> nil
-        end
-
-    if invalid, do: {:deny, {:context, {:invalid, invalid}}}, else: :ok
-  end
-
-  defp optional_decimal?(nil), do: true
-  defp optional_decimal?(value), do: finite_decimal?(value)
-
-  defp finite_decimal?(%Decimal{coef: coefficient}), do: is_integer(coefficient)
-  defp finite_decimal?(_value), do: false
-
-  defp price_map?(map) when is_map(map),
-    do: Enum.all?(map, fn {key, value} -> is_binary(key) and finite_decimal?(value) end)
-
-  defp price_map?(_value), do: false
-
-  defp optional_count?(nil), do: true
-  defp optional_count?(value), do: is_integer(value) and value >= 0
 
   @doc """
   The USD notional of `intent` as the policy computes it: the stated amount,
@@ -216,8 +184,8 @@ defmodule Raxol.Broker.Policy do
     end
   end
 
-  defp positive(%Decimal{} = value, field) do
-    if finite_decimal?(value) and Decimal.gt?(value, 0),
+  defp positive(%Decimal{coef: coefficient} = value, field) when is_integer(coefficient) do
+    if Decimal.gt?(value, 0),
       do: {:ok, value},
       else: {:error, {:invalid, field}}
   end

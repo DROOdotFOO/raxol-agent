@@ -138,7 +138,20 @@ defmodule Raxol.Broker.Executor.StructureTest do
     {Mix.Tasks.Raxol.Broker.Gen.Tools, {:remote_call, :var, :info, 1}} =>
       "Mix.shell().info/1: Mix's own shell indirection",
     {Mix.Tasks.Raxol.Broker.CaptureTools, {:remote_call, :var, :info, 1}} =>
-      "Mix.shell().info/1: Mix's own shell indirection"
+      "Mix.shell().info/1: Mix's own shell indirection",
+    {Raxol.Broker.CLI, {:remote_call, :var, :info, 1}} =>
+      "Mix.shell().info/1: Mix's own shell indirection",
+    {Raxol.Broker.CLI, {:remote_call, :var, :prompt, 1}} =>
+      "Mix.shell().prompt/1: Mix's own shell indirection",
+    {Raxol.Broker.Strategy, {:remote_call, :var, :init, 1}} =>
+      "Strategy behaviour dispatch to a module from the fixed strategy table; " <>
+        "the function name is fixed and is not a sink",
+    {Raxol.Broker.Strategy, {:remote_call, :var, :symbols, 1}} =>
+      "Strategy behaviour dispatch to a module from the fixed strategy table",
+    {Raxol.Broker.Strategy.Runner, {:remote_call, :var, :update, 2}} =>
+      "Strategy behaviour dispatch to the module Strategy.start/1 resolved",
+    {Raxol.Broker.Strategy.Runner, {:remote_call, :var, :symbols, 1}} =>
+      "Strategy behaviour dispatch to the module Strategy.start/1 resolved"
   }
 
   @call_tool_atom_allowed [@port_mcp, @broker_client]

@@ -13,6 +13,7 @@ defmodule RaxolBroker.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      dialyzer: [plt_add_apps: [:mix]],
       description: description(),
       package: package(),
       docs: docs(),

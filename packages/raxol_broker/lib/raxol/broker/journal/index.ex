@@ -8,6 +8,9 @@ defmodule Raxol.Broker.Journal.Index do
   #   {:fill, at_us, offset}         a fill's realized P&L
   #   {:intent_placing, intent_id}   the group that placed it without failing
   #
+  #   {:emit, intent_id}            a pending intent and its strategy
+  #   {:strategy, strategy_id}      an active strategy spec
+  #
   # Only recorded notionals are read, never recomputed, so the live index
   # and the one rebuilt on start agree.
 
@@ -55,6 +58,64 @@ defmodule Raxol.Broker.Journal.Index do
       [] -> nil
     end
   end
+
+  @spec pending_intents(table(), String.t()) :: [map()]
+  def pending_intents(table, strategy_id) do
+    match =
+      {{{:emit, :_}, :"$1", :"$2", :"$3"}, [{:==, :"$2", {:const, strategy_id}}],
+       [{{:"$1", :"$3"}}]}
+
+    table |> :ets.select([match]) |> ordered_values()
+  end
+
+  @spec strategies(table()) :: [map()]
+  def strategies(table) do
+    table
+    |> :ets.select([{{{:strategy, :_}, :"$1", :"$2"}, [], [{{:"$1", :"$2"}}]}])
+    |> ordered_values()
+  end
+
+  defp ordered_values(entries),
+    do: entries |> Enum.sort_by(&elem(&1, 0)) |> Enum.map(&elem(&1, 1))
+
+  # Events are indexed in journal order, so a later record wins. Each entry
+  # carries a monotonic sequence number for ordered listings.
+  @spec event(table(), map()) :: true
+  def event(table, %{"kind" => "broker", "type" => "emit"} = record) do
+    case record do
+      %{"intent" => %{"id" => id} = intent, "strategy_id" => strategy}
+      when is_binary(id) and is_binary(strategy) ->
+        :ets.insert(table, {{:emit, id}, seq(), strategy, intent})
+
+      _malformed ->
+        true
+    end
+  end
+
+  def event(table, %{"kind" => "broker", "type" => "dispatch", "intent_id" => id})
+      when is_binary(id),
+      do: :ets.delete(table, {:emit, id})
+
+  def event(
+        table,
+        %{"kind" => "broker", "type" => "strategy", "strategy_id" => id} = record
+      )
+      when is_binary(id) do
+    case record do
+      %{"action" => "add", "spec" => %{"id" => ^id} = spec} ->
+        :ets.insert(table, {{:strategy, id}, seq(), spec})
+
+      %{"action" => "stop"} ->
+        :ets.delete(table, {:strategy, id})
+
+      _malformed ->
+        true
+    end
+  end
+
+  def event(_table, _record), do: true
+
+  defp seq, do: System.unique_integer([:monotonic])
 
   @doc "Count a `placing` record written live for group `id`."
   @spec placed(table(), String.t(), String.t(), map()) :: :ok | {:error, term()}

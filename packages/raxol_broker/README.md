@@ -28,7 +28,7 @@ flag only on a real terminal, and never replaces an existing file.
   max_orders_per_minute: :unset,
   drawdown_halt: :unset,
   llm_ask_above: :unset,
-  ask_timeout: 30_000
+  ask_timeout: 300_000
 ]
 ```
 
@@ -38,12 +38,12 @@ flag only on a real terminal, and never replaces an existing file.
 | `max_position_weight` | `:unset`, or a `Decimal` in (0, 1]. |
 | `order_types` | A nonempty, duplicate-free subset of `:market`, `:limit`, `:stop_limit`, `:stop_market`. |
 | `options`, `advanced_orders`, `after_hours_market` | A boolean. |
-| `symbols_allow` | `:unset`, or a nonempty list of uppercase symbols. |
-| `symbols_deny` | A list of uppercase symbols, possibly empty. |
+| `symbols_allow` | `:unset`, or a nonempty, duplicate-free list of uppercase symbols. |
+| `symbols_deny` | A duplicate-free list of uppercase symbols, possibly empty. |
 | `max_orders_per_minute` | `:unset`, or an integer in 1..10_000. |
 | `drawdown_halt` | `:unset`, or a `Decimal` in (0, 1]: the share of start-of-day value today's loss may reach. |
 | `llm_ask_above` | `:unset` (every model-originated order asks), or a `Decimal` > 0. |
-| `ask_timeout` | Milliseconds in 1..4_294_967_295. |
+| `ask_timeout` | Milliseconds in 1..4_294_967_295. The generated default is `300_000` (five minutes). |
 
 Every key is required. The file is parsed as data and never evaluated. Only these literals and
 `Decimal.new("...")` are accepted. Anything else, an oversized file or invalid UTF-8 fails
@@ -117,6 +117,56 @@ re-runs the policy.
   `{:error, {:no_adapter, kind}}`.
 - The session must be marked `sandbox: true` and must not point at `robinhood.com`.
 
+## Strategies
+
+A strategy (`Raxol.Broker.Strategy`) is a pure state machine: `init/1`
+takes its parameters, `update/2` takes a feed message and returns the
+intents to send, and `symbols/1` names the symbols it wants quotes for. It
+never calls a tool. `Raxol.Broker.Strategy.DipBuy` is the reference: when
+a symbol's last price falls `dip` (default 2%) below the highest price seen
+since its last buy, it emits one limit buy in whole shares, priced at that
+last price, for at most `usd` dollars.
+
+```sh
+mix raxol.broker.strategy add dip_buy --symbol F --usd 25 --dip 0.02
+mix raxol.broker.strategy list
+mix raxol.broker.strategy stop dip_buy-F
+```
+
+Each added strategy runs in a `Raxol.Broker.Strategy.Runner` under
+`Raxol.Broker.Strategy.Supervisor`. The runner journals every intent
+(`emit` record) before handing it to the executor and marks it once the
+executor answers (`dispatch` record). A runner that restarts re-sends each
+intent it emitted and never saw answered, with the same intent id, so the
+executor's idempotency check and the `ref_id` derived from that id keep it
+to one order.
+
+Adding and stopping are journaled. With `:strategies` configured, the broker
+restores every added strategy when it starts. Stopping terminates the runner,
+and any intent already handed to the executor may still complete. The task
+acts on the broker running in its own VM (`iex -S mix`) when there is one
+and otherwise opens the journal itself;
+the journal's writer lock refuses it while the broker runs in another
+process.
+
+## Quote feed
+
+`Raxol.Broker.Feed` polls `get_equity_quotes` through the read-only session
+for its subscribers' symbols and sends each runner `{:quote, symbol,
+%{last: _, bid: _, ask: _}}`. Every poll takes a grant from the shared
+`Raxol.Broker.Feed.Bucket` (at most 10 in any 60 seconds by default); a
+`429` or `5xx` backs off with jittered doubling from 1 s up to 5 minutes.
+
+```elixir
+children = [
+  {Raxol.Broker.Supervisor,
+   executor: [policy: policy, account_number: account, session: session],
+   client: [],
+   feed: [interval: 15_000, bucket: [limit: 10, window: 60_000]],
+   strategies: []}
+]
+```
+
 ## Decision journal
 
 `Raxol.Broker.Journal` is a hash-chained journal at `~/.raxol/broker/journal` (or
@@ -129,7 +179,7 @@ On start the journal verifies its chain. A damaged journal answers every call wi
 `{:error, {:journal_damaged, offset}}`. A group left open by a crash closes as
 `crash_before_verdict` (no `placing`) or `crash_outcome_unknown` (it keeps counting).
 
-An order counts toward `today_notional/1` and `orders_last_minute/1` from its `placing` record
+An order counts toward `today_notional/2` and `orders_last_minute/2` from its `placing` record
 until a `:failed` response.
 
 The chain has no key. It detects corruption and naive edits, but not someone who can rewrite the

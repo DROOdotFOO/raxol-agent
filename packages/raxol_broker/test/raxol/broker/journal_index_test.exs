@@ -11,6 +11,72 @@ defmodule Raxol.Broker.JournalIndexTest do
   @t0 JournalCase.t0()
   @day JournalCase.day()
 
+  test "strategy events have the same ordered results live and after journal restart",
+       %{opts: opts, name: name} do
+    start!(opts)
+    first = limit("1")
+    dispatched = limit("2")
+    last = limit("3")
+    other = limit("4")
+    active = %{"id" => "z-active"}
+    stopped = %{"id" => "stopped"}
+    another = %{"id" => "a-active"}
+
+    :ok = Journal.put_strategy(active, name)
+    :ok = Journal.put_strategy(stopped, name)
+    :ok = Journal.put_strategy(another, name)
+    :ok = Journal.emit(first, active["id"], name)
+    :ok = Journal.emit(dispatched, active["id"], name)
+    :ok = Journal.emit(last, active["id"], name)
+    :ok = Journal.emit(other, another["id"], name)
+    :ok = Journal.dispatched(dispatched.id, "placed", name)
+    :ok = Journal.drop_strategy(stopped["id"], name)
+
+    assert Journal.strategies(name) == {:ok, [active, another]}
+    assert Journal.pending_intents(active["id"], name) == {:ok, [first, last]}
+    assert Journal.pending_intents(another["id"], name) == {:ok, [other]}
+
+    stop_supervised!(name)
+    start!(opts)
+
+    assert Journal.status(name) == :ok
+    assert Journal.strategies(name) == {:ok, [active, another]}
+    assert Journal.pending_intents(active["id"], name) == {:ok, [first, last]}
+    assert Journal.pending_intents(another["id"], name) == {:ok, [other]}
+  end
+
+  test "event writes cannot add broker group records", %{opts: opts, name: name, path: path} do
+    start!(opts)
+
+    assert {:error, :invalid_event} =
+             GenServer.call(name, {:event, "fill", ~s({"fill":{"realized_pnl":"1000"}})})
+
+    assert {:error, :invalid_event_fields} =
+             GenServer.call(name, {:event, "strategy", "[]"})
+
+    assert :ok =
+             Journal.append_event(
+               :strategy,
+               %{
+                 "action" => "add",
+                 "strategy_id" => "broken",
+                 "spec" => "not a strategy spec",
+                 "group_id" => "fake",
+                 "type" => "placing"
+               },
+               name
+             )
+
+    assert Journal.strategies(name) == {:ok, []}
+
+    stop_supervised!(name)
+    start!(opts)
+
+    assert Journal.strategies(name) == {:ok, []}
+    assert [%{"type" => "strategy"} = event] = records(path)
+    refute Map.has_key?(event, "group_id")
+  end
+
   describe "index" do
     test "only placed orders count; denials, failed orders and cancels never do",
          %{opts: opts, clock: clock} do
@@ -129,6 +195,8 @@ defmodule Raxol.Broker.JournalIndexTest do
 
       assert Journal.status(name) == :ok
       assert counters(name, placed_at) == live
+      assert Journal.pending_intents("strategy", name) == {:ok, []}
+      assert Journal.strategies(name) == {:ok, []}
     end
 
     test "a failed order stops counting, live and after a restart", %{opts: opts, path: path} do

@@ -23,7 +23,7 @@ defmodule Raxol.Broker.PolicyFile do
     max_orders_per_minute: {{:integer_range_or_unset, 1, 10_000}, {:default, :unset}},
     drawdown_halt: {:weight_or_unset, {:default, :unset}},
     llm_ask_above: {:positive_decimal_or_unset, {:default, :unset}},
-    ask_timeout: {{:integer_range, 1, 4_294_967_295}, {:default, 30_000}}
+    ask_timeout: {{:integer_range, 1, 4_294_967_295}, {:default, 300_000}}
   ]
   @keys Keyword.keys(@schema)
   @zero Decimal.new(0)
