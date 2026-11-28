@@ -462,6 +462,20 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       assert hint =~ "\"chains\""
     end
 
+    test "a router with no chains does not offer an empty list to pick from" do
+      assert {:error, error} = call(Router.new([]), "web3_chain_info", %{"chain" => @chain})
+
+      assert %{"code" => "no_backend", "chains" => [], "hint" => hint} = Error.to_map(error)
+      assert hint =~ "serves no chains"
+      refute hint =~ "\"chains\""
+    end
+
+    test "an error built without the router's chains claims neither" do
+      hint = Error.new(:no_backend).hint
+
+      assert hint == "No backend serves this chain."
+    end
+
     test "only no_backend carries the chains key" do
       router = router(answers: %{chain_info: {:error, {:timeout, :deadline}}})
 

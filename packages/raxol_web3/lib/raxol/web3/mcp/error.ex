@@ -106,10 +106,23 @@ defmodule Raxol.Web3.MCP.Error do
 
   # -- Hints -----------------------------------------------------------------
 
-  defp hint("no_backend", _detail, _context),
-    do:
-      "No backend serves this chain. Call again with one of the CAIP-2 references in " <>
-        "\"chains\"."
+  # The list to pick from is only offered when there is one: a router with no
+  # chains makes every chain reference fail, and an error built without the
+  # router's chains cannot say which exist.
+  defp hint("no_backend", _detail, context) do
+    case Map.fetch(context, :chains) do
+      {:ok, []} ->
+        "This deployment serves no chains, so no chain reference will work. Its " <>
+          "operator has to configure a backend."
+
+      {:ok, _chains} ->
+        "No backend serves this chain. Call again with one of the CAIP-2 references in " <>
+          "\"chains\"."
+
+      :error ->
+        "No backend serves this chain."
+    end
+  end
 
   # Every clause that interpolates its datum is guarded on the type it
   # expects, and an argument name only when it is printable, because
