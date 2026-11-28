@@ -19,7 +19,7 @@ It mounts `Raxol.Payments.EchoServer` as a Req plug rather than over a socket,
 so unlike step 1 it needs no second terminal.
 
 ```bash
-MIX_ENV=test mix run examples/agent_payment_tour.exs
+mix run examples/agent_payment_tour.exs
 ```
 
 ## 0b. Understand the two privacy modes (no funds, no network)
@@ -42,7 +42,7 @@ is public under every design. An agent that must not reveal an amount cannot
 use either mode today.
 
 ```bash
-MIX_ENV=test mix run examples/privacy_modes.exs
+mix run examples/privacy_modes.exs
 ```
 
 ## 1. Rehearse the pay-stack (no funds, no network)
@@ -56,10 +56,12 @@ mix raxol_payments.echo --port 4002      # terminal A: start the echo server
 mix run examples/preflight.exs           # terminal B: run against it
 ```
 
-**Use a throwaway key for `PREFLIGHT_WALLET_KEY`.** Against the default echo
-server (Base mainnet) the script signs a real USDC transfer authorization,
-valid until the challenge's `validBefore`. Nothing is broadcast. For a
-signature worth nothing, start the echo server on Base Sepolia:
+**You need no key.** Leave `PREFLIGHT_WALLET_KEY` unset and the script
+generates a throwaway key for the run. A key you do set must be a throwaway
+too: against the default echo server (Base mainnet) the script signs a real
+USDC transfer authorization, valid until the challenge's `validBefore`.
+Nothing is broadcast. For a signature worth nothing, start the echo server on
+Base Sepolia:
 
 ```bash
 mix raxol_payments.echo --port 4002 --network eip155:84532 \
@@ -75,7 +77,7 @@ authorized before signing), poll to settlement. Every step goes through the same
 in-process Xochi sim, so it spends nothing.
 
 ```bash
-MIX_ENV=test mix run examples/crosschain_stealth_payment.exs
+mix run examples/crosschain_stealth_payment.exs
 ```
 
 ## 3. Graduate to live (MOVES REAL FUNDS)

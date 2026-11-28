@@ -20,13 +20,17 @@
 # Environment:
 #
 #   PREFLIGHT_TARGET_URL   default http://localhost:4002/anything
-#   PREFLIGHT_WALLET_KEY   private key (0x-prefixed hex). Required. Use a
-#                          THROWAWAY key: on Base mainnet this signs a real
-#                          USDC transfer authorization (examples/README.md).
+#   PREFLIGHT_WALLET_KEY   private key (0x-prefixed hex). Optional: unset, the
+#                          script generates a throwaway key, which is what a
+#                          rehearsal should use. A key you do set must be a
+#                          THROWAWAY: on Base mainnet this signs a real USDC
+#                          transfer authorization (examples/README.md).
 #                          For a real launch, switch to Raxol.Payments.Wallets.Op
 #                          and remove this env var entirely.
 #   PREFLIGHT_AUTO_APPROVE if "true", skip the terminal prompt and approve
 #                          any over-threshold payment. Use only during rehearsal.
+#
+# Exits 0 only when the payment was accepted; any other outcome exits 1.
 #
 # Units:
 #   Amounts in this policy are in human-decimal USDC ($1.00 = Decimal.new("1.00")).
@@ -74,21 +78,32 @@ defmodule Preflight do
         on_confirm: confirm
       )
 
-    case Req.get(req) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
-        IO.puts("\n[ok] payment accepted")
-        IO.inspect(body, label: "response")
+    outcome =
+      case Req.get(req) do
+        {:ok, %Req.Response{status: 200, body: body}} ->
+          IO.puts("\n[ok] payment accepted")
+          IO.inspect(body, label: "response")
+          :ok
 
-      {:ok, %Req.Response{status: status, body: body}} ->
-        IO.puts("\n[denied] status=#{status}")
-        IO.inspect(body, label: "response")
+        {:ok, %Req.Response{status: status, body: body}} ->
+          IO.puts("\n[denied] status=#{status}")
+          IO.inspect(body, label: "response")
+          :failed
 
-      {:error, reason} ->
-        IO.puts("\n[error] #{inspect(reason)}")
-    end
+        # The message is the transport's own words for its reason atom
+        # ("connection refused"), so no upstream byte is printed.
+        {:error, %Req.TransportError{} = error} ->
+          IO.puts("\n[error] cannot reach #{url}: #{Exception.message(error)}")
+          :failed
+
+        {:error, reason} ->
+          IO.puts("\n[error] #{inspect(reason)}")
+          :failed
+      end
 
     # Give the ledger tail a moment to flush before we exit.
     Process.sleep(50)
+    if outcome == :failed, do: System.halt(1)
     :ok
   end
 

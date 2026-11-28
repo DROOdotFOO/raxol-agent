@@ -27,6 +27,30 @@ defmodule Raxol.CLI.NewTest do
       assert File.ls!(base) == []
     end
 
+    test "the usage names exactly the files a new app gets" do
+      base = Path.join(System.tmp_dir!(), "raxol_cli_files_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(base)
+      on_exit(fn -> File.rm_rf(base) end)
+
+      capture_io(fn -> assert File.cd!(base, fn -> New.run(["my_app"]) end) == 0 end)
+      app = Path.join(base, "my_app")
+
+      created =
+        Path.join(app, "**")
+        |> Path.wildcard(match_dot: true)
+        |> Enum.reject(&File.dir?/1)
+        |> Enum.map(&(&1 |> Path.relative_to(app) |> String.replace("my_app", "<app_name>")))
+        |> Enum.sort()
+
+      [_before, listed] =
+        capture_io(fn -> New.run(["--help"]) end)
+        |> String.split("under ./<app_name>:\n", parts: 2)
+
+      listed = listed |> String.split(".\n", parts: 2) |> hd() |> String.split(", ")
+
+      assert Enum.sort(listed) == created
+    end
+
     test "rejects a non-snake_case name" do
       assert capture_io(:stderr, fn -> assert New.run(["MyApp"]) == 1 end) =~ "invalid app name"
     end

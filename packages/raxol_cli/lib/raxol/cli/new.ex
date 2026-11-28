@@ -31,10 +31,10 @@ defmodule Raxol.CLI.New do
     Options:
       -h, --help    Show this help
 
-    Scaffolds a minimal Raxol counter app (mix.exs, lib/<app_name>.ex,
-    .formatter.exs, README.md) under ./<app_name>. The name must be
-    snake_case, such as my_app. Building and running it needs a local
-    Elixir/Mix.
+    Scaffolds a minimal Raxol counter app under ./<app_name>:
+    #{Enum.map_join(files("<app_name>", "<AppName>"), ", ", &elem(&1, 0))}.
+    The name must be snake_case, such as my_app. Building and running it
+    needs a local Elixir/Mix.
     """)
 
     0
@@ -66,10 +66,7 @@ defmodule Raxol.CLI.New do
   defp generate(name) do
     mod = Macro.camelize(name)
 
-    write(Path.join(name, "mix.exs"), mix_exs(name, mod))
-    write(Path.join([name, "lib", "#{name}.ex"]), app_ex(mod))
-    write(Path.join(name, ".formatter.exs"), formatter_exs())
-    write(Path.join(name, "README.md"), readme(name, mod))
+    for {path, contents} <- files(name, mod), do: write(Path.join(name, path), contents.())
 
     IO.puts("""
     Created #{name}/
@@ -81,6 +78,18 @@ defmodule Raxol.CLI.New do
     """)
 
     0
+  end
+
+  # Every file a new app gets, as {path under the app, template}. The usage
+  # text lists these paths, so the two cannot drift; a template is a function
+  # so that listing renders none of them.
+  defp files(name, mod) do
+    [
+      {"mix.exs", fn -> mix_exs(name, mod) end},
+      {Path.join("lib", "#{name}.ex"), fn -> app_ex(mod) end},
+      {".formatter.exs", &formatter_exs/0},
+      {"README.md", fn -> readme(name, mod) end}
+    ]
   end
 
   defp write(path, contents) do

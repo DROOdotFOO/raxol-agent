@@ -61,10 +61,18 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
     end
   end
 
+  # `EchoServer.default_asset/1`'s message is for an Elixir caller and names
+  # the `:asset` option; someone at a shell typed flags, so this names the flag.
   defp default_asset!(network) do
     case Raxol.Payments.EchoServer.default_asset(network) do
-      {:ok, asset} -> asset
-      {:error, message} -> Mix.raise(message)
+      {:ok, asset} ->
+        asset
+
+      {:error, _message} ->
+        Mix.raise(
+          "no USDC the x402 client signs for is registered on #{network || "the default network"}; " <>
+            "pass the asset contract with --asset"
+        )
     end
   end
 

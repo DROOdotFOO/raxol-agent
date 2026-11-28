@@ -13,7 +13,7 @@
 #
 # Usage (from packages/raxol_payments/):
 #
-#   MIX_ENV=test mix run examples/crosschain_stealth_payment.exs
+#   mix run examples/crosschain_stealth_payment.exs
 
 Logger.configure(level: :warning)
 
