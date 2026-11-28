@@ -40,7 +40,7 @@ defmodule Raxol.Web3.MCP.ErrorTest do
       for status <- Enum.to_list(400..451) ++ Enum.to_list(500..511) ++ [599] do
         %Error{hint: hint} = Error.new({:http, status})
 
-        assert hint =~ "retry" == HTTP.unhealthy_status?(status),
+        assert hint =~ ~r/retry/i == HTTP.unhealthy_status?(status),
                "HTTP #{status}: #{hint}"
       end
     end
@@ -55,12 +55,15 @@ defmodule Raxol.Web3.MCP.ErrorTest do
       end
     end
 
-    test "401 and 403 are the source refusing this deployment" do
+    test "401 and 403 are about this deployment, and only 403 says to retry" do
       for status <- [401, 403] do
         hint = Error.new({:http, status}).hint
-        assert hint =~ "refused this deployment", "HTTP #{status}"
-        assert hint =~ "will not help", "HTTP #{status}"
+        assert hint =~ "this deployment", "HTTP #{status}"
+        assert hint =~ "Changing the arguments will not help.", "HTTP #{status}"
       end
+
+      assert Error.new({:http, 403}).hint =~ "Retry later."
+      refute Error.new({:http, 401}).hint =~ ~r/retry/i
     end
   end
 
@@ -84,7 +87,7 @@ defmodule Raxol.Web3.MCP.ErrorTest do
 
     test "the two reported shapes no longer raise" do
       assert %Error{code: "timeout", hint: timeout} = Error.new({:timeout, {:chunk, 30_000}}, %{})
-      assert timeout =~ "This was a timeout"
+      assert timeout =~ "The source timed out."
 
       assert %Error{code: "rate_limited", hint: rate} =
                Error.new({:rate_limited, {:retry_after, 5}}, %{})

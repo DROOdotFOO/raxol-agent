@@ -488,16 +488,16 @@ defmodule Raxol.Web3.MCP.ToolsTest do
                })
     end
 
-    test "a timeout says it was one and that a retry or a narrower query may work" do
+    test "a timeout says the source timed out and that a retry or less may work" do
       router = router(answers: %{token_balances: {:error, {:timeout, :chunk}}})
 
       assert {:error, error} =
                call(router, "web3_token_balances", %{"chain" => @chain, "account" => @address})
 
       assert %{code: "timeout", detail: :chunk} = error
-      assert error.hint =~ "timeout"
-      assert error.hint =~ "retry"
-      assert error.hint =~ "narrower"
+      assert error.hint =~ "timed out (stage: chunk)"
+      assert error.hint =~ "A retry may work."
+      assert error.hint =~ "ask for less"
     end
 
     test "a callback no backend answers is reported as unsupported" do

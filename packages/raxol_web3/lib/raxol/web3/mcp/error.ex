@@ -51,9 +51,8 @@ defmodule Raxol.Web3.MCP.Error do
   """
   @type context :: %{optional(:chains) => [String.t()], optional(:account) => term()}
 
-  @retry_narrower "A retry may work. If it times out again the query is likely too " <>
-                    "large for this source; try a narrower one, such as a more specific " <>
-                    "tool or a later page by cursor."
+  @retry_narrower "A retry may work. If it times out again, ask for less: a more " <>
+                    "specific tool or a later page."
 
   @families ~s(Prefix a non-EVM account with its family: "tron:", "solana:", ) <>
               ~s("party:" or "aztec:".)
@@ -132,9 +131,7 @@ defmodule Raxol.Web3.MCP.Error do
     do: ~s(The chain must be a CAIP-2 string, e.g. "eip155:1" for Ethereum mainnet.)
 
   defp hint("invalid_argument", "hash", _context),
-    do:
-      "Not a transaction hash this chain uses: an EVM transaction hash is \"0x\" " <>
-        "followed by 64 hex characters."
+    do: ~s(An EVM transaction hash is "0x" plus 64 hex characters.)
 
   defp hint("invalid_argument", "number", _context),
     do:
@@ -153,8 +150,8 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("unsupported_account_ref", _detail, context) do
     if name?(Map.get(context, :account)),
       do:
-        "The account looks like a name, not an address. Call web3_resolve_name with " <>
-          "this name and the same chain first, then pass the account it returns.",
+        "This looks like a name. Call web3_resolve_name with it and the same chain, " <>
+          "then pass the account it returns.",
       else: "The account is not an address this chain uses. " <> @families
   end
 
@@ -166,16 +163,14 @@ defmodule Raxol.Web3.MCP.Error do
 
   defp hint("invalid_cursor", _detail, _context),
     do:
-      "The cursor is not valid here. Pass it exactly as the previous page of the same " <>
-        "tool on the same chain returned it, or omit it for the first page."
+      "Pass the cursor exactly as the previous page of this tool on this chain " <>
+        "returned it, or omit it for the first page."
 
   defp hint("timeout", stage, _context) when is_atom(stage) and not is_nil(stage),
-    do:
-      "This was a timeout: the source did not answer in time (stage: #{stage}). " <>
-        @retry_narrower
+    do: "The source timed out (stage: #{stage}). " <> @retry_narrower
 
   defp hint("timeout", _detail, _context),
-    do: "This was a timeout: the source did not answer in time. " <> @retry_narrower
+    do: "The source timed out. " <> @retry_narrower
 
   defp hint("rate_limited", ms, _context) when is_integer(ms),
     do: "The source is rate limiting this client. Retry after #{ms} ms."
@@ -184,13 +179,13 @@ defmodule Raxol.Web3.MCP.Error do
     do: "The source is rate limiting this client. Retry later."
 
   defp hint("breaker_open", _origin, _context),
-    do: "The source failed repeatedly and is paused. Retry in a minute."
+    do: "The source failed repeatedly and is paused. Retry later."
 
   defp hint("transport", _detail, _context),
     do: "The connection to the source failed. A retry may work."
 
   defp hint("dns_failed", _origin, _context),
-    do: "The source's host name did not resolve. A retry later may work."
+    do: "The source's host name did not resolve. Retry later."
 
   defp hint("too_large", limit, _context) when is_integer(limit),
     do: "The answer was larger than the #{limit}-byte limit. Try a narrower query."
@@ -239,15 +234,15 @@ defmodule Raxol.Web3.MCP.Error do
 
   defp retry_hint(403),
     do:
-      "The source refused this deployment (HTTP 403), not the arguments, so changing " <>
-        "them will not help. A retry later may work."
+      "The source refused this deployment (HTTP 403). Changing the arguments will " <>
+        "not help. Retry later."
 
   defp retry_hint(status), do: "The source failed with HTTP #{status}. A retry may work."
 
   defp final_hint(401),
     do:
-      "The source refused this deployment (HTTP 401): it requires a credential this " <>
-        "deployment does not hold. Changing the arguments will not help."
+      "The source needs a credential this deployment does not hold (HTTP 401). " <>
+        "Changing the arguments will not help."
 
   defp final_hint(status) when status in 400..499,
     do: "The source refused the request with HTTP #{status}. Check the arguments."
