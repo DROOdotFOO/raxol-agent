@@ -1,4 +1,4 @@
-defmodule Raxol.Web3.MCP.JSON do
+defmodule Raxol.Web3.MCP.Result do
   @moduledoc """
   The JSON text a served tool returns.
 
@@ -28,9 +28,13 @@ defmodule Raxol.Web3.MCP.JSON do
       client that reads JSON numbers as IEEE doubles loses digits. Heights and
       counts are far below that bound and stay numbers.
 
-  The rules match only atom keys, which is what the normalized contract uses.
-  String keys come from upstream JSON passed through whole (a contract's ABI),
-  and their values are left as the upstream wrote them.
+  The key rules (string keys, the four amount fields) match only atom keys,
+  which is what the normalized contract uses. String keys come from upstream
+  JSON passed through whole (a contract's ABI), so an upstream `"value"` keeps
+  the JSON type the upstream gave it. The integer bound is not a key rule and
+  holds under string keys too: an upstream integer past 2^53 is a decimal
+  string, because a client reading it as a double would lose digits whoever
+  wrote it.
   """
 
   alias Raxol.Web3.Serialize

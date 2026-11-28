@@ -6,6 +6,7 @@ defmodule Raxol.Web3.FXTest do
   alias Raxol.Web3.FX
   alias Raxol.Web3.FX.Chainlink
   alias Raxol.Web3.FX.Quality
+  alias Raxol.Web3.MCP.Error
   alias Raxol.Web3.MCP.FXTools
 
   @base_eur Raxol.Web3.FXHarness.base_eur()
@@ -114,13 +115,125 @@ defmodule Raxol.Web3.FXTest do
       s = sleuth(%{"/api/mcp/fx/stables" => sleuth_fixture("stables_partner")})
       stables = tool(FX.new(s, chainlink()), "web3_fx_stables")
 
-      assert {:ok, result} = stables.callback.(%{"partner_only" => true})
-      decoded = result |> Jason.encode!() |> Jason.decode!()
+      assert {:ok, json} = stables.callback.(%{"partner_only" => true})
+      assert is_binary(json)
+      decoded = Jason.decode!(json)
 
       eure = Enum.find(decoded["assets"], &(&1["symbol"] == "EURe"))
       assert is_binary(eure["price_usd"])
       assert %{"status" => "ok", "rate" => rate, "deviation_bps" => bps} = eure["quality"]
       assert is_binary(rate) and is_integer(bps)
+    end
+
+    test "every tool answers JSON text that decodes to an object" do
+      s =
+        sleuth(%{
+          "/api/mcp/fx/stables" => sleuth_fixture("stables_partner"),
+          "/api/mcp/fx/stables/EURC" => sleuth_fixture("stable_eurc"),
+          "/api/mcp/fx/corridors" => sleuth_fixture("corridors")
+        })
+
+      fx = FX.new(s, chainlink())
+
+      for {name, arguments} <- [
+            {"web3_fx_stables", %{}},
+            {"web3_fx_stable", %{"symbol" => "EURC"}},
+            {"web3_fx_corridors", %{"include_assets" => true}}
+          ] do
+        assert {:ok, json} = tool(fx, name).callback.(arguments), name
+        assert {:ok, %{} = _object} = Jason.decode(json), name
+      end
+    end
+
+    test "a rate and a price arrive with every digit the source and the feed gave" do
+      body =
+        String.replace(
+          sleuth_fixture("stables_partner"),
+          ~s("priceUsd": 1.133365),
+          ~s("priceUsd": 1.133365000000000000000000001)
+        )
+
+      fx = FX.new(sleuth(%{"/api/mcp/fx/stables" => body}), chainlink())
+      {:ok, eur} = Chainlink.rate(fx.chainlink, "EUR")
+
+      assert {:ok, json} = tool(fx, "web3_fx_stables").callback.(%{})
+
+      eurc =
+        json |> Jason.decode!() |> Map.fetch!("assets") |> Enum.find(&(&1["symbol"] == "EURC"))
+
+      assert eurc["price_usd"] == "1.133365000000000000000000001"
+      assert eurc["quality"]["rate"] == Decimal.to_string(eur.rate, :normal)
+    end
+
+    test "the agent's dispatch/3 still answers Elixir terms from the same read" do
+      s = sleuth(%{"/api/mcp/fx/stables" => sleuth_fixture("stables_partner")})
+      fx = FX.new(s, chainlink())
+
+      assert {:ok, %{assets: [%{symbol: _symbol, quality: %{status: :ok}} | _rest]}} =
+               FXTools.dispatch(fx, "web3_fx_stables", %{"partner_only" => true})
+
+      assert {:error, %{code: "invalid_argument", detail: "limit"} = error} =
+               FXTools.dispatch(fx, "web3_fx_stables", %{"limit" => 9_999})
+
+      refute is_struct(error)
+    end
+
+    test "an error is the served error type, with a hint that names the accepted values" do
+      fx = FX.new(sleuth(%{}), chainlink())
+
+      hints =
+        for {name, arguments} <- [
+              {"web3_fx_stables", %{"limit" => 9_999}},
+              {"web3_fx_stables", %{"offset" => -1}},
+              {"web3_fx_stables", %{"sort" => "price"}},
+              {"web3_fx_stables", %{"corridor" => "euro"}},
+              {"web3_fx_stable", %{"symbol" => "../x"}}
+            ] do
+          assert {:error, %Error{code: "invalid_argument", hint: hint} = error} =
+                   tool(fx, name).callback.(arguments)
+
+          assert %{"code" => "invalid_argument", "hint" => ^hint} = Jason.decode!(inspect(error))
+          hint
+        end
+
+      assert hints == [
+               "The limit must be an integer from 1 to 300.",
+               "The offset must be a non-negative integer.",
+               "The sort must be one of supplyUsd, volume24hUsd, deviationBps, " <>
+                 "partnerLiquidityUsd, marketCapUsd.",
+               ~s(The corridor must be a peg currency code of 3 or 4 capital letters, e.g. "EUR".),
+               ~s(The symbol must be a ticker such as "EURC": a letter or digit, then up to 23 ) <>
+                 "letters, digits, dots or hyphens."
+             ]
+    end
+
+    test "every reason an FX read can return has a hint" do
+      reasons = [
+        {:missing_argument, "symbol"},
+        {:invalid_argument, "include_assets"},
+        {:invalid_argument, "partner_only"},
+        {:invalid_argument, "exclude_yield_bearing"},
+        {:invalid_argument, "query"},
+        {:upstream_refused, :auth},
+        {:upstream_refused, :not_found},
+        {:upstream_refused, :rate_limit},
+        {:http, 400},
+        {:http, 403},
+        {:http, 503},
+        {:decode_failed, :sleuth},
+        {:decode_failed, :result},
+        {:timeout, :chunk},
+        {:rate_limited, 500},
+        {:too_large, 262_144},
+        {:transport, :closed},
+        {:dns_failed, "sleuth"},
+        {:blocked, "sleuth"},
+        {:breaker_open, "sleuth"}
+      ]
+
+      for reason <- reasons do
+        assert is_binary(Error.new(reason).hint), inspect(reason)
+      end
     end
 
     test "bad arguments answer a closed error code and send nothing" do
@@ -142,7 +255,10 @@ defmodule Raxol.Web3.FXTest do
       s = sleuth(%{"/api/mcp/fx/stables/NOPE" => {404, ~s({"error":"x"})}})
       stable = tool(FX.new(s, chainlink()), "web3_fx_stable")
 
-      assert {:error, error} = stable.callback.(%{"symbol" => "NOPE"})
+      assert {:error, %Error{code: "upstream_refused", detail: :not_found} = error} =
+               stable.callback.(%{"symbol" => "NOPE"})
+
+      assert error.hint == "The source has no such record."
       refute stable.fault?.(error)
       assert stable.fault?.(%{code: "upstream_refused", detail: :auth})
     end

@@ -14,12 +14,23 @@ defmodule Raxol.Web3.MCP.FXTools do
 
   Like `Raxol.Web3.MCP.Tools`, every tool is `readOnlyHint: true` and
   `sensitive: true`: it spends an operator's Sleuth key and RPC budget, so
-  `Raxol.MCP.Server` refuses to serve it without an authorizer. Errors are
-  `Raxol.Web3.Serialize.error/1` codes and carry no upstream text.
+  `Raxol.MCP.Server` refuses to serve it without an authorizer.
+
+  ## Two surfaces, one read
+
+  A served tool answers as `Raxol.Web3.MCP.Tools` does: a result is JSON text
+  (`Raxol.Web3.MCP.Result`), an error is a `Raxol.Web3.MCP.Error` with a
+  hint, and neither carries upstream text. `Raxol.Agent.Actions.FX` serves the
+  same three reads to an agent, which wants Elixir terms, through
+  `dispatch/3`. The split is after `run/3`: both surfaces make the same call
+  with the same argument handling, and only the rendering differs, so they
+  cannot drift in what they read.
   """
 
   alias Raxol.MCP.Registry
   alias Raxol.Web3.FX
+  alias Raxol.Web3.MCP.Error
+  alias Raxol.Web3.MCP.Result
   alias Raxol.Web3.MCP.Tools
   alias Raxol.Web3.Serialize
 
@@ -61,7 +72,7 @@ defmodule Raxol.Web3.MCP.FXTools do
         },
         annotations: %{readOnlyHint: true, sensitive: true},
         fault?: &Tools.fault?/1,
-        callback: fn arguments -> dispatch(fx, name, arguments) end
+        callback: fn arguments -> serve(fx, name, arguments) end
       }
     end)
   end
@@ -71,7 +82,7 @@ defmodule Raxol.Web3.MCP.FXTools do
   def register(registry, %FX{} = fx), do: Registry.register_all(registry, tools: tool_defs(fx))
 
   @doc false
-  # Shared with `Raxol.Agent.Actions.FX`, which serves the same three reads.
+  # `Raxol.Agent.Actions.FX`'s entry: the read, rendered as Elixir terms.
   @spec dispatch(FX.t(), String.t(), map()) :: {:ok, term()} | {:error, map()}
   def dispatch(fx, name, arguments) do
     case run(fx, name, arguments || %{}) do
@@ -79,6 +90,22 @@ defmodule Raxol.Web3.MCP.FXTools do
       {:error, reason} -> {:error, Serialize.error(reason)}
     end
   end
+
+  # The served tool's entry: the same read, rendered as JSON text or an
+  # `Raxol.Web3.MCP.Error`. Every FX read answers a map, so anything else is
+  # the source answering in a shape this surface cannot read.
+  defp serve(fx, name, arguments) do
+    with {:ok, result} <- run(fx, name, arguments || %{}),
+         {:ok, object} <- object(result),
+         {:ok, json} <- Result.encode(object) do
+      {:ok, json}
+    else
+      {:error, reason} -> {:error, Error.new(reason)}
+    end
+  end
+
+  defp object(result) when is_map(result) and not is_struct(result), do: {:ok, result}
+  defp object(_result), do: {:error, {:decode_failed, :result}}
 
   defp run(fx, "web3_fx_stables", arguments) do
     with {:ok, opts} <- stables_opts(arguments), do: FX.stables(fx, opts)

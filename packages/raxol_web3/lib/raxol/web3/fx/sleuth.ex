@@ -128,6 +128,7 @@ defmodule Raxol.Web3.FX.Sleuth do
   @max_rates 64
 
   @sorts ~w(supplyUsd volume24hUsd deviationBps partnerLiquidityUsd marketCapUsd)
+  @limits 1..300
 
   @canonical %{"EURE" => "EURe", "MONERIUM" => "EURe", "FRANKENCOIN" => "ZCHF"}
 
@@ -212,6 +213,14 @@ defmodule Raxol.Web3.FX.Sleuth do
     get(sleuth, "/fx/corridors", [], &decode_corridors(&1, include_assets?), nil)
   end
 
+  @doc "The `:sort` values `stables/2` accepts."
+  @spec sorts() :: [String.t()]
+  def sorts, do: @sorts
+
+  @doc "The `:limit` values `stables/2` accepts."
+  @spec limits() :: Range.t()
+  def limits, do: @limits
+
   @doc """
   The symbol `Raxol.Payments.Assets` uses for a Sleuth symbol. Case is folded
   in ASCII only, so a lookalike such as `MONERıUM` (dotless i) stays itself.
@@ -241,7 +250,7 @@ defmodule Raxol.Web3.FX.Sleuth do
   defp param(:exclude_yield_bearing, false), do: {:ok, nil}
   defp param(:sort, value) when value in @sorts, do: {:ok, {"sort", value}}
 
-  defp param(:limit, value) when is_integer(value) and value in 1..300,
+  defp param(:limit, value) when is_integer(value) and value in @limits,
     do: {:ok, {"limit", Integer.to_string(value)}}
 
   defp param(:offset, value) when is_integer(value) and value >= 0,

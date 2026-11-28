@@ -8,6 +8,7 @@ defmodule Raxol.Web3.MCP.ToolsTest do
   alias Raxol.Web3.MCP.Error
   alias Raxol.Web3.MCP.Tools
   alias Raxol.Web3.Router
+  alias Raxol.Web3.Serialize
 
   @chain "eip155:1"
   @address "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
@@ -49,6 +50,19 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       assert Enum.all?(Tools.tool_defs(router()), fn tool ->
                not String.contains?(Jason.encode!(tool.inputSchema), "method")
              end)
+    end
+
+    test "every account argument names every family Serialize reads" do
+      descriptions =
+        for %{inputSchema: %{"properties" => %{"account" => %{"description" => d}}}} <-
+              Tools.tool_defs(router()),
+            do: d
+
+      assert length(descriptions) == 7
+
+      for description <- descriptions, tag <- Serialize.tags(), tag != "evm" do
+        assert description =~ ~s("#{tag}:), tag
+      end
     end
 
     test "every registered tool is one this package declared" do
@@ -370,6 +384,36 @@ defmodule Raxol.Web3.MCP.ToolsTest do
                })
     end
 
+    test "a result that is not an object is a closed error, not a non-object answer" do
+      unreadable = [
+        {:account_info, nil, "web3_account_info", %{"account" => @address}},
+        {:account_info, [], "web3_account_info", %{"account" => @address}},
+        {:account_info, ~U[2026-11-28 12:00:00Z], "web3_account_info", %{"account" => @address}},
+        {:chain_info, "text", "web3_chain_info", %{}},
+        {:resolve_name, {:unknown, "0xabc"}, "web3_resolve_name", %{"name" => "vitalik.eth"}},
+        {:resolve_name, {:evm, 42}, "web3_resolve_name", %{"name" => "vitalik.eth"}},
+        {:resolve_name, "0xabc", "web3_resolve_name", %{"name" => "vitalik.eth"}},
+        {:read_contract, nil, "web3_read_contract", %{"to" => @address, "data" => "0x"}}
+      ]
+
+      for {callback, answer, name, arguments} <- unreadable do
+        router = router(answers: %{callback => {:ok, answer}})
+
+        assert {:error, %Error{code: "decode_failed", detail: :result}} =
+                 call(router, name, Map.put(arguments, "chain", @chain)),
+               "#{callback} answering #{inspect(answer)}"
+      end
+    end
+
+    test "an unreadable result counts against the tool, as a source fault" do
+      router = router(answers: %{account_info: {:ok, nil}})
+
+      assert {:error, error} =
+               call(router, "web3_account_info", %{"chain" => @chain, "account" => @address})
+
+      assert Tools.fault?(error)
+    end
+
     test "a wei balance past 2^53 arrives as its exact decimal string" do
       # 5_799_554_154_377_317_710 is the balance Blockscout reported for the
       # address above on 2026-11-28. As a JSON number a double reads it as
@@ -418,6 +462,20 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       assert hint =~ "\"chains\""
     end
 
+    test "a router with no chains does not offer an empty list to pick from" do
+      assert {:error, error} = call(Router.new([]), "web3_chain_info", %{"chain" => @chain})
+
+      assert %{"code" => "no_backend", "chains" => [], "hint" => hint} = Error.to_map(error)
+      assert hint =~ "serves no chains"
+      refute hint =~ "\"chains\""
+    end
+
+    test "an error built without the router's chains claims neither" do
+      hint = Error.new(:no_backend).hint
+
+      assert hint == "No backend serves this chain."
+    end
+
     test "only no_backend carries the chains key" do
       router = router(answers: %{chain_info: {:error, {:timeout, :deadline}}})
 
@@ -433,13 +491,35 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       {:ok, blockscout} = Raxol.Web3.Backend.Blockscout.new(@chain)
       router = Router.new([blockscout])
 
-      for tool <- ~w(web3_account_info web3_token_balances web3_list_transactions) do
+      for tool <- ~w(web3_account_info web3_token_balances web3_list_transactions),
+          account <- ["vitalik.eth", "evm:vitalik.eth"] do
         assert {:error, error} =
-                 call(router, tool, %{"chain" => @chain, "account" => "vitalik.eth"})
+                 call(router, tool, %{"chain" => @chain, "account" => account})
 
         assert %{code: "unsupported_account_ref", detail: :not_an_address} = error
-        assert error.hint =~ "web3_resolve_name"
+        assert error.hint =~ "web3_resolve_name", "#{tool} #{account}"
       end
+    end
+
+    test "a name behind evm: is told to drop the prefix; a bare name's hint is unchanged" do
+      hint = fn account ->
+        Error.new({:unsupported_account_ref, :not_an_address}, %{account: account}).hint
+      end
+
+      assert hint.("vitalik.eth") ==
+               "This looks like a name. Call web3_resolve_name with it and the same chain, " <>
+                 "then pass the account it returns."
+
+      assert hint.("evm:vitalik.eth") ==
+               ~s(This looks like a name. Drop the "evm:" prefix and call web3_resolve_name ) <>
+                 "with the name alone and the same chain, then pass the account it returns."
+    end
+
+    test "a dotted value behind another family's prefix is not taken for a name" do
+      context = %{account: "tron:vitalik.eth"}
+      hint = Error.new({:unsupported_account_ref, :not_an_address}, context).hint
+
+      refute hint =~ "web3_resolve_name"
     end
 
     test "an address of the wrong form gets the family hint, not the name hint" do

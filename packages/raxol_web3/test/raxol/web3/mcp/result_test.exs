@@ -1,13 +1,13 @@
-defmodule Raxol.Web3.MCP.JSONTest do
+defmodule Raxol.Web3.MCP.ResultTest do
   use ExUnit.Case, async: true
 
-  alias Raxol.Web3.MCP.JSON
+  alias Raxol.Web3.MCP.Result
 
   @address "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
   @max_safe 9_007_199_254_740_991
 
   defp decode!(value) do
-    assert {:ok, json} = JSON.encode(value)
+    assert {:ok, json} = Result.encode(value)
     Jason.decode!(json)
   end
 
@@ -74,8 +74,18 @@ defmodule Raxol.Web3.MCP.JSONTest do
       assert decode!(%{abi: abi, verified?: true}) == %{"abi" => abi, "verified?" => true}
     end
 
+    test "an integer past 2^53 under a string key is a decimal string too" do
+      abi = [%{"type" => "constant", "value" => @max_safe + 1, "small" => @max_safe}]
+
+      assert decode!(%{abi: abi}) == %{
+               "abi" => [
+                 %{"type" => "constant", "value" => "9007199254740992", "small" => @max_safe}
+               ]
+             }
+    end
+
     test "a value JSON cannot hold is a closed error, not a raise" do
-      assert JSON.encode(%{data: <<0xFF, 0xFE>>}) == {:error, :unencodable_result}
+      assert Result.encode(%{data: <<0xFF, 0xFE>>}) == {:error, :unencodable_result}
     end
   end
 end

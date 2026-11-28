@@ -20,5 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     are the values the old text showed. `hint` is a fixed sentence that says
     what to do next. The `Error: ` prefix is `Raxol.MCP.Server`'s.
   - `no_backend` lists the served chains under `"chains"`. A name where an
-    account belongs gets a hint to call `web3_resolve_name` first. A
-    malformed EVM transaction hash is refused locally as `invalid_argument`.
+    account belongs gets a hint to call `web3_resolve_name` first; behind an
+    `evm:` prefix, to drop the prefix and pass the name alone. A malformed EVM
+    transaction hash is refused locally as `invalid_argument`.
+  - `no_backend` on a deployment that serves no chains says so instead of
+    pointing at an empty `"chains"`.
+  - A backend answer that is not an object, or not the account or hex value
+    the tool promises, is `decode_failed` / `"result"` instead of a non-object
+    result.
+- **Visible to MCP clients: the three `Raxol.Web3.MCP.FXTools` tools
+  (`web3_fx_*`) answer the same way:** JSON text, and `Error: {"code",
+  "detail", "hint"}`. Prices and rates are decimal strings with every digit
+  the source gave. An `invalid_argument` hint for `symbol`, `corridor`,
+  `sort`, `limit` or `offset` names the accepted values.
+  `Raxol.Agent.Actions.FX` still answers Elixir terms.

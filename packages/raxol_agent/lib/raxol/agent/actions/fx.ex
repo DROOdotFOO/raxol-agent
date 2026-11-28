@@ -6,8 +6,8 @@ if Code.ensure_loaded?(Raxol.Web3.FX) do
 
     One tool with an `operation` enum, for the reason `Raxol.Agent.Actions.Web3`
     gives: an Action sits in the toolset for the whole session. The three reads
-    are the ones `Raxol.Web3.MCP.FXTools` serves, through the same dispatch, so
-    the two surfaces cannot drift.
+    are the ones `Raxol.Web3.MCP.FXTools` serves, through the same `run/3`
+    (only the rendering differs), so the two surfaces cannot drift.
 
     The handle comes from `context[:fx_source]` (a `Raxol.Web3.FX`); without it
     the tool answers `{:error, :fx_not_configured}`. A jailed session refuses

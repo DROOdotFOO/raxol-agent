@@ -65,7 +65,8 @@ MAC and are bound to their scope.
   `"chains"` on `no_backend`.
 - `Raxol.Web3.MCP.FXTools`: `web3_fx_stables`, `web3_fx_stable`, `web3_fx_corridors`. Also
   `sensitive: true`, because they spend the operator's Sleuth key and RPC budget, and the same
-  authorizer caveat applies.
+  authorizer caveat applies. They answer the same way: JSON text, and `Error: {"code",
+  "detail", "hint"}`.
 - The agent tool is `Raxol.Agent.Actions.Web3` in `raxol_agent`: one tool with an `operation`
   enum.
 

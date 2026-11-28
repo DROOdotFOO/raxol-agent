@@ -32,10 +32,12 @@ defmodule Raxol.Web3.MCP.Tools do
 
   ## Results and errors are JSON text
 
-  A result is a JSON object, encoded by `Raxol.Web3.MCP.JSON`: string keys,
+  A result is a JSON object, encoded by `Raxol.Web3.MCP.Result`: string keys,
   atoms as strings, and amounts and any integer past 2^53 as decimal strings.
   `web3_resolve_name` answers `{"account": "evm:0x..."}` and
-  `web3_read_contract` answers `{"value": "0x..."}`.
+  `web3_read_contract` answers `{"value": "0x..."}`. A backend answer that is
+  not the type its callback promises is `decode_failed` / `"result"`, never a
+  non-object.
 
   An error is a `Raxol.Web3.MCP.Error`: `{"code", "detail", "hint"}`, plus
   `"chains"` on `no_backend`. `Raxol.MCP.Server` prefixes it with `Error: `.
@@ -66,17 +68,19 @@ defmodule Raxol.Web3.MCP.Tools do
   alias Raxol.MCP.Registry
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCP.Error
-  alias Raxol.Web3.MCP.JSON
+  alias Raxol.Web3.MCP.Result
   alias Raxol.Web3.Router
   alias Raxol.Web3.Serialize
 
   @prefix "web3_"
 
-  # One description for the eight `account` arguments, and the one place to
-  # change when a family lands. `Raxol.Web3.Serialize.account_ref/1` reads an
-  # unprefixed value as EVM, so every other family has to be named here: a
-  # model that sends a bare Solana pubkey gets `{:unsupported_account_ref,
-  # :evm}` and no way to tell from the schema why.
+  # One description for the seven `account` arguments. `Raxol.Web3.Serialize`
+  # owns the family list (`tags/0`), and `Raxol.Web3.MCP.Error`'s hint is
+  # derived from it; this text is written out because it shows each family's
+  # form, and a test fails when a tag in `tags/0` is missing from it. An
+  # unprefixed value is read as EVM, so every other family has to be named
+  # here: a model that sends a bare Solana pubkey gets
+  # `{:unsupported_account_ref, :evm}` and no way to tell from the schema why.
   @families ~s(An unprefixed value is read as EVM; every other family must ) <>
               ~s(name itself: "tron:T...", "solana:<pubkey>", ) <>
               ~s("party:<party-id>", "aztec:0x...".)
@@ -222,8 +226,8 @@ defmodule Raxol.Web3.MCP.Tools do
   failure nor a success for it.
 
   The argument is the SERIALIZED term, because that is what a callback here
-  returns: a `Raxol.Web3.MCP.Error` here, a plain map from
-  `Raxol.Web3.MCP.FXTools`, and both carry `Raxol.Web3.Serialize.error/1`'s
+  returns: a `Raxol.Web3.MCP.Error`, here and from
+  `Raxol.Web3.MCP.FXTools`, which carries `Raxol.Web3.Serialize.error/1`'s
   `%{code: "upstream_refused", detail: :not_found}` for `{:upstream_refused,
   :not_found}`, so the two classes that split on their detail are read that
   way.
@@ -298,7 +302,8 @@ defmodule Raxol.Web3.MCP.Tools do
          {:ok, args} <- build_args(callback, arg_spec, arguments),
          :ok <- vet(callback, chain, args),
          {:ok, value} <- Router.call(router, chain, callback, args),
-         {:ok, json} <- value |> shape() |> JSON.encode() do
+         {:ok, object} <- shape(callback, value),
+         {:ok, json} <- Result.encode(object) do
       {:ok, json}
     else
       {:error, reason} -> {:error, Error.new(reason, context(router, arguments))}
@@ -310,11 +315,22 @@ defmodule Raxol.Web3.MCP.Tools do
 
   # Every result is a JSON object. Two callbacks answer a scalar, and they are
   # wrapped the way `Raxol.Agent.Actions.Web3` wraps them, so the two surfaces
-  # over one router name the same field the same way.
-  defp shape(value) when is_map(value), do: value
-  defp shape({tag, _value} = ref) when is_atom(tag), do: %{account: ref}
-  defp shape(value) when is_binary(value), do: %{value: value}
-  defp shape(value), do: value
+  # over one router name the same field the same way. Each callback is held
+  # to the type the backend contract gives it, and anything else is the
+  # source answering in a shape this surface cannot read: `nil`, a list, a
+  # struct, or a tuple that is not an account reference would otherwise reach
+  # the client as something other than an object, or as a false `"account"`.
+  defp shape(:resolve_name, value) do
+    if Serialize.account_ref?(value), do: {:ok, %{account: value}}, else: unreadable()
+  end
+
+  defp shape(:read_contract, value) when is_binary(value), do: {:ok, %{value: value}}
+  defp shape(:read_contract, _value), do: unreadable()
+
+  defp shape(_callback, value) when is_map(value) and not is_struct(value), do: {:ok, value}
+  defp shape(_callback, _value), do: unreadable()
+
+  defp unreadable, do: {:error, {:decode_failed, :result}}
 
   # An EVM transaction hash has one form, so a malformed one is refused here
   # rather than sent: Blockscout answered `"0x1234"` with a bare `422`, which
@@ -434,7 +450,7 @@ defmodule Raxol.Web3.MCP.Tools do
   # a quantity -- and narrowing them here would take away reads that work
   # today. What is refused is the remainder, which is exactly the set that
   # reached a backend and came back as a wrong answer.
-  @block_tags ~w(latest earliest pending safe finalized)
+  @block_tags Serialize.block_tags()
 
   defp block_ref(number) when is_integer(number), do: {:ok, number}
   defp block_ref(tag) when tag in @block_tags, do: {:ok, tag}

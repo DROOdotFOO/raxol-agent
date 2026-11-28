@@ -153,7 +153,24 @@ defmodule Raxol.Web3.Serialize do
     end
   end
 
+  @doc "Whether a term is a tagged account reference of a family in `tags/0`."
+  @spec account_ref?(term()) :: boolean()
+  def account_ref?({family, value}) when is_atom(family) and is_binary(value),
+    do: family in Map.values(@tags)
+
+  def account_ref?(_other), do: false
+
   @doc "The account-reference tags this surface understands."
   @spec tags() :: [String.t()]
   def tags, do: Map.keys(@tags)
+
+  # The block tags a caller may send where a block number is expected. Here
+  # beside the account tags for the same reason: `Raxol.Web3.MCP.Tools`
+  # accepts them and `Raxol.Web3.MCP.Error` names them in a hint, and two
+  # copies would drift.
+  @block_tags ~w(latest earliest pending safe finalized)
+
+  @doc "The block tags a caller may send in place of a block number."
+  @spec block_tags() :: [String.t()]
+  def block_tags, do: @block_tags
 end

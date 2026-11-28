@@ -31,8 +31,9 @@ defmodule Raxol.Web3.MCP.Error do
   this value, reads it as it read the plain map before.
   """
 
+  alias Raxol.Web3.FX.Sleuth
   alias Raxol.Web3.HTTP
-  alias Raxol.Web3.MCP.JSON
+  alias Raxol.Web3.MCP.Result
   alias Raxol.Web3.Serialize
 
   @enforce_keys [:code]
@@ -54,9 +55,6 @@ defmodule Raxol.Web3.MCP.Error do
   @retry_narrower "A retry may work. If it times out again, ask for less: a more " <>
                     "specific tool or a later page."
 
-  @families ~s(Prefix a non-EVM account with its family: "tron:", "solana:", ) <>
-              ~s("party:" or "aztec:".)
-
   @doc "Build the served error for a taxonomy reason."
   @spec new(term(), context()) :: t()
   def new(reason, context \\ %{}) do
@@ -73,7 +71,7 @@ defmodule Raxol.Web3.MCP.Error do
   @doc "The error as JSON-safe data, in the shape the moduledoc gives."
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = error) do
-    %{"code" => error.code, "detail" => JSON.safe(error.detail), "hint" => error.hint}
+    %{"code" => error.code, "detail" => Result.safe(error.detail), "hint" => error.hint}
     |> put_chains(error.chains)
   end
 
@@ -109,10 +107,23 @@ defmodule Raxol.Web3.MCP.Error do
 
   # -- Hints -----------------------------------------------------------------
 
-  defp hint("no_backend", _detail, _context),
-    do:
-      "No backend serves this chain. Call again with one of the CAIP-2 references in " <>
-        "\"chains\"."
+  # The list to pick from is only offered when there is one: a router with no
+  # chains makes every chain reference fail, and an error built without the
+  # router's chains cannot say which exist.
+  defp hint("no_backend", _detail, context) do
+    case Map.fetch(context, :chains) do
+      {:ok, []} ->
+        "This deployment serves no chains, so no chain reference will work. Its " <>
+          "operator has to configure a backend."
+
+      {:ok, _chains} ->
+        "No backend serves this chain. Call again with one of the CAIP-2 references in " <>
+          "\"chains\"."
+
+      :error ->
+        "No backend serves this chain."
+    end
+  end
 
   # Every clause that interpolates its datum is guarded on the type it
   # expects, and an argument name only when it is printable, because
@@ -136,7 +147,31 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("invalid_argument", "number", _context),
     do:
       "The block number must be a non-negative integer, a 0x quantity, or one of " <>
-        "latest, earliest, pending, safe, finalized."
+        Enum.join(Serialize.block_tags(), ", ") <> "."
+
+  # The FX tools' arguments. Each is refused for its value, not its type, so
+  # each says what the accepted values are; `Raxol.Web3.FX.Sleuth` owns them.
+  defp hint("invalid_argument", "symbol", _context),
+    do:
+      ~s(The symbol must be a ticker such as "EURC": a letter or digit, then up to 23 ) <>
+        "letters, digits, dots or hyphens."
+
+  defp hint("invalid_argument", "corridor", _context),
+    do: ~s(The corridor must be a peg currency code of 3 or 4 capital letters, e.g. "EUR".)
+
+  defp hint("invalid_argument", "sort", _context),
+    do: "The sort must be one of " <> Enum.join(Sleuth.sorts(), ", ") <> "."
+
+  defp hint("invalid_argument", "limit", _context) do
+    first..last//_step = Sleuth.limits()
+    "The limit must be an integer from #{first} to #{last}."
+  end
+
+  defp hint("invalid_argument", "offset", _context),
+    do: "The offset must be a non-negative integer."
+
+  defp hint("invalid_argument", "query", _context),
+    do: "The source refused this combination of filters. Check them against the inputSchema."
 
   defp hint("invalid_argument", name, _context) when is_binary(name) do
     if printable?(name),
@@ -147,12 +182,22 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("invalid_argument", _detail, _context),
     do: "An argument has the wrong type; see the tool's inputSchema."
 
+  # `web3_resolve_name` takes the bare name: `"evm:vitalik.eth"` is not a
+  # name it knows, so a hint that said "call it with it" sent the caller into
+  # a `not_found` for a name that exists.
   defp hint("unsupported_account_ref", _detail, context) do
-    if name?(Map.get(context, :account)),
-      do:
+    case name(Map.get(context, :account)) do
+      :bare ->
         "This looks like a name. Call web3_resolve_name with it and the same chain, " <>
-          "then pass the account it returns.",
-      else: "The account is not an address this chain uses. " <> @families
+          "then pass the account it returns."
+
+      :prefixed ->
+        ~s(This looks like a name. Drop the "evm:" prefix and call web3_resolve_name ) <>
+          "with the name alone and the same chain, then pass the account it returns."
+
+      nil ->
+        "The account is not an address this chain uses. " <> families()
+    end
   end
 
   defp hint("unsupported", _callback, _context),
@@ -252,13 +297,27 @@ defmodule Raxol.Web3.MCP.Error do
 
   # A dot and no family prefix is how a name differs from every account form
   # this surface reads: an EVM address, a Tron or Solana key and a Canton
-  # party id carry no dot, and every non-EVM family is prefixed.
+  # party id carry no dot, and every non-EVM family is prefixed. `"evm:"` is
+  # the one prefix a name can sit behind, because an unprefixed value already
+  # means EVM (`Raxol.Web3.Serialize.account_ref/1`), so it is read past.
+  defp name("evm:" <> account), do: if(name?(account), do: :prefixed)
+  defp name(account), do: if(name?(account), do: :bare)
+
   defp name?(account) when is_binary(account) do
     String.contains?(account, ".") and not String.contains?(account, ":") and
       not String.starts_with?(account, "0x")
   end
 
   defp name?(_account), do: false
+
+  # Derived from `Raxol.Web3.Serialize.tags/0`, so a family that lands there
+  # is named here without an edit.
+  defp families do
+    {last, rest} =
+      Serialize.tags() |> List.delete("evm") |> Enum.map(&~s("#{&1}:")) |> List.pop_at(-1)
+
+    "Prefix a non-EVM account with its family: " <> Enum.join(rest, ", ") <> " or " <> last <> "."
+  end
 
   defp printable?(name), do: byte_size(name) <= 64 and String.printable?(name)
 
