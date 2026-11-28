@@ -491,13 +491,21 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       {:ok, blockscout} = Raxol.Web3.Backend.Blockscout.new(@chain)
       router = Router.new([blockscout])
 
-      for tool <- ~w(web3_account_info web3_token_balances web3_list_transactions) do
+      for tool <- ~w(web3_account_info web3_token_balances web3_list_transactions),
+          account <- ["vitalik.eth", "evm:vitalik.eth"] do
         assert {:error, error} =
-                 call(router, tool, %{"chain" => @chain, "account" => "vitalik.eth"})
+                 call(router, tool, %{"chain" => @chain, "account" => account})
 
         assert %{code: "unsupported_account_ref", detail: :not_an_address} = error
-        assert error.hint =~ "web3_resolve_name"
+        assert error.hint =~ "web3_resolve_name", "#{tool} #{account}"
       end
+    end
+
+    test "a dotted value behind another family's prefix is not taken for a name" do
+      context = %{account: "tron:vitalik.eth"}
+      hint = Error.new({:unsupported_account_ref, :not_an_address}, context).hint
+
+      refute hint =~ "web3_resolve_name"
     end
 
     test "an address of the wrong form gets the family hint, not the name hint" do

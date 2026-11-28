@@ -20,8 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     are the values the old text showed. `hint` is a fixed sentence that says
     what to do next. The `Error: ` prefix is `Raxol.MCP.Server`'s.
   - `no_backend` lists the served chains under `"chains"`. A name where an
-    account belongs gets a hint to call `web3_resolve_name` first. A
-    malformed EVM transaction hash is refused locally as `invalid_argument`.
+    account belongs gets a hint to call `web3_resolve_name` first, with or
+    without an `evm:` prefix. A malformed EVM transaction hash is refused
+    locally as `invalid_argument`.
   - `no_backend` on a deployment that serves no chains says so instead of
     pointing at an empty `"chains"`.
   - A backend answer that is not an object, or not the account or hex value

@@ -262,7 +262,11 @@ defmodule Raxol.Web3.MCP.Error do
 
   # A dot and no family prefix is how a name differs from every account form
   # this surface reads: an EVM address, a Tron or Solana key and a Canton
-  # party id carry no dot, and every non-EVM family is prefixed.
+  # party id carry no dot, and every non-EVM family is prefixed. `"evm:"` is
+  # the one prefix a name can sit behind, because an unprefixed value already
+  # means EVM (`Raxol.Web3.Serialize.account_ref/1`), so it is read past.
+  defp name?("evm:" <> account), do: name?(account)
+
   defp name?(account) when is_binary(account) do
     String.contains?(account, ".") and not String.contains?(account, ":") and
       not String.starts_with?(account, "0x")
