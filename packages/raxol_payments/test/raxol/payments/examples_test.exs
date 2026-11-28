@@ -115,6 +115,44 @@ defmodule Raxol.Payments.ExamplesTest do
     refute output =~ "[ok]"
   end
 
+  # A target that answers every request with a 500 and never a 402: no
+  # challenge means no payment flow, so nothing is signed.
+  test "examples/preflight.exs exits 1 when the target answers anything but 200" do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, ip: {127, 0, 0, 1}, active: false])
+    {:ok, port} = :inet.port(socket)
+    listener = spawn_link(fn -> answer_500(socket) end)
+    :ok = :gen_tcp.controlling_process(socket, listener)
+
+    env = [
+      {"PREFLIGHT_TARGET_URL", "http://127.0.0.1:#{port}/anything"},
+      {"PREFLIGHT_WALLET_KEY", false},
+      {"PREFLIGHT_AUTO_APPROVE", false}
+    ]
+
+    mix = System.find_executable("mix")
+
+    assert {:exited, 1, output} =
+             run(mix, ["run", "examples/preflight.exs"], @deadline, env: env)
+
+    assert output =~ "[denied] status=500"
+    refute output =~ "[ok]"
+  end
+
+  defp answer_500(socket) do
+    with {:ok, client} <- :gen_tcp.accept(socket) do
+      _request = :gen_tcp.recv(client, 0, 5_000)
+
+      :gen_tcp.send(
+        client,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-length: 4\r\n" <>
+          "connection: close\r\n\r\nnope"
+      )
+
+      :gen_tcp.close(client)
+      answer_500(socket)
+    end
+  end
+
   test "a child that hangs is killed, not left running after the test" do
     sleep = System.find_executable("sleep")
 

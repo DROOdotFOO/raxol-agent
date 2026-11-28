@@ -30,7 +30,7 @@
 #   PREFLIGHT_AUTO_APPROVE if "true", skip the terminal prompt and approve
 #                          any over-threshold payment. Use only during rehearsal.
 #
-# Exits 1 when the request itself fails (the target cannot be reached).
+# Exits 0 only when the payment was accepted; any other outcome exits 1.
 #
 # Units:
 #   Amounts in this policy are in human-decimal USDC ($1.00 = Decimal.new("1.00")).
@@ -88,7 +88,7 @@ defmodule Preflight do
         {:ok, %Req.Response{status: status, body: body}} ->
           IO.puts("\n[denied] status=#{status}")
           IO.inspect(body, label: "response")
-          :ok
+          :failed
 
         # The message is the transport's own words for its reason atom
         # ("connection refused"), so no upstream byte is printed.
