@@ -100,6 +100,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   killed VM left behind once they are older than the op timeout plus a
   minute (at least ten minutes).
 
+### Fixed
+
+- `use Raxol.Agent` no longer makes Elixir 1.20's type checker warn in every
+  agent module. The default `available_actions/0` branched on
+  `skills_provider/0` inside the caller, where the checker could see the
+  default `nil` (or an override's module) and flagged a branch as
+  unreachable. It now delegates to `Raxol.Agent`, with the same result.
+
 ## [3.1.0] - 2026-11-14
 
 ### Changed

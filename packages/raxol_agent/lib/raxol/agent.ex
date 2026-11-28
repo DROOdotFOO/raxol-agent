@@ -91,9 +91,7 @@ defmodule Raxol.Agent do
       `[]`.
       """
       @spec available_actions() :: [module()]
-      def available_actions do
-        if skills_provider(), do: Raxol.Agent.Actions.Skills.actions(), else: []
-      end
+      def available_actions, do: Raxol.Agent.__default_actions__(skills_provider())
 
       defoverridable init: 1,
                      update: 2,
@@ -182,6 +180,16 @@ defmodule Raxol.Agent do
       [] -> base
       _list -> [Raxol.Agent.SandboxHook | base]
     end
+  end
+
+  # The default `available_actions/0` branches here, not inside `__using__`:
+  # compiled into the caller, the branch sees the default `skills_provider/0`
+  # return `nil`, and the type checker flags the other clause as unreachable
+  # in every agent that keeps the default.
+  @doc false
+  @spec __default_actions__(module() | nil) :: [module()]
+  def __default_actions__(provider) do
+    if provider, do: Raxol.Agent.Actions.Skills.actions(), else: []
   end
 
   defp safe_call(module, fun, args, default) do
