@@ -306,6 +306,18 @@ defmodule Raxol.Web3.Backend do
   """
   @callback health_key(state :: term()) :: Raxol.MCP.CircuitBreaker.key() | nil
 
+  @doc """
+  The scopes this handle mints cursors under (`Raxol.Web3.Scope`), or `nil`
+  for one that mints none.
+
+  Infrastructure, like `health_key/1`: `Raxol.Web3.Router` sends a request
+  that carries a cursor only to a handle whose scope the cursor claims,
+  because no other source can serve it. `nil` means the handle mints none, so
+  it is not asked to serve one: a backend that mints cursors must declare the
+  scopes it mints them under.
+  """
+  @callback cursor_scopes(state :: term()) :: [String.t()] | nil
+
   @callback chain_info(state :: term()) :: {:ok, chain_info()} | {:error, error()}
   @callback block_height(state :: term()) :: {:ok, height()} | {:error, error()}
 
@@ -345,6 +357,7 @@ defmodule Raxol.Web3.Backend do
 
   @optional_callbacks backend: 1,
                       health_key: 1,
+                      cursor_scopes: 1,
                       get_transaction: 2,
                       account_info: 2,
                       list_transactions: 3,
@@ -381,6 +394,12 @@ defmodule Raxol.Web3.Backend do
   @spec health_key(t()) :: Raxol.MCP.CircuitBreaker.key() | nil
   def health_key({module, state}) do
     if exported?(module, :health_key), do: module.health_key(state), else: nil
+  end
+
+  @doc "A handle's cursor scopes, or `nil` when it does not declare them."
+  @spec cursor_scopes(t()) :: [String.t()] | nil
+  def cursor_scopes({module, state}) do
+    if exported?(module, :cursor_scopes), do: module.cursor_scopes(state), else: nil
   end
 
   @doc """

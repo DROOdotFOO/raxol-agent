@@ -8,6 +8,7 @@ defmodule Raxol.Web3.Backend.SolanaReadsTest do
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.Router
   alias Raxol.Web3.Scope
+  alias Raxol.Web3.TestSupport.RouterPaging
 
   @mainnet "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
 
@@ -56,6 +57,19 @@ defmodule Raxol.Web3.Backend.SolanaReadsTest do
                "38gvbbjChiHatnNaUhYxoma7gHuwLiKkUCPmFpDWQQuB9MsN7h52LgJr452FDAbcHvNvZUkFtrmuoiHB86B17gCS"
 
       assert config["limit"] == 100
+    end
+
+    test "page two comes back through the router, routed by the scope this backend declares" do
+      handle =
+        rpc(%{
+          "getSignaturesForAddress" => fixture("rpc_signatures.json"),
+          "getSignaturesForAddress:before" => fixture("rpc_signatures_page2.json")
+        })
+
+      assert {first, {:ok, second}} = RouterPaging.page_two(handle, :list_transactions, [@wallet])
+
+      hashes = fn page -> page.items |> Enum.map(& &1.hash) |> MapSet.new() end
+      assert MapSet.disjoint?(hashes.(first), hashes.(second))
     end
 
     test "the second page is the upstream's own next page, and the two are disjoint" do

@@ -180,6 +180,9 @@ defmodule Raxol.Web3.Backend.JSONRPC do
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
   @impl Backend
+  def cursor_scopes(%__MODULE__{} = state), do: [scope(state)]
+
+  @impl Backend
   def chain_info(%__MODULE__{} = state) do
     with :ok <- check_chain_id(state),
          {:ok, latest} <- head_block(state),

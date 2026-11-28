@@ -187,6 +187,30 @@ defmodule Raxol.Web3.Cursor do
 
   def decode(_cursor, _scope, _endpoint), do: {:error, :malformed}
 
+  @doc """
+  The scope a cursor CLAIMS, read without verifying it.
+
+  For `Raxol.Web3.Router` to choose which source to ask, and for nothing
+  else: nothing here is checked, so a forged cursor claims whatever its forger
+  wrote. That is harmless for routing, because the source it reaches still
+  runs `decode/3`, which verifies the MAC before trusting a byte, and a forger
+  can only choose which configured source refuses it. `:error` for anything
+  that is not a `v2` cursor with a payload, which the router routes as if no
+  scope were known.
+  """
+  @spec claimed_scope(term()) :: {:ok, Raxol.Web3.Scope.t()} | :error
+  def claimed_scope(cursor) when is_binary(cursor) do
+    with [@version, payload, _signature] <- String.split(cursor, "."),
+         {:ok, json} <- Base.url_decode64(payload, padding: false),
+         {:ok, %{"s" => scope}} when is_binary(scope) <- Jason.decode(json) do
+      {:ok, scope}
+    else
+      _unreadable -> :error
+    end
+  end
+
+  def claimed_scope(_cursor), do: :error
+
   defp split(cursor) do
     case String.split(cursor, ".") do
       [@version, payload, signature] ->

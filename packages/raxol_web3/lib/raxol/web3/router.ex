@@ -30,52 +30,74 @@ defmodule Raxol.Web3.Router do
     * `{:unsupported_chain, _}` -- this source does not serve the chain; decided
       on a read because some upstreams resolve their network set at runtime.
     * `{:source_unavailable, _}` -- an endpoint the source must serve is gone.
+    * `{:blocked, :invalid_url}` -- this source's base URL does not parse, so
+      it refuses every read. A fact about its configuration: the operator is
+      warned by name at most once an hour per source, `coverage/2` leaves it
+      out, and the walk moves on. The other
+      `blocked` reasons are unchanged: `:address` fails over as before, and
+      `:no_address`, `:not_an_address` and `:forbidden_transport_opts` are
+      final. None of them can come from a request's own arguments, which reach
+      a URL only through `Raxol.Web3.Backend.PathSegment` or a verified cursor.
 
   Every other error is FINAL: the walk stops there, whichever source gave it.
   Final is not the same as "about the question". Three final reasons are
   answers any source would give: `{:upstream_refused, :not_found}`,
   `{:unsupported_account_ref, _}` (decided by the chain's address family) and
   `{:missing_argument, _}`. The rest are about the one source that gave them:
-  `{:invalid_cursor, _}` (a cursor is bound to the source that minted it),
-  `{:unsupported, _}` (this handle does not answer the callback),
-  `{:invalid_argument, _}` from a backend's own path rules, `{:blocked,
-  :invalid_url}` (a URL built from that source's base URL), a bare `{:http,
-  status}` that is not unhealthy, and `{:upstream_refused, :unknown}`. They
-  stop the walk anyway: which of them should fail over is a routing decision
-  this module has not made.
+  `{:invalid_cursor, _}`, `{:unsupported, _}` (this handle does not answer the
+  callback), `{:invalid_argument, _}` from a backend's own path rules, a bare
+  `{:http, status}` that is not unhealthy, and `{:upstream_refused,
+  :unknown}`. They stop the walk anyway: which of them should fail over is a
+  routing decision this module has not made, apart from cursors (below).
 
   ## Which error a failed walk reports
 
-  What the caller is told is not always the error the walk stopped on:
+  What the caller is told is not always the error the walk stopped on. An open
+  breaker and a URL that does not parse are SKIPS, not faults from a call:
+  each is a fact about the source (earlier calls, or its configuration), not
+  about this request.
 
     1. An answer any source would give stands, whichever source gave it.
     2. Otherwise, after a failover from a call, the caller is told the FIRST
        fault from a call in walk order. A source-specific final reason from a
-       later source does not stand in for it, nor does the last candidate's
-       fault. Last-wins told a client "Check the arguments" for a 400 from a
-       fallback when the primary had timed out, and hid that timeout from the
-       tool's breaker, which reads a 400 as an answer.
+       later source does not stand in for it, nor does a later skip or the
+       last candidate's fault. Last-wins told a client "Check the arguments"
+       for a 400 from a fallback when the primary had timed out, and hid that
+       timeout from the tool's breaker, which reads a 400 as an answer.
     3. With no failover from a call, the first source actually called answered
-       for itself, and its error stands whatever its class. An open breaker is
-       a fact about earlier calls, not this one, so a walk whose only earlier
-       faults are `{:breaker_open, _}` is in this case; when every source is
-       an open breaker, the first is reported.
+       for itself, and its error stands whatever its class. A walk whose only
+       earlier problems are skips is in this case; when every source was
+       skipped, the first skip is reported, an open breaker before a
+       misconfiguration, since "retry later" is the one a client can act on.
 
   ## Paging walks are pinned
 
-  A cursor carries the origin that minted it (`Raxol.Web3.Cursor`), so another
-  source refuses it as `{:invalid_cursor, _}` and the walk stops: failing over
-  to a source that accepted it would return its first page labelled as page
-  two. When the minting source fails and a fallback then refuses the cursor,
-  the caller is told the first source's fault (rule 2), so a retry with the
-  same cursor is the right next step. A cursor the minting source itself
-  refuses, with no failover, stands (rule 3), and that walk restarts.
+  A cursor is bound to the scope of the source that minted it
+  (`Raxol.Web3.Cursor`), and no other source can serve it: one that tried
+  would return its first page labelled as page two. So a request that carries
+  a cursor goes only to the handles whose `Raxol.Web3.Backend.cursor_scopes/1`
+  includes the scope the cursor claims, in health order among them. The claim
+  is read without verification and used for nothing but that choice; the
+  handle asked verifies the cursor in full, so a forged or altered cursor gets
+  whatever its claimed source answers. A handle that declares no scopes mints
+  no cursors and is not asked.
+
+    * The minter answers: page two, even when its open breaker had demoted it.
+    * The minter's breaker is open: the caller hears the pause
+      (`{:breaker_open, _}`), and a later retry with the same cursor is the
+      right next step.
+    * No configured source has the claimed scope (the router changed after
+      the cursor was minted): `{:invalid_cursor, :wrong_scope}` without asking
+      anyone, and the walk restarts.
+    * A cursor whose claim cannot be read is routed as any request is, and the
+      first source refuses it (rule 3).
   """
 
   require Logger
 
   alias Raxol.MCP.CircuitBreaker
   alias Raxol.Web3.Backend
+  alias Raxol.Web3.Cursor
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.Tables
 
@@ -137,7 +159,8 @@ defmodule Raxol.Web3.Router do
   @doc """
   What is answerable on a chain right now.
 
-  A callback maps to the backends that declare it and are not open-breakered,
+  A callback maps to the backends that declare it, are not open-breakered and
+  have not been found misconfigured (a base URL that does not parse),
   in preference order. A callback absent from the map has no healthy source at
   this moment, which is the degradation ADR-0038 leaves open as a question and
   which is otherwise invisible until a caller gets an error.
@@ -166,15 +189,62 @@ defmodule Raxol.Web3.Router do
   def call(%__MODULE__{} = router, chain_ref, callback, args \\ []) do
     case Map.get(router.chains, chain_ref) do
       nil -> {:error, :no_backend}
-      _handles -> attempt(candidates(router, chain_ref, callback), callback, args)
+      _handles -> router |> candidates(chain_ref, callback) |> route(callback, args)
     end
   end
 
+  defp route(candidates, callback, args) do
+    case for_cursor(candidates, args) do
+      {:ok, handles} -> attempt(handles, callback, args)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  # A request that carries a cursor goes only to the handles whose scope the
+  # cursor claims, in health order among them: no other source can serve it.
+  # The claim is read unverified (`Raxol.Web3.Cursor.claimed_scope/1`) and
+  # used for nothing but this choice; the handle asked still verifies the
+  # cursor in full. A cursor whose claim cannot be read is routed as before,
+  # so the first source refuses it as it does today. A handle that declares no
+  # scopes (`nil`) mints no cursors, so it is not asked: one that ignored the
+  # cursor would answer its first page labelled as the next.
+  defp for_cursor(candidates, args) do
+    case claimed_scope(args) do
+      {:ok, scope} ->
+        case Enum.filter(candidates, &mints?(&1, scope)) do
+          [] when candidates != [] -> {:error, {:invalid_cursor, :wrong_scope}}
+          matching -> {:ok, matching}
+        end
+
+      :none ->
+        {:ok, candidates}
+    end
+  end
+
+  defp claimed_scope(args) do
+    with cursor when is_binary(cursor) <- Enum.find_value(args, &cursor_in/1),
+         {:ok, scope} <- Cursor.claimed_scope(cursor) do
+      {:ok, scope}
+    else
+      _no_readable_claim -> :none
+    end
+  end
+
+  defp cursor_in(opts) when is_list(opts) do
+    if Keyword.keyword?(opts), do: Keyword.get(opts, :cursor)
+  end
+
+  defp cursor_in(_arg), do: nil
+
+  defp mints?(handle, scope), do: scope in (Backend.cursor_scopes(handle) || [])
+
   # `seen` keeps the first fault from a call actually made and, apart, the
-  # first open breaker: an open breaker is a fact about earlier calls, so a
-  # walk whose only earlier faults are open breakers has not failed over from
-  # a call, and the first source called answers for itself (rule 3).
-  defp attempt(candidates, callback, args, seen \\ %{fault: nil, open: nil})
+  # first source that was skipped rather than called: an open breaker is a
+  # fact about earlier calls, and a URL that does not parse is a fact about
+  # the source's configuration. A walk whose only earlier problems are skips
+  # has not failed over from a call, so the first source called answers for
+  # itself (rule 3).
+  defp attempt(candidates, callback, args, seen \\ %{fault: nil, skipped: nil})
 
   defp attempt([], callback, _args, _seen), do: {:error, {:unsupported, callback}}
 
@@ -184,6 +254,8 @@ defmodule Raxol.Web3.Router do
         ok
 
       {:error, reason} ->
+        if reason == {:blocked, :invalid_url}, do: warn_misconfigured(handle)
+
         if rest != [] and failover?(reason) do
           log_failover(handle, callback, reason)
           attempt(rest, callback, args, note(seen, reason))
@@ -193,17 +265,28 @@ defmodule Raxol.Web3.Router do
     end
   end
 
-  defp note(%{open: nil} = seen, {:breaker_open, _} = reason), do: %{seen | open: reason}
-  defp note(seen, {:breaker_open, _}), do: seen
-  defp note(%{fault: nil} = seen, reason), do: %{seen | fault: reason}
-  defp note(seen, _reason), do: seen
+  defp skip?({:breaker_open, _}), do: true
+  defp skip?({:blocked, :invalid_url}), do: true
+  defp skip?(_reason), do: false
+
+  defp note(seen, reason) do
+    if skip?(reason),
+      do: %{seen | skipped: first_skip(seen.skipped, reason)},
+      else: %{seen | fault: seen.fault || reason}
+  end
+
+  # The first skip, except that a pause outranks a misconfiguration: "retry
+  # later" is the one a client can act on, and it will work once the paused
+  # source recovers. The operator is already warned about the other.
+  defp first_skip(nil, reason), do: reason
+  defp first_skip({:blocked, :invalid_url}, {:breaker_open, _} = paused), do: paused
+  defp first_skip(first, _reason), do: first
 
   # The moduledoc's three rules. No fault from a call: rule 3, unless every
-  # source was an open breaker, when the first of them is reported.
-  defp reported(_handle, _callback, {:breaker_open, _} = reason, %{fault: nil, open: open}),
-    do: open || reason
-
-  defp reported(_handle, _callback, reason, %{fault: nil}), do: reason
+  # source was skipped, when the first skip is reported, a pause before a
+  # misconfiguration.
+  defp reported(_handle, _callback, reason, %{fault: nil, skipped: skipped}),
+    do: if(skip?(reason), do: first_skip(skipped, reason), else: reason)
 
   defp reported(handle, callback, reason, %{fault: first_fault}) do
     cond do
@@ -225,6 +308,39 @@ defmodule Raxol.Web3.Router do
         "(#{inspect(reason)}) after a failover; reporting #{inspect(first_fault)}"
     end)
   end
+
+  # At most once an hour per handle, not once per call: a misconfigured source
+  # refuses every read the same way, and a line per call would bury everything
+  # else, while one line per node lifetime is easy to miss. The marker is a row
+  # in `Raxol.Web3.Tables.misconfigured/0` keyed by a hash of the handle, so
+  # the table is bounded by the number of configured sources, and
+  # `coverage/2` reads it to leave the source out. The source is named by
+  # `Backend.name/1` and its chains, never by URL: the URL is what is wrong,
+  # and it may carry a key.
+  @warn_every_ms :timer.hours(1)
+
+  defp warn_misconfigured({module, state} = handle) do
+    table = Tables.misconfigured()
+    key = :erlang.phash2(handle)
+    now = System.monotonic_time(:millisecond)
+
+    due? =
+      case :ets.lookup(table, key) do
+        [{^key, warned_at}] -> now - warned_at >= @warn_every_ms
+        [] -> true
+      end
+
+    if due? do
+      :ets.insert(table, {key, now})
+
+      Logger.warning(
+        "raxol_web3: #{Backend.name(handle)} (#{Enum.join(module.supported_chain_ids(state), ", ")}) " <>
+          "has a base URL that does not parse; skipping it until it is reconfigured"
+      )
+    end
+  end
+
+  defp misconfigured?(handle), do: :ets.member(Tables.misconfigured(), :erlang.phash2(handle))
 
   defp source_independent?({:upstream_refused, :not_found}), do: true
   defp source_independent?({:unsupported_account_ref, _}), do: true
@@ -262,6 +378,8 @@ defmodule Raxol.Web3.Router do
   # failing over from here, and two lists drift.
   defp failover?({:http, status}), do: HTTP.unhealthy_status?(status)
   defp failover?({:blocked, :address}), do: true
+  # A source whose URL does not parse refuses every read; the next may not.
+  defp failover?({:blocked, :invalid_url}), do: true
   defp failover?(_question), do: false
 
   defp answers?(handle, callback) do
@@ -276,6 +394,7 @@ defmodule Raxol.Web3.Router do
     for handle <- handles,
         answers?(handle, callback),
         health(handle, breaker_opts) != :open,
+        not misconfigured?(handle),
         do: Backend.name(handle)
   end
 

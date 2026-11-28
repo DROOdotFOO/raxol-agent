@@ -138,6 +138,34 @@ defmodule Raxol.Web3.CursorTest do
     end
   end
 
+  describe "claimed_scope/1" do
+    test "reads the scope a cursor claims, without verifying it" do
+      cursor = Cursor.encode(@upstream, "scope-a", :address_transactions)
+      assert Cursor.claimed_scope(cursor) == {:ok, "scope-a"}
+
+      # Unverified: a cursor with a broken MAC still claims its scope, and
+      # only decode/3 refuses it.
+      [version, payload, _mac] = String.split(cursor, ".")
+      forged = Enum.join([version, payload, "AAAA"], ".")
+      assert Cursor.claimed_scope(forged) == {:ok, "scope-a"}
+      assert {:error, _reason} = Cursor.decode(forged, "scope-a", :address_transactions)
+    end
+
+    test "anything that is not a readable v2 cursor claims nothing" do
+      for cursor <- [
+            "",
+            "v2",
+            "v1.abc.def",
+            "v2.!!!.x",
+            "v2.#{Base.url_encode64("[]", padding: false)}.x",
+            nil,
+            42
+          ] do
+        assert Cursor.claimed_scope(cursor) == :error, inspect(cursor)
+      end
+    end
+  end
+
   describe "the key allowlist" do
     test "an authentic cursor still cannot introduce a parameter" do
       # Signed with this node's key, so it verifies. Verification proves we

@@ -48,6 +48,7 @@ defmodule Raxol.Web3.Tables do
   @breakers {__MODULE__, :breakers}
   @origins {__MODULE__, :origins}
   @cache {__MODULE__, :cache}
+  @misconfigured {__MODULE__, :misconfigured}
   @scope_key {__MODULE__, :scope_key}
   # The derivation label for the scope key, distinct from every cursor MAC input.
   @scope_label "raxol_web3.scope.v1"
@@ -89,6 +90,16 @@ defmodule Raxol.Web3.Tables do
   """
   @spec cache() :: :ets.table()
   def cache, do: :persistent_term.get(@cache)
+
+  @doc """
+  The sources found misconfigured: a hash of the handle -> when the operator
+  was last warned, in monotonic milliseconds. `Raxol.Web3.Router` writes it,
+  so a warning repeats at most once an hour and `Raxol.Web3.Router.coverage/2`
+  can leave the source out. A reconfigured source is a new handle with a new
+  hash, so an entry never needs clearing.
+  """
+  @spec misconfigured() :: :ets.table()
+  def misconfigured, do: :persistent_term.get(@misconfigured)
 
   @doc """
   The key cursors are signed with.
@@ -156,6 +167,11 @@ defmodule Raxol.Web3.Tables do
     # cursor signed or verified, against an HTTP round-trip on either side of
     # it; the lock-free `:persistent_term` read the tables keep is the right
     # trade for an id that is not a credential and the wrong one for this.
+    :persistent_term.put(
+      @misconfigured,
+      :ets.new(:raxol_web3_misconfigured, [:set, :public, read_concurrency: true])
+    )
+
     secrets = :ets.new(:raxol_web3_secrets, [:set, :private])
     :ets.insert(secrets, {:cursor_key, cursor_key})
 

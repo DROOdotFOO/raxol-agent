@@ -242,6 +242,9 @@ defmodule Raxol.Web3.Backend.Tron do
   def health_key(%__MODULE__{} = state), do: {:origin, Era.origin(uri(state))}
 
   @impl Backend
+  def cursor_scopes(%__MODULE__{} = state), do: [scope(state)]
+
+  @impl Backend
   def chain_info(%__MODULE__{source: :sqd} = state) do
     with {:ok, body} <- call(state, "portal_get_network_info", network(state), :chain_stats),
          :ok <- confirm_network(body) do

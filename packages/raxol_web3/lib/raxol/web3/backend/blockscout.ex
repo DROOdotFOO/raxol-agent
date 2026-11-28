@@ -154,6 +154,9 @@ defmodule Raxol.Web3.Backend.Blockscout do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
+  @impl Backend
+  def cursor_scopes(%__MODULE__{} = state), do: [scope(state)]
+
   defp origin_id(state), do: Origin.for_url("https://#{state.host}/")
 
   # The REST base is the chain's host and nothing else, so the scope is too.

@@ -272,6 +272,11 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("source_unavailable", _detail, _context),
     do: "The source is no longer available at its configured address."
 
+  defp hint("blocked", :invalid_url, _context),
+    do:
+      "A source for this chain is misconfigured (its base URL does not parse). " <>
+        "The deployment's operator has to fix it."
+
   defp hint("blocked", _detail, _context),
     do: "This deployment's outbound policy refuses the source's address."
 
