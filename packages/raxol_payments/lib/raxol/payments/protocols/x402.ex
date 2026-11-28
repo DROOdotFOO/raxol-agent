@@ -165,6 +165,23 @@ defmodule Raxol.Payments.Protocols.X402 do
        else: {:error, {:unsupported_asset, %{chain_id: chain_id, asset: asset}}}
   end
 
+  @doc """
+  Whether this client signs a challenge for `asset` on `network`.
+
+  The same rule `parse_challenge/1` and `build_payment/2` apply: `network` is
+  `eip155:<chain id>`, a chain id, or `nil` (Base), and `asset` is the
+  registered USDC contract on a chain whose USDC EIP-712 domain is known.
+  """
+  @spec signable_asset?(String.t() | pos_integer() | nil, term()) :: boolean()
+  def signable_asset?(network, asset) do
+    with {:ok, chain_id} <- parse_network(network),
+         :ok <- require_usdc(chain_id, asset) do
+      true
+    else
+      {:error, _reason} -> false
+    end
+  end
+
   defp parse_network(nil), do: {:ok, 8453}
   defp parse_network(chain_id) when is_integer(chain_id) and chain_id > 0, do: {:ok, chain_id}
 

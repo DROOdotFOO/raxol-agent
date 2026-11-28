@@ -32,8 +32,10 @@ defmodule Raxol.Payments.EchoServer do
     deterministic dev address; **override for any real use**.
   - `:amount` -- atomic units (USDC has 6 decimals; `10_000` = $0.01)
   - `:network` -- CAIP-2 chain id, default `"eip155:8453"` (Base)
-  - `:asset` -- ERC-20 contract address. Default is the registered USDC
-    contract on `:network`, the only asset the x402 client will sign for.
+  - `:asset` -- ERC-20 contract address, used as given. Default:
+    `default_asset/1`, the registered USDC contract on `:network` if
+    `Raxol.Payments.Protocols.X402.signable_asset?/2` accepts it. Starting
+    raises `ArgumentError` when it does not.
   """
 
   @behaviour Plug
@@ -203,16 +205,37 @@ defmodule Raxol.Payments.EchoServer do
 
     [
       pay_to: Keyword.get(opts, :pay_to, @default_pay_to),
-      asset: Keyword.get_lazy(opts, :asset, fn -> default_asset(network) end),
+      asset: Keyword.get_lazy(opts, :asset, fn -> default_asset!(network) end),
       network: network,
       amount: Keyword.get(opts, :amount, @default_amount)
     ]
   end
 
-  defp default_asset(network) do
-    case Raxol.Payments.Assets.address(network, "USDC") do
-      {:ok, usdc} -> usdc
-      :error -> raise ArgumentError, "no USDC registered for #{network}; pass :asset"
+  defp default_asset!(network) do
+    case default_asset(network) do
+      {:ok, asset} -> asset
+      {:error, message} -> raise ArgumentError, message
+    end
+  end
+
+  @doc """
+  The asset a server on `network` (`nil` for the default, Base) challenges for
+  when no `:asset` is given: the registered USDC contract there, accepted only
+  if `Raxol.Payments.Protocols.X402.signable_asset?/2` says the x402 client
+  signs for it.
+  """
+  @spec default_asset(String.t() | nil) :: {:ok, String.t()} | {:error, String.t()}
+  def default_asset(network \\ nil) do
+    network = network || @default_network
+
+    with {:ok, usdc} <- Raxol.Payments.Assets.address(network, "USDC"),
+         true <- Raxol.Payments.Protocols.X402.signable_asset?(network, usdc) do
+      {:ok, usdc}
+    else
+      _ ->
+        {:error,
+         "no USDC the x402 client signs for is registered on #{network}; " <>
+           "pass the asset contract with the :asset option (--asset for mix raxol_payments.echo)"}
     end
   end
 end

@@ -102,6 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Raxol.Payments.Protocols.X402.signable_asset?/2`: whether the x402 client
+  signs a challenge for an asset on a network, by the rule it applies when
+  paying. `Raxol.Payments.EchoServer.default_asset/1` returns the asset a
+  server challenges for without `:asset`, checked with that rule.
 - `Raxol.Payments.EIP712.address?/1,2`: whether a value is a clean `0x` +
   40-hex EVM address. A mixed-case address must carry a valid EIP-55
   checksum; all-lowercase and all-uppercase carry none. `checksum: false`
