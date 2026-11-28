@@ -30,7 +30,7 @@
 #
 # Usage (from packages/raxol_payments/):
 #
-#   MIX_ENV=test mix run examples/privacy_modes.exs
+#   mix run examples/privacy_modes.exs
 
 Logger.configure(level: :warning)
 

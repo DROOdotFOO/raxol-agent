@@ -22,7 +22,7 @@
 #
 # Usage (from packages/raxol_payments/):
 #
-#   MIX_ENV=test mix run examples/agent_payment_tour.exs
+#   mix run examples/agent_payment_tour.exs
 
 Logger.configure(level: :warning)
 

@@ -19,7 +19,7 @@ It mounts `Raxol.Payments.EchoServer` as a Req plug rather than over a socket,
 so unlike step 1 it needs no second terminal.
 
 ```bash
-MIX_ENV=test mix run examples/agent_payment_tour.exs
+mix run examples/agent_payment_tour.exs
 ```
 
 ## 0b. Understand the two privacy modes (no funds, no network)
@@ -42,7 +42,7 @@ is public under every design. An agent that must not reveal an amount cannot
 use either mode today.
 
 ```bash
-MIX_ENV=test mix run examples/privacy_modes.exs
+mix run examples/privacy_modes.exs
 ```
 
 ## 1. Rehearse the pay-stack (no funds, no network)
@@ -75,7 +75,7 @@ authorized before signing), poll to settlement. Every step goes through the same
 in-process Xochi sim, so it spends nothing.
 
 ```bash
-MIX_ENV=test mix run examples/crosschain_stealth_payment.exs
+mix run examples/crosschain_stealth_payment.exs
 ```
 
 ## 3. Graduate to live (MOVES REAL FUNDS)

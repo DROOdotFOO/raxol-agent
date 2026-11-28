@@ -29,7 +29,7 @@ spend gate refuse the same call.
 ```bash
 cd packages/raxol_payments
 mix deps.get
-MIX_ENV=test mix run examples/agent_payment_tour.exs
+mix run examples/agent_payment_tour.exs
 ```
 
 [`packages/raxol_payments/examples/README.md`](packages/raxol_payments/examples/README.md)
