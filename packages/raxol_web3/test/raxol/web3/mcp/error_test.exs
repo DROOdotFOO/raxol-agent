@@ -50,6 +50,15 @@ defmodule Raxol.Web3.MCP.ErrorTest do
     end
   end
 
+  test "a URL that does not parse is a misconfiguration, not an outbound policy" do
+    assert Error.new({:blocked, :invalid_url}).hint ==
+             "A source for this chain is misconfigured (its base URL does not parse). " <>
+               "The deployment's operator has to fix it."
+
+    assert Error.new({:blocked, :address}).hint ==
+             "This deployment's outbound policy refuses the source's address."
+  end
+
   describe "HTTP status hints" do
     # The hint's retry class is `HTTP.unhealthy_status?/1`'s, the policy the
     # router fails over on and the breaker counts, so the two cannot drift.
