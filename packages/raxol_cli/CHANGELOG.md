@@ -25,6 +25,9 @@
   created with `mkdir -p`, so on a shared `/tmp` another user could create
   it first and replace a verified download before it was installed.
 
+`raxol new --help` and `raxol new -h` print the command's usage and exit 0.
+Both were taken as the app name and refused with `invalid app name`.
+
 ## 0.3.0 - 2026-11-15
 
 First release from `DROOdotFOO/raxol-agent`.

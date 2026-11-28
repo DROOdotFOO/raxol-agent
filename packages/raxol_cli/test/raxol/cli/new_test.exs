@@ -14,6 +14,19 @@ defmodule Raxol.CLI.NewTest do
       assert message =~ "requires local Elixir/Mix"
     end
 
+    test "--help and -h print usage and exit 0 without creating anything" do
+      base = Path.join(System.tmp_dir!(), "raxol_cli_help_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(base)
+      on_exit(fn -> File.rm_rf(base) end)
+
+      for flag <- ["--help", "-h"] do
+        output = capture_io(fn -> assert File.cd!(base, fn -> New.run([flag]) end) == 0 end)
+        assert output =~ "Usage: raxol new <app_name>"
+      end
+
+      assert File.ls!(base) == []
+    end
+
     test "rejects a non-snake_case name" do
       assert capture_io(:stderr, fn -> assert New.run(["MyApp"]) == 1 end) =~ "invalid app name"
     end

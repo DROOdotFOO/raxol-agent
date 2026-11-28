@@ -15,6 +15,22 @@ defmodule Raxol.CLI.New do
 
   @doc "Generate a new app under `./<name>`, returning an exit code."
   @spec run([String.t()]) :: non_neg_integer()
+  def run([help | _]) when help in ~w(--help -h) do
+    IO.puts("""
+    Usage: raxol new <app_name>
+
+    Options:
+      -h, --help    Show this help
+
+    Scaffolds a minimal Raxol counter app (mix.exs, lib/<app_name>.ex,
+    .formatter.exs, README.md) under ./<app_name>. The name must be
+    snake_case, such as my_app. Building and running it needs a local
+    Elixir/Mix.
+    """)
+
+    0
+  end
+
   def run([name | _]) when is_binary(name) do
     cond do
       not Regex.match?(@name_re, name) ->
