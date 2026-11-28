@@ -34,10 +34,40 @@ defmodule Raxol.Payments.ExamplesTest do
     end
   end
 
+  # The one script that takes a user's key, run without one and with no
+  # server: the target is a loopback port closed a moment ago, so no 402
+  # arrives and nothing is signed. This pins today's behaviour, exit status
+  # included; it does not endorse it.
+  test "examples/preflight.exs without a key warns, mints a throwaway one, and stops at the target" do
+    {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
+    {:ok, port} = :inet.port(socket)
+    :ok = :gen_tcp.close(socket)
+
+    env = [
+      {"PREFLIGHT_TARGET_URL", "http://127.0.0.1:#{port}/anything"},
+      {"PREFLIGHT_WALLET_KEY", false},
+      {"PREFLIGHT_AUTO_APPROVE", false}
+    ]
+
+    mix = System.find_executable("mix")
+
+    assert {:exited, 0, output} =
+             run(mix, ["run", "examples/preflight.exs"], @deadline, env: env)
+
+    assert output =~ "[warn] PREFLIGHT_WALLET_KEY not set; generating ephemeral dev key"
+    assert output =~ "target:   http://127.0.0.1:#{port}/anything"
+    assert output =~ "[error] %Req.TransportError{reason: :econnrefused}"
+    refute output =~ "[ok]"
+  end
+
   test "a child that hangs is killed, not left running after the test" do
     sleep = System.find_executable("sleep")
 
-    assert {:killed, _output} = run(sleep, ["600"], 200, &send(self(), {:child, &1}))
+    test_pid = self()
+
+    assert {:killed, _output} =
+             run(sleep, ["600"], 200, on_spawn: &send(test_pid, {:child, &1}))
+
     assert_received {:child, os_pid}
     refute alive?(os_pid)
   end
@@ -47,7 +77,14 @@ defmodule Raxol.Payments.ExamplesTest do
   # port's OS pid is the VM (`env`, `elixir` and `erl` each `exec` the next),
   # and it is killed here on a deadline and in `on_exit/1`, which ExUnit runs
   # after a test exits for any reason, its own timeout included.
-  defp run(executable, args, deadline, on_spawn \\ fn _os_pid -> :ok end) do
+  #
+  # `:env` adds to the child's environment; a `false` value removes the
+  # variable. `:on_spawn` is called with the child's OS pid.
+  defp run(executable, args, deadline, opts \\ []) do
+    env =
+      for {name, value} <- [{"MIX_ENV", "test"} | Keyword.get(opts, :env, [])],
+          do: env(name, value)
+
     port =
       Port.open({:spawn_executable, executable}, [
         :binary,
@@ -55,15 +92,18 @@ defmodule Raxol.Payments.ExamplesTest do
         :stderr_to_stdout,
         args: args,
         cd: @package_root,
-        env: [{~c"MIX_ENV", ~c"test"}]
+        env: env
       ])
 
     {:os_pid, os_pid} = Port.info(port, :os_pid)
     on_exit(fn -> kill(os_pid) end)
-    on_spawn.(os_pid)
+    Keyword.get(opts, :on_spawn, fn _os_pid -> :ok end).(os_pid)
 
     collect(port, os_pid, System.monotonic_time(:millisecond) + deadline, [])
   end
+
+  defp env(name, false), do: {String.to_charlist(name), false}
+  defp env(name, value), do: {String.to_charlist(name), String.to_charlist(value)}
 
   defp collect(port, os_pid, deadline_at, output) do
     remaining = max(deadline_at - System.monotonic_time(:millisecond), 0)
