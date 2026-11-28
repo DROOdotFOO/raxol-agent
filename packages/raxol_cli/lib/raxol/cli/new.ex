@@ -13,9 +13,34 @@ defmodule Raxol.CLI.New do
   # kept in step by hand.
   @reserved ~w(raxol elixir mix test lib config)
 
-  @doc "Generate a new app under `./<name>`, returning an exit code."
+  @help_flags ~w(--help -h)
+
+  @doc """
+  Generate a new app under `./<name>`, returning an exit code. A help flag
+  anywhere in `argv` prints the usage instead and creates nothing.
+  """
   @spec run([String.t()]) :: non_neg_integer()
-  def run([name | _]) when is_binary(name) do
+  def run(argv) when is_list(argv) do
+    if Enum.any?(argv, &(&1 in @help_flags)), do: usage(), else: scaffold(argv)
+  end
+
+  defp usage do
+    IO.puts("""
+    Usage: raxol new <app_name>
+
+    Options:
+      -h, --help    Show this help
+
+    Scaffolds a minimal Raxol counter app (mix.exs, lib/<app_name>.ex,
+    .formatter.exs, README.md) under ./<app_name>. The name must be
+    snake_case, such as my_app. Building and running it needs a local
+    Elixir/Mix.
+    """)
+
+    0
+  end
+
+  defp scaffold([name | _]) when is_binary(name) do
     cond do
       not Regex.match?(@name_re, name) ->
         err("invalid app name #{inspect(name)} (use snake_case: my_app)")
@@ -36,7 +61,7 @@ defmodule Raxol.CLI.New do
     end
   end
 
-  def run(_), do: err("usage: raxol new <app_name> (requires local Elixir/Mix)")
+  defp scaffold(_), do: err("usage: raxol new <app_name> (requires local Elixir/Mix)")
 
   defp generate(name) do
     mod = Macro.camelize(name)

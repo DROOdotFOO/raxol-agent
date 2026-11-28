@@ -31,6 +31,10 @@ defaults to `nil`, which gives a headless agent. `Raxol.Agent.Session` wraps the
 lifecycle with `environment: :agent`, which skips the terminal driver. Sessions register in
 `Raxol.Agent.Registry` by `:id`.
 
+`use Raxol.Agent` imports the view DSL (`Raxol.Core.Renderer.View`), so a local function named
+like a DSL element (`label`, `text`, `box`, `row`, `table`) fails to compile. Name the helper
+differently, such as `label_for/1`.
+
 Commands returned from `update/2`:
 
 | Helper | Result in `update/2` |

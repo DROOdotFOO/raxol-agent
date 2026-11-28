@@ -11,8 +11,12 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
   - `--port` (integer, default 4002)
   - `--amount` (integer atomic units, default 10000 = $0.01 USDC)
   - `--pay-to` (hex address, default deterministic dev address)
-  - `--asset` (hex address, default deterministic dev asset)
+  - `--asset` (hex address, default USDC on `--network`; a network with no
+    USDC the x402 client signs for stops here and asks for `--asset`)
   - `--network` (CAIP-2, default `eip155:8453` / Base)
+
+  Rehearse with a throwaway key: on Base mainnet a client signs a real USDC
+  transfer authorization. `Raxol.Payments.EchoServer` shows the testnet path.
 
   The server runs until you `Ctrl-C` it. Hit `GET /health` for a liveness
   ping; any other path triggers the 402 -> 200 dance.
@@ -44,6 +48,7 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
       |> Keyword.update(:pay_to, nil, &with_0x/1)
       |> Keyword.update(:asset, nil, &with_0x/1)
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+      |> Keyword.put_new_lazy(:asset, fn -> default_asset!(opts[:network]) end)
 
     case Raxol.Payments.EchoServer.start_link(server_opts) do
       {:ok, _pid} ->
@@ -53,6 +58,13 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
 
       {:error, reason} ->
         Mix.raise("failed to start echo server: #{inspect(reason)}")
+    end
+  end
+
+  defp default_asset!(network) do
+    case Raxol.Payments.EchoServer.default_asset(network) do
+      {:ok, asset} -> asset
+      {:error, message} -> Mix.raise(message)
     end
   end
 

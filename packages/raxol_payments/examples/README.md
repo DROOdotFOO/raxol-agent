@@ -56,6 +56,16 @@ mix raxol_payments.echo --port 4002      # terminal A: start the echo server
 mix run examples/preflight.exs           # terminal B: run against it
 ```
 
+**Use a throwaway key for `PREFLIGHT_WALLET_KEY`.** Against the default echo
+server (Base mainnet) the script signs a real USDC transfer authorization,
+valid until the challenge's `validBefore`. Nothing is broadcast. For a
+signature worth nothing, start the echo server on Base Sepolia:
+
+```bash
+mix raxol_payments.echo --port 4002 --network eip155:84532 \
+  --asset 0x036cbd53842c5426634e7929541ec2318f3dcf7e
+```
+
 ## 2. Walk the launch path (no funds, in-process sim)
 
 **`crosschain_stealth_payment.exs`** is the private cross-chain flow an agent

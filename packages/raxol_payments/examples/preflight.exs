@@ -20,7 +20,9 @@
 # Environment:
 #
 #   PREFLIGHT_TARGET_URL   default http://localhost:4002/anything
-#   PREFLIGHT_WALLET_KEY   private key (0x-prefixed hex). Required.
+#   PREFLIGHT_WALLET_KEY   private key (0x-prefixed hex). Required. Use a
+#                          THROWAWAY key: on Base mainnet this signs a real
+#                          USDC transfer authorization (examples/README.md).
 #                          For a real launch, switch to Raxol.Payments.Wallets.Op
 #                          and remove this env var entirely.
 #   PREFLIGHT_AUTO_APPROVE if "true", skip the terminal prompt and approve

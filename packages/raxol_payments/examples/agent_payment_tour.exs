@@ -34,11 +34,15 @@ defmodule AgentPaymentTour do
 
   # The echo server fills these itself when it runs over a socket; mounted as a
   # bare plug its `init/1` passes opts straight through, so state them here.
-  # 10_000 atomic units of a 6-decimal asset is one cent.
+  # The asset must be registered USDC: x402 signs an ERC-3009 transfer under
+  # USDC's own EIP-712 domain and refuses any other contract. 10_000 atomic
+  # units of 6-decimal USDC is one cent.
+  {:ok, usdc} = Raxol.Payments.Assets.address(@base, "USDC")
+
   @echo_opts [
     amount: 10_000,
     pay_to: "0x" <> String.duplicate("ab", 20),
-    asset: "0x" <> String.duplicate("cd", 20),
+    asset: usdc,
     network: "eip155:#{@base}"
   ]
 

@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Raxol.Payments.EchoServer` challenges for real USDC, so a rehearsal
+  signs an authorization that is valid on mainnet until its `validBefore`.**
+  Without `:asset` it asks for the USDC contract on its `:network` that the
+  x402 client signs for (`default_asset/1`). The old placeholder was refused
+  (`:unsupported_asset`), which broke `examples/preflight.exs` and
+  `examples/agent_payment_tour.exs`. Rehearse with a throwaway key or on a
+  testnet (see the module doc). A network with no signable USDC stops with a
+  message naming `--asset`.
+
 - Requires, when present, `plug ~> 1.20 and >= 1.20.4` (was `~> 1.19 and >=
   1.19.3`) for CVE-2026-120287 (multipart framing not charged to `:length`).
 
@@ -102,6 +111,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Raxol.Payments.Protocols.X402.signable_asset?/2`: whether the x402 client
+  signs a challenge for an asset on a network, by the rule it applies when
+  paying. `Raxol.Payments.EchoServer.default_asset/1` returns the asset a
+  server challenges for without `:asset`, checked with that rule.
 - `Raxol.Payments.EIP712.address?/1,2`: whether a value is a clean `0x` +
   40-hex EVM address. A mixed-case address must carry a valid EIP-55
   checksum; all-lowercase and all-uppercase carry none. `checksum: false`
