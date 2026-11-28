@@ -22,9 +22,9 @@ packages here take from Hex.
 
 ## Try it first
 
-The payment examples run offline in a few seconds, after a first compile of
-about a minute, and spend nothing. Start with the tour, which pays an x402
-challenge and has the spend gate refuse the same call:
+The payment examples run offline and spend nothing. The first compile takes
+about a minute. Start with the tour: it pays an x402 challenge, then has the
+spend gate refuse the same call.
 
 ```bash
 cd packages/raxol_payments
@@ -33,7 +33,7 @@ MIX_ENV=test mix run examples/agent_payment_tour.exs
 ```
 
 [`packages/raxol_payments/examples/README.md`](packages/raxol_payments/examples/README.md)
-lists the rest in order, from the offline demos to a real settlement.
+lists the rest, from offline demos to a real settlement.
 
 ## Docs
 
