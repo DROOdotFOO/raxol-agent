@@ -22,3 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `no_backend` lists the served chains under `"chains"`. A name where an
     account belongs gets a hint to call `web3_resolve_name` first. A
     malformed EVM transaction hash is refused locally as `invalid_argument`.
+  - A backend answer that is not an object, or not the account or hex value
+    the tool promises, is `decode_failed` / `"result"` instead of a non-object
+    result.

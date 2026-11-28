@@ -384,6 +384,36 @@ defmodule Raxol.Web3.MCP.ToolsTest do
                })
     end
 
+    test "a result that is not an object is a closed error, not a non-object answer" do
+      unreadable = [
+        {:account_info, nil, "web3_account_info", %{"account" => @address}},
+        {:account_info, [], "web3_account_info", %{"account" => @address}},
+        {:account_info, ~U[2026-11-28 12:00:00Z], "web3_account_info", %{"account" => @address}},
+        {:chain_info, "text", "web3_chain_info", %{}},
+        {:resolve_name, {:unknown, "0xabc"}, "web3_resolve_name", %{"name" => "vitalik.eth"}},
+        {:resolve_name, {:evm, 42}, "web3_resolve_name", %{"name" => "vitalik.eth"}},
+        {:resolve_name, "0xabc", "web3_resolve_name", %{"name" => "vitalik.eth"}},
+        {:read_contract, nil, "web3_read_contract", %{"to" => @address, "data" => "0x"}}
+      ]
+
+      for {callback, answer, name, arguments} <- unreadable do
+        router = router(answers: %{callback => {:ok, answer}})
+
+        assert {:error, %Error{code: "decode_failed", detail: :result}} =
+                 call(router, name, Map.put(arguments, "chain", @chain)),
+               "#{callback} answering #{inspect(answer)}"
+      end
+    end
+
+    test "an unreadable result counts against the tool, as a source fault" do
+      router = router(answers: %{account_info: {:ok, nil}})
+
+      assert {:error, error} =
+               call(router, "web3_account_info", %{"chain" => @chain, "account" => @address})
+
+      assert Tools.fault?(error)
+    end
+
     test "a wei balance past 2^53 arrives as its exact decimal string" do
       # 5_799_554_154_377_317_710 is the balance Blockscout reported for the
       # address above on 2026-11-28. As a JSON number a double reads it as

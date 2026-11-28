@@ -153,6 +153,13 @@ defmodule Raxol.Web3.Serialize do
     end
   end
 
+  @doc "Whether a term is a tagged account reference of a family in `tags/0`."
+  @spec account_ref?(term()) :: boolean()
+  def account_ref?({family, value}) when is_atom(family) and is_binary(value),
+    do: family in Map.values(@tags)
+
+  def account_ref?(_other), do: false
+
   @doc "The account-reference tags this surface understands."
   @spec tags() :: [String.t()]
   def tags, do: Map.keys(@tags)
