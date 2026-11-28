@@ -51,6 +51,10 @@ defmodule Raxol.Web3.MCP.Error do
   """
   @type context :: %{optional(:chains) => [String.t()], optional(:account) => term()}
 
+  @retry_narrower "A retry may work. If it times out again the query is likely too " <>
+                    "large for this source; try a narrower one, such as a more specific " <>
+                    "tool or a later page by cursor."
+
   @families ~s(Prefix a non-EVM account with its family: "tron:", "solana:", ) <>
               ~s("party:" or "aztec:".)
 
@@ -74,9 +78,29 @@ defmodule Raxol.Web3.MCP.Error do
     |> put_chains(error.chains)
   end
 
-  @doc "The error as JSON text."
+  @doc """
+  The error as JSON text. Total: it is called from `Inspect`, whose output
+  `Raxol.MCP.Server` sends outside `Raxol.MCP.Registry`'s `rescue`, so a raise
+  here would put an `Inspect.Error` with a struct dump and a stack trace in
+  front of a model. A datum JSON cannot hold (a binary that is not UTF-8, a
+  pid) is answered with the code, a null detail and the hint instead.
+  """
   @spec to_json(t()) :: String.t()
-  def to_json(%__MODULE__{} = error), do: error |> to_map() |> Jason.encode!()
+  def to_json(%__MODULE__{} = error) do
+    [
+      to_map(error),
+      %{"code" => error.code, "detail" => nil, "hint" => error.hint},
+      %{"code" => "error", "detail" => nil, "hint" => nil}
+    ]
+    |> Enum.find_value(&encoded/1)
+  end
+
+  defp encoded(map) do
+    case Jason.encode(map) do
+      {:ok, json} -> json
+      {:error, _reason} -> nil
+    end
+  end
 
   defp put_chains(map, nil), do: map
   defp put_chains(map, chains), do: Map.put(map, "chains", chains)
@@ -91,8 +115,18 @@ defmodule Raxol.Web3.MCP.Error do
       "No backend serves this chain. Call again with one of the CAIP-2 references in " <>
         "\"chains\"."
 
-  defp hint("missing_argument", name, _context),
-    do: "The required argument \"#{name}\" is missing."
+  # Every clause that interpolates its datum is guarded on the type it
+  # expects, and an argument name only when it is printable, because
+  # `Raxol.Web3.Serialize.error/1` admits a nested map or any binary there and
+  # a hint must be total. The datum-free sentence after each one is the
+  # fallthrough.
+  defp hint("missing_argument", name, _context) when is_binary(name) do
+    if printable?(name),
+      do: "The required argument \"#{name}\" is missing.",
+      else: "A required argument is missing."
+  end
+
+  defp hint("missing_argument", _detail, _context), do: "A required argument is missing."
 
   defp hint("invalid_argument", "chain", _context),
     do: ~s(The chain must be a CAIP-2 string, e.g. "eip155:1" for Ethereum mainnet.)
@@ -107,8 +141,14 @@ defmodule Raxol.Web3.MCP.Error do
       "The block number must be a non-negative integer, a 0x quantity, or one of " <>
         "latest, earliest, pending, safe, finalized."
 
-  defp hint("invalid_argument", name, _context),
-    do: "The argument \"#{name}\" has the wrong type; see the tool's inputSchema."
+  defp hint("invalid_argument", name, _context) when is_binary(name) do
+    if printable?(name),
+      do: "The argument \"#{name}\" has the wrong type; see the tool's inputSchema.",
+      else: "An argument has the wrong type; see the tool's inputSchema."
+  end
+
+  defp hint("invalid_argument", _detail, _context),
+    do: "An argument has the wrong type; see the tool's inputSchema."
 
   defp hint("unsupported_account_ref", _detail, context) do
     if name?(Map.get(context, :account)),
@@ -129,14 +169,19 @@ defmodule Raxol.Web3.MCP.Error do
       "The cursor is not valid here. Pass it exactly as the previous page of the same " <>
         "tool on the same chain returned it, or omit it for the first page."
 
-  defp hint("timeout", stage, _context),
+  defp hint("timeout", stage, _context) when is_atom(stage) and not is_nil(stage),
     do:
-      "This was a timeout: the source did not answer in time (stage: #{stage}). A retry " <>
-        "may work. If it times out again the query is likely too large for this source; " <>
-        "try a narrower one, such as a more specific tool or a later page by cursor."
+      "This was a timeout: the source did not answer in time (stage: #{stage}). " <>
+        @retry_narrower
 
-  defp hint("rate_limited", ms, _context),
+  defp hint("timeout", _detail, _context),
+    do: "This was a timeout: the source did not answer in time. " <> @retry_narrower
+
+  defp hint("rate_limited", ms, _context) when is_integer(ms),
     do: "The source is rate limiting this client. Retry after #{ms} ms."
+
+  defp hint("rate_limited", _detail, _context),
+    do: "The source is rate limiting this client. Retry later."
 
   defp hint("breaker_open", _origin, _context),
     do: "The source failed repeatedly and is paused. Retry in a minute."
@@ -147,8 +192,11 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("dns_failed", _origin, _context),
     do: "The source's host name did not resolve. A retry later may work."
 
-  defp hint("too_large", limit, _context),
+  defp hint("too_large", limit, _context) when is_integer(limit),
     do: "The answer was larger than the #{limit}-byte limit. Try a narrower query."
+
+  defp hint("too_large", _detail, _context),
+    do: "The answer was larger than the size limit. Try a narrower query."
 
   defp hint("decode_failed", _tag, _context),
     do: "The source answered in a shape this tool could not read. A retry may work."
@@ -166,6 +214,9 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("http", status, _context) when is_integer(status) do
     if HTTP.unhealthy_status?(status), do: retry_hint(status), else: final_hint(status)
   end
+
+  defp hint("http", _detail, _context),
+    do: "The source answered with an HTTP status this tool cannot use."
 
   defp hint("upstream_refused", :not_found, _context), do: "The source has no such record."
 
@@ -214,11 +265,15 @@ defmodule Raxol.Web3.MCP.Error do
 
   defp name?(_account), do: false
 
+  defp printable?(name), do: byte_size(name) <= 64 and String.printable?(name)
+
   defimpl Inspect do
     def inspect(error, _opts), do: Raxol.Web3.MCP.Error.to_json(error)
   end
 
+  # Both implementations go through `to_json/1`, so neither can raise. The
+  # encoder returns the finished text, which `Jason` inserts as-is.
   defimpl Jason.Encoder do
-    def encode(error, opts), do: error |> Raxol.Web3.MCP.Error.to_map() |> Jason.Encode.map(opts)
+    def encode(error, _opts), do: Raxol.Web3.MCP.Error.to_json(error)
   end
 end

@@ -63,4 +63,62 @@ defmodule Raxol.Web3.MCP.ErrorTest do
       end
     end
   end
+
+  describe "rendering is total" do
+    # `Raxol.Web3.Serialize.error/1` admits a nested map or any binary as a
+    # datum, and a raise here becomes `callback_raised` and a breaker fault,
+    # or, from inside `Inspect`, an `Inspect.Error` the server sends as-is.
+    @interpolating ~w(missing_argument invalid_argument timeout rate_limited too_large http)a
+
+    test "a nested datum on every interpolating code renders without its datum in the hint" do
+      for code <- @interpolating, datum <- [{:chunk, 30_000}, {:retry_after, 5}] do
+        error = Error.new({code, datum})
+
+        assert is_binary(error.hint), "#{code} has no hint"
+        refute error.hint =~ "%{", "#{code}: #{error.hint}"
+
+        assert %{"code" => _code, "detail" => %{}, "hint" => hint} = Jason.decode!(inspect(error))
+        assert hint == error.hint
+      end
+    end
+
+    test "the two reported shapes no longer raise" do
+      assert %Error{code: "timeout", hint: timeout} = Error.new({:timeout, {:chunk, 30_000}}, %{})
+      assert timeout =~ "This was a timeout"
+
+      assert %Error{code: "rate_limited", hint: rate} =
+               Error.new({:rate_limited, {:retry_after, 5}}, %{})
+
+      assert rate =~ "Retry later."
+    end
+
+    test "a bare code has a hint with no empty slot in it" do
+      assert Error.new(:rate_limited).hint ==
+               "The source is rate limiting this client. Retry later."
+
+      refute Error.new(:timeout).hint =~ "stage"
+      refute Error.new(:too_large).hint =~ " -byte"
+    end
+
+    test "a non-UTF-8 datum renders as the server renders it, with none of its bytes" do
+      bytes = <<0xFF, 0xFE, 0x41>>
+
+      for reason <- [{:upstream_refused, bytes}, {:invalid_argument, bytes}, {:http, bytes}] do
+        error = Error.new(reason)
+        rendered = "Error: #{inspect(error)}"
+
+        assert String.valid?(rendered)
+        refute rendered =~ "Inspect.Error"
+        refute rendered =~ ~r/stacktrace/i
+        refute rendered =~ "255, 254"
+        refute String.contains?(rendered, <<0xFF>>)
+
+        assert "Error: " <> json = rendered
+        assert %{"code" => code, "detail" => nil, "hint" => hint} = Jason.decode!(json)
+        assert code == error.code
+        assert hint == error.hint
+        assert Jason.encode!(error) == json
+      end
+    end
+  end
 end

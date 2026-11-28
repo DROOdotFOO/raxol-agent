@@ -507,6 +507,15 @@ defmodule Raxol.Web3.MCP.ToolsTest do
                call(router, "web3_get_logs", %{"chain" => @chain, "account" => @address})
     end
 
+    test "a nested datum from a backend is an answered error, not a raised callback" do
+      registry = registry()
+      router = router(answers: %{chain_info: {:error, {:timeout, {:chunk, 30_000}}}})
+      assert :ok = Tools.register(registry, router)
+
+      assert {:error, %Error{code: "timeout"}} =
+               Registry.call_tool(registry, "web3_chain_info", %{"chain" => @chain})
+    end
+
     test "an unrecognised error term becomes a bare code rather than being inspected" do
       router = router(answers: %{chain_info: {:error, {:weird, %{body: "upstream text"}}}})
 
