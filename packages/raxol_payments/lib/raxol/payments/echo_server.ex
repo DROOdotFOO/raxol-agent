@@ -15,15 +15,9 @@ defmodule Raxol.Payments.EchoServer do
   ## Rehearse with a throwaway key
 
   On the default network (Base mainnet) the client signs a real ERC-3009
-  transfer authorization: the challenge amount of Base USDC from the
-  signing wallet to `:pay_to`. Nothing here broadcasts it, but the
-  `x-payment` payload is valid on that chain until the challenge's
-  `validBefore` (an hour), so anyone holding it can submit it until then.
-  Sign with a throwaway key, not a funded one.
-
-  For a rehearsal whose signature is worth nothing, run on a testnet whose
-  USDC the client signs for, naming its USDC contract (testnets have no
-  default asset). Base Sepolia:
+  transfer of the challenge amount to `:pay_to`. Nothing here broadcasts it,
+  but whoever holds the `x-payment` payload can until its `validBefore`. For a
+  signature worth nothing, use a testnet and name its USDC (Base Sepolia):
 
       mix raxol_payments.echo --network eip155:84532 \\
         --asset 0x036cbd53842c5426634e7929541ec2318f3dcf7e

@@ -56,13 +56,10 @@ mix raxol_payments.echo --port 4002      # terminal A: start the echo server
 mix run examples/preflight.exs           # terminal B: run against it
 ```
 
-**Use a throwaway key for `PREFLIGHT_WALLET_KEY`.** On the default network
-(Base mainnet) the script signs a real ERC-3009 transfer of one cent of Base
-USDC to the echo server's `pay_to`. Nothing is broadcast, but the signed
-`x-payment` payload is valid on Base until the challenge's `validBefore`, an
-hour later. For a rehearsal whose signature is worth nothing, start the echo
-server on Base Sepolia instead (testnets have no default asset, so name its
-USDC):
+**Use a throwaway key for `PREFLIGHT_WALLET_KEY`.** Against the default echo
+server (Base mainnet) the script signs a real USDC transfer authorization,
+valid until the challenge's `validBefore`. Nothing is broadcast. For a
+signature worth nothing, start the echo server on Base Sepolia:
 
 ```bash
 mix raxol_payments.echo --port 4002 --network eip155:84532 \

@@ -21,17 +21,8 @@
 #
 #   PREFLIGHT_TARGET_URL   default http://localhost:4002/anything
 #   PREFLIGHT_WALLET_KEY   private key (0x-prefixed hex). Required. Use a
-#                          THROWAWAY key: against the default echo server
-#                          (Base mainnet) this signs a real ERC-3009 transfer
-#                          of the challenge amount to its pay_to. Nothing is
-#                          broadcast, but the signed payload is valid on Base
-#                          until the challenge's validBefore (an hour). For a
-#                          signature worth nothing, start the echo server on
-#                          Base Sepolia:
-#                            mix raxol_payments.echo --network eip155:84532 \
-#                              --asset 0x036cbd53842c5426634e7929541ec2318f3dcf7e
-#                          For a real launch, switch to Raxol.Payments.Wallets.Op
-#                          and remove this env var entirely.
+#                          THROWAWAY key: on Base mainnet this signs a real
+#                          USDC transfer authorization (examples/README.md).
 #   PREFLIGHT_AUTO_APPROVE if "true", skip the terminal prompt and approve
 #                          any over-threshold payment. Use only during rehearsal.
 #

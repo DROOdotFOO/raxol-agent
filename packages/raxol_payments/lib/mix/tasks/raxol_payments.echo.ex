@@ -15,14 +15,8 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
     USDC the x402 client signs for stops here and asks for `--asset`)
   - `--network` (CAIP-2, default `eip155:8453` / Base)
 
-  Rehearse with a throwaway key. On the default network a client signs a real
-  ERC-3009 transfer of Base USDC to `--pay-to`, valid on Base until the
-  challenge's `validBefore` (an hour). This server never broadcasts it, but
-  anyone holding the `x-payment` header can until then. For a signature worth
-  nothing, use a testnet (Base Sepolia):
-
-      mix raxol_payments.echo --network eip155:84532 \\
-        --asset 0x036cbd53842c5426634e7929541ec2318f3dcf7e
+  Rehearse with a throwaway key: on Base mainnet a client signs a real USDC
+  transfer authorization. `Raxol.Payments.EchoServer` shows the testnet path.
 
   The server runs until you `Ctrl-C` it. Hit `GET /health` for a liveness
   ping; any other path triggers the 402 -> 200 dance.
