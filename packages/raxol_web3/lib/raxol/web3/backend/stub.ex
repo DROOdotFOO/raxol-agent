@@ -31,13 +31,19 @@ defmodule Raxol.Web3.Backend.Stub do
   alias Raxol.Web3.Backend
 
   @enforce_keys [:chain_ref]
-  defstruct chain_ref: nil, answers: %{}, capabilities: nil, health_key: nil, name: :stub
+  defstruct chain_ref: nil,
+            answers: %{},
+            capabilities: nil,
+            health_key: nil,
+            cursor_scopes: nil,
+            name: :stub
 
   @type t :: %__MODULE__{
           chain_ref: Backend.chain_ref(),
           answers: %{optional(atom()) => {:ok, term()} | {:error, term()}},
           capabilities: [atom()] | nil,
           health_key: Raxol.MCP.CircuitBreaker.key() | nil,
+          cursor_scopes: [String.t()] | nil,
           name: atom()
         }
 
@@ -69,6 +75,9 @@ defmodule Raxol.Web3.Backend.Stub do
       router exists to route around.
     * `:health_key` - a `Raxol.MCP.CircuitBreaker` key, or `nil` (the default)
       for a backend with no health to check. In-memory means never unhealthy.
+    * `:cursor_scopes` - the scopes this handle claims to mint cursors under,
+      or `nil` (the default): it mints none, so the router does not send it a
+      request that carries a cursor.
     * `:name` - what this handle calls itself, default `:stub`. Two handles of
       one module is the normal case for a real backend with several upstreams,
       so a reference backend has to be able to model it: `Backend.name/1` and
@@ -82,6 +91,7 @@ defmodule Raxol.Web3.Backend.Stub do
       answers: Keyword.get(opts, :answers, %{}),
       capabilities: Keyword.get(opts, :capabilities),
       health_key: Keyword.get(opts, :health_key),
+      cursor_scopes: Keyword.get(opts, :cursor_scopes),
       name: Keyword.get(opts, :name, :stub)
     }
 
@@ -103,6 +113,9 @@ defmodule Raxol.Web3.Backend.Stub do
 
   @impl Backend
   def health_key(%__MODULE__{health_key: key}), do: key
+
+  @impl Backend
+  def cursor_scopes(%__MODULE__{cursor_scopes: scopes}), do: scopes
 
   @impl Backend
   def chain_info(%__MODULE__{} = state) do

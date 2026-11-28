@@ -42,3 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the tool's breaker counts the fault. An answer every source would give
   (`not_found`, a reference of the wrong family, a missing argument) still
   stands.
+- **Visible to MCP clients: a page-two request goes to the source that
+  minted its cursor, and a source whose base URL does not parse is skipped.**
+  A cursor whose source is paused answers `breaker_open` ("Retry later"),
+  where it answered `invalid_cursor`; a cursor no configured source minted is
+  still `invalid_cursor`. A misconfigured first source no longer answers
+  `blocked` on every read: the next source answers, and the operator gets one
+  warning per source.

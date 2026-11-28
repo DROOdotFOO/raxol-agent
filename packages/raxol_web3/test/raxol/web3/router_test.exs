@@ -179,6 +179,8 @@ defmodule Raxol.Web3.RouterTest do
             {:http, 429},
             {:http, 503},
             {:blocked, :address},
+            # A base URL that does not parse is this source's configuration.
+            {:blocked, :invalid_url},
             # A credential this deployment does not hold is a fact about the
             # source, and it cannot be reached through health: an upstream that
             # answers 404 under a withdrawn key prefix records a breaker
@@ -207,7 +209,6 @@ defmodule Raxol.Web3.RouterTest do
             # rather than the last source's.
             {:upstream_refused, :unknown},
             {:unsupported_account_ref, :party},
-            {:blocked, :invalid_url},
             {:http, 404},
             {:http, 400}
           ] do
@@ -385,12 +386,156 @@ defmodule Raxol.Web3.RouterTest do
     end
   end
 
+  describe "a request that carries a cursor goes to the source that minted it" do
+    defp minting(name, scope, opts \\ []) do
+      answers = %{list_transactions: Keyword.get(opts, :answer, {:ok, %{marker: name}})}
+
+      stub(
+        [name: name, cursor_scopes: [scope], answers: answers] ++
+          Keyword.take(opts, [:health_key])
+      )
+    end
+
+    defp page_two(router, cursor),
+      do: Router.call(router, @chain, :list_transactions, [@account, [cursor: cursor]])
+
+    defp cursor_for(scope),
+      do: Cursor.encode(%{"block_number" => 1}, scope, :address_transactions)
+
+    test "a minter demoted by its open breaker is still the one asked, and its pause is reported" do
+      # Today the first candidate refused the cursor as :wrong_scope and the
+      # walk stopped before it asked the minter.
+      minter =
+        minting(:minter, "scope-a",
+          health_key: open(key("minter")),
+          answer: {:error, {:breaker_open, "minter"}}
+        )
+
+      other = minting(:other, "scope-b", answer: {:error, {:invalid_cursor, :wrong_scope}})
+
+      assert {:error, {:breaker_open, "minter"}} =
+               page_two(Router.new([minter, other]), cursor_for("scope-a"))
+    end
+
+    test "a minter demoted by its breaker that does answer serves page two" do
+      minter = minting(:minter, "scope-a", health_key: open(key("minter-ok")))
+      other = minting(:other, "scope-b", answer: {:error, {:invalid_cursor, :wrong_scope}})
+
+      assert {:ok, %{marker: :minter}} =
+               page_two(Router.new([minter, other]), cursor_for("scope-a"))
+    end
+
+    test "a healthy minter first is asked as before" do
+      router = Router.new([minting(:minter, "scope-a"), minting(:other, "scope-b")])
+
+      assert {:ok, %{marker: :minter}} = page_two(router, cursor_for("scope-a"))
+    end
+
+    test "a cursor whose scope no configured source has is invalid_cursor, and nobody is asked" do
+      router =
+        Router.new([
+          minting(:a, "scope-a", answer: {:error, {:timeout, :chunk}}),
+          minting(:b, "scope-b", answer: {:error, {:timeout, :chunk}})
+        ])
+
+      assert {:error, {:invalid_cursor, :wrong_scope}} =
+               page_two(router, cursor_for("scope-gone"))
+    end
+
+    test "a source that mints no cursors is never sent one" do
+      # The stub ignores cursors; asked, it would answer page one as page two.
+      router =
+        Router.new([
+          marked(:mints_none, answers: %{list_transactions: {:ok, %{marker: :rewound}}})
+        ])
+
+      assert {:error, {:invalid_cursor, :wrong_scope}} = page_two(router, cursor_for("scope-a"))
+    end
+
+    test "a cursor whose claim cannot be read is routed as before, and the first source refuses it" do
+      router =
+        Router.new([
+          minting(:a, "scope-a", answer: {:error, {:invalid_cursor, :malformed}}),
+          minting(:b, "scope-b")
+        ])
+
+      assert {:error, {:invalid_cursor, :malformed}} = page_two(router, "not-a-cursor")
+    end
+
+    test "a forged cursor reaches the source it claims, which refuses it as it does today" do
+      # A real backend, so the MAC is really checked: the claim chose the
+      # source and nothing else.
+      {:ok, minter} =
+        Blockscout.new(@chain, cache: false, http_opts: [exchange: refusing_exchange()])
+
+      [scope] = Backend.cursor_scopes(minter)
+      [version, payload, _mac] = String.split(cursor_for(scope), ".")
+
+      forged =
+        Enum.join(
+          [version, payload, Base.url_encode64(:binary.copy(<<0>>, 32), padding: false)],
+          "."
+        )
+
+      router = Router.new([minting(:other, "scope-b"), minter])
+
+      assert {:error, {:invalid_cursor, :bad_signature}} = page_two(router, forged)
+    end
+  end
+
+  describe "a misconfigured source is skipped" do
+    @invalid_url {:error, {:blocked, :invalid_url}}
+
+    test "the fallback answers when the first source's URL does not parse" do
+      assert {:ok, %{marker: :fallback}} = walk([@invalid_url, {:ok, %{marker: :fallback}}])
+    end
+
+    test "after only misconfigured or paused sources, the first source called answers for itself" do
+      assert {:error, {:http, 400}} = walk([@invalid_url, fails({:http, 400})])
+
+      assert {:error, {:http, 404}} =
+               walk([@invalid_url, fails({:breaker_open, "a"}), fails({:http, 404})])
+
+      assert {:error, {:timeout, :chunk}} = walk([@invalid_url, fails({:timeout, :chunk})])
+    end
+
+    test "when every source is skipped, the first skip is reported" do
+      assert {:error, {:blocked, :invalid_url}} =
+               walk([@invalid_url, fails({:breaker_open, "a"})])
+
+      assert {:error, {:breaker_open, "a"}} = walk([fails({:breaker_open, "a"}), @invalid_url])
+      assert {:error, {:blocked, :invalid_url}} = walk([@invalid_url, @invalid_url])
+    end
+
+    test "a misconfigured fallback after a fault does not stand in for the fault" do
+      assert {:error, {:timeout, :chunk}} = walk([fails({:timeout, :chunk}), @invalid_url])
+    end
+
+    test "the operator is warned once per source, by name and never by URL" do
+      name = :"misconfigured_#{System.unique_integer([:positive])}"
+      broken = stub(name: name, answers: %{chain_info: @invalid_url})
+      router = Router.new([broken, marked(:fallback, [])])
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :warning], fn ->
+          for _call <- 1..3, do: assert({:ok, _} = Router.call(router, @chain, :chain_info))
+        end)
+
+      lines = for line <- String.split(log, "\n"), line =~ "does not parse", do: line
+      assert [line] = lines
+      assert line =~ "#{name} (#{@chain})"
+      refute line =~ "://"
+    end
+  end
+
   describe "a paging walk is pinned to the backend that started it" do
     test "an invalid cursor is final, so a failover cannot rewind a paginated read" do
       # The failure this rule prevents: the fallback cannot use another
       # backend's cursor, so it would answer with its FIRST page and the caller
       # would receive page one labelled page two. An error is recoverable; a
-      # silent rewind is not.
+      # silent rewind is not. The cursor claims a scope no configured source
+      # has, so nothing is asked, and the fallback (which mints no cursors)
+      # is never sent it.
       cursor = Cursor.encode(%{"block_number" => 1}, "someotherorigin", :address_transactions)
 
       {:ok, primary} =

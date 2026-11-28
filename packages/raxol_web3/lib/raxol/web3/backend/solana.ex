@@ -220,6 +220,9 @@ defmodule Raxol.Web3.Backend.Solana do
   def health_key(%__MODULE__{} = state), do: {:origin, origin_id(state)}
 
   @impl Backend
+  def cursor_scopes(%__MODULE__{} = state), do: [scope(state)]
+
+  @impl Backend
   def chain_info(%__MODULE__{source: :sqd} = state) do
     with {:ok, network} <- resolve(state),
          {:ok, payload} <-

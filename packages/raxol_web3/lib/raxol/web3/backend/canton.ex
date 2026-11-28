@@ -230,6 +230,10 @@ defmodule Raxol.Web3.Backend.Canton do
   @impl Backend
   def health_key(%__MODULE__{} = state), do: {:origin, Origin.for_url(state.scan_url)}
 
+  # Holdings is the one paged read, and it mints under the Scan scope.
+  @impl Backend
+  def cursor_scopes(%__MODULE__{} = state), do: [Scan.scope(state)]
+
   @impl Backend
   def chain_info(%__MODULE__{} = state) do
     with {:ok, body} <- Scan.dso(state) do
