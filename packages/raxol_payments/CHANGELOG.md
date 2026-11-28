@@ -142,6 +142,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `IntentStatus`; `Relay.Schemas.QuoteRequest`, `QuoteResponse`,
   `ExecuteRequest` and `StatusResponse`; `Pxe.Schemas.HealthStatus`. `mix docs`
   builds without warnings.
+- `Raxol.Payments.EchoServer` challenges for USDC on its `:network` (Base
+  native USDC by default) instead of a placeholder contract the x402 client
+  refuses to sign for (`:unsupported_asset`), so `examples/preflight.exs`
+  and `examples/agent_payment_tour.exs` pay again. An explicit `:asset`
+  is used as given.
 
 ## [0.3.0] - 2026-11-14
 

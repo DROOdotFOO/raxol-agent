@@ -11,7 +11,7 @@ defmodule Mix.Tasks.RaxolPayments.Echo do
   - `--port` (integer, default 4002)
   - `--amount` (integer atomic units, default 10000 = $0.01 USDC)
   - `--pay-to` (hex address, default deterministic dev address)
-  - `--asset` (hex address, default deterministic dev asset)
+  - `--asset` (hex address, default USDC on `--network`)
   - `--network` (CAIP-2, default `eip155:8453` / Base)
 
   The server runs until you `Ctrl-C` it. Hit `GET /health` for a liveness

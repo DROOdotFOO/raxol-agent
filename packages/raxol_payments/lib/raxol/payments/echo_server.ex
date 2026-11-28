@@ -32,7 +32,8 @@ defmodule Raxol.Payments.EchoServer do
     deterministic dev address; **override for any real use**.
   - `:amount` -- atomic units (USDC has 6 decimals; `10_000` = $0.01)
   - `:network` -- CAIP-2 chain id, default `"eip155:8453"` (Base)
-  - `:asset` -- ERC-20 contract address. Default is a placeholder.
+  - `:asset` -- ERC-20 contract address. Default is the registered USDC
+    contract on `:network`, the only asset the x402 client will sign for.
   """
 
   @behaviour Plug
@@ -40,7 +41,6 @@ defmodule Raxol.Payments.EchoServer do
   import Plug.Conn
 
   @default_pay_to "0x" <> String.duplicate("ab", 20)
-  @default_asset "0x" <> String.duplicate("cd", 20)
   @default_network "eip155:8453"
   # 1 cent USDC (6 decimals)
   @default_amount 10_000
@@ -199,11 +199,20 @@ defmodule Raxol.Payments.EchoServer do
   end
 
   defp build_config(opts) do
+    network = Keyword.get(opts, :network, @default_network)
+
     [
       pay_to: Keyword.get(opts, :pay_to, @default_pay_to),
-      asset: Keyword.get(opts, :asset, @default_asset),
-      network: Keyword.get(opts, :network, @default_network),
+      asset: Keyword.get_lazy(opts, :asset, fn -> default_asset(network) end),
+      network: network,
       amount: Keyword.get(opts, :amount, @default_amount)
     ]
+  end
+
+  defp default_asset(network) do
+    case Raxol.Payments.Assets.address(network, "USDC") do
+      {:ok, usdc} -> usdc
+      :error -> raise ArgumentError, "no USDC registered for #{network}; pass :asset"
+    end
   end
 end
