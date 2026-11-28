@@ -31,5 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Visible to MCP clients: the three `Raxol.Web3.MCP.FXTools` tools
   (`web3_fx_*`) answer the same way:** JSON text, and `Error: {"code",
   "detail", "hint"}`. Prices and rates are decimal strings with every digit
-  the source gave. An `invalid_argument` hint names the accepted values.
+  the source gave. An `invalid_argument` hint for `symbol`, `corridor`,
+  `sort`, `limit` or `offset` names the accepted values.
   `Raxol.Agent.Actions.FX` still answers Elixir terms.
