@@ -20,6 +20,21 @@ packages here take from Hex.
 | `raxol_cli` | The `raxol` binary and its npm wrapper |
 | `raxol_agent_client_protocol` | Agent Client Protocol codec and transports |
 
+## Try it first
+
+The payment examples run offline in a few seconds, after a first compile of
+about a minute, and spend nothing. Start with the tour, which pays an x402
+challenge and has the spend gate refuse the same call:
+
+```bash
+cd packages/raxol_payments
+mix deps.get
+MIX_ENV=test mix run examples/agent_payment_tour.exs
+```
+
+[`packages/raxol_payments/examples/README.md`](packages/raxol_payments/examples/README.md)
+lists the rest in order, from the offline demos to a real settlement.
+
 ## Docs
 
 Start with the Agent Framework.
