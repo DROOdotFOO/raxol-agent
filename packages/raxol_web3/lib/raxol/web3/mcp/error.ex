@@ -31,6 +31,7 @@ defmodule Raxol.Web3.MCP.Error do
   this value, reads it as it read the plain map before.
   """
 
+  alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCP.JSON
   alias Raxol.Web3.Serialize
 
@@ -155,13 +156,16 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("unencodable_result", _detail, _context),
     do: "The source answered with data that cannot be written as JSON."
 
+  # Which statuses a retry can help is `Raxol.Web3.HTTP.unhealthy_status?/1`'s
+  # call, the same one the router's failover and `Tools.fault?/1` make, so it
+  # is asked rather than restated here. Within each class the wording says
+  # whose problem it is: 401 and 403 are the source refusing this deployment,
+  # and only a status about the request itself says to check the arguments.
   defp hint("http", 404, _context), do: "The source has no such record (HTTP 404)."
 
-  defp hint("http", status, _context) when status in [408, 429] or status >= 500,
-    do: "The source failed with HTTP #{status}. A retry may work."
-
-  defp hint("http", status, _context) when is_integer(status),
-    do: "The source refused the request with HTTP #{status}. Check the arguments."
+  defp hint("http", status, _context) when is_integer(status) do
+    if HTTP.unhealthy_status?(status), do: retry_hint(status), else: final_hint(status)
+  end
 
   defp hint("upstream_refused", :not_found, _context), do: "The source has no such record."
 
@@ -181,6 +185,24 @@ defmodule Raxol.Web3.MCP.Error do
     do: "This deployment's outbound policy refuses the source's address."
 
   defp hint(_code, _detail, _context), do: nil
+
+  defp retry_hint(403),
+    do:
+      "The source refused this deployment (HTTP 403), not the arguments, so changing " <>
+        "them will not help. A retry later may work."
+
+  defp retry_hint(status), do: "The source failed with HTTP #{status}. A retry may work."
+
+  defp final_hint(401),
+    do:
+      "The source refused this deployment (HTTP 401): it requires a credential this " <>
+        "deployment does not hold. Changing the arguments will not help."
+
+  defp final_hint(status) when status in 400..499,
+    do: "The source refused the request with HTTP #{status}. Check the arguments."
+
+  defp final_hint(status),
+    do: "The source answered with HTTP #{status}, which this tool cannot use."
 
   # A dot and no family prefix is how a name differs from every account form
   # this surface reads: an EVM address, a Tron or Solana key and a Canton
