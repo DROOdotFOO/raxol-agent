@@ -1,4 +1,4 @@
-defmodule Raxol.Web3.MCP.JSON do
+defmodule Raxol.Web3.MCP.Result do
   @moduledoc """
   The JSON text a served tool returns.
 

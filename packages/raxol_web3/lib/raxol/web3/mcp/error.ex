@@ -32,7 +32,7 @@ defmodule Raxol.Web3.MCP.Error do
   """
 
   alias Raxol.Web3.HTTP
-  alias Raxol.Web3.MCP.JSON
+  alias Raxol.Web3.MCP.Result
   alias Raxol.Web3.Serialize
 
   @enforce_keys [:code]
@@ -73,7 +73,7 @@ defmodule Raxol.Web3.MCP.Error do
   @doc "The error as JSON-safe data, in the shape the moduledoc gives."
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = error) do
-    %{"code" => error.code, "detail" => JSON.safe(error.detail), "hint" => error.hint}
+    %{"code" => error.code, "detail" => Result.safe(error.detail), "hint" => error.hint}
     |> put_chains(error.chains)
   end
 

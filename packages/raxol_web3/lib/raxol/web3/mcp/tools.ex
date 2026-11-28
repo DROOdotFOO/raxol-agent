@@ -32,7 +32,7 @@ defmodule Raxol.Web3.MCP.Tools do
 
   ## Results and errors are JSON text
 
-  A result is a JSON object, encoded by `Raxol.Web3.MCP.JSON`: string keys,
+  A result is a JSON object, encoded by `Raxol.Web3.MCP.Result`: string keys,
   atoms as strings, and amounts and any integer past 2^53 as decimal strings.
   `web3_resolve_name` answers `{"account": "evm:0x..."}` and
   `web3_read_contract` answers `{"value": "0x..."}`.
@@ -66,7 +66,7 @@ defmodule Raxol.Web3.MCP.Tools do
   alias Raxol.MCP.Registry
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCP.Error
-  alias Raxol.Web3.MCP.JSON
+  alias Raxol.Web3.MCP.Result
   alias Raxol.Web3.Router
   alias Raxol.Web3.Serialize
 
@@ -298,7 +298,7 @@ defmodule Raxol.Web3.MCP.Tools do
          {:ok, args} <- build_args(callback, arg_spec, arguments),
          :ok <- vet(callback, chain, args),
          {:ok, value} <- Router.call(router, chain, callback, args),
-         {:ok, json} <- value |> shape() |> JSON.encode() do
+         {:ok, json} <- value |> shape() |> Result.encode() do
       {:ok, json}
     else
       {:error, reason} -> {:error, Error.new(reason, context(router, arguments))}
