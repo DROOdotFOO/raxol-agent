@@ -335,6 +335,22 @@ defmodule Raxol.Web3.RouterTest do
                walk([fails({:breaker_open, "a"}), fails({:breaker_open, "b"})])
     end
 
+    test "after only open breakers, the first source actually called answers for itself" do
+      # An open breaker is a fact about earlier calls, so a walk whose only
+      # earlier faults are open breakers has not failed over from a call. Same
+      # outcome as a primary demoted by its health key (below), whether or not
+      # the backend exposes one.
+      for {walk, expected} <- [
+            {[fails({:breaker_open, "a"}), fails({:http, 400})], {:http, 400}},
+            {[fails({:breaker_open, "a"}), fails({:invalid_argument, "hash"})],
+             {:invalid_argument, "hash"}},
+            {[fails({:breaker_open, "a"}), fails({:breaker_open, "b"}), fails({:http, 404})],
+             {:http, 404}}
+          ] do
+        assert {:error, ^expected} = walk(walk), inspect(walk)
+      end
+    end
+
     test "a primary demoted for its open breaker is tried last, and its breaker_open is not reported" do
       sick =
         stub(

@@ -164,11 +164,15 @@ defmodule Raxol.Web3.Router do
     end
   end
 
-  defp attempt(candidates, callback, args, first_fault \\ nil)
+  # `seen` keeps the first fault from a call actually made and, apart, the
+  # first open breaker: an open breaker is a fact about earlier calls, so a
+  # walk whose only earlier faults are open breakers has not failed over from
+  # a call, and the first source called answers for itself (rule 3).
+  defp attempt(candidates, callback, args, seen \\ %{fault: nil, open: nil})
 
-  defp attempt([], callback, _args, _first_fault), do: {:error, {:unsupported, callback}}
+  defp attempt([], callback, _args, _seen), do: {:error, {:unsupported, callback}}
 
-  defp attempt([handle | rest], callback, args, first_fault) do
+  defp attempt([handle | rest], callback, args, seen) do
     case Backend.call(handle, callback, args) do
       {:ok, _value} = ok ->
         ok
@@ -176,40 +180,45 @@ defmodule Raxol.Web3.Router do
       {:error, reason} ->
         if rest != [] and failover?(reason) do
           log_failover(handle, callback, reason)
-          attempt(rest, callback, args, earliest_fault(first_fault, reason))
+          attempt(rest, callback, args, note(seen, reason))
         else
-          {:error, reported(handle, callback, reason, first_fault)}
+          {:error, reported(handle, callback, reason, seen)}
         end
     end
   end
 
-  # The moduledoc's three rules, in order.
-  defp reported(_handle, _callback, reason, nil), do: reason
+  defp note(%{open: nil} = seen, {:breaker_open, _} = reason), do: %{seen | open: reason}
+  defp note(seen, {:breaker_open, _}), do: seen
+  defp note(%{fault: nil} = seen, reason), do: %{seen | fault: reason}
+  defp note(seen, _reason), do: seen
 
-  defp reported(handle, callback, reason, first_fault) do
+  # The moduledoc's three rules. No fault from a call: rule 3, unless every
+  # source was an open breaker, when the first of them is reported.
+  defp reported(_handle, _callback, {:breaker_open, _} = reason, %{fault: nil, open: open}),
+    do: open || reason
+
+  defp reported(_handle, _callback, reason, %{fault: nil}), do: reason
+
+  defp reported(handle, callback, reason, %{fault: first_fault}) do
     cond do
       source_independent?(reason) ->
         reason
 
       failover?(reason) ->
-        earliest_fault(first_fault, reason)
+        first_fault
 
       true ->
-        Logger.debug(fn ->
-          "raxol_web3: #{Backend.name(handle)} answered #{callback} " <>
-            "(#{inspect(reason)}) after a failover; reporting #{inspect(first_fault)}"
-        end)
-
+        log_replaced(handle, callback, reason, first_fault)
         first_fault
     end
   end
 
-  # The first fault in walk order, except that an open breaker gives way to
-  # the first fault that came from a call actually made.
-  defp earliest_fault(nil, reason), do: reason
-  defp earliest_fault({:breaker_open, _} = first, {:breaker_open, _}), do: first
-  defp earliest_fault({:breaker_open, _}, reason), do: reason
-  defp earliest_fault(first, _reason), do: first
+  defp log_replaced(handle, callback, reason, first_fault) do
+    Logger.debug(fn ->
+      "raxol_web3: #{Backend.name(handle)} answered #{callback} " <>
+        "(#{inspect(reason)}) after a failover; reporting #{inspect(first_fault)}"
+    end)
+  end
 
   defp source_independent?({:upstream_refused, :not_found}), do: true
   defp source_independent?({:unsupported_account_ref, _}), do: true
