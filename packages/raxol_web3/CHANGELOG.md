@@ -34,3 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the source gave. An `invalid_argument` hint for `symbol`, `corridor`,
   `sort`, `limit` or `offset` names the accepted values.
   `Raxol.Agent.Actions.FX` still answers Elixir terms.
+- **When every source for a chain fails, the error is the first source's
+  fault, not the last source's.** A bare HTTP status, an unclassified refusal
+  or an answer only that source would give (such as a cursor another source
+  minted) from a fallback no longer stands in for it, so a client is not told
+  to check arguments or a cursor that were fine, and the tool's breaker counts
+  the fault. An answer every source would give (`not_found`, a reference of the
+  wrong family, a missing argument) still stands.

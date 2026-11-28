@@ -36,6 +36,28 @@ defmodule Raxol.Web3.Router do
   `{:unsupported_account_ref, _}`, `{:unsupported, _}`,
   `{:blocked, :invalid_url}` and `{:invalid_cursor, _}`.
 
+  ## Which error a failed walk reports
+
+  The walk ends on a final error, or on the last candidate's. What the caller
+  is told is not always that error, because an error from a later source can
+  be about that source rather than the question:
+
+    1. An answer that does not depend on the source stands, whichever source
+       gave it: `{:upstream_refused, :not_found}`, `{:unsupported_account_ref,
+       _}` (decided by the chain's address family) and `{:missing_argument,
+       _}`.
+    2. Otherwise, after a failover, the caller is told the FIRST source fault
+       in walk order, skipping `{:breaker_open, _}` unless every fault is one:
+       an open breaker is a fact about earlier calls, not this one. A bare
+       status the backend could not classify, an unclassified refusal, or a
+       reason only that source would give (`{:invalid_cursor, _}` for a cursor
+       another source minted, `{:unsupported, _}`, `{:invalid_argument, _}`
+       from its own path rules, `{:blocked, :invalid_url}`) does not stand in
+       for it. Last-wins told a client "Check the arguments" for a 400 from a
+       fallback when the primary had timed out, and hid that timeout from the
+       tool's breaker, which reads a 400 as an answer.
+    3. With no failover, the one source asked answered, and its error stands.
+
   ## Paging walks are pinned
 
   A cursor carries the origin that minted it (`Raxol.Web3.Cursor`), so
@@ -142,22 +164,57 @@ defmodule Raxol.Web3.Router do
     end
   end
 
-  defp attempt([], callback, _args), do: {:error, {:unsupported, callback}}
+  defp attempt(candidates, callback, args, first_fault \\ nil)
 
-  defp attempt([handle | rest], callback, args) do
+  defp attempt([], callback, _args, _first_fault), do: {:error, {:unsupported, callback}}
+
+  defp attempt([handle | rest], callback, args, first_fault) do
     case Backend.call(handle, callback, args) do
       {:ok, _value} = ok ->
         ok
 
-      {:error, reason} = error ->
+      {:error, reason} ->
         if rest != [] and failover?(reason) do
           log_failover(handle, callback, reason)
-          attempt(rest, callback, args)
+          attempt(rest, callback, args, earliest_fault(first_fault, reason))
         else
-          error
+          {:error, reported(handle, callback, reason, first_fault)}
         end
     end
   end
+
+  # The moduledoc's three rules, in order.
+  defp reported(_handle, _callback, reason, nil), do: reason
+
+  defp reported(handle, callback, reason, first_fault) do
+    cond do
+      source_independent?(reason) ->
+        reason
+
+      failover?(reason) ->
+        earliest_fault(first_fault, reason)
+
+      true ->
+        Logger.debug(fn ->
+          "raxol_web3: #{Backend.name(handle)} answered #{callback} " <>
+            "(#{inspect(reason)}) after a failover; reporting #{inspect(first_fault)}"
+        end)
+
+        first_fault
+    end
+  end
+
+  # The first fault in walk order, except that an open breaker gives way to
+  # the first fault that came from a call actually made.
+  defp earliest_fault(nil, reason), do: reason
+  defp earliest_fault({:breaker_open, _} = first, {:breaker_open, _}), do: first
+  defp earliest_fault({:breaker_open, _}, reason), do: reason
+  defp earliest_fault(first, _reason), do: first
+
+  defp source_independent?({:upstream_refused, :not_found}), do: true
+  defp source_independent?({:unsupported_account_ref, _}), do: true
+  defp source_independent?({:missing_argument, _}), do: true
+  defp source_independent?(_reason), do: false
 
   # The reason, never the response: a failover decision is made from the error
   # tuple, which by construction carries no upstream text and names an origin

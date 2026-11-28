@@ -431,6 +431,62 @@ defmodule Raxol.Web3.MCP.ToolsTest do
     end
   end
 
+  describe "errors after a failover" do
+    defp walk_router(answers, callback) do
+      answers
+      |> Enum.with_index()
+      |> Enum.map(fn {answer, i} ->
+        {:ok, handle} = Stub.new(@chain, name: :"s#{i}", answers: %{callback => answer})
+        handle
+      end)
+      |> Router.new()
+    end
+
+    test "the live get_logs case: the client hears the timeout, and the breaker counts it" do
+      router =
+        walk_router(
+          [{:error, {:timeout, :chunk}}, {:error, {:http, 403}}, {:error, {:http, 400}}],
+          :get_logs
+        )
+
+      assert {:error, %Error{code: "timeout", detail: :chunk} = error} =
+               call(router, "web3_get_logs", %{"chain" => @chain, "account" => @address})
+
+      refute error.hint =~ "Check the arguments"
+      assert Tools.fault?(error)
+    end
+
+    test "page two after the first source times out: the cursor is not blamed" do
+      router =
+        walk_router(
+          [{:error, {:timeout, :chunk}}, {:error, {:invalid_cursor, :wrong_scope}}],
+          :list_transactions
+        )
+
+      arguments = %{"chain" => @chain, "account" => @address, "cursor" => "page-two"}
+
+      assert {:error, %Error{code: "timeout"} = error} =
+               call(router, "web3_list_transactions", arguments)
+
+      refute error.hint =~ "cursor"
+      assert error.hint =~ "A retry may work."
+      assert Tools.fault?(error)
+    end
+
+    test "an answer every source would give still reaches the client as an answer" do
+      router =
+        walk_router(
+          [{:error, {:timeout, :chunk}}, {:error, {:upstream_refused, :not_found}}],
+          :account_info
+        )
+
+      assert {:error, %Error{code: "upstream_refused", detail: :not_found} = error} =
+               call(router, "web3_account_info", %{"chain" => @chain, "account" => @address})
+
+      refute Tools.fault?(error)
+    end
+  end
+
   describe "errors" do
     test "an error is a code, its own datum and a fixed hint, with no upstream text" do
       # The hint is chosen from the code and datum, so no upstream byte can
