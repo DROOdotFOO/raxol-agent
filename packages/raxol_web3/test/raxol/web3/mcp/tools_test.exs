@@ -5,11 +5,13 @@ defmodule Raxol.Web3.MCP.ToolsTest do
   alias Raxol.MCP.Server
   alias Raxol.MCP.ToolDef
   alias Raxol.Web3.Backend.Stub
+  alias Raxol.Web3.MCP.Error
   alias Raxol.Web3.MCP.Tools
   alias Raxol.Web3.Router
 
   @chain "eip155:1"
   @address "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+  @hash "0x" <> String.duplicate("ab", 32)
 
   defp router(opts \\ []) do
     {:ok, handle} = Stub.new(@chain, opts)
@@ -20,9 +22,16 @@ defmodule Raxol.Web3.MCP.ToolsTest do
     Enum.find(Tools.tool_defs(router), &(&1.name == name))
   end
 
+  # A result is JSON text, decoded here so a test reads it as a client does.
+  # An error is a `Raxol.Web3.MCP.Error`, which matches `%{code:, detail:}`.
   defp call(router, name, arguments) do
-    tool(router, name).callback.(arguments)
+    case raw_call(router, name, arguments) do
+      {:ok, json} when is_binary(json) -> {:ok, Jason.decode!(json)}
+      other -> other
+    end
   end
+
+  defp raw_call(router, name, arguments), do: tool(router, name).callback.(arguments)
 
   defp registry do
     name = :"web3_tools_registry_#{System.unique_integer([:positive])}"
@@ -141,7 +150,7 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       # took `web3_get_transaction` out for every client of the server.
       registry = registry()
       router = router(answers: %{get_transaction: {:error, {:http, 404}}})
-      arguments = %{"chain" => @chain, "hash" => "0xdeadbeef"}
+      arguments = %{"chain" => @chain, "hash" => @hash}
 
       assert :ok = Tools.register(registry, router)
 
@@ -160,7 +169,7 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       # the router's failover already use.
       registry = registry()
       router = router(answers: %{get_transaction: {:error, {:http, 503}}})
-      arguments = %{"chain" => @chain, "hash" => "0xdeadbeef"}
+      arguments = %{"chain" => @chain, "hash" => @hash}
 
       assert :ok = Tools.register(registry, router)
 
@@ -202,10 +211,15 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       # missing argument. The names now come from a compile-time table in the
       # module itself, and this covers every one of them.
       router = router()
-      refused = {:error, %{code: "missing_argument", detail: "chain"}}
+      refused = {"missing_argument", "chain"}
 
-      assert Map.new(Tools.names(), &{&1, call(router, &1, %{})}) ==
-               Map.new(Tools.names(), &{&1, refused})
+      answered =
+        Map.new(Tools.names(), fn name ->
+          {:error, %Error{code: code, detail: detail}} = call(router, name, %{})
+          {name, {code, detail}}
+        end)
+
+      assert answered == Map.new(Tools.names(), &{&1, refused})
     end
 
     test "atom keys and string keys both work" do
@@ -223,7 +237,7 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       assert {:ok, account} =
                call(router, "web3_account_info", %{"chain" => @chain, "account" => @address})
 
-      assert account.ref == "evm:#{@address}"
+      assert account["ref"] == "evm:#{@address}"
     end
 
     test "an explicitly tagged reference keeps its tag" do
@@ -238,16 +252,16 @@ defmodule Raxol.Web3.MCP.ToolsTest do
                  "account" => "party:Alice::1220abcd"
                })
 
-      assert account.ref == "party:Alice::1220abcd"
+      assert account["ref"] == "party:Alice::1220abcd"
     end
 
     test "an optional cursor is passed through and an absent one is not invented" do
       router = router(answers: %{list_transactions: {:ok, %{items: [], next: "opaque"}}})
 
-      assert {:ok, %{next: "opaque"}} =
+      assert {:ok, %{"next" => "opaque"}} =
                call(router, "web3_list_transactions", %{"chain" => @chain, "account" => @address})
 
-      assert {:ok, %{next: "opaque"}} =
+      assert {:ok, %{"next" => "opaque"}} =
                call(router, "web3_list_transactions", %{
                  "chain" => @chain,
                  "account" => @address,
@@ -317,10 +331,13 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       # JSON receives as a string, if at all.
       router = router()
 
-      assert {:ok, page} =
-               call(router, "web3_list_transactions", %{"chain" => @chain, "account" => @address})
+      assert {:ok, json} =
+               raw_call(router, "web3_list_transactions", %{
+                 "chain" => @chain,
+                 "account" => @address
+               })
 
-      assert {:ok, json} = Jason.encode(page)
+      assert is_binary(json)
       assert {:ok, decoded} = Jason.decode(json)
 
       assert [item] = decoded["items"]
@@ -329,31 +346,158 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       assert item["timestamp"] =~ "2026-"
     end
 
-    test "every tool's result encodes as JSON" do
+    test "every tool answers JSON text that decodes to an object" do
       router = router()
 
       for {name, arguments} <- every_call() do
-        assert {:ok, result} = call(router, name, arguments), "#{name} did not answer"
-        assert {:ok, _json} = Jason.encode(result), "#{name} returned a term JSON cannot encode"
+        assert {:ok, json} = raw_call(router, name, arguments), "#{name} did not answer"
+        assert is_binary(json), "#{name} answered a term, not text"
+        assert {:ok, %{} = _object} = Jason.decode(json), "#{name} is not a JSON object"
       end
+    end
+
+    test "the two scalar answers are wrapped in an object" do
+      router = router()
+
+      assert {:ok, %{"account" => "evm:" <> _address}} =
+               call(router, "web3_resolve_name", %{"chain" => @chain, "name" => "vitalik.eth"})
+
+      assert {:ok, %{"value" => "0x" <> _word}} =
+               call(router, "web3_read_contract", %{
+                 "chain" => @chain,
+                 "to" => @address,
+                 "data" => "0x70a08231"
+               })
+    end
+
+    test "a wei balance past 2^53 arrives as its exact decimal string" do
+      # 5_799_554_154_377_317_710 is the balance Blockscout reported for the
+      # address above on 2026-11-28. As a JSON number a double reads it as
+      # 5799554154377317376.
+      balance = 5_799_554_154_377_317_710
+      answer = {:ok, %{ref: {:evm, @address}, balance: balance, contract?: false}}
+      router = router(answers: %{account_info: answer})
+
+      assert {:ok, account} =
+               call(router, "web3_account_info", %{"chain" => @chain, "account" => @address})
+
+      assert account["balance"] == "5799554154377317710"
+      assert String.to_integer(account["balance"]) == balance
+      assert account["contract?"] == false
     end
   end
 
   describe "errors" do
-    test "an error is a code and its own datum, with no message field" do
-      # The taxonomy has no text to put in one, which is the property ADR-0038
-      # decision 6 spends its rules on. This surface is where a leak would be
-      # worst: a tool result is text a model reads and may act on.
+    test "an error is a code, its own datum and a fixed hint, with no upstream text" do
+      # The hint is chosen from the code and datum, so no upstream byte can
+      # reach it, which is the property ADR-0038 decision 6 spends its rules
+      # on. This surface is where a leak would be worst: a tool result is text
+      # a model reads and may act on.
       router = router(answers: %{chain_info: {:error, {:rate_limited, 500}}})
 
       assert {:error, error} = call(router, "web3_chain_info", %{"chain" => @chain})
-      assert error == %{code: "rate_limited", detail: 500}
-      refute Map.has_key?(error, :message)
+
+      assert Error.to_map(error) == %{
+               "code" => "rate_limited",
+               "detail" => 500,
+               "hint" => "The source is rate limiting this client. Retry after 500 ms."
+             }
     end
 
-    test "an unrouted chain says so rather than failing opaquely" do
-      assert {:error, %{code: "no_backend"}} =
-               call(router(), "web3_chain_info", %{"chain" => "eip155:999999"})
+    test "an unrouted chain names the chains that are routed" do
+      {:ok, ethereum} = Stub.new(@chain)
+      {:ok, tron} = Stub.new("tron:0x2b6653dc")
+      router = Router.new([tron, ethereum])
+
+      assert {:error, error} = call(router, "web3_chain_info", %{"chain" => "eip155:8453"})
+      assert %{code: "no_backend", chains: ["eip155:1", "tron:0x2b6653dc"]} = error
+
+      assert %{"chains" => ["eip155:1", "tron:0x2b6653dc"], "hint" => hint} =
+               Error.to_map(error)
+
+      assert hint =~ "\"chains\""
+    end
+
+    test "only no_backend carries the chains key" do
+      router = router(answers: %{chain_info: {:error, {:timeout, :deadline}}})
+
+      assert {:error, error} = call(router, "web3_chain_info", %{"chain" => @chain})
+      assert error |> Error.to_map() |> Map.keys() |> Enum.sort() == ~w(code detail hint)
+    end
+
+    test "a name where an account belongs says to call web3_resolve_name first" do
+      # The account is not resolved on the caller's behalf: one call stays one
+      # read, and the address a read is about is one the caller has seen. The
+      # real Blockscout handle decides an address locally, so no request is
+      # made here.
+      {:ok, blockscout} = Raxol.Web3.Backend.Blockscout.new(@chain)
+      router = Router.new([blockscout])
+
+      for tool <- ~w(web3_account_info web3_token_balances web3_list_transactions) do
+        assert {:error, error} =
+                 call(router, tool, %{"chain" => @chain, "account" => "vitalik.eth"})
+
+        assert %{code: "unsupported_account_ref", detail: :not_an_address} = error
+        assert error.hint =~ "web3_resolve_name"
+      end
+    end
+
+    test "an address of the wrong form gets the family hint, not the name hint" do
+      {:ok, blockscout} = Raxol.Web3.Backend.Blockscout.new(@chain)
+      router = Router.new([blockscout])
+
+      assert {:error, error} =
+               call(router, "web3_account_info", %{"chain" => @chain, "account" => "0x1234"})
+
+      assert error.code == "unsupported_account_ref"
+      refute error.hint =~ "web3_resolve_name"
+      assert error.hint =~ "solana:"
+    end
+
+    test "a malformed EVM transaction hash is refused before any backend is asked" do
+      router = router(answers: %{get_transaction: {:error, {:http, 422}}})
+
+      for hash <- ["0x1234", "1234", "0x" <> String.duplicate("zz", 32), @hash <> "00"] do
+        assert {:error, error} =
+                 call(router, "web3_get_transaction", %{"chain" => @chain, "hash" => hash})
+
+        assert %{code: "invalid_argument", detail: "hash"} = error
+        assert error.hint =~ "64 hex characters"
+      end
+    end
+
+    test "a well-formed hash in either case reaches the backend" do
+      router = router()
+      upper = "0x" <> String.duplicate("AB", 32)
+
+      for hash <- [@hash, upper] do
+        assert {:ok, %{"hash" => _hash}} =
+                 call(router, "web3_get_transaction", %{"chain" => @chain, "hash" => hash})
+      end
+    end
+
+    test "the hash check is EVM-only: other families keep deciding their own ids" do
+      # A Tron transaction id has no 0x prefix and would fail the EVM check.
+      tron = "tron:0x2b6653dc"
+      {:ok, handle} = Stub.new(tron)
+
+      assert {:ok, _transaction} =
+               call(Router.new([handle]), "web3_get_transaction", %{
+                 "chain" => tron,
+                 "hash" => String.duplicate("ab", 32)
+               })
+    end
+
+    test "a timeout says it was one and that a retry or a narrower query may work" do
+      router = router(answers: %{token_balances: {:error, {:timeout, :chunk}}})
+
+      assert {:error, error} =
+               call(router, "web3_token_balances", %{"chain" => @chain, "account" => @address})
+
+      assert %{code: "timeout", detail: :chunk} = error
+      assert error.hint =~ "timeout"
+      assert error.hint =~ "retry"
+      assert error.hint =~ "narrower"
     end
 
     test "a callback no backend answers is reported as unsupported" do
@@ -367,7 +511,7 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       router = router(answers: %{chain_info: {:error, {:weird, %{body: "upstream text"}}}})
 
       assert {:error, error} = call(router, "web3_chain_info", %{"chain" => @chain})
-      assert error == %{code: "error", detail: nil}
+      assert Error.to_map(error) == %{"code" => "error", "detail" => nil, "hint" => nil}
       refute inspect(error) =~ "upstream text"
     end
   end
@@ -376,7 +520,7 @@ defmodule Raxol.Web3.MCP.ToolsTest do
     [
       {"web3_chain_info", %{"chain" => @chain}},
       {"web3_block_height", %{"chain" => @chain}},
-      {"web3_get_transaction", %{"chain" => @chain, "hash" => "0xabc"}},
+      {"web3_get_transaction", %{"chain" => @chain, "hash" => @hash}},
       {"web3_account_info", %{"chain" => @chain, "account" => @address}},
       {"web3_list_transactions", %{"chain" => @chain, "account" => @address}},
       {"web3_token_balances", %{"chain" => @chain, "account" => @address}},
