@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Raxol.Payments.EchoServer` challenges for real USDC, so a rehearsal
+  signature is now valid on mainnet.** Without `:asset` it asks for the USDC
+  contract on its `:network` (`default_asset/1`; Base native USDC by
+  default) instead of a placeholder the x402 client refused to sign for
+  (`:unsupported_asset`), so `examples/preflight.exs` and
+  `examples/agent_payment_tour.exs` pay again. The client therefore signs a
+  real ERC-3009 transfer of the challenge amount (one cent by default) to
+  `:pay_to`. The server never broadcasts it, but the `x-payment` payload is
+  valid on that chain until the challenge's `validBefore`, an hour later.
+  Rehearse with a throwaway key, or on a testnet:
+  `mix raxol_payments.echo --network eip155:84532 --asset
+  0x036cbd53842c5426634e7929541ec2318f3dcf7e` (Base Sepolia USDC). A network
+  with no USDC the client signs for now stops `mix raxol_payments.echo` with
+  a one-line message naming `--asset`; `start_link/1` raises
+  `ArgumentError` naming `:asset`. An explicit `:asset` is used as given.
+
 - Requires, when present, `plug ~> 1.20 and >= 1.20.4` (was `~> 1.19 and >=
   1.19.3`) for CVE-2026-120287 (multipart framing not charged to `:length`).
 
@@ -146,11 +162,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `IntentStatus`; `Relay.Schemas.QuoteRequest`, `QuoteResponse`,
   `ExecuteRequest` and `StatusResponse`; `Pxe.Schemas.HealthStatus`. `mix docs`
   builds without warnings.
-- `Raxol.Payments.EchoServer` challenges for USDC on its `:network` (Base
-  native USDC by default) instead of a placeholder contract the x402 client
-  refuses to sign for (`:unsupported_asset`), so `examples/preflight.exs`
-  and `examples/agent_payment_tour.exs` pay again. An explicit `:asset`
-  is used as given.
 
 ## [0.3.0] - 2026-11-14
 

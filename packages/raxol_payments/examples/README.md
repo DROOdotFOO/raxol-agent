@@ -56,6 +56,19 @@ mix raxol_payments.echo --port 4002      # terminal A: start the echo server
 mix run examples/preflight.exs           # terminal B: run against it
 ```
 
+**Use a throwaway key for `PREFLIGHT_WALLET_KEY`.** On the default network
+(Base mainnet) the script signs a real ERC-3009 transfer of one cent of Base
+USDC to the echo server's `pay_to`. Nothing is broadcast, but the signed
+`x-payment` payload is valid on Base until the challenge's `validBefore`, an
+hour later. For a rehearsal whose signature is worth nothing, start the echo
+server on Base Sepolia instead (testnets have no default asset, so name its
+USDC):
+
+```bash
+mix raxol_payments.echo --port 4002 --network eip155:84532 \
+  --asset 0x036cbd53842c5426634e7929541ec2318f3dcf7e
+```
+
 ## 2. Walk the launch path (no funds, in-process sim)
 
 **`crosschain_stealth_payment.exs`** is the private cross-chain flow an agent

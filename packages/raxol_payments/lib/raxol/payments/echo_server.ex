@@ -12,6 +12,22 @@ defmodule Raxol.Payments.EchoServer do
   echo server accepts a payment, the agent's signing flow is correct; if
   it rejects, the failure surfaces locally without spending any money.
 
+  ## Rehearse with a throwaway key
+
+  On the default network (Base mainnet) the client signs a real ERC-3009
+  transfer authorization: the challenge amount of Base USDC from the
+  signing wallet to `:pay_to`. Nothing here broadcasts it, but the
+  `x-payment` payload is valid on that chain until the challenge's
+  `validBefore` (an hour), so anyone holding it can submit it until then.
+  Sign with a throwaway key, not a funded one.
+
+  For a rehearsal whose signature is worth nothing, run on a testnet whose
+  USDC the client signs for, naming its USDC contract (testnets have no
+  default asset). Base Sepolia:
+
+      mix raxol_payments.echo --network eip155:84532 \\
+        --asset 0x036cbd53842c5426634e7929541ec2318f3dcf7e
+
   ## Running
 
       iex> Raxol.Payments.EchoServer.start_link(
