@@ -31,39 +31,45 @@ defmodule Raxol.Web3.Router do
       on a read because some upstreams resolve their network set at runtime.
     * `{:source_unavailable, _}` -- an endpoint the source must serve is gone.
 
-  Errors about the QUESTION are final, since another source would give the same
-  answer: `{:upstream_refused, :not_found}`, `{:upstream_refused, :unknown}`,
-  `{:unsupported_account_ref, _}`, `{:unsupported, _}`,
-  `{:blocked, :invalid_url}` and `{:invalid_cursor, _}`.
+  Every other error is FINAL: the walk stops there, whichever source gave it.
+  Final is not the same as "about the question". Three final reasons are
+  answers any source would give: `{:upstream_refused, :not_found}`,
+  `{:unsupported_account_ref, _}` (decided by the chain's address family) and
+  `{:missing_argument, _}`. The rest are about the one source that gave them:
+  `{:invalid_cursor, _}` (a cursor is bound to the source that minted it),
+  `{:unsupported, _}` (this handle does not answer the callback),
+  `{:invalid_argument, _}` from a backend's own path rules, `{:blocked,
+  :invalid_url}` (a URL built from that source's base URL), a bare `{:http,
+  status}` that is not unhealthy, and `{:upstream_refused, :unknown}`. They
+  stop the walk anyway: which of them should fail over is a routing decision
+  this module has not made.
 
   ## Which error a failed walk reports
 
-  The walk ends on a final error, or on the last candidate's. What the caller
-  is told is not always that error, because an error from a later source can
-  be about that source rather than the question:
+  What the caller is told is not always the error the walk stopped on:
 
-    1. An answer that does not depend on the source stands, whichever source
-       gave it: `{:upstream_refused, :not_found}`, `{:unsupported_account_ref,
-       _}` (decided by the chain's address family) and `{:missing_argument,
-       _}`.
-    2. Otherwise, after a failover, the caller is told the FIRST source fault
-       in walk order, skipping `{:breaker_open, _}` unless every fault is one:
-       an open breaker is a fact about earlier calls, not this one. A bare
-       status the backend could not classify, an unclassified refusal, or a
-       reason only that source would give (`{:invalid_cursor, _}` for a cursor
-       another source minted, `{:unsupported, _}`, `{:invalid_argument, _}`
-       from its own path rules, `{:blocked, :invalid_url}`) does not stand in
-       for it. Last-wins told a client "Check the arguments" for a 400 from a
+    1. An answer any source would give stands, whichever source gave it.
+    2. Otherwise, after a failover from a call, the caller is told the FIRST
+       fault from a call in walk order. A source-specific final reason from a
+       later source does not stand in for it, nor does the last candidate's
+       fault. Last-wins told a client "Check the arguments" for a 400 from a
        fallback when the primary had timed out, and hid that timeout from the
        tool's breaker, which reads a 400 as an answer.
-    3. With no failover, the one source asked answered, and its error stands.
+    3. With no failover from a call, the first source actually called answered
+       for itself, and its error stands whatever its class. An open breaker is
+       a fact about earlier calls, not this one, so a walk whose only earlier
+       faults are `{:breaker_open, _}` is in this case; when every source is
+       an open breaker, the first is reported.
 
   ## Paging walks are pinned
 
-  A cursor carries the origin that minted it (`Raxol.Web3.Cursor`), so
-  `{:invalid_cursor, _}` is terminal: failing over mid-walk would return the
-  second backend's first page labelled as page two. An interrupted walk gets an
-  error and restarts.
+  A cursor carries the origin that minted it (`Raxol.Web3.Cursor`), so another
+  source refuses it as `{:invalid_cursor, _}` and the walk stops: failing over
+  to a source that accepted it would return its first page labelled as page
+  two. When the minting source fails and a fallback then refuses the cursor,
+  the caller is told the first source's fault (rule 2), so a retry with the
+  same cursor is the right next step. A cursor the minting source itself
+  refuses, with no failover, stands (rule 3), and that walk restarts.
   """
 
   require Logger
