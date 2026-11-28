@@ -6,7 +6,7 @@ map and the recommended order.
 
 Run everything from `packages/raxol_payments/`.
 
-## 0. See the whole surface (no funds, no network, one command)
+## 0. See the whole surface (no funds, no network)
 
 **`agent_payment_tour.exs`** answers "what can an agent pay with, and who picks
 the rail?" before you follow any single rail end to end. It prints the payment
@@ -19,6 +19,7 @@ It mounts `Raxol.Payments.EchoServer` as a Req plug rather than over a socket,
 so unlike step 1 it needs no second terminal.
 
 ```bash
+mix compile    # once, about a minute: the build prints here, not in the tour
 mix run examples/agent_payment_tour.exs
 ```
 

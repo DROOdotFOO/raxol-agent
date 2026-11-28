@@ -29,6 +29,7 @@ spend gate refuse the same call.
 ```bash
 cd packages/raxol_payments
 mix deps.get
+mix compile    # once, about a minute: the build prints here, not in the tour
 mix run examples/agent_payment_tour.exs
 ```
 
