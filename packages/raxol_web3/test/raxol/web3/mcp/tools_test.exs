@@ -8,6 +8,7 @@ defmodule Raxol.Web3.MCP.ToolsTest do
   alias Raxol.Web3.MCP.Error
   alias Raxol.Web3.MCP.Tools
   alias Raxol.Web3.Router
+  alias Raxol.Web3.Serialize
 
   @chain "eip155:1"
   @address "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
@@ -49,6 +50,19 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       assert Enum.all?(Tools.tool_defs(router()), fn tool ->
                not String.contains?(Jason.encode!(tool.inputSchema), "method")
              end)
+    end
+
+    test "every account argument names every family Serialize reads" do
+      descriptions =
+        for %{inputSchema: %{"properties" => %{"account" => %{"description" => d}}}} <-
+              Tools.tool_defs(router()),
+            do: d
+
+      assert length(descriptions) == 7
+
+      for description <- descriptions, tag <- Serialize.tags(), tag != "evm" do
+        assert description =~ ~s("#{tag}:), tag
+      end
     end
 
     test "every registered tool is one this package declared" do

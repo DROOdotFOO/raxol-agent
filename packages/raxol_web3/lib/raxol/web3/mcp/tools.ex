@@ -72,11 +72,13 @@ defmodule Raxol.Web3.MCP.Tools do
 
   @prefix "web3_"
 
-  # One description for the eight `account` arguments, and the one place to
-  # change when a family lands. `Raxol.Web3.Serialize.account_ref/1` reads an
-  # unprefixed value as EVM, so every other family has to be named here: a
-  # model that sends a bare Solana pubkey gets `{:unsupported_account_ref,
-  # :evm}` and no way to tell from the schema why.
+  # One description for the seven `account` arguments. `Raxol.Web3.Serialize`
+  # owns the family list (`tags/0`), and `Raxol.Web3.MCP.Error`'s hint is
+  # derived from it; this text is written out because it shows each family's
+  # form, and a test fails when a tag in `tags/0` is missing from it. An
+  # unprefixed value is read as EVM, so every other family has to be named
+  # here: a model that sends a bare Solana pubkey gets
+  # `{:unsupported_account_ref, :evm}` and no way to tell from the schema why.
   @families ~s(An unprefixed value is read as EVM; every other family must ) <>
               ~s(name itself: "tron:T...", "solana:<pubkey>", ) <>
               ~s("party:<party-id>", "aztec:0x...".)
@@ -434,7 +436,7 @@ defmodule Raxol.Web3.MCP.Tools do
   # a quantity -- and narrowing them here would take away reads that work
   # today. What is refused is the remainder, which is exactly the set that
   # reached a backend and came back as a wrong answer.
-  @block_tags ~w(latest earliest pending safe finalized)
+  @block_tags Serialize.block_tags()
 
   defp block_ref(number) when is_integer(number), do: {:ok, number}
   defp block_ref(tag) when tag in @block_tags, do: {:ok, tag}

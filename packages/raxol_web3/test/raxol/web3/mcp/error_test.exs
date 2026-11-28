@@ -4,6 +4,7 @@ defmodule Raxol.Web3.MCP.ErrorTest do
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCP.Error
   alias Raxol.Web3.MCP.Tools
+  alias Raxol.Web3.Serialize
 
   test "its inspect form is its JSON, which is the text Raxol.MCP.Server sends" do
     error = Error.new({:upstream_refused, :not_found})
@@ -31,6 +32,22 @@ defmodule Raxol.Web3.MCP.ErrorTest do
     assert Tools.fault?(Error.new({:http, 503}))
     refute Tools.fault?(Error.new(:no_backend))
     assert Tools.fault?(Error.new({:timeout, :chunk}))
+  end
+
+  describe "lists the hints share with Raxol.Web3.Serialize" do
+    test "the family hint names every non-EVM tag" do
+      hint = Error.new({:unsupported_account_ref, :not_an_address}).hint
+
+      for tag <- Serialize.tags(), tag != "evm" do
+        assert hint =~ ~s("#{tag}:"), tag
+      end
+    end
+
+    test "the block number hint names every block tag" do
+      hint = Error.new({:invalid_argument, "number"}).hint
+
+      for tag <- Serialize.block_tags(), do: assert(hint =~ tag, tag)
+    end
   end
 
   describe "HTTP status hints" do

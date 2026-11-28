@@ -54,9 +54,6 @@ defmodule Raxol.Web3.MCP.Error do
   @retry_narrower "A retry may work. If it times out again, ask for less: a more " <>
                     "specific tool or a later page."
 
-  @families ~s(Prefix a non-EVM account with its family: "tron:", "solana:", ) <>
-              ~s("party:" or "aztec:".)
-
   @doc "Build the served error for a taxonomy reason."
   @spec new(term(), context()) :: t()
   def new(reason, context \\ %{}) do
@@ -136,7 +133,7 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("invalid_argument", "number", _context),
     do:
       "The block number must be a non-negative integer, a 0x quantity, or one of " <>
-        "latest, earliest, pending, safe, finalized."
+        Enum.join(Serialize.block_tags(), ", ") <> "."
 
   defp hint("invalid_argument", name, _context) when is_binary(name) do
     if printable?(name),
@@ -152,7 +149,7 @@ defmodule Raxol.Web3.MCP.Error do
       do:
         "This looks like a name. Call web3_resolve_name with it and the same chain, " <>
           "then pass the account it returns.",
-      else: "The account is not an address this chain uses. " <> @families
+      else: "The account is not an address this chain uses. " <> families()
   end
 
   defp hint("unsupported", _callback, _context),
@@ -259,6 +256,15 @@ defmodule Raxol.Web3.MCP.Error do
   end
 
   defp name?(_account), do: false
+
+  # Derived from `Raxol.Web3.Serialize.tags/0`, so a family that lands there
+  # is named here without an edit.
+  defp families do
+    {last, rest} =
+      Serialize.tags() |> List.delete("evm") |> Enum.map(&~s("#{&1}:")) |> List.pop_at(-1)
+
+    "Prefix a non-EVM account with its family: " <> Enum.join(rest, ", ") <> " or " <> last <> "."
+  end
 
   defp printable?(name), do: byte_size(name) <= 64 and String.printable?(name)
 
