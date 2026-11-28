@@ -11,6 +11,7 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
   alias Raxol.Web3.Router
   alias Raxol.Web3.Scope
   alias Raxol.Web3.Tables
+  alias Raxol.Web3.TestSupport.RouterPaging
 
   # A Binance cold wallet, in both encodings, and they are the same account:
   # `Raxol.Web3.Tron.Address.to_hex/1` of the first is the second.
@@ -18,6 +19,18 @@ defmodule Raxol.Web3.Backend.TronTransportTest do
   @hex "41e28b3cfd4e0e909077821478e9fcb86b84be786e"
 
   describe "pagination" do
+    test "page two comes back through the router, routed by the scope this backend declares" do
+      handle =
+        stateful(:trongrid, %{"getAccountTransactions" => "trongrid_account_transactions.sse"})
+
+      assert {_first, {:ok, _second}} =
+               RouterPaging.page_two(handle, :list_transactions, [{:tron, @base58}])
+
+      assert [{_tool, first_args}, {_tool2, second_args}] = calls()
+      refute Map.has_key?(first_args, "fingerprint")
+      assert Map.has_key?(second_args, "fingerprint")
+    end
+
     test "the node source pages on a fingerprint the caller never sees" do
       handle =
         stateful(:trongrid, %{"getAccountTransactions" => "trongrid_account_transactions.sse"})

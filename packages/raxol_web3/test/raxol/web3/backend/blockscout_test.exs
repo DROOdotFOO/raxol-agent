@@ -5,6 +5,7 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
   alias Raxol.Web3.Backend.Blockscout
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.Scope
+  alias Raxol.Web3.TestSupport.RouterPaging
 
   @fixtures Path.expand("../../../fixtures/blockscout", __DIR__)
 
@@ -364,6 +365,16 @@ defmodule Raxol.Web3.Backend.BlockscoutTest do
       assert requested =~ "block_number=25574152"
       assert requested =~ "index=149"
       refute requested =~ "items_count"
+    end
+
+    test "page two comes back through the router, routed by the scope this backend declares" do
+      path = "/api/v2/addresses/#{elem(@vitalik, 1)}/transactions"
+      handle = handle(%{path => fixture("address_transactions")})
+
+      assert {_first, {:ok, %{items: [_ | _]}}} =
+               RouterPaging.page_two(handle, :list_transactions, [@vitalik])
+
+      assert Enum.any?(requested_paths(), &(&1 =~ "block_number=25574152"))
     end
 
     test "a cursor from another endpoint is refused before the request is built" do

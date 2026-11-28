@@ -11,6 +11,7 @@ defmodule Raxol.Web3.Backend.JSONRPCWireTest do
   alias Raxol.Web3.Router
   alias Raxol.Web3.Scope
   alias Raxol.Web3.Tables
+  alias Raxol.Web3.TestSupport.RouterPaging
 
   @eoa {:evm, "0xb754e001604508f841d768e64d38b7c98c859c05"}
   @token {:evm, "0x5317c0d077d2eeb639448939b930d49c4984b63b"}
@@ -32,6 +33,13 @@ defmodule Raxol.Web3.Backend.JSONRPCWireTest do
         },
         Keyword.merge([log_window: 2, log_lookback: 4], opts)
       )
+    end
+
+    test "page two comes back through the router, routed by the scope this backend declares" do
+      assert {_first, {:ok, %{items: [_ | _]}}} =
+               RouterPaging.page_two(paging_handle(), :get_logs, [@token])
+
+      assert {"eth_getLogs", [%{"fromBlock" => "0x9"}]} = List.last(drain())
     end
 
     test "pages forward, and the second page continues where the first stopped" do

@@ -8,6 +8,7 @@ defmodule Raxol.Web3.Backend.CantonWireTest do
   alias Raxol.Web3.Backend.Canton
   alias Raxol.Web3.Cursor
   alias Raxol.Web3.Scope
+  alias Raxol.Web3.TestSupport.RouterPaging
   alias Raxol.Web3.Serialize
 
   # A real party id, from a live `POST /v0/transactions` page on 2026-09-14, and
@@ -68,6 +69,20 @@ defmodule Raxol.Web3.Backend.CantonWireTest do
       assert {:ok, page} = Backend.call(handle(routes), :token_balances, [@dso])
       assert page.items == []
       assert is_binary(page.next)
+    end
+
+    test "page two comes back through the router, routed by the scope this backend declares" do
+      pages = %{
+        nil => fixture("holdings_state_empty_page"),
+        8_926_540_676 => fixture("holdings_state")
+      }
+
+      handle = handle(Map.put(scan_routes(), "/v0/holdings/state", pages))
+
+      assert {_first, {:ok, %{items: [balance]}}} =
+               RouterPaging.page_two(handle, :token_balances, [@dso])
+
+      assert balance.amount == 18_441_754_850_303_696
     end
 
     test "a cursor pages forward through two recorded pages, and a null token ends it" do
