@@ -30,12 +30,29 @@ defmodule Raxol.Web3.MCP.Tools do
   agent Action surface makes the opposite trade for the opposite reason, and
   `Raxol.Agent.Actions.Web3` says why.
 
+  ## Results and errors are JSON text
+
+  A result is a JSON object, encoded by `Raxol.Web3.MCP.JSON`: string keys,
+  atoms as strings, and amounts and any integer past 2^53 as decimal strings.
+  `web3_resolve_name` answers `{"account": "evm:0x..."}` and
+  `web3_read_contract` answers `{"value": "0x..."}`.
+
+  An error is a `Raxol.Web3.MCP.Error`: `{"code", "detail", "hint"}`, plus
+  `"chains"` on `no_backend`. `Raxol.MCP.Server` prefixes it with `Error: `.
+
   ## Errors carry no upstream text
 
-  A failure is rendered by `Raxol.Web3.Serialize.error/1` as a code plus its
-  own datum. The taxonomy has no message field to fill, which is the whole
-  point of ADR-0038 decision 6, and this is the surface where a leak would be
-  worst: an MCP tool result is text a model reads and may act on.
+  The code and datum are `Raxol.Web3.Serialize.error/1`'s, and the hint is a
+  fixed sentence chosen from them, so no upstream byte reaches an error, which
+  is the whole point of ADR-0038 decision 6. This is the surface where a leak
+  would be worst: an MCP tool result is text a model reads and may act on.
+
+  Two errors are decided here rather than upstream. An EVM transaction hash
+  that is not `0x` plus 64 hex characters is `invalid_argument` before any
+  request. A name sent where an account is expected is not resolved on the
+  caller's behalf: the hint says to call `web3_resolve_name` first, so each
+  call stays one read and the address the read is about is one the caller
+  has seen.
 
   ## Not every error is evidence against the tool
 
@@ -48,6 +65,8 @@ defmodule Raxol.Web3.MCP.Tools do
 
   alias Raxol.MCP.Registry
   alias Raxol.Web3.HTTP
+  alias Raxol.Web3.MCP.Error
+  alias Raxol.Web3.MCP.JSON
   alias Raxol.Web3.Router
   alias Raxol.Web3.Serialize
 
@@ -203,9 +222,11 @@ defmodule Raxol.Web3.MCP.Tools do
   failure nor a success for it.
 
   The argument is the SERIALIZED term, because that is what a callback here
-  returns: `Raxol.Web3.Serialize.error/1` renders `{:upstream_refused,
-  :not_found}` as `%{code: "upstream_refused", detail: :not_found}`, so the
-  two classes that split on their detail are read that way.
+  returns: a `Raxol.Web3.MCP.Error` here, a plain map from
+  `Raxol.Web3.MCP.FXTools`, and both carry `Raxol.Web3.Serialize.error/1`'s
+  `%{code: "upstream_refused", detail: :not_found}` for `{:upstream_refused,
+  :not_found}`, so the two classes that split on their detail are read that
+  way.
 
   `{:http, status}` is the second of them. A backend that cannot classify a
   status hands it through as-is, and Blockscout answers an unknown hash with
@@ -268,14 +289,45 @@ defmodule Raxol.Web3.MCP.Tools do
   # writes atoms. Both are accepted rather than one being documented, because
   # the failure mode of guessing wrong is a required argument reported missing
   # when it was supplied.
+  #
+  # A result is JSON text and an error is a `Raxol.Web3.MCP.Error`, because
+  # `Raxol.MCP.Server` passes a binary through as the text a client reads and
+  # renders anything else with `inspect/2`.
   defp dispatch(router, callback, arg_spec, arguments) do
     with {:ok, chain} <- chain_ref(arguments),
-         {:ok, args} <- build_args(callback, arg_spec, arguments) do
-      call(router, chain, callback, args)
+         {:ok, args} <- build_args(callback, arg_spec, arguments),
+         :ok <- vet(callback, chain, args),
+         {:ok, value} <- Router.call(router, chain, callback, args),
+         {:ok, json} <- value |> shape() |> JSON.encode() do
+      {:ok, json}
     else
-      {:error, reason} -> {:error, Serialize.error(reason)}
+      {:error, reason} -> {:error, Error.new(reason, context(router, arguments))}
     end
   end
+
+  defp context(router, arguments),
+    do: %{chains: Router.chains(router), account: get(arguments, "account")}
+
+  # Every result is a JSON object. Two callbacks answer a scalar, and they are
+  # wrapped the way `Raxol.Agent.Actions.Web3` wraps them, so the two surfaces
+  # over one router name the same field the same way.
+  defp shape(value) when is_map(value), do: value
+  defp shape({tag, _value} = ref) when is_atom(tag), do: %{account: ref}
+  defp shape(value) when is_binary(value), do: %{value: value}
+  defp shape(value), do: value
+
+  # An EVM transaction hash has one form, so a malformed one is refused here
+  # rather than sent: Blockscout answered `"0x1234"` with a bare `422`, which
+  # told the caller neither what was wrong nor that it was their argument.
+  # Other families' transaction ids differ (a Tron id has no `0x`, a Solana
+  # signature is Base58), and their backends keep deciding them.
+  @evm_hash ~r/\A0x[0-9a-fA-F]{64}\z/
+
+  defp vet(:get_transaction, "eip155:" <> _reference, [hash]) do
+    if Regex.match?(@evm_hash, hash), do: :ok, else: {:error, {:invalid_argument, "hash"}}
+  end
+
+  defp vet(_callback, _chain, _args), do: :ok
 
   # A chain reference is a CAIP-2 string, and `Raxol.Web3.Router.call/4` looks
   # it up in a map: a number or a list would answer `{:error, :no_backend}`,
@@ -284,13 +336,6 @@ defmodule Raxol.Web3.MCP.Tools do
   defp chain_ref(arguments) do
     with {:ok, chain} <- fetch(arguments, "chain") do
       if is_binary(chain), do: {:ok, chain}, else: {:error, {:invalid_argument, "chain"}}
-    end
-  end
-
-  defp call(router, chain, callback, args) do
-    case Router.call(router, chain, callback, args) do
-      {:ok, value} -> {:ok, Serialize.result(value)}
-      {:error, reason} -> {:error, Serialize.error(reason)}
     end
   end
 
