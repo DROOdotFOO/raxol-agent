@@ -499,9 +499,11 @@ defmodule Raxol.Web3.RouterTest do
       assert {:error, {:timeout, :chunk}} = walk([@invalid_url, fails({:timeout, :chunk})])
     end
 
-    test "when every source is skipped, the first skip is reported" do
-      assert {:error, {:blocked, :invalid_url}} =
-               walk([@invalid_url, fails({:breaker_open, "a"})])
+    test "when every source is skipped, the first skip is reported, a pause before a misconfiguration" do
+      assert {:error, {:breaker_open, "a"}} = walk([@invalid_url, fails({:breaker_open, "a"})])
+
+      assert {:error, {:breaker_open, "a"}} =
+               walk([@invalid_url, fails({:breaker_open, "a"}), fails({:breaker_open, "b"})])
 
       assert {:error, {:breaker_open, "a"}} = walk([fails({:breaker_open, "a"}), @invalid_url])
       assert {:error, {:blocked, :invalid_url}} = walk([@invalid_url, @invalid_url])

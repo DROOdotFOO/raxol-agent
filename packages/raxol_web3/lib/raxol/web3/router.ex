@@ -66,7 +66,8 @@ defmodule Raxol.Web3.Router do
     3. With no failover from a call, the first source actually called answered
        for itself, and its error stands whatever its class. A walk whose only
        earlier problems are skips is in this case; when every source was
-       skipped, the first skip is reported.
+       skipped, the first skip is reported, an open breaker before a
+       misconfiguration, since "retry later" is the one a client can act on.
 
   ## Paging walks are pinned
 
@@ -267,17 +268,23 @@ defmodule Raxol.Web3.Router do
   defp skip?(_reason), do: false
 
   defp note(seen, reason) do
-    cond do
-      not skip?(reason) -> %{seen | fault: seen.fault || reason}
-      seen.skipped == nil -> %{seen | skipped: reason}
-      true -> seen
-    end
+    if skip?(reason),
+      do: %{seen | skipped: first_skip(seen.skipped, reason)},
+      else: %{seen | fault: seen.fault || reason}
   end
 
+  # The first skip, except that a pause outranks a misconfiguration: "retry
+  # later" is the one a client can act on, and it will work once the paused
+  # source recovers. The operator is already warned about the other.
+  defp first_skip(nil, reason), do: reason
+  defp first_skip({:blocked, :invalid_url}, {:breaker_open, _} = paused), do: paused
+  defp first_skip(first, _reason), do: first
+
   # The moduledoc's three rules. No fault from a call: rule 3, unless every
-  # source was skipped, when the first skip is reported.
+  # source was skipped, when the first skip is reported, a pause before a
+  # misconfiguration.
   defp reported(_handle, _callback, reason, %{fault: nil, skipped: skipped}),
-    do: if(skip?(reason), do: skipped || reason, else: reason)
+    do: if(skip?(reason), do: first_skip(skipped, reason), else: reason)
 
   defp reported(handle, callback, reason, %{fault: first_fault}) do
     cond do
