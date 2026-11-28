@@ -182,12 +182,22 @@ defmodule Raxol.Web3.MCP.Error do
   defp hint("invalid_argument", _detail, _context),
     do: "An argument has the wrong type; see the tool's inputSchema."
 
+  # `web3_resolve_name` takes the bare name: `"evm:vitalik.eth"` is not a
+  # name it knows, so a hint that said "call it with it" sent the caller into
+  # a `not_found` for a name that exists.
   defp hint("unsupported_account_ref", _detail, context) do
-    if name?(Map.get(context, :account)),
-      do:
+    case name(Map.get(context, :account)) do
+      :bare ->
         "This looks like a name. Call web3_resolve_name with it and the same chain, " <>
-          "then pass the account it returns.",
-      else: "The account is not an address this chain uses. " <> families()
+          "then pass the account it returns."
+
+      :prefixed ->
+        ~s(This looks like a name. Drop the "evm:" prefix and call web3_resolve_name ) <>
+          "with the name alone and the same chain, then pass the account it returns."
+
+      nil ->
+        "The account is not an address this chain uses. " <> families()
+    end
   end
 
   defp hint("unsupported", _callback, _context),
@@ -290,7 +300,8 @@ defmodule Raxol.Web3.MCP.Error do
   # party id carry no dot, and every non-EVM family is prefixed. `"evm:"` is
   # the one prefix a name can sit behind, because an unprefixed value already
   # means EVM (`Raxol.Web3.Serialize.account_ref/1`), so it is read past.
-  defp name?("evm:" <> account), do: name?(account)
+  defp name("evm:" <> account), do: if(name?(account), do: :prefixed)
+  defp name(account), do: if(name?(account), do: :bare)
 
   defp name?(account) when is_binary(account) do
     String.contains?(account, ".") and not String.contains?(account, ":") and

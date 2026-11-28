@@ -501,6 +501,20 @@ defmodule Raxol.Web3.MCP.ToolsTest do
       end
     end
 
+    test "a name behind evm: is told to drop the prefix; a bare name's hint is unchanged" do
+      hint = fn account ->
+        Error.new({:unsupported_account_ref, :not_an_address}, %{account: account}).hint
+      end
+
+      assert hint.("vitalik.eth") ==
+               "This looks like a name. Call web3_resolve_name with it and the same chain, " <>
+                 "then pass the account it returns."
+
+      assert hint.("evm:vitalik.eth") ==
+               ~s(This looks like a name. Drop the "evm:" prefix and call web3_resolve_name ) <>
+                 "with the name alone and the same chain, then pass the account it returns."
+    end
+
     test "a dotted value behind another family's prefix is not taken for a name" do
       context = %{account: "tron:vitalik.eth"}
       hint = Error.new({:unsupported_account_ref, :not_an_address}, context).hint
