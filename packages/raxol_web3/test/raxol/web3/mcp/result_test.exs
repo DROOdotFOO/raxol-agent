@@ -74,6 +74,16 @@ defmodule Raxol.Web3.MCP.ResultTest do
       assert decode!(%{abi: abi, verified?: true}) == %{"abi" => abi, "verified?" => true}
     end
 
+    test "an integer past 2^53 under a string key is a decimal string too" do
+      abi = [%{"type" => "constant", "value" => @max_safe + 1, "small" => @max_safe}]
+
+      assert decode!(%{abi: abi}) == %{
+               "abi" => [
+                 %{"type" => "constant", "value" => "9007199254740992", "small" => @max_safe}
+               ]
+             }
+    end
+
     test "a value JSON cannot hold is a closed error, not a raise" do
       assert Result.encode(%{data: <<0xFF, 0xFE>>}) == {:error, :unencodable_result}
     end
