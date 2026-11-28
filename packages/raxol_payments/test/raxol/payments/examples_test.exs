@@ -34,6 +34,59 @@ defmodule Raxol.Payments.ExamplesTest do
     end
   end
 
+  # The README runs the examples as `mix run`, the dev environment, while the
+  # tests above run them under `test`, where `test/support` is compiled in.
+  # The one thing that separates the two for an example is a test-only
+  # module, so this fails when an example names one: the suite would
+  # otherwise stay green while a new user's first command does not compile.
+  # A check rather than a second run under dev, which on a cold CI runner
+  # would compile a second dependency tree inside the deadline.
+  test "no example names a module that only the test environment compiles" do
+    support = test_support_modules()
+    assert support != [], "found no test/support modules to check against"
+
+    for example <- Path.wildcard(Path.join(@package_root, "examples/*.exs")) do
+      named = for ref <- aliases_in(example), module <- support, suffix?(module, ref), do: module
+
+      assert named == [],
+             "#{Path.relative_to(example, @package_root)} names test-only " <>
+               "#{inspect(Enum.uniq(named))}; `mix run` outside MIX_ENV=test cannot load it"
+    end
+  end
+
+  defp test_support_modules do
+    for module <- Application.spec(:raxol_payments, :modules),
+        source = module.module_info(:compile)[:source],
+        String.contains?(to_string(source), "/test/support/"),
+        do: module
+  end
+
+  # Every alias the script spells, with `alias A.{B, C.D}` expanded, as a list
+  # of segments. An alias used after `alias X.Y` is spelled from `Y`, so a
+  # reference matches a module it is a trailing part of.
+  defp aliases_in(path) do
+    {:ok, ast} = path |> File.read!() |> Code.string_to_quoted()
+
+    {_ast, refs} =
+      Macro.prewalk(ast, [], fn
+        {{:., _, [{:__aliases__, _, base}, :{}]}, _, children} = node, refs ->
+          {node, for({:__aliases__, _, parts} <- children, do: base ++ parts) ++ refs}
+
+        {:__aliases__, _, parts} = node, refs when is_list(parts) ->
+          {node, [parts | refs]}
+
+        node, refs ->
+          {node, refs}
+      end)
+
+    Enum.uniq(refs)
+  end
+
+  defp suffix?(module, ref) do
+    parts = module |> Module.split() |> Enum.map(&String.to_atom/1)
+    ref != [] and Enum.all?(ref, &is_atom/1) and List.ends_with?(parts, ref)
+  end
+
   # The one script that takes a user's key, run without one and with no
   # server: the target is a loopback port closed a moment ago, so no 402
   # arrives and nothing is signed. This pins today's behaviour, exit status
