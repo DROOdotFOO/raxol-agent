@@ -56,10 +56,12 @@ mix raxol_payments.echo --port 4002      # terminal A: start the echo server
 mix run examples/preflight.exs           # terminal B: run against it
 ```
 
-**Use a throwaway key for `PREFLIGHT_WALLET_KEY`.** Against the default echo
-server (Base mainnet) the script signs a real USDC transfer authorization,
-valid until the challenge's `validBefore`. Nothing is broadcast. For a
-signature worth nothing, start the echo server on Base Sepolia:
+**You need no key.** Leave `PREFLIGHT_WALLET_KEY` unset and the script
+generates a throwaway key for the run. A key you do set must be a throwaway
+too: against the default echo server (Base mainnet) the script signs a real
+USDC transfer authorization, valid until the challenge's `validBefore`.
+Nothing is broadcast. For a signature worth nothing, start the echo server on
+Base Sepolia:
 
 ```bash
 mix raxol_payments.echo --port 4002 --network eip155:84532 \
