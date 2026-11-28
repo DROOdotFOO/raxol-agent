@@ -60,7 +60,9 @@ MAC and are bound to their scope.
 - `Raxol.Web3.MCP.Tools`: thirteen typed read tools. They are `sensitive: true`, so the server
   needs an authorizer. `raxol mcp`'s stdio authorizer allows them (see
   [ADR-0042](../../docs/adr/0042-lean-on-omp.md)), so a network deployment must supply a
-  restrictive one. `raw_request` has no tool.
+  restrictive one. `raw_request` has no tool. A result is JSON text (amounts, and any integer
+  past 2^53, as decimal strings); an error is `Error: {"code", "detail", "hint"}`, with
+  `"chains"` on `no_backend`.
 - `Raxol.Web3.MCP.FXTools`: `web3_fx_stables`, `web3_fx_stable`, `web3_fx_corridors`. Also
   `sensitive: true`, because they spend the operator's Sleuth key and RPC budget, and the same
   authorizer caveat applies.
