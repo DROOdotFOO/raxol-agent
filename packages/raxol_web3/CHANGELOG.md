@@ -47,5 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A cursor whose source is paused answers `breaker_open` ("Retry later"),
   where it answered `invalid_cursor`; a cursor no configured source minted is
   still `invalid_cursor`. A misconfigured first source no longer answers
-  `blocked` on every read: the next source answers, and the operator gets one
-  warning per source.
+  `blocked` on every read: the next source answers, the operator is warned at
+  most once an hour per source, and a client that does see it gets a hint
+  that names a misconfiguration rather than an outbound policy.

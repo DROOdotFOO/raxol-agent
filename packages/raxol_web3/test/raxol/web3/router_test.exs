@@ -528,6 +528,43 @@ defmodule Raxol.Web3.RouterTest do
       assert line =~ "#{name} (#{@chain})"
       refute line =~ "://"
     end
+
+    test "the warning repeats once its hour is up" do
+      broken =
+        stub(
+          name: :"stale_#{System.unique_integer([:positive])}",
+          answers: %{chain_info: @invalid_url}
+        )
+
+      router = Router.new([broken, marked(:fallback, [])])
+
+      warned = fn ->
+        ExUnit.CaptureLog.capture_log([level: :warning], fn ->
+          Router.call(router, @chain, :chain_info)
+        end)
+      end
+
+      assert warned.() =~ "does not parse"
+      refute warned.() =~ "does not parse"
+
+      two_hours_ago = System.monotonic_time(:millisecond) - :timer.hours(2)
+      :ets.insert(Tables.misconfigured(), {:erlang.phash2(broken), two_hours_ago})
+
+      assert warned.() =~ "does not parse"
+    end
+
+    test "coverage leaves out a source once it is found misconfigured" do
+      name = :"uncovered_#{System.unique_integer([:positive])}"
+      broken = stub(name: name, answers: %{chain_info: @invalid_url})
+      router = Router.new([broken, marked(:fallback, [])])
+
+      assert name in Router.coverage(router, @chain).chain_info
+
+      ExUnit.CaptureLog.capture_log(fn -> Router.call(router, @chain, :chain_info) end)
+
+      refute name in Router.coverage(router, @chain).chain_info
+      assert :stub in Router.coverage(router, @chain).chain_info
+    end
   end
 
   describe "a paging walk is pinned to the backend that started it" do

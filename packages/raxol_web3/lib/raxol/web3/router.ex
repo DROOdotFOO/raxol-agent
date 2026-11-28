@@ -32,7 +32,8 @@ defmodule Raxol.Web3.Router do
     * `{:source_unavailable, _}` -- an endpoint the source must serve is gone.
     * `{:blocked, :invalid_url}` -- this source's base URL does not parse, so
       it refuses every read. A fact about its configuration: the operator is
-      warned once per source, by name, and the walk moves on. The other
+      warned by name at most once an hour per source, `coverage/2` leaves it
+      out, and the walk moves on. The other
       `blocked` reasons are unchanged: `:address` fails over as before, and
       `:no_address`, `:not_an_address` and `:forbidden_transport_opts` are
       final. None of them can come from a request's own arguments, which reach
@@ -158,7 +159,8 @@ defmodule Raxol.Web3.Router do
   @doc """
   What is answerable on a chain right now.
 
-  A callback maps to the backends that declare it and are not open-breakered,
+  A callback maps to the backends that declare it, are not open-breakered and
+  have not been found misconfigured (a base URL that does not parse),
   in preference order. A callback absent from the map has no healthy source at
   this moment, which is the degradation ADR-0038 leaves open as a question and
   which is otherwise invisible until a caller gets an error.
@@ -307,17 +309,29 @@ defmodule Raxol.Web3.Router do
     end)
   end
 
-  # Once per handle per node, not per call: a misconfigured source refuses
-  # every read the same way, and a line per call would bury everything else.
-  # The marker is a `:persistent_term` keyed by a hash of the handle, so the
-  # lines are bounded by the number of configured sources. The source is named
-  # by `Backend.name/1` and its chains, never by URL: the URL is what is wrong,
+  # At most once an hour per handle, not once per call: a misconfigured source
+  # refuses every read the same way, and a line per call would bury everything
+  # else, while one line per node lifetime is easy to miss. The marker is a row
+  # in `Raxol.Web3.Tables.misconfigured/0` keyed by a hash of the handle, so
+  # the table is bounded by the number of configured sources, and
+  # `coverage/2` reads it to leave the source out. The source is named by
+  # `Backend.name/1` and its chains, never by URL: the URL is what is wrong,
   # and it may carry a key.
-  defp warn_misconfigured({module, state} = handle) do
-    marker = {__MODULE__, :misconfigured, :erlang.phash2(handle)}
+  @warn_every_ms :timer.hours(1)
 
-    unless :persistent_term.get(marker, false) do
-      :persistent_term.put(marker, true)
+  defp warn_misconfigured({module, state} = handle) do
+    table = Tables.misconfigured()
+    key = :erlang.phash2(handle)
+    now = System.monotonic_time(:millisecond)
+
+    due? =
+      case :ets.lookup(table, key) do
+        [{^key, warned_at}] -> now - warned_at >= @warn_every_ms
+        [] -> true
+      end
+
+    if due? do
+      :ets.insert(table, {key, now})
 
       Logger.warning(
         "raxol_web3: #{Backend.name(handle)} (#{Enum.join(module.supported_chain_ids(state), ", ")}) " <>
@@ -325,6 +339,8 @@ defmodule Raxol.Web3.Router do
       )
     end
   end
+
+  defp misconfigured?(handle), do: :ets.member(Tables.misconfigured(), :erlang.phash2(handle))
 
   defp source_independent?({:upstream_refused, :not_found}), do: true
   defp source_independent?({:unsupported_account_ref, _}), do: true
@@ -378,6 +394,7 @@ defmodule Raxol.Web3.Router do
     for handle <- handles,
         answers?(handle, callback),
         health(handle, breaker_opts) != :open,
+        not misconfigured?(handle),
         do: Backend.name(handle)
   end
 
