@@ -30,6 +30,8 @@
 #   PREFLIGHT_AUTO_APPROVE if "true", skip the terminal prompt and approve
 #                          any over-threshold payment. Use only during rehearsal.
 #
+# Exits 1 when the request itself fails (the target cannot be reached).
+#
 # Units:
 #   Amounts in this policy are in human-decimal USDC ($1.00 = Decimal.new("1.00")).
 #   `Raxol.Payments.Protocols.X402.amount/1` normalizes the atomic-unit
@@ -76,21 +78,32 @@ defmodule Preflight do
         on_confirm: confirm
       )
 
-    case Req.get(req) do
-      {:ok, %Req.Response{status: 200, body: body}} ->
-        IO.puts("\n[ok] payment accepted")
-        IO.inspect(body, label: "response")
+    outcome =
+      case Req.get(req) do
+        {:ok, %Req.Response{status: 200, body: body}} ->
+          IO.puts("\n[ok] payment accepted")
+          IO.inspect(body, label: "response")
+          :ok
 
-      {:ok, %Req.Response{status: status, body: body}} ->
-        IO.puts("\n[denied] status=#{status}")
-        IO.inspect(body, label: "response")
+        {:ok, %Req.Response{status: status, body: body}} ->
+          IO.puts("\n[denied] status=#{status}")
+          IO.inspect(body, label: "response")
+          :ok
 
-      {:error, reason} ->
-        IO.puts("\n[error] #{inspect(reason)}")
-    end
+        # The message is the transport's own words for its reason atom
+        # ("connection refused"), so no upstream byte is printed.
+        {:error, %Req.TransportError{} = error} ->
+          IO.puts("\n[error] cannot reach #{url}: #{Exception.message(error)}")
+          :failed
+
+        {:error, reason} ->
+          IO.puts("\n[error] #{inspect(reason)}")
+          :failed
+      end
 
     # Give the ledger tail a moment to flush before we exit.
     Process.sleep(50)
+    if outcome == :failed, do: System.halt(1)
     :ok
   end
 

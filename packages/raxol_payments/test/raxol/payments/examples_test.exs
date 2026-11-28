@@ -89,9 +89,8 @@ defmodule Raxol.Payments.ExamplesTest do
 
   # The one script that takes a user's key, run without one and with no
   # server: the target is a loopback port closed a moment ago, so no 402
-  # arrives and nothing is signed. This pins today's behaviour, exit status
-  # included; it does not endorse it.
-  test "examples/preflight.exs without a key warns, mints a throwaway one, and stops at the target" do
+  # arrives and nothing is signed.
+  test "examples/preflight.exs without a key warns, mints a throwaway one, and fails at the target" do
     {:ok, socket} = :gen_tcp.listen(0, ip: {127, 0, 0, 1})
     {:ok, port} = :inet.port(socket)
     :ok = :gen_tcp.close(socket)
@@ -104,12 +103,15 @@ defmodule Raxol.Payments.ExamplesTest do
 
     mix = System.find_executable("mix")
 
-    assert {:exited, 0, output} =
+    target = "http://127.0.0.1:#{port}/anything"
+
+    assert {:exited, 1, output} =
              run(mix, ["run", "examples/preflight.exs"], @deadline, env: env)
 
     assert output =~ "[warn] PREFLIGHT_WALLET_KEY not set; generating ephemeral dev key"
-    assert output =~ "target:   http://127.0.0.1:#{port}/anything"
-    assert output =~ "[error] %Req.TransportError{reason: :econnrefused}"
+    assert output =~ "target:   #{target}"
+    assert output =~ "[error] cannot reach #{target}: connection refused\n"
+    refute output =~ "%Req."
     refute output =~ "[ok]"
   end
 
