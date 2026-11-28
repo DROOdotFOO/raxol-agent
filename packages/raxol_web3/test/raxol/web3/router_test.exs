@@ -222,18 +222,6 @@ defmodule Raxol.Web3.RouterTest do
       end
     end
 
-    test "the last candidate's error is what the caller sees" do
-      # Not the first one's, and not a summary: the caller needs an error it
-      # can act on, and the last attempt is the freshest evidence.
-      router =
-        Router.new([
-          stub(answers: %{chain_info: {:error, {:timeout, :chunk}}}),
-          stub(answers: %{chain_info: {:error, {:transport, :econnrefused}}})
-        ])
-
-      assert {:error, {:transport, :econnrefused}} = Router.call(router, @chain, :chain_info)
-    end
-
     test "failing over does not record health, so one failure is not counted twice" do
       # The outbound path is the only writer. A router that also recorded would
       # open a breaker at half the configured threshold, and an operator tuning
@@ -248,6 +236,152 @@ defmodule Raxol.Web3.RouterTest do
 
       assert {:ok, _info} = Router.call(router, @chain, :chain_info)
       assert CircuitBreaker.status(Tables.breakers(), health).failures == 0
+    end
+  end
+
+  describe "which error a failed walk reports" do
+    # One backend per answer, in walk order; an `:ok` answer marks a success.
+    defp walk(answers, callback \\ :chain_info, args \\ []) do
+      answers
+      |> Enum.with_index()
+      |> Enum.map(fn {answer, i} -> stub(name: :"s#{i}", answers: %{callback => answer}) end)
+      |> Router.new()
+      |> Router.call(@chain, callback, args)
+    end
+
+    defp fails(reason), do: {:error, reason}
+
+    @page [@account, [cursor: "minted-by-the-first-source"]]
+
+    test "a cursor the second source refuses does not stand in for the first source's timeout" do
+      # A cursor is bound to the source that minted it, so the fallback refuses
+      # it with :wrong_scope. The cursor was right; a retry with it is the
+      # correct next step, which the timeout says.
+      assert {:error, {:timeout, :chunk}} =
+               walk(
+                 [fails({:timeout, :chunk}), fails({:invalid_cursor, :wrong_scope})],
+                 :list_transactions,
+                 @page
+               )
+    end
+
+    test "with no failover, the first source's own invalid_cursor stands" do
+      assert {:error, {:invalid_cursor, :wrong_scope}} =
+               walk(
+                 [fails({:invalid_cursor, :wrong_scope}), {:ok, %{}}],
+                 :list_transactions,
+                 @page
+               )
+    end
+
+    test "with no failover, the one source's answer stands, a bare 400 included" do
+      for reason <- [
+            {:upstream_refused, :not_found},
+            {:unsupported_account_ref, :party},
+            {:http, 400}
+          ] do
+        assert {:error, ^reason} = walk([fails(reason), {:ok, %{}}]), inspect(reason)
+      end
+    end
+
+    test "when every source fails, the caller is told the first fault, not the last" do
+      assert {:error, {:timeout, :chunk}} =
+               walk([fails({:timeout, :chunk}), fails({:timeout, :connect}), fails({:http, 403})])
+
+      assert {:error, {:http, 503}} = walk([fails({:http, 503}), fails({:rate_limited, 500})])
+    end
+
+    test "a bare status from a fallback does not stand in for an earlier fault (the live case)" do
+      assert {:error, {:timeout, :chunk}} =
+               walk([fails({:timeout, :chunk}), fails({:http, 403}), fails({:http, 400})])
+
+      assert {:error, {:timeout, :chunk}} =
+               walk([
+                 fails({:timeout, :chunk}),
+                 fails({:too_large, 2_097_152}),
+                 fails({:http, 400})
+               ])
+    end
+
+    test "after a failover, an answer only that source would give is not reported" do
+      for later <- [
+            {:http, 404},
+            {:http, 422},
+            {:upstream_refused, :unknown},
+            {:unsupported, :read_contract},
+            {:invalid_argument, "hash"},
+            {:blocked, :invalid_url}
+          ] do
+        assert {:error, {:timeout, :chunk}} = walk([fails({:timeout, :chunk}), fails(later)]),
+               inspect(later)
+      end
+    end
+
+    test "after a failover, an answer every source would give stands" do
+      for later <- [
+            {:upstream_refused, :not_found},
+            {:unsupported_account_ref, :not_an_address},
+            {:missing_argument, "account"}
+          ] do
+        assert {:error, ^later} = walk([fails({:timeout, :chunk}), fails(later)]), inspect(later)
+      end
+    end
+
+    test "an open breaker gives way to the first fault from a call actually made" do
+      assert {:error, {:timeout, :chunk}} =
+               walk([fails({:breaker_open, "a"}), fails({:timeout, :chunk})])
+
+      assert {:error, {:breaker_open, "a"}} =
+               walk([fails({:breaker_open, "a"}), fails({:breaker_open, "b"})])
+    end
+
+    test "after only open breakers, the first source actually called answers for itself" do
+      # An open breaker is a fact about earlier calls, so a walk whose only
+      # earlier faults are open breakers has not failed over from a call. Same
+      # outcome as a primary demoted by its health key (below), whether or not
+      # the backend exposes one.
+      for {walk, expected} <- [
+            {[fails({:breaker_open, "a"}), fails({:http, 400})], {:http, 400}},
+            {[fails({:breaker_open, "a"}), fails({:invalid_argument, "hash"})],
+             {:invalid_argument, "hash"}},
+            {[fails({:breaker_open, "a"}), fails({:breaker_open, "b"}), fails({:http, 404})],
+             {:http, 404}}
+          ] do
+        assert {:error, ^expected} = walk(walk), inspect(walk)
+      end
+    end
+
+    test "a primary demoted for its open breaker is tried last, and its breaker_open is not reported" do
+      sick =
+        stub(
+          name: :sick,
+          health_key: open(key("demoted")),
+          answers: %{chain_info: fails({:breaker_open, "sick"})}
+        )
+
+      timing_out = stub(name: :slow, answers: %{chain_info: fails({:timeout, :chunk})})
+
+      assert {:error, {:timeout, :chunk}} =
+               Router.call(Router.new([sick, timing_out]), @chain, :chain_info)
+    end
+
+    test "a primary demoted for its open breaker does not change the answer of the source asked first" do
+      sick =
+        stub(
+          name: :sick,
+          health_key: open(key("demoted-400")),
+          answers: %{chain_info: fails({:breaker_open, "sick"})}
+        )
+
+      refusing = stub(name: :refusing, answers: %{chain_info: fails({:http, 400})})
+
+      assert {:error, {:http, 400}} =
+               Router.call(Router.new([sick, refusing]), @chain, :chain_info)
+    end
+
+    test "a success after a failover is still the success" do
+      assert {:ok, %{marker: :fallback}} =
+               walk([fails({:timeout, :chunk}), fails({:http, 403}), {:ok, %{marker: :fallback}}])
     end
   end
 
