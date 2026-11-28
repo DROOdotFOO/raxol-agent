@@ -31,6 +31,7 @@ defmodule Raxol.Web3.MCP.Error do
   this value, reads it as it read the plain map before.
   """
 
+  alias Raxol.Web3.FX.Sleuth
   alias Raxol.Web3.HTTP
   alias Raxol.Web3.MCP.Result
   alias Raxol.Web3.Serialize
@@ -147,6 +148,30 @@ defmodule Raxol.Web3.MCP.Error do
     do:
       "The block number must be a non-negative integer, a 0x quantity, or one of " <>
         Enum.join(Serialize.block_tags(), ", ") <> "."
+
+  # The FX tools' arguments. Each is refused for its value, not its type, so
+  # each says what the accepted values are; `Raxol.Web3.FX.Sleuth` owns them.
+  defp hint("invalid_argument", "symbol", _context),
+    do:
+      ~s(The symbol must be a ticker such as "EURC": a letter or digit, then up to 23 ) <>
+        "letters, digits, dots or hyphens."
+
+  defp hint("invalid_argument", "corridor", _context),
+    do: ~s(The corridor must be a peg currency code of 3 or 4 capital letters, e.g. "EUR".)
+
+  defp hint("invalid_argument", "sort", _context),
+    do: "The sort must be one of " <> Enum.join(Sleuth.sorts(), ", ") <> "."
+
+  defp hint("invalid_argument", "limit", _context) do
+    first..last//_step = Sleuth.limits()
+    "The limit must be an integer from #{first} to #{last}."
+  end
+
+  defp hint("invalid_argument", "offset", _context),
+    do: "The offset must be a non-negative integer."
+
+  defp hint("invalid_argument", "query", _context),
+    do: "The source refused this combination of filters. Check them against the inputSchema."
 
   defp hint("invalid_argument", name, _context) when is_binary(name) do
     if printable?(name),

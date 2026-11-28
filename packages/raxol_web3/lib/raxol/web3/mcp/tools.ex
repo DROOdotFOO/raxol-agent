@@ -226,8 +226,8 @@ defmodule Raxol.Web3.MCP.Tools do
   failure nor a success for it.
 
   The argument is the SERIALIZED term, because that is what a callback here
-  returns: a `Raxol.Web3.MCP.Error` here, a plain map from
-  `Raxol.Web3.MCP.FXTools`, and both carry `Raxol.Web3.Serialize.error/1`'s
+  returns: a `Raxol.Web3.MCP.Error`, here and from
+  `Raxol.Web3.MCP.FXTools`, which carries `Raxol.Web3.Serialize.error/1`'s
   `%{code: "upstream_refused", detail: :not_found}` for `{:upstream_refused,
   :not_found}`, so the two classes that split on their detail are read that
   way.
